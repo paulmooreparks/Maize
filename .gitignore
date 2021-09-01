@@ -1,0 +1,18 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/.vs/Maize.CLion/v17/Preview/Browse.VC.db
+/.vs/Maize.CLion/v17/Preview
+/.vs/Maize.CLion/v17/TestStore/0
+/.vs/Maize.CLion/v17
+/cmake-build-debug/CMakeFiles/3.20.2/CompilerIdC
+/cmake-build-debug/CMakeFiles/3.20.2/CompilerIdCXX
+/cmake-build-debug/Testing/Temporary
+/cmake-build-release
+/cmake-build-relwithdebinfo
+/out/build
+/Maize.kdev4
+/cmake-build-debug
+/.vs/slnx.sqlite
+/.kdev4
