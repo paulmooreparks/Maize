@@ -405,30 +405,25 @@ namespace maize {
 		};
 
 		bus address_bus;
-		bus data_bus0;
-		bus data_bus1;
+		bus data_bus_0;
+		bus data_bus_1;
 		bus io_bus;
 
 		struct memory_module : public reg {
-			void set_address(bus& source_bus) {
+			void set_address_from_bus(bus& source_bus) {
 				source_bus.set_reg(address_reg, subreg_enum::h0);
 			}
 
-			void load(bus& load_bus, size_t size) {
+			void enable_memory_to_bus(bus& load_bus, size_t size) {
 				pload_bus = &load_bus;
 				load_size = size;
 			}
 
-			bool load_scheduled() {
+			bool enable_memory_scheduled() {
 				return (pload_bus);
 			}
 
-			uint8_t read(uint64_t address) {
-				set_cache_address(address);
-				return cache[cache_address.b0];
-			}
-
-			void on_load() {
+			void on_enable_memory() {
 				if (pload_bus) {
 					w0 = 0;
 					uint64_t address = address_reg.w0;
@@ -503,22 +498,22 @@ namespace maize {
 				}
 			}
 
-			void store(bus& store_bus, subreg_enum subreg) {
-				pstore_bus = &store_bus;
-				store_mask = subreg_mask_map[static_cast<size_t>(subreg)];
-				store_bus.set_reg(this, subreg);
-			}
-
-			bool store_scheduled() {
-				return pstore_bus;
-			}
-
 			void write(uint64_t address, uint8_t value) {
 				set_cache_address(address);
 				cache[cache_address.b0] = value;
 			}
 
-			void on_store() {
+			void set_memory_from_bus(bus& store_bus, subreg_enum subreg) {
+				pstore_bus = &store_bus;
+				store_mask = subreg_mask_map[static_cast<size_t>(subreg)];
+				store_bus.set_reg(this, subreg);
+			}
+
+			bool set_memory_scheduled() {
+				return pstore_bus;
+			}
+
+			void on_set_memory() {
 				if (pstore_bus) {
 					pstore_bus = nullptr;
 					uint64_t address = address_reg.w0;
@@ -905,7 +900,18 @@ namespace maize {
 					|| ((b < 0) && (a >= 0) && (a > std::numeric_limits<T>::min() / b));
 			}
 
-			opcode op {0};
+			void set_src_from_bus(bus& source_bus, subreg_enum subreg = subreg_enum::w0) {
+				source_bus.set_reg(src_reg, subreg);
+			}
+
+			void set_dest_from_bus(bus& source_bus, subreg_enum subreg = subreg_enum::w0) {
+				source_bus.set_reg(this, subreg);
+			}
+
+			void enable_dest_to_bus(bus& dest_bus, subreg_enum subreg = subreg_enum::w0) {
+				dest_bus.enable_reg(this, subreg);
+			}
+
 			reg src_reg;
 		};
 
@@ -940,6 +946,11 @@ namespace maize {
 
 		run_states run_state = run_states::decode;
 
+		void instr_execute() {
+			run_state = run_states::execute;
+			step = 0;
+		}
+
 		void instr_complete() {
 			run_state = run_states::decode;
 			cycle = 0;
@@ -959,13 +970,13 @@ namespace maize {
 						switch (cycle) {
 							case 0:
 								address_bus.enable_reg(pc, subreg_enum::h0);
-								mm.set_address(address_bus);
+								mm.set_address_from_bus(address_bus);
 								break;
 
 							case 1:
-								mm.load(data_bus0, 8);
-								data_bus0.set_reg(in, subreg_enum::w0);
-								++pc;
+								pc.increment(1);
+								mm.enable_memory_to_bus(data_bus_0, 8);
+								data_bus_0.set_reg(in, subreg_enum::w0);
 								run_state = run_states::execute;
 								step = 0;
 								break;
@@ -983,7 +994,7 @@ namespace maize {
 								switch (step) {
 									case 0:
 										running_flag = false;
-										cycle = 0;
+										instr_complete();
 										break;
 								}
 
@@ -994,8 +1005,8 @@ namespace maize {
 								switch (step) {
 									case 0: {
 										pc.increment(2);
-										data_bus0.enable_reg(src_reg(), src_subreg_flag());
-										data_bus0.set_reg(dest_reg(), dest_subreg_flag());
+										data_bus_0.enable_reg(src_reg(), src_subreg_flag());
+										data_bus_0.set_reg(dest_reg(), dest_subreg_flag());
 										instr_complete();
 										break;
 									}
@@ -1009,15 +1020,15 @@ namespace maize {
 									case 0: {
 										pc.increment(2);
 										address_bus.enable_reg(pc, subreg_enum::h0);
-										mm.set_address(address_bus);
+										mm.set_address_from_bus(address_bus);
 										break;
 									}
 
 									case 1: {
 										size_t src_size = src_imm_size();
 										pc.increment(src_size);
-										mm.load(data_bus0, src_size);
-										data_bus0.set_reg(dest_reg(), dest_subreg_flag());
+										mm.enable_memory_to_bus(data_bus_0, src_size);
+										data_bus_0.set_reg(dest_reg(), dest_subreg_flag());
 										instr_complete();
 										break;
 									}
@@ -1030,10 +1041,10 @@ namespace maize {
 								switch (step) {
 									case 0: {
 										pc.increment(2);
+										data_bus_0.enable_reg(src_reg(), src_subreg_flag());
 										address_bus.enable_reg(dest_reg(), dest_subreg_flag());
-										mm.set_address(address_bus);
-										data_bus0.enable_reg(src_reg(), src_subreg_flag());
-										mm.store(data_bus0, src_subreg_flag());
+										mm.set_address_from_bus(address_bus);
+										mm.set_memory_from_bus(data_bus_0, src_subreg_flag());
 										instr_complete();
 										break;
 									}
@@ -1050,17 +1061,17 @@ namespace maize {
 								switch (step) {
 									case 0: {
 										pc.increment(2);
-										data_bus0.enable_reg(src_reg(), src_subreg_flag());
-										data_bus0.set_reg(al.src_reg, subreg_enum::w0);
-										data_bus1.enable_reg(dest_reg(), dest_subreg_flag());
-										data_bus1.set_reg(al, subreg_enum::w0);
+										data_bus_0.enable_reg(src_reg(), src_subreg_flag());
+										data_bus_1.enable_reg(dest_reg(), dest_subreg_flag());
+										al.set_src_from_bus(data_bus_0);
+										al.set_dest_from_bus(data_bus_1);
 										instr_jmp_alu();
 										break;
 									}
 
 									case 1: {
-										data_bus0.enable_reg(al, subreg_enum::w0);
-										data_bus0.set_reg(dest_reg(), dest_subreg_flag());
+										al.enable_dest_to_bus(data_bus_0);
+										data_bus_0.set_reg(dest_reg(), dest_subreg_flag());
 										instr_complete();
 										break;
 									}
@@ -1076,15 +1087,15 @@ namespace maize {
 								switch (step) {
 									case 0: {
 										pc.increment(1);
-										data_bus0.enable_reg(src_reg(), src_subreg_flag());
-										data_bus0.set_reg(al.src_reg, subreg_enum::w0);
+										data_bus_0.enable_reg(src_reg(), src_subreg_flag());
+										al.set_src_from_bus(data_bus_0);
 										instr_jmp_alu();
 										break;
 									}
 
 									case 1: {
-										data_bus0.enable_reg(al, subreg_enum::w0);
-										data_bus0.set_reg(src_reg(), src_subreg_flag());
+										al.enable_dest_to_bus(data_bus_0);
+										data_bus_0.set_reg(src_reg(), src_subreg_flag());
 										instr_complete();
 										break;
 									}
@@ -1396,8 +1407,8 @@ namespace maize {
 
 						run_state = run_states::execute;
 
-						/* Go back to the top of the loop, skipping the increment/load/enable/set/store 
-						steps below. That means that the ALU operations CANNOT do anything that would 
+						/* Go back to the top of the loop, skipping the increment/enable/set steps 
+						below. That means that the ALU operations CANNOT do anything that would 
 						require these steps to execute. */
 						continue;
 					}
@@ -1413,26 +1424,26 @@ namespace maize {
 					increment_count = 0;
 				}
 
-				/* load */
-				if (mm.load_scheduled()) {
-					mm.on_load();
+				/* enable memory to bus */
+				if (mm.enable_memory_scheduled()) {
+					mm.on_enable_memory();
 				}
 
-				/* enable */
+				/* enable registers to buses */
 				address_bus.on_enable();
-				data_bus0.on_enable();
-				data_bus1.on_enable();
+				data_bus_0.on_enable();
+				data_bus_1.on_enable();
 				io_bus.on_enable();
 
-				/* set */
+				/* set registers from buses */
 				address_bus.on_set();
-				data_bus0.on_set();
-				data_bus1.on_set();
+				data_bus_0.on_set();
+				data_bus_1.on_set();
 				io_bus.on_set();
 
-				/* store */
-				if (mm.store_scheduled()) {
-					mm.on_store();
+				/* set memory from buses*/
+				if (mm.set_memory_scheduled()) {
+					mm.on_set_memory();
 				}
 			}
 		}
