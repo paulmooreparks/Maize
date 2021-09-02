@@ -3,6 +3,22 @@
 #include <map>
 #include <array>
 
+/* The main run loop is farther below, in the "run" function. That's where you'll find the 
+state machine that implements the machine-code instructions. */
+
+/* Right now, the code is still a bit scattered and not up to my usual standards, but I'll 
+clean it up soon. This is not intended to be pure OO code; my priorities are speed and 
+super-tight generated assembly. */
+
+/* This program doesn't really "do" anything yet, at least not as visible output. So far it's 
+just a platform for testing instructions as I implement them. There's some code implemented as 
+machine language in the vector in the main function (at the bottom of this file) that I load 
+into memory before starting the main loop. You'll need to run this in the debugger to watch 
+the data move around as it executes. */
+
+/* Soon, I'll implement console output by connecting a "screen device" to a port via the 
+OUT instruction. Input will follow afterward (via the IN instruction, naturally). */
+
 namespace maize {
 	namespace cpu {
 		typedef uint8_t opcode;
@@ -49,24 +65,6 @@ namespace maize {
 			template<typename T = uint8_t> const T operator[](size_t index) const {
 				return byte_array[index];
 			}
-
-			/*
-			template<uint16_t> uint16_t operator[](size_t index) {
-				return qword[index];
-			}
-
-			template<uint16_t> const uint16_t operator[](size_t index) const {
-				return qword[index];
-			}
-
-			template<uint32_t> uint32_t operator[](size_t index) {
-				return hword[index];
-			}
-
-			template<uint32_t> const uint32_t operator[](size_t index) const {
-				return hword[index];
-			}
-			*/
 
 			uint64_t& w0 {word.w0};
 			uint32_t& h0 {hword.h0};
@@ -749,8 +747,8 @@ namespace maize {
 			reg& flag_reg;
 		};
 
-											//       6         5         4         3         2         1         0
-											//    3210987654321098765432109876543210987654321098765432109876543210
+											//      6         5         4         3         2         1         0
+											//   3210987654321098765432109876543210987654321098765432109876543210
 		const uint64_t bit_carryout =          0b0000000000000000000000000000000000000000000000000000000000000001;
 		const uint64_t bit_negative =          0b0000000000000000000000000000000000000000000000000000000000000010;
 		const uint64_t bit_overflow =          0b0000000000000000000000000000000000000000000000000000000000000100;
@@ -1453,7 +1451,10 @@ namespace maize {
 using namespace maize;
 
 int main() {
-	uint64_t address = 0x0000000000001000;
+	uint64_t address {0x0000000000001000};
+
+	/* This is a sample program that I load into memory before starting the main loop. Eventually, 
+	I'll load a binary file with BIOS, OS image, etc. */
 
 	std::vector<uint8_t> mem {
 		/* 1000 */  cpu::instr::ld_immVal_reg, 0x00, 0x10, 0x88,
