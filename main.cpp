@@ -1114,7 +1114,7 @@ namespace maize {
 							case alu::op_add: {
 								switch (op_size) {
 									case alu::opsize_byte: {
-										uint8_t result = static_cast<uint8_t>(al.b0) + static_cast<uint8_t>(al.src_reg.b0);
+										uint8_t result = al.b0 + al.src_reg.b0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
 										overflow_flag = result < al.b0;
@@ -1123,7 +1123,7 @@ namespace maize {
 									}
 
 									case alu::opsize_qword: {
-										uint16_t result = static_cast<uint16_t>(al.q0) + static_cast<uint16_t>(al.src_reg.q0);
+										uint16_t result = al.q0 + al.src_reg.q0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
 										overflow_flag = result < al.q0;
@@ -1132,7 +1132,7 @@ namespace maize {
 									}
 
 									case alu::opsize_hword: {
-										uint32_t result = static_cast<uint32_t>(al.h0) + static_cast<uint32_t>(al.src_reg.h0);
+										uint32_t result = al.h0 + al.src_reg.h0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
 										overflow_flag = result < al.h0;
@@ -1141,7 +1141,7 @@ namespace maize {
 									}
 
 									case alu::opsize_word: {
-										uint64_t result = static_cast<uint64_t>(al.w0) + static_cast<uint64_t>(al.src_reg.w0);
+										uint64_t result = al.w0 + al.src_reg.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
 										overflow_flag = result < al.w0;
@@ -1156,7 +1156,7 @@ namespace maize {
 							case alu::op_sub: {
 								switch (op_size) {
 									case alu::opsize_byte: {
-										uint8_t result = static_cast<uint8_t>(al.b0) - static_cast<uint8_t>(al.src_reg.b0);
+										uint8_t result = al.b0 - al.src_reg.b0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
 										overflow_flag = result > al.b0;
@@ -1165,7 +1165,7 @@ namespace maize {
 									}
 
 									case alu::opsize_qword: {
-										uint16_t result = static_cast<uint16_t>(al.q0) - static_cast<uint16_t>(al.src_reg.q0);
+										uint16_t result = al.q0 - al.src_reg.q0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
 										overflow_flag = result > al.q0;
@@ -1174,7 +1174,7 @@ namespace maize {
 									}
 
 									case alu::opsize_hword: {
-										uint32_t result = static_cast<uint32_t>(al.h0) - static_cast<uint32_t>(al.src_reg.h0);
+										uint32_t result = al.h0 - al.src_reg.h0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
 										overflow_flag = result > al.h0;
@@ -1183,7 +1183,7 @@ namespace maize {
 									}
 
 									case alu::opsize_word: {
-										uint64_t result = static_cast<uint64_t>(al.w0) - static_cast<uint64_t>(al.src_reg.w0);
+										uint64_t result = al.w0 - al.src_reg.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
 										overflow_flag = result > al.w0;
@@ -1198,7 +1198,7 @@ namespace maize {
 							case alu::op_mul: {
 								switch (op_size) {
 									case alu::opsize_byte: {
-										uint8_t result = static_cast<uint8_t>(al.b0) - static_cast<uint8_t>(al.src_reg.b0);
+										uint8_t result = al.b0 - al.src_reg.b0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
 										overflow_flag = alu::test_mul_overflow(al.src_reg.b0, al.b0) || alu::test_mul_underflow(al.src_reg.b0, al.b0);
@@ -1207,7 +1207,7 @@ namespace maize {
 									}
 
 									case alu::opsize_qword: {
-										uint16_t result = static_cast<uint16_t>(al.q0) - static_cast<uint16_t>(al.src_reg.q0);
+										uint16_t result = al.q0 - al.src_reg.q0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
 										overflow_flag = alu::test_mul_overflow(al.src_reg.q0, al.q0) || alu::test_mul_underflow(al.src_reg.q0, al.q0);
@@ -1216,7 +1216,7 @@ namespace maize {
 									}
 
 									case alu::opsize_hword: {
-										uint32_t result = static_cast<uint32_t>(al.h0) - static_cast<uint32_t>(al.src_reg.h0);
+										uint32_t result = al.h0 - al.src_reg.h0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
 										overflow_flag = alu::test_mul_overflow(al.src_reg.h0, al.h0) || alu::test_mul_underflow(al.src_reg.h0, al.h0);
@@ -1225,7 +1225,7 @@ namespace maize {
 									}
 
 									case alu::opsize_word: {
-										uint64_t result = static_cast<uint64_t>(al.w0) - static_cast<uint64_t>(al.src_reg.w0);
+										uint64_t result = al.w0 - al.src_reg.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
 										overflow_flag = alu::test_mul_overflow(al.src_reg.h0, al.h0) || alu::test_mul_underflow(al.src_reg.h0, al.h0);
@@ -1242,7 +1242,7 @@ namespace maize {
 
 								switch (op_size) {
 									case alu::opsize_byte: {
-										uint8_t result = static_cast<uint8_t>(al.b0) / static_cast<uint8_t>(al.src_reg.b0);
+										uint8_t result = al.b0 / al.src_reg.b0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
 										al.w0 = result;
@@ -1250,7 +1250,7 @@ namespace maize {
 									}
 
 									case alu::opsize_qword: {
-										uint16_t result = static_cast<uint16_t>(al.q0) / static_cast<uint16_t>(al.src_reg.q0);
+										uint16_t result = al.q0 / al.src_reg.q0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
 										al.w0 = result;
@@ -1258,7 +1258,7 @@ namespace maize {
 									}
 
 									case alu::opsize_hword: {
-										uint32_t result = static_cast<uint32_t>(al.h0) / static_cast<uint32_t>(al.src_reg.h0);
+										uint32_t result = al.h0 / al.src_reg.h0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
 										al.w0 = result;
@@ -1266,7 +1266,7 @@ namespace maize {
 									}
 
 									case alu::opsize_word: {
-										uint64_t result = static_cast<uint64_t>(al.w0) / static_cast<uint64_t>(al.src_reg.w0);
+										uint64_t result = al.w0 / al.src_reg.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
 										al.w0 = result;
@@ -1280,7 +1280,7 @@ namespace maize {
 							case alu::op_inc: {
 								switch (op_size) {
 									case alu::opsize_byte: {
-										uint8_t result = static_cast<uint8_t>(al.b0) + uint8_t(1);
+										uint8_t result = al.b0 + uint8_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
 										overflow_flag = result < al.b0;
@@ -1289,7 +1289,7 @@ namespace maize {
 									}
 
 									case alu::opsize_qword: {
-										uint16_t result = static_cast<uint16_t>(al.q0) + uint16_t(1);
+										uint16_t result = al.q0 + uint16_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
 										overflow_flag = result < al.q0;
@@ -1298,7 +1298,7 @@ namespace maize {
 									}
 
 									case alu::opsize_hword: {
-										uint32_t result = static_cast<uint32_t>(al.h0) + uint32_t(1);
+										uint32_t result = al.h0 + uint32_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
 										overflow_flag = result < al.h0;
@@ -1307,7 +1307,7 @@ namespace maize {
 									}
 
 									case alu::opsize_word: {
-										uint64_t result = static_cast<uint64_t>(al.w0) + uint64_t(1);
+										uint64_t result = al.w0 + uint64_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
 										overflow_flag = result < al.w0;
@@ -1322,7 +1322,7 @@ namespace maize {
 							case alu::op_dec: {
 								switch (op_size) {
 									case alu::opsize_byte: {
-										uint8_t result = static_cast<uint8_t>(al.b0) - uint8_t(1);
+										uint8_t result = al.b0 - uint8_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
 										overflow_flag = result > al.b0;
@@ -1331,7 +1331,7 @@ namespace maize {
 									}
 
 									case alu::opsize_qword: {
-										uint16_t result = static_cast<uint16_t>(al.q0) - uint16_t(1);
+										uint16_t result = al.q0 - uint16_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
 										overflow_flag = result > al.q0;
@@ -1340,7 +1340,7 @@ namespace maize {
 									}
 
 									case alu::opsize_hword: {
-										uint32_t result = static_cast<uint32_t>(al.h0) - uint32_t(1);
+										uint32_t result = al.h0 - uint32_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
 										overflow_flag = result > al.h0;
@@ -1349,7 +1349,7 @@ namespace maize {
 									}
 
 									case alu::opsize_word: {
-										uint64_t result = static_cast<uint64_t>(al.w0) - uint64_t(1);
+										uint64_t result = al.w0 - uint64_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
 										overflow_flag = result > al.w0;
@@ -1366,7 +1366,7 @@ namespace maize {
 
 								switch (op_size) {
 									case alu::opsize_byte: {
-										uint8_t result = ~static_cast<uint8_t>(al.b0);
+										uint8_t result = ~al.b0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
 										al.w0 = result;
@@ -1374,7 +1374,7 @@ namespace maize {
 									}
 
 									case alu::opsize_qword: {
-										uint16_t result = ~static_cast<uint16_t>(al.q0);
+										uint16_t result = ~al.q0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
 										al.w0 = result;
@@ -1382,7 +1382,7 @@ namespace maize {
 									}
 
 									case alu::opsize_hword: {
-										uint32_t result = ~static_cast<uint32_t>(al.h0);
+										uint32_t result = ~al.h0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
 										al.w0 = result;
@@ -1390,7 +1390,7 @@ namespace maize {
 									}
 
 									case alu::opsize_word: {
-										uint64_t result = ~static_cast<uint64_t>(al.w0);
+										uint64_t result = ~al.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
 										al.w0 = result;
