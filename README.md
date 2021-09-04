@@ -242,8 +242,8 @@ There are four special-purpose registers.
 
 ## Execution
 
-The CPU starts in privileged mode, and the program counter is initially set to segment $0000`0000,
-address $0000`1000. When in privileged mode, the Privilege flag is set, and instructions marked
+The CPU starts in privileged mode, and the program counter is initially set to segment $00000000,
+address $00001000. When in privileged mode, the privilege flag is set, and instructions marked
 as privileged may be executed. When the privilege flag is cleared, instruction execution and
 memory access are limited to the current segment, and certain flags, registers, and instructions
 are inaccessible. Program execution may return to privileged mode via hardware interrupts or via

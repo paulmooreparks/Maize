@@ -2,8 +2,12 @@
 #include <vector>
 #include <map>
 #include <array>
+#include <thread>
+#include <chrono>
+#include <semaphore>
+#include <condition_variable>
 
-/* The main run loop is farther below, in the "run" function. That's where you'll find the 
+/* The main tick loop is farther below, in the "tick" function. That's where you'll find the 
 state machine that implements the machine-code instructions. */
 
 /* Right now, the code is still a bit scattered and not up to my usual standards, but I'll 
@@ -959,7 +963,11 @@ namespace maize {
 			run_state = run_states::alu;
 		}
 
-		void run() {
+		std::mutex int_mutex;
+		std::condition_variable int_event;
+		bool is_power_on = false;
+
+		void tick() {
 			running_flag = true;
 
 			while (running_flag) {
@@ -992,6 +1000,7 @@ namespace maize {
 								switch (step) {
 									case 0:
 										running_flag = false;
+										is_power_on = false; // just temporary
 										instr_complete();
 										break;
 								}
@@ -1445,6 +1454,28 @@ namespace maize {
 				}
 			}
 		}
+
+		void run() {
+			{
+				// std::lock_guard<std::mutex> lk(int_mutex);
+				is_power_on = true;
+			}
+
+			// int_event.notify_all();
+
+			while (is_power_on) {
+				tick();
+
+				{
+					// std::unique_lock<std::mutex> lk(int_mutex);
+
+					if (is_power_on) {
+						// int_event.wait(lk);
+					}
+				}
+			}
+		}
+
 	} /* namespace cpu; */
 } /* namespace maize */
 
@@ -1472,6 +1503,7 @@ int main() {
 		++address;
 	}
 
+	cpu::is_power_on = true;
 	cpu::run();
 }
 
