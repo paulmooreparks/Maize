@@ -7,9 +7,9 @@ above the virtual devices, implement a simple OS and a subset of Unix/Linux syst
 
 ## How To Use Maize
 
-Maize is implemented in C++ and will run on Windows and Linux. I have not ported the assember (mazm) yet, but that will arrive as soon 
-as I implement a few more instructions. For now, the binary just executes a few instructions that are loaded into memory from the main 
-function.
+Maize is implemented in C++ and will run on Windows and Linux. I have not ported [the C# version of the assember (mazm)](https://github.com/paulmooreparks/Tortilla/tree/master/mazm) 
+yet, but that will arrive as soon as I implement a few more instructions. For now, the binary just executes a few hand-coded instructions that are loaded into memory from the 
+main function.
 
 ## Project Status
 
