@@ -26,8 +26,8 @@ So far, this implementation in C++ is MUCH faster and MUCH tighter than the .NET
 
 ## Hello, World!
 
-Here is a simple "Hello, World!" application written in Maize assembly, targeting the basic OS I've written and the 
-system calls it implements.
+Here is a simple ["Hello, World!" application](https://github.com/paulmooreparks/Maize/blob/master/HelloWorld.asm) 
+written in Maize assembly, targeting the basic OS I've written and the system calls it implements.
 
     INCLUDE "core.asm"
     INCLUDE "stdlib.asm"
