@@ -7,6 +7,11 @@
 #include <semaphore>
 #include <condition_variable>
 
+// TODO: wrap this in an #ifdef
+#include <Windows.h>
+#undef min
+#undef max
+
 /* The main tick loop is farther below, in the "tick" function. That's where you'll find the 
 state machine that implements the machine-code instructions. */
 
@@ -20,10 +25,8 @@ machine language in the vector in the main function (at the bottom of this file)
 into memory before starting the main loop. You'll need to run this in the debugger to watch 
 the data move around as it executes. */
 
-/* Soon, I'll implement console output by connecting a "screen device" to a port via the 
-OUT instruction. Input will follow afterward (via the IN instruction, naturally). */
-
 namespace maize {
+
 	namespace cpu {
 		typedef uint8_t opcode;
 
@@ -346,6 +349,12 @@ namespace maize {
 				}
 			}
 
+			virtual void on_enable() {
+			}
+
+			virtual void on_set() {
+			}
+
 		protected:
 			uint64_t privilege_flags {0};
 			uint64_t privilege_mask {0};
@@ -356,7 +365,7 @@ namespace maize {
 			bus() = default;
 
 		protected:
-			reg* enabled_reg{nullptr};
+			reg* penabled_reg{nullptr};
 			subreg_mask_enum enable_subreg_mask{0};
 			uint8_t enable_offset{0};
 
@@ -372,7 +381,7 @@ namespace maize {
 			void enable_reg(reg& en_reg, subreg_enum subreg) {
 				enable_subreg_mask = subreg_mask_map[static_cast<size_t>(subreg)];
 				enable_offset = offset_map[static_cast<size_t>(subreg)];
-				enabled_reg = &en_reg;
+				penabled_reg = &en_reg;
 			}
 
 			void set_reg(reg* pset_reg, subreg_enum subreg) {
@@ -389,9 +398,10 @@ namespace maize {
 			}
 
 			void on_enable() {
-				if (enabled_reg) {
-					w0 = (enabled_reg->w0 & (uint64_t)enable_subreg_mask) >> enable_offset;
-					enabled_reg = nullptr;
+				if (penabled_reg) {
+					penabled_reg->on_enable();
+					w0 = (penabled_reg->w0 & (uint64_t)enable_subreg_mask) >> enable_offset;
+					penabled_reg = nullptr;
 				}
 			}
 
@@ -400,11 +410,39 @@ namespace maize {
 				for (size_t idx = 0; idx < set_count; ++idx) {
 					auto & info = bus_set_array[idx];
 					info.op_reg->w0 = (~(uint64_t)info.mask & info.op_reg->w0) | (w0 << info.offset) & (uint64_t)info.mask;
+					info.op_reg->on_set();
 				}
 
 				set_count = 0;
 			}
 		};
+
+		class device : public reg {
+		public:
+			device() = default;
+
+		protected:
+			reg address_reg;
+
+		public:
+			void set_address_from_bus(bus& set_bus) {
+				set_bus.set_reg(address_reg, subreg_enum::w0);
+			}
+
+			void enable_address_to_bus(bus& enable_bus) {
+				enable_bus.enable_reg(address_reg, subreg_enum::w0);
+			}
+
+			void set_io_from_bus(bus& source_bus) {
+				source_bus.set_reg(this, subreg_enum::w0);
+			}
+
+			void enable_io_to_bus(bus& io_bus) {
+				io_bus.enable_reg(this, subreg_enum::w0);
+			}
+		};
+
+		std::map<uint16_t, device*> devices;
 
 		bus address_bus;
 		bus data_bus_0;
@@ -433,13 +471,13 @@ namespace maize {
 					size_t idx = cache_address.b0;
 
 					switch (load_size) {
-						case 1:
+						case sizeof(uint8_t) :
 							b0 = cache[idx];
 							pload_bus->enable_reg(this, subreg_enum::b0);
 							break;
 
-						case 2:
-							if (rem >= 2) {
+						case sizeof(uint16_t) :
+							if (rem >= sizeof(uint16_t)) {
 								q0 = *((uint16_t*)(cache + idx));
 							}
 							else {
@@ -451,9 +489,8 @@ namespace maize {
 							pload_bus->enable_reg(this, subreg_enum::q0);
 							break;
 
-						case 4:
-
-							if (rem >= 4) {
+						case sizeof(uint32_t) :
+							if (rem >= sizeof(uint32_t)) {
 								h0 = *((uint32_t*)(cache + idx));
 							}
 							else {
@@ -469,8 +506,8 @@ namespace maize {
 							pload_bus->enable_reg(this, subreg_enum::h0);
 							break;
 
-						case 8:
-							if (rem >= 8) {
+						case sizeof(uint64_t):
+							if (rem >= sizeof(uint64_t)) {
 								w0 = *((uint64_t*)(cache + idx));
 							}
 							else {
@@ -857,6 +894,22 @@ namespace maize {
 			const opcode inc_reg			{0x11};
 			const opcode dec_reg			{0x12};
 			const opcode not_reg			{0x13};
+
+			const opcode out_regVal_imm		{0x14};
+			const opcode out_immVal_imm		{0x54};
+			const opcode out_regAddr_imm	{0x94};
+			const opcode out_immAddr_imm	{0xD4};
+
+			const opcode outr_regVal_imm	{0x1E};
+			const opcode outr_immVal_imm	{0x5E};
+			const opcode outr_regAddr_imm	{0x9E};
+			const opcode outr_immAddr_imm	{0xDE};
+
+			const opcode in_regVal_imm		{0x1F};
+			const opcode in_immVal_imm		{0x5F};
+			const opcode in_regAddr_imm		{0x9F};
+			const opcode in_immAddr_imm		{0xDF};
+
 		}
 
 		class alu : public reg {
@@ -891,13 +944,13 @@ namespace maize {
 			static const opcode opflag_ctrl {0xC0};
 
 			template <typename T>
-			static constexpr bool test_mul_overflow(const T& a, const T& b) {
+			static constexpr bool is_mul_overflow(const T& a, const T& b) {
 				return ((b >= 0) && (a >= 0) && (a > std::numeric_limits<T>::max() / b))
 					|| ((b < 0) && (a < 0) && (a < std::numeric_limits<T>::max() / b));
 			}
 
 			template <typename T>
-			static constexpr bool test_mul_underflow(const T& a, const T& b) {
+			static constexpr bool is_mul_underflow(const T& a, const T& b) {
 				return ((b >= 0) && (a < 0) && (a < std::numeric_limits<T>::min() / b))
 					|| ((b < 0) && (a >= 0) && (a > std::numeric_limits<T>::min() / b));
 			}
@@ -965,6 +1018,13 @@ namespace maize {
 
 		std::mutex int_mutex;
 		std::condition_variable int_event;
+
+		std::mutex io_set_mutex;
+		std::condition_variable io_set_event;
+
+		reg operand1;
+		reg operand2;
+
 		bool is_power_on = false;
 
 		void tick() {
@@ -1014,6 +1074,45 @@ namespace maize {
 										pc.increment(2);
 										data_bus_0.enable_reg(src_reg(), src_subreg_flag());
 										data_bus_0.set_reg(dest_reg(), dest_subreg_flag());
+										instr_complete();
+										break;
+									}
+								}
+
+								break;
+							}
+
+							case instr::out_regVal_imm: {
+								switch (step) {
+									case 0: {
+										pc.increment(2);
+										address_bus.enable_reg(pc, subreg_enum::h0);
+										mm.set_address_from_bus(address_bus);
+										data_bus_0.enable_reg(src_reg(), src_subreg_flag());
+										break;
+									}
+
+									case 1: {
+										size_t dest_size = dest_imm_size();
+										pc.increment(dest_size);
+										mm.enable_memory_to_bus(data_bus_1, dest_size);
+										data_bus_1.set_reg(operand1, src_subreg_flag());
+										break;
+									}
+
+									case 2: {
+										// operand1 contains device ID
+										// look up device from operand1
+										
+										device* pdevice = devices[operand1.q0];
+
+										// data_bus_0 already has reg val
+										// set device from data_bus_0
+										
+										pdevice->set_io_from_bus(data_bus_0);
+										pdevice->set_address_from_bus(data_bus_1);
+
+										// sys::console::set(operand1.w0);
 										instr_complete();
 										break;
 									}
@@ -1210,7 +1309,7 @@ namespace maize {
 										uint8_t result = al.b0 - al.src_reg.b0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
-										overflow_flag = alu::test_mul_overflow(al.src_reg.b0, al.b0) || alu::test_mul_underflow(al.src_reg.b0, al.b0);
+										overflow_flag = alu::is_mul_overflow(al.src_reg.b0, al.b0) || alu::is_mul_underflow(al.src_reg.b0, al.b0);
 										al.w0 = result;
 										break;
 									}
@@ -1219,7 +1318,7 @@ namespace maize {
 										uint16_t result = al.q0 - al.src_reg.q0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
-										overflow_flag = alu::test_mul_overflow(al.src_reg.q0, al.q0) || alu::test_mul_underflow(al.src_reg.q0, al.q0);
+										overflow_flag = alu::is_mul_overflow(al.src_reg.q0, al.q0) || alu::is_mul_underflow(al.src_reg.q0, al.q0);
 										al.w0 = result;
 										break;
 									}
@@ -1228,7 +1327,7 @@ namespace maize {
 										uint32_t result = al.h0 - al.src_reg.h0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
-										overflow_flag = alu::test_mul_overflow(al.src_reg.h0, al.h0) || alu::test_mul_underflow(al.src_reg.h0, al.h0);
+										overflow_flag = alu::is_mul_overflow(al.src_reg.h0, al.h0) || alu::is_mul_underflow(al.src_reg.h0, al.h0);
 										al.w0 = result;
 										break;
 									}
@@ -1237,7 +1336,7 @@ namespace maize {
 										uint64_t result = al.w0 - al.src_reg.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
-										overflow_flag = alu::test_mul_overflow(al.src_reg.h0, al.h0) || alu::test_mul_underflow(al.src_reg.h0, al.h0);
+										overflow_flag = alu::is_mul_overflow(al.src_reg.h0, al.h0) || alu::is_mul_underflow(al.src_reg.h0, al.h0);
 										al.w0 = result;
 										break;
 									}
@@ -1414,8 +1513,8 @@ namespace maize {
 
 						run_state = run_states::execute;
 
-						/* Go back to the top of the loop, skipping the increment/enable/set steps 
-						below. That means that the ALU operations CANNOT do anything that would 
+						/* Go back to the top of the loop, skipping the increment/enable/set steps
+						below. That means that the ALU operations CANNOT do anything that would
 						require these steps to execute. */
 						continue;
 					}
@@ -1455,29 +1554,176 @@ namespace maize {
 			}
 		}
 
+		void add_device(uint16_t id, device& new_device) {
+			devices[id] = &new_device;
+		}
+
 		void run() {
 			{
-				// std::lock_guard<std::mutex> lk(int_mutex);
+				std::lock_guard<std::mutex> lk(int_mutex);
 				is_power_on = true;
 			}
 
-			// int_event.notify_all();
+			int_event.notify_all();
 
 			while (is_power_on) {
 				tick();
 
 				{
-					// std::unique_lock<std::mutex> lk(int_mutex);
+					std::unique_lock<std::mutex> lk(int_mutex);
 
 					if (is_power_on) {
-						// int_event.wait(lk);
+						int_event.wait(lk);
 					}
 				}
 			}
 		}
 
-	} /* namespace cpu; */
-} /* namespace maize */
+	} // namespace cpu; 
+
+	namespace sys {
+		class win_console : public cpu::device {
+		protected:
+			std::mutex ctrl_mutex;
+			std::mutex io_mutex;
+			std::counting_semaphore<16> io_set {0};
+			std::condition_variable io_run_event;
+			std::condition_variable io_close_event;
+			bool is_open;
+
+		public:
+			virtual void on_set() {
+				cpu::reg::on_set();
+				set(w0);
+			}
+
+			void set(uint64_t new_bus_value) {
+				{
+					std::lock_guard<std::mutex> lk(io_mutex);
+					w0 = new_bus_value;
+				}
+
+				io_set.release();
+			}
+
+			uint64_t enable() {
+				return 0;
+			}
+
+			void open() {
+				// std::cout << "opening" << std::endl;
+				std::thread run_thread {&win_console::run, this};
+
+				{
+					std::unique_lock<std::mutex> lk(io_mutex);
+					address_reg.h0 = 0xFFFE;
+				}
+
+				io_set.release();
+
+				{
+					std::unique_lock<std::mutex> lk(io_mutex);
+					io_run_event.wait(lk);
+					is_open = true;
+				}
+
+				// std::cout << "opened" << std::endl;
+
+				if (run_thread.joinable()) {
+					run_thread.detach();
+				}
+			}
+
+			void close() {
+				// std::cout << "closing" << std::endl;
+
+				{
+					std::unique_lock<std::mutex> lk(io_mutex);
+					address_reg.h0 = 0xFFFF;
+				}
+
+				io_set.release();
+
+				{
+					std::unique_lock<std::mutex> lk(io_mutex);
+					io_close_event.wait(lk);
+					is_open = false;
+				}
+
+				// std::cout << "closed" << std::endl;
+			}
+
+			void run() {
+				bool running = true;
+				HANDLE hStdin {INVALID_HANDLE_VALUE};
+				HANDLE hStdout {INVALID_HANDLE_VALUE};
+				HANDLE hStderr {INVALID_HANDLE_VALUE};
+				CONSOLE_SCREEN_BUFFER_INFO csbiInfo {0};
+
+				while (running) {
+					io_set.acquire();
+					uint64_t local_bus_value {0};
+
+					{
+						std::unique_lock<std::mutex> lk(io_mutex);
+						local_bus_value = w0;
+					}
+
+					cpu::reg_value cmd {w0};
+
+					switch (address_reg.w0) {
+						case 0x7F: {
+							auto opcode = cmd.b1;
+
+							switch (opcode) {
+								case 0x0A: {
+									WCHAR buf[1] {b0};
+									WriteConsole(hStdout, buf, 1, nullptr, nullptr);
+									break;
+								}
+							}
+
+							break;
+						}
+
+						case 0xFFFE: {
+							hStdin = GetStdHandle(STD_INPUT_HANDLE);
+							// TODO: error handling
+							hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+							// TODO: error handling
+							hStderr = GetStdHandle(STD_ERROR_HANDLE);
+							// TODO: error handling
+
+							DWORD dwMode {0};
+
+							if (!GetConsoleMode(hStdout, &dwMode)) {
+								// TODO: error handling
+							}
+
+							dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+
+							if (!SetConsoleMode(hStdout, dwMode)) {
+								// TODO: error handling
+							}
+
+							io_run_event.notify_all();
+							break;
+						}
+
+						case 0xFFFF: {
+							running = false;
+							break;
+						}
+					}
+				}
+
+				io_close_event.notify_all();
+			}
+		};
+
+	} // namespace sys
+
+} // namespace maize
 
 using namespace maize;
 
@@ -1488,14 +1734,15 @@ int main() {
 	I'll load a binary file with BIOS, OS image, etc. */
 
 	std::vector<uint8_t> mem {
-		/* 1000 */  cpu::instr::ld_immVal_reg, 0x00, 0x10, 0x88,
-		/* 1004 */  cpu::instr::ld_immVal_reg, 0x00, 0x11, 0x22,
-		/* 1008 */  cpu::instr::add_regVal_reg, 0x10, 0x11,
-		/* 100B */  cpu::instr::ld_regVal_reg, 0x11, 0x28,
-		/* 100E */  cpu::instr::ld_immVal_reg, 0x02, 0x0C, 0x00, 0x20, 0x00, 0x00,
-		/* 1015 */  cpu::instr::st_regVal_regAddr, 0x1E, 0x0C,
-		/* 1018 */  cpu::instr::inc_reg, 0x11,
-		/* 101A */  cpu::instr::halt
+		/* LD B.B0 0x41         */	cpu::instr::ld_immVal_reg, 0x00, 0x10, 0x41,
+		/* LD B.B1 0x0A         */	cpu::instr::ld_immVal_reg, 0x00, 0x11, 0x0A,
+		/* OUT B 0x7F           */	cpu::instr::out_regVal_imm, 0x1E, 0x00, 0x7F,
+		/* ADD B.B0 B.B1        */	cpu::instr::add_regVal_reg, 0x10, 0x11,
+		/* LD B.B1 C.Q0         */	cpu::instr::ld_regVal_reg, 0x11, 0x28,
+		/* LD 0x00002000 A.H0   */	cpu::instr::ld_immVal_reg, 0x02, 0x0C, 0x00, 0x20, 0x00, 0x00,
+		/* ST B @A.H0           */	cpu::instr::st_regVal_regAddr, 0x1E, 0x0C,
+		/* INC B.B1             */	cpu::instr::inc_reg, 0x11,
+		/* HALT                 */	cpu::instr::halt
 	};
 
 	for (auto & b : mem) {
@@ -1503,7 +1750,11 @@ int main() {
 		++address;
 	}
 
+	sys::win_console console;
+	console.open();
+	cpu::add_device(0x7F, console);
 	cpu::is_power_on = true;
 	cpu::run();
+	console.close();
 }
 
