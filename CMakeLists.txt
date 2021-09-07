@@ -3,4 +3,4 @@ project(Maize)
 
 set(CMAKE_CXX_STANDARD 20)
 
-add_executable(Maize main.cpp)
+add_executable(maize main.cpp)

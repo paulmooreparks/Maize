@@ -1,3 +1,7 @@
+/* Right now, I have everything crammed into this file. I'm going to break it up into headers and 
+various cpp files eventually. I find it a little easier to work in one file for the moment. I'm 
+still playing with the structure a bit. */
+
 #include <iostream>
 #include <vector>
 #include <map>
@@ -11,6 +15,8 @@
 #include <Windows.h>
 #undef min
 #undef max
+
+
 
 /* The main tick loop is farther below, in the "tick" function. That's where you'll find the 
 state machine that implements the machine-code instructions. */
@@ -876,39 +882,180 @@ namespace maize {
 		}
 
 		namespace instr {
-			const opcode halt               {0x00};
+			const opcode halt					{0x00};
 
-			const opcode ld_regVal_reg      {0x01};
-			const opcode ld_immVal_reg		{0x41};
+			const opcode ld_regVal_reg			{0x01};
+			const opcode ld_immVal_reg			{0x41};
+			const opcode ld_regAddr_reg			{0x81};
+			const opcode ld_immAddr_reg			{0xC1};
 
-			const opcode st_regVal_regAddr  {0x02};
+			const opcode st_regVal_regAddr		{0x02};
 
-			const opcode add_regVal_reg     {0x03};
+			const opcode add_regVal_reg			{0x03};
+			const opcode add_immVal_reg			{0x43};
+			const opcode add_regAddr_reg		{0x83};
+			const opcode add_immAddr_reg		{0xC3};
 
-			const opcode sub_regVal_reg		{0x04};
+			const opcode sub_regVal_reg			{0x04};
+			const opcode sub_immVal_reg			{0x44};
+			const opcode sub_regAddr_reg		{0x84};
+			const opcode sub_immAddr_reg		{0xC4};
 
-			const opcode mul_regVal_reg		{0x05};
+			const opcode mul_regVal_reg			{0x05};
+			const opcode mul_immVal_reg			{0x45};
+			const opcode mul_regAddr_reg		{0x86};
+			const opcode mul_immAddr_reg		{0xC5};
 
-			const opcode div_regVal_reg		{0x06};
+			const opcode div_regVal_reg			{0x06};
+			const opcode div_immVal_reg			{0x46};
+			const opcode div_regAddr_reg		{0x86};
+			const opcode div_immAddr_reg		{0xC6};
 
-			const opcode inc_reg			{0x11};
-			const opcode dec_reg			{0x12};
-			const opcode not_reg			{0x13};
+			const opcode mod_regVal_reg			{0x07};
+			const opcode mod_immVal_reg			{0x47};
+			const opcode mod_regAddr_reg		{0x87};
+			const opcode mod_immAddr_reg		{0xC7};
 
-			const opcode out_regVal_imm		{0x14};
-			const opcode out_immVal_imm		{0x54};
-			const opcode out_regAddr_imm	{0x94};
-			const opcode out_immAddr_imm	{0xD4};
+			const opcode and_regVal_reg			{0x08};
+			const opcode and_immVal_reg			{0x48};
+			const opcode and_regAddr_reg		{0x88};
+			const opcode and_immAddr_reg		{0xC8};
 
-			const opcode outr_regVal_imm	{0x1E};
-			const opcode outr_immVal_imm	{0x5E};
-			const opcode outr_regAddr_imm	{0x9E};
-			const opcode outr_immAddr_imm	{0xDE};
+			const opcode or_regVal_reg			{0x09};
+			const opcode or_immVal_reg			{0x49};
+			const opcode or_regAddr_reg			{0x89};
+			const opcode or_immAddr_reg			{0xC9};
 
-			const opcode in_regVal_imm		{0x1F};
-			const opcode in_immVal_imm		{0x5F};
-			const opcode in_regAddr_imm		{0x9F};
-			const opcode in_immAddr_imm		{0xDF};
+			const opcode nor_regVal_reg			{0x0A};
+			const opcode nor_immVal_reg			{0x4A};
+			const opcode nor_regAddr_reg		{0x8A};
+			const opcode nor_immAddr_reg		{0xCA};
+
+			const opcode nand_regVal_reg		{0x0B};
+			const opcode nand_immVal_reg		{0x4B};
+			const opcode nand_regAddr_reg		{0x8B};
+			const opcode nand_immAddr_reg		{0xCB};
+
+			const opcode xor_regVal_reg			{0x0C};
+			const opcode xor_immVal_reg			{0x4C};
+			const opcode xor_regAddr_reg		{0x8C};
+			const opcode xor_immAddr_reg		{0xCC};
+
+			const opcode shl_regVal_reg			{0x0D};
+			const opcode shl_immVal_reg			{0x4D};
+			const opcode shl_regAddr_reg		{0x8D};
+			const opcode shl_immAddr_reg		{0xCD};
+
+			const opcode shr_regVal_reg			{0x0E};
+			const opcode shr_immVal_reg			{0x4E};
+			const opcode shr_regAddr_reg		{0x8E};
+			const opcode shr_immAddr_reg		{0xCE};
+
+			const opcode cmp_regVal_reg			{0x0F};
+			const opcode cmp_immVal_reg			{0x4F};
+			const opcode cmp_regAddr_reg		{0x8F};
+			const opcode cmp_immAddr_reg		{0xCF};
+
+			const opcode test_regVal_reg		{0x10};
+			const opcode test_immVal_reg		{0x50};
+			const opcode test_regAddr_reg		{0x90};
+			const opcode test_immAddr_reg		{0xD0};
+
+			const opcode inc_regVal				{0x11};
+			const opcode dec_regVal				{0x12};
+			const opcode not_regVal				{0x13};
+
+			const opcode out_regVal_imm			{0x14};
+			const opcode out_immVal_imm			{0x54};
+			const opcode out_regAddr_imm		{0x94};
+			const opcode out_immAddr_imm		{0xD4};
+
+			const opcode lngjmp_regVal_reg		{0x15};
+			const opcode lngjmp_immVal_reg		{0x55};
+			const opcode lngjmp_regAddr_reg		{0x95};
+			const opcode lngjmp_immAddr_reg		{0xD5};
+
+			const opcode jmp_regVal_imm			{0x16};
+			const opcode jmp_immVal_imm			{0x56};
+			const opcode jmp_regAddr_imm		{0x96};
+			const opcode jmp_immAddr_imm		{0xD6};
+
+			const opcode jz_regVal_imm			{0x17};
+			const opcode jz_immVal_imm			{0x57};
+			const opcode jz_regAddr_imm			{0x97};
+			const opcode jz_immAddr_imm			{0xD7};
+
+			const opcode jnz_regVal_imm			{0x18};
+			const opcode jnz_immVal_imm			{0x58};
+			const opcode jnz_regAddr_imm		{0x98};
+			const opcode jnz_immAddr_imm		{0xD8};
+
+			const opcode jlt_regVal_imm			{0x19};
+			const opcode jlt_immVal_imm			{0x59};
+			const opcode jlt_regAddr_imm		{0x99};
+			const opcode jlt_immAddr_imm		{0xD9};
+
+			const opcode jb_regVal_imm			{0x1A};
+			const opcode jb_immVal_imm			{0x5A};
+			const opcode jb_regAddr_imm			{0x9A};
+			const opcode jb_immAddr_imm			{0xDA};
+
+			const opcode jgt_regVal_imm			{0x1B};
+			const opcode jgt_immVal_imm			{0x5B};
+			const opcode jgt_regAddr_imm		{0x9B};
+			const opcode jgt_immAddr_imm		{0xDB};
+
+			const opcode ja_regVal_imm			{0x1C};
+			const opcode ja_immVal_imm			{0x5C};
+			const opcode ja_regAddr_imm			{0x9C};
+			const opcode ja_immAddr_imm			{0xDC};
+
+			const opcode call_regVal_reg		{0x1D};
+			const opcode call_immVal_imm		{0x5D};
+			const opcode call_regAddr_imm		{0x9D};
+			const opcode call_immAddr_imm		{0xDD};
+
+			const opcode outr_regVal_reg		{0x1E};
+			const opcode outr_immVal_imm		{0x5E};
+			const opcode outr_regAddr_imm		{0x9E};
+			const opcode outr_immAddr_imm		{0xDE};
+
+			const opcode in_regVal_imm			{0x1F};
+			const opcode in_immVal_imm			{0x5F};
+			const opcode in_regAddr_imm			{0x9F};
+			const opcode in_immAddr_imm			{0xDF};
+
+			const opcode push_regVal			{0x20};
+			const opcode push_immVal			{0x60};
+
+			const opcode clr_regVal				{0x20};
+
+			const opcode cmpind_regVal_regAddr	{0x23};
+			const opcode cmpind_immVal_regAddr	{0x63};
+
+			const opcode int_regVal				{0x24};
+			const opcode int_immVal				{0x64};
+
+			const opcode tstind_regVal_regAddr	{0x25};
+			const opcode tstind_immVal_regAddr	{0x65};
+
+			const opcode pop_regVal				{0x26};
+
+			const opcode ret					{0x27};
+
+			const opcode iret					{0x28};
+
+			const opcode setint					{0x29};
+
+			const opcode clrint					{0x30};
+
+			const opcode setcry					{0x31};
+
+			const opcode clrcrt					{0x32};
+
+			const opcode nop					{0xAA};
+
+			const opcode brk					{0xFF};
 
 		}
 
@@ -1101,18 +1248,9 @@ namespace maize {
 									}
 
 									case 2: {
-										// operand1 contains device ID
-										// look up device from operand1
-										
 										device* pdevice = devices[operand1.q0];
-
-										// data_bus_0 already has reg val
-										// set device from data_bus_0
-										
 										pdevice->set_io_from_bus(data_bus_0);
 										pdevice->set_address_from_bus(data_bus_1);
-
-										// sys::console::set(operand1.w0);
 										instr_complete();
 										break;
 									}
@@ -1186,9 +1324,9 @@ namespace maize {
 								break;
 							}
 
-							case instr::inc_reg:
-							case instr::dec_reg:
-							case instr::not_reg:
+							case instr::inc_regVal:
+							case instr::dec_regVal:
+							case instr::not_regVal:
 							{
 								switch (step) {
 									case 0: {
@@ -1728,10 +1866,11 @@ namespace maize {
 using namespace maize;
 
 int main() {
-	uint64_t address {0x0000000000001000};
-
 	/* This is a sample program that I load into memory before starting the main loop. Eventually, 
 	I'll load a binary file with BIOS, OS image, etc. */
+
+	/* This is the address where the CPU starts executing code. */
+	uint64_t address {0x0000000000001000};
 
 	std::vector<uint8_t> mem {
 		/* LD B.B0 0x41         */	cpu::instr::ld_immVal_reg, 0x00, 0x10, 0x41,
@@ -1741,10 +1880,11 @@ int main() {
 		/* LD B.B1 C.Q0         */	cpu::instr::ld_regVal_reg, 0x11, 0x28,
 		/* LD 0x00002000 A.H0   */	cpu::instr::ld_immVal_reg, 0x02, 0x0C, 0x00, 0x20, 0x00, 0x00,
 		/* ST B @A.H0           */	cpu::instr::st_regVal_regAddr, 0x1E, 0x0C,
-		/* INC B.B1             */	cpu::instr::inc_reg, 0x11,
+		/* INC B.B1             */	cpu::instr::inc_regVal, 0x11,
 		/* HALT                 */	cpu::instr::halt
 	};
 
+	/* Load the program above into memory. */
 	for (auto & b : mem) {
 		cpu::mm.write(address, b);
 		++address;

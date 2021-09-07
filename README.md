@@ -278,75 +278,75 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     ----------  ---   --------  ----------     --------------------------------------------------------------------------------------------------------------------------------------
     %0000`0000  $00   HALT                     Halt the clock, thereby stopping execution (privileged)
     
-    %0000`0001  $01   LD        reg reg        Load source register value into destination register
-    %0100`0001  $41   LD        imm reg        Load immediate value into destination register
+    %0000`0001  $01   LD        regVal reg     Load source register value into destination register
+    %0100`0001  $41   LD        immVal reg     Load immediate value into destination register
     %1000`0001  $81   LD        regAddr reg    Load value at address in source register into destination register
     %1100`0001  $C1   LD        immAddr reg    Load value at immediate address into destination register
     
-    %0000`0010  $02   ST        reg regAddr    Store source register value at address in second register
+    %0000`0010  $02   ST        regVal regAddr Store source register value at address in second register
     
-    %0000`0011  $03   ADD       reg reg        Add source register value to destination register
-    %0100`0011  $43   ADD       imm reg        Add immediate value to destination register
+    %0000`0011  $03   ADD       regVal reg     Add source register value to destination register
+    %0100`0011  $43   ADD       immVal reg     Add immediate value to destination register
     %1000`0011  $83   ADD       regAddr reg    Add value at address in source register to destination register
     %1100`0011  $C3   ADD       immAddr reg    Add value at immediate address to destination register
     
-    %0000`0100  $04   SUB       reg reg        Subtract source register value from destination register
-    %0100`0100  $44   SUB       imm reg        Subtract immediate value from destination register
+    %0000`0100  $04   SUB       regVal reg     Subtract source register value from destination register
+    %0100`0100  $44   SUB       immVal reg     Subtract immediate value from destination register
     %1010`0100  $84   SUB       regAddr reg    Subtract value at address in source register from destination register
     %1110`0100  $C4   SUB       immAddr reg    Subtract value at immediate address from destination register
     
-    %0000`0101  $05   MUL       reg reg        Multiply destination register by source register value
-    %0100`0101  $45   MUL       imm reg        Multiply destination register by immediate value
+    %0000`0101  $05   MUL       regVal reg     Multiply destination register by source register value
+    %0100`0101  $45   MUL       immVal reg     Multiply destination register by immediate value
     %1000`0101  $85   MUL       regAddr reg    Multiply destination register by value at address in source register
     %1100`0101  $C5   MUL       immAddr reg    Multiply destination register by value at immediate address
     
-    %0000`0110  $06   DIV       reg reg        Divide destination register by source register value
-    %0100`0110  $46   DIV       imm reg        Divide destination register by immediate value
+    %0000`0110  $06   DIV       regVal reg     Divide destination register by source register value
+    %0100`0110  $46   DIV       immVal reg     Divide destination register by immediate value
     %1000`0110  $86   DIV       regAddr reg    Divide destination register by value at address in source register
     %1100`0110  $C6   DIV       immAddr reg    Divide destination register by value at immediate address
     
-    %0000`0111  $07   MOD       reg reg        Modulo destination register by source register value
-    %0100`0111  $47   MOD       imm reg        Modulo destination register by immediate value
+    %0000`0111  $07   MOD       regVal reg     Modulo destination register by source register value
+    %0100`0111  $47   MOD       immVal reg     Modulo destination register by immediate value
     %1000`0111  $87   MOD       regAddr reg    Modulo destination register by value at address in source register
     %1100`0111  $C7   MOD       immAddr reg    Modulo destination register by value at immediate address
     
-    %0000`1000  $08   AND       reg reg        Bitwise AND destination register with source register value
-    %0100`1000  $48   AND       imm reg        Bitwise AND destination register with immediate value
+    %0000`1000  $08   AND       regVal reg     Bitwise AND destination register with source register value
+    %0100`1000  $48   AND       immVal reg     Bitwise AND destination register with immediate value
     %1000`1000  $88   AND       regAddr reg    Bitwise AND destination register with value at address in source register
     %1100`1000  $C8   AND       immAddr reg    Bitwise AND destination register with value at immediate address
     
-    %0000`1001  $09   OR        reg reg        Bitwise OR destination register with source register value
-    %0100`1001  $49   OR        imm reg        Bitwise OR destination register with immediate value
+    %0000`1001  $09   OR        regVal reg     Bitwise OR destination register with source register value
+    %0100`1001  $49   OR        immVal reg     Bitwise OR destination register with immediate value
     %1000`1001  $89   OR        regAddr reg    Bitwise OR destination register with value at address in source register
     %1100`1001  $C9   OR        immAddr reg    Bitwise OR destination register with value at immediate address
     
-    %0000`1010  $0A   NOR       reg reg        Bitwise NOR destination register with source register value
-    %0100`1010  $4A   NOR       imm reg        Bitwise NOR destination register with immediate value
+    %0000`1010  $0A   NOR       regVal reg     Bitwise NOR destination register with source register value
+    %0100`1010  $4A   NOR       immVal reg     Bitwise NOR destination register with immediate value
     %1000`1010  $8A   NOR       regAddr reg    Bitwise NOR destination register with value at address in source register
     %1100`1010  $CA   NOR       immAddr reg    Bitwise NOR destination register with value at immediate address
     
-    %0000`1011  $0B   NAND      reg reg        Bitwise NAND destination register with source register value
-    %0100`1011  $4B   NAND      imm reg        Bitwise NAND destination register with immediate value
+    %0000`1011  $0B   NAND      regVal reg     Bitwise NAND destination register with source register value
+    %0100`1011  $4B   NAND      immVal reg     Bitwise NAND destination register with immediate value
     %1000`1011  $8B   NAND      regAddr reg    Bitwise NAND destination register with value at address in source register
     %1100`1011  $CB   NAND      immAddr reg    Bitwise NAND destination register with value at immediate address
     
-    %0000`1100  $0C   XOR       reg reg        Bitwise XOR destination register with source register value
-    %0100`1100  $4C   XOR       imm reg        Bitwise XOR destination register with immediate value
+    %0000`1100  $0C   XOR       regVal reg     Bitwise XOR destination register with source register value
+    %0100`1100  $4C   XOR       immVal reg     Bitwise XOR destination register with immediate value
     %1000`1100  $8C   XOR       regAddr reg    Bitwise XOR destination register with value at address in source register
     %1100`1100  $CC   XOR       immAddr reg    Bitwise XOR destination register with value at immediate address
     
-    %0000`1101  $0D   SHL       reg reg        Shift value in destination register left by value in source register
-    %0100`1101  $4D   SHL       imm reg        Shift value in destination register left by immediate value
+    %0000`1101  $0D   SHL       regVal reg     Shift value in destination register left by value in source register
+    %0100`1101  $4D   SHL       immVal reg     Shift value in destination register left by immediate value
     %1000`1101  $8D   SHL       regAddr reg    Shift value in destination register left by value at address in source register
     %1100`1101  $CD   SHL       immAddr reg    Shift value in destination register left by value at immediate address
     
-    %0000`1110  $0E   SHR       reg reg        Shift value in destination register right by value in source register
-    %0100`1110  $4E   SHR       imm reg        Shift value in destination register right by immediate value
+    %0000`1110  $0E   SHR       regVal reg     Shift value in destination register right by value in source register
+    %0100`1110  $4E   SHR       immVal reg     Shift value in destination register right by immediate value
     %1000`1110  $8E   SHR       regAddr reg    Shift value in destination register right by value at address in source register
     %1100`1110  $CE   SHR       immAddr reg    Shift value in destination register right by value at immediate address
     
-    %0000`1111  $0F   CMP       reg reg        Set flags by subtracting source register value from destination register
-    %0100`1111  $4F   CMP       imm reg        Set flags by subtracting immediate value from destination register
+    %0000`1111  $0F   CMP       regVal reg     Set flags by subtracting source register value from destination register
+    %0100`1111  $4F   CMP       immVal reg     Set flags by subtracting immediate value from destination register
     %1000`1111  $8F   CMP       regAddr reg    Set flags by subtracting value at address in source register from destination register
     %1100`1111  $CF   CMP       immAddr reg    Set flags by subtracting value at immediate address from destination register
     
@@ -355,39 +355,39 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     %1001`0000  $90   TEST      regAddr reg    Set flags by ANDing value at address in source register with destination register
     %1101`0000  $D0   TEST      immAddr reg    Set flags by ANDing value at immediate address with destination register
     
-    %0001`0001  $11   INC       reg            Increment register by 1.
+    %0001`0001  $11   INC       regVal         Increment register by 1.
     
-    %0001`0010  $12   DEC       reg            Decrement register by 1.
+    %0001`0010  $12   DEC       regVal         Decrement register by 1.
     
-    %0001`0011  $13   NOT       reg            Bitwise negate value in register, store result in register.
+    %0001`0011  $13   NOT       regVal         Bitwise negate value in register, store result in register.
     
-    %0001`0100  $14   OUT       reg imm        Output value in source register to destination port
-    %0101`0100  $54   OUT       imm imm        Output immediate value to destination port
+    %0001`0100  $14   OUT       regVal imm     Output value in source register to destination port
+    %0101`0100  $54   OUT       immVal imm     Output immediate value to destination port
     %1001`0100  $94   OUT       regAddr imm    Output value at address in source register to destination port
     %1101`0100  $D4   OUT       immAddr imm    Output value at immediate address to destination port
     
-    %0001`0101  $15   LNGJMP    reg            Jump to segment and address in source register and continue execution (privileged)
-    %0101`0101  $55   LNGJMP    imm            Jump to immediate segment and address and continue execution (privileged)
+    %0001`0101  $15   LNGJMP    regVal         Jump to segment and address in source register and continue execution (privileged)
+    %0101`0101  $55   LNGJMP    immVal         Jump to immediate segment and address and continue execution (privileged)
     %1001`0101  $95   LNGJMP    regAddr        Jump to segment and address pointed to by source register and continue execution (privileged)
     %1101`0101  $D5   LNGJMP    immAddr        Jump to segment and address pointed to by immediate value and continue execution (privileged)
     
-    %0001`0110  $16   JMP       reg            Jump to address in source register and continue execution
-    %0101`0110  $56   JMP       imm            Jump to immediate address and continue execution
+    %0001`0110  $16   JMP       regVal         Jump to address in source register and continue execution
+    %0101`0110  $56   JMP       immVal         Jump to immediate address and continue execution
     %1001`0110  $96   JMP       regAddr        Jump to address pointed to by source register and continue execution
     %1101`0110  $D6   JMP       immAddr        Jump to address pointed to by immediate value and continue execution
     
-    %0001`0111  $17   JZ        reg            If Zero flag is set, jump to address in source register and continue execution
-    %0101`0111  $57   JZ        imm            If Zero flag is set, jump to immediate address and continue execution
+    %0001`0111  $17   JZ        regVal         If Zero flag is set, jump to address in source register and continue execution
+    %0101`0111  $57   JZ        immVal         If Zero flag is set, jump to immediate address and continue execution
     %1001`0111  $97   JZ        regAddr        If Zero flag is set, jump to address pointed to by source register and continue execution
     %1101`0111  $D7   JZ        immAddr        If Zero flag is set, jump to address pointed to by immediate value and continue execution
     
-    %0001`1000  $18   JNZ       reg            If Zero flag is not set, jump to address in source register and continue execution
-    %0101`1000  $58   JNZ       imm            If Zero flag is not set, jump to immediate address and continue execution
+    %0001`1000  $18   JNZ       regVal         If Zero flag is not set, jump to address in source register and continue execution
+    %0101`1000  $58   JNZ       immVal         If Zero flag is not set, jump to immediate address and continue execution
     %1001`1000  $98   JNZ       regAddr        If Zero flag is not set, jump to address pointed to by source register and continue execution
     %1101`1000  $D8   JNZ       immAddr        If Zero flag is not set, jump to address pointed to by immediate value and continue execution
     
-    %0001`1001  $19   JLT       reg            If Negative flag is not equal to Overflow flag, jump to address in source register and continue execution
-    %0101`1001  $59   JLT       imm            If Negative flag is not equal to Overflow flag, jump to immediate address and continue execution
+    %0001`1001  $19   JLT       regVal         If Negative flag is not equal to Overflow flag, jump to address in source register and continue execution
+    %0101`1001  $59   JLT       immVal         If Negative flag is not equal to Overflow flag, jump to immediate address and continue execution
     %1001`1001  $99   JLT       regAddr        If Negative flag is not equal to Overflow flag, jump to address pointed to by source register and continue execution
     %1101`1001  $D9   JLT       immAddr        If Negative flag is not equal to Overflow flag, jump to address pointed to by immediate value and continue execution
     
@@ -396,46 +396,46 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     %1001`1010  $9A   JB        regAddr        If Carry flag is set, jump to address pointed to by source register and continue execution
     %1101`1010  $DA   JB        immAddr        If Carry flag is set, jump to address pointed to by immediate value and continue execution
     
-    %0001`1011  $1B   JGT       reg            If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to address in source register and continue execution
-    %0101`1011  $5B   JGT       imm            If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to immediate address and continue execution
+    %0001`1011  $1B   JGT       regVal         If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to address in source register and continue execution
+    %0101`1011  $5B   JGT       immVal         If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to immediate address and continue execution
     %1001`1011  $9B   JGT       regAddr        If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to address pointed to by source register and continue execution
     %1101`1011  $DB   JGT       immAddr        If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to address pointed to by immediate value and continue execution
     
-    %0001`1100  $1C   JA        reg            If Carry flag is clear and Zero flag is clear, jump to address in source register and continue execution
-    %0101`1100  $5C   JA        imm            If Carry flag is clear and Zero flag is clear, jump to immediate address and continue execution
+    %0001`1100  $1C   JA        regVal         If Carry flag is clear and Zero flag is clear, jump to address in source register and continue execution
+    %0101`1100  $5C   JA        immVal         If Carry flag is clear and Zero flag is clear, jump to immediate address and continue execution
     %1001`1100  $9C   JA        regAddr        If Carry flag is clear and Zero flag is clear, jump to address pointed to by source register and continue execution
     %1101`1100  $DC   JA        immAddr        If Carry flag is clear and Zero flag is clear, jump to address pointed to by immediate value and continue execution
     
-    %0001`1101  $1D   CALL      reg            Push PC.H0 to stack, jump to address in source register and continue execution until RET is executed
-    %0101`1101  $5D   CALL      imm            Push PC.H0 to stack, jump to immediate address and continue execution until RET is executed
+    %0001`1101  $1D   CALL      regVal         Push PC.H0 to stack, jump to address in source register and continue execution until RET is executed
+    %0101`1101  $5D   CALL      immVal         Push PC.H0 to stack, jump to immediate address and continue execution until RET is executed
     %1001`1101  $9D   CALL      regAddr        Push PC.H0 to stack, jump to address pointed to by source register and continue execution until RET is executed
     %1101`1101  $DD   CALL      immAddr        Push PC.H0 to stack, jump to address pointed to by immediate value and continue execution until RET is executed
     
-    %0001`1110  $1E   OUTR      reg reg        Output value in source register to port in destination register
-    %0101`1110  $5E   OUTR      imm reg        Output immediate value to port in destination register
+    %0001`1110  $1E   OUTR      regVal reg     Output value in source register to port in destination register
+    %0101`1110  $5E   OUTR      immVal reg     Output immediate value to port in destination register
     %1001`1110  $9E   OUTR      regAddr reg    Output value at address in source register to port in destination register
     %1101`1110  $DE   OUTR      immAddr reg    Output value at immediate address to port in destination register
     
-    %0001`1111  $1F   IN        reg reg        Read value from port in source register into destination register
-    %0101`1111  $5F   IN        imm reg        Read value from port in immediate value into destination register
+    %0001`1111  $1F   IN        regVal reg     Read value from port in source register into destination register
+    %0101`1111  $5F   IN        immVal reg     Read value from port in immediate value into destination register
     %1001`1111  $9F   IN        regAddr reg    Read value from port at address in source register into destination register
     %1101`1111  $DF   IN        immAddr reg    Read value from port at immediate address into destination register
     
-    %0010`0000  $20   PUSH      reg            Copy register value into memory at location in S.H0, decrement S.H0 by size of register
-    %0110`0000  $60   PUSH      imm            Copy immediate value into memory at location in S.H0, decrement S.H0 by size of immediate value
+    %0010`0000  $20   PUSH      regVal         Copy register value into memory at location in S.H0, decrement S.H0 by size of register
+    %0110`0000  $60   PUSH      immVal         Copy immediate value into memory at location in S.H0, decrement S.H0 by size of immediate value
     
-    %0010`0010  $22   CLR       reg            Set register to zero (0).
+    %0010`0010  $22   CLR       regVal         Set register to zero (0).
     
-    %0010`0001  $23   CMPIND    reg regAddr    Set flags by subtracting source register value from value at address in destination register
-    %0110`0001  $63   CMPIND    imm regAddr    Set flags by subtracting immediate value from value at address in destination register
+    %0010`0001  $23   CMPIND    regVal regAddr Set flags by subtracting source register value from value at address in destination register
+    %0110`0001  $63   CMPIND    immVal regAddr Set flags by subtracting immediate value from value at address in destination register
     
-    %0010`0100  $24   INT       reg            Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
-    %0110`0100  $64   INT       imm            Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
+    %0010`0100  $24   INT       regVal         Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
+    %0110`0100  $64   INT       immVal         Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
     
-    %0010`0101  $25   TSTIND    reg regAddr    Set flags by ANDing source register value with value at address in destination register
-    %0110`0101  $65   TSTIND    imm regAddr    Set flags by ANDing immediate value with value at address in destination register
+    %0010`0101  $25   TSTIND    regVal regAddr Set flags by ANDing source register value with value at address in destination register
+    %0110`0101  $65   TSTIND    immVal regAddr Set flags by ANDing immediate value with value at address in destination register
     
-    %0010`0110  $26   POP       reg            Increment SP.H0 by size of register, copy value at SP.H0 into register
+    %0010`0110  $26   POP       regVal         Increment SP.H0 by size of register, copy value at SP.H0 into register
     
     %0010`0111  $27   RET                      Pop PC.H0 from stack and continue execution at that address. Used to return from CALL.
     
@@ -616,44 +616,44 @@ Other syntax, to be described more fully later:
     Binary      Hex   Mnemonic  Parameters     Description
     ----------  ---   --------  ----------     --------------------------------------------------------------------------------------------------------------------------------------------
     %0000`0000  $00   HALT                     Halt the clock, thereby stopping execution (privileged)
-    %0000`0001  $01   LD        reg reg        Load source register value into destination register
-    %0000`0010  $02   ST        reg regAddr    Store source register value at address in second register
-    %0000`0011  $03   ADD       reg reg        Add source register value to destination register
-    %0000`0100  $04   SUB       reg reg        Subtract source register value from destination register
-    %0000`0101  $05   MUL       reg reg        Multiply destination register by source register value
-    %0000`0110  $06   DIV       reg reg        Divide destination register by source register value
-    %0000`0111  $07   MOD       reg reg        Modulo destination register by source register value
-    %0000`1000  $08   AND       reg reg        Bitwise AND destination register with source register value
-    %0000`1001  $09   OR        reg reg        Bitwise OR destination register with source register value
-    %0000`1010  $0A   NOR       reg reg        Bitwise NOR destination register with source register value
-    %0000`1011  $0B   NAND      reg reg        Bitwise NAND destination register with source register value
-    %0000`1100  $0C   XOR       reg reg        Bitwise XOR destination register with source register value
-    %0000`1101  $0D   SHL       reg reg        Shift value in destination register left by value in source register
-    %0000`1110  $0E   SHR       reg reg        Shift value in destination register right by value in source register
-    %0000`1111  $0F   CMP       reg reg        Set flags by subtracting source register value from destination register
-    %0001`0000  $10   TEST      reg reg        Set flags by ANDing source register value with destination register
-    %0001`0001  $11   INC       reg            Increment register by 1.
-    %0001`0010  $12   DEC       reg            Decrement register by 1.
-    %0001`0011  $13   NOT       reg            Bitwise negate value in register, store result in register.
-    %0001`0100  $14   OUT       reg imm        Output value in source register to destination port
-    %0001`0101  $15   LNGJMP    reg            Jump to segment and address in source register and continue execution (privileged)
-    %0001`0110  $16   JMP       reg            Jump to address in source register and continue execution
-    %0001`0111  $17   JZ        reg            If Zero flag is set, jump to address in source register and continue execution
-    %0001`1000  $18   JNZ       reg            If Zero flag is not set, jump to address in source register and continue execution
-    %0001`1001  $19   JLT       reg            If Negative flag is not equal to Overflow flag, jump to address in source register and continue execution
-    %0001`1010  $1A   JB        reg            If Carry flag is set, jump to address in source register and continue execution
-    %0001`1011  $1B   JGT       reg            If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to address in source register and continue execution
-    %0001`1100  $1C   JA        reg            If Carry flag is clear and Zero flag is clear, jump to address in source register and continue execution
-    %0001`1101  $1D   CALL      reg            Push PC.H0 to stack, jump to address in source register and continue execution until RET is executed
-    %0001`1110  $1E   OUTR      reg reg        Output value in source register to port in destination register
-    %0001`1111  $1F   IN        reg reg        Read value from port in source register into destination register
-    %0010`0000  $20   PUSH      reg            Copy register value into memory at location in S.H0, decrement S.H0 by size of register
+    %0000`0001  $01   LD        regVal reg     Load source register value into destination register
+    %0000`0010  $02   ST        regVal regAddr Store source register value at address in second register
+    %0000`0011  $03   ADD       regVal reg     Add source register value to destination register
+    %0000`0100  $04   SUB       regVal reg     Subtract source register value from destination register
+    %0000`0101  $05   MUL       regVal reg     Multiply destination register by source register value
+    %0000`0110  $06   DIV       regVal reg     Divide destination register by source register value
+    %0000`0111  $07   MOD       regVal reg     Modulo destination register by source register value
+    %0000`1000  $08   AND       regVal reg     Bitwise AND destination register with source register value
+    %0000`1001  $09   OR        regVal reg     Bitwise OR destination register with source register value
+    %0000`1010  $0A   NOR       regVal reg     Bitwise NOR destination register with source register value
+    %0000`1011  $0B   NAND      regVal reg     Bitwise NAND destination register with source register value
+    %0000`1100  $0C   XOR       regVal reg     Bitwise XOR destination register with source register value
+    %0000`1101  $0D   SHL       regVal reg     Shift value in destination register left by value in source register
+    %0000`1110  $0E   SHR       regVal reg     Shift value in destination register right by value in source register
+    %0000`1111  $0F   CMP       regVal reg     Set flags by subtracting source register value from destination register
+    %0001`0000  $10   TEST      regVal reg     Set flags by ANDing source register value with destination register
+    %0001`0001  $11   INC       regVal         Increment register by 1.
+    %0001`0010  $12   DEC       regVal         Decrement register by 1.
+    %0001`0011  $13   NOT       regVal         Bitwise negate value in register, store result in register.
+    %0001`0100  $14   OUT       regVal imm     Output value in source register to destination port
+    %0001`0101  $15   LNGJMP    regVal         Jump to segment and address in source register and continue execution (privileged)
+    %0001`0110  $16   JMP       regVal         Jump to address in source register and continue execution
+    %0001`0111  $17   JZ        regVal         If Zero flag is set, jump to address in source register and continue execution
+    %0001`1000  $18   JNZ       regVal         If Zero flag is not set, jump to address in source register and continue execution
+    %0001`1001  $19   JLT       regVal         If Negative flag is not equal to Overflow flag, jump to address in source register and continue execution
+    %0001`1010  $1A   JB        regVal         If Carry flag is set, jump to address in source register and continue execution
+    %0001`1011  $1B   JGT       regVal         If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to address in source register and continue execution
+    %0001`1100  $1C   JA        regVal         If Carry flag is clear and Zero flag is clear, jump to address in source register and continue execution
+    %0001`1101  $1D   CALL      regVal         Push PC.H0 to stack, jump to address in source register and continue execution until RET is executed
+    %0001`1110  $1E   OUTR      regVal reg     Output value in source register to port in destination register
+    %0001`1111  $1F   IN        regVal reg     Read value from port in source register into destination register
+    %0010`0000  $20   PUSH      regVal         Copy register value into memory at location in S.H0, decrement S.H0 by size of register
     %0010`0001  $21             reserved       
-    %0010`0010  $22   CLR       reg            Set register to zero (0).
-    %0010`0011  $23   CMPIND    reg regAddr    Set flags by subtracting source register value from value at address in destination register
-    %0010`0100  $24   INT       reg            Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
-    %0010`0101  $25   TSTIND    reg regAddr    Set flags by ANDing source register value with value at address in destination register
-    %0010`0110  $26   POP       reg            Increment SP.H0 by size of register, copy value at SP.H0 into register
+    %0010`0010  $22   CLR       regVal         Set register to zero (0).
+    %0010`0011  $23   CMPIND    regVal regAddr Set flags by subtracting source register value from value at address in destination register
+    %0010`0100  $24   INT       regVal         Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
+    %0010`0101  $25   TSTIND    regVal regAddr Set flags by ANDing source register value with value at address in destination register
+    %0010`0110  $26   POP       regVal         Increment SP.H0 by size of register, copy value at SP.H0 into register
     %0010`0111  $27   RET                      Pop PC.H0 from stack and continue execution at that address. Used to return from CALL.
     %0010`1000  $28   IRET                     Pop FL and PC from stack and continue execution at segment/address in PC. Used to return from interrupt (privileged).
     %0010`1001  $29   SETINT                   Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
@@ -680,43 +680,43 @@ Other syntax, to be described more fully later:
     %0011`1110  $3E             reserved       
     %0011`1111  $3F             reserved       
     %0100`0000  $40             reserved       
-    %0100`0001  $41   LD        imm reg        Load immediate value into destination register
+    %0100`0001  $41   LD        immVal reg     Load immediate value into destination register
     %0100`0010  $42             reserved       
-    %0100`0011  $43   ADD       imm reg        Add immediate value to destination register
-    %0100`0100  $44   SUB       imm reg        Subtract immediate value from destination register
-    %0100`0101  $45   MUL       imm reg        Multiply destination register by immediate value
-    %0100`0110  $46   DIV       imm reg        Divide destination register by immediate value
-    %0100`0111  $47   MOD       imm reg        Modulo destination register by immediate value
-    %0100`1000  $48   AND       imm reg        Bitwise AND destination register with immediate value
-    %0100`1001  $49   OR        imm reg        Bitwise OR destination register with immediate value
-    %0100`1010  $4A   NOR       imm reg        Bitwise NOR destination register with immediate value
-    %0100`1011  $4B   NAND      imm reg        Bitwise NAND destination register with immediate value
-    %0100`1100  $4C   XOR       imm reg        Bitwise XOR destination register with immediate value
-    %0100`1101  $4D   SHL       imm reg        Shift value in destination register left by immediate value
-    %0100`1110  $4E   SHR       imm reg        Shift value in destination register right by immediate value
-    %0100`1111  $4F   CMP       imm reg        Set flags by subtracting immediate value from destination register
-    %0101`0000  $50   TEST      imm reg        Set flags by ANDing immediate value with destination register
+    %0100`0011  $43   ADD       immVal reg     Add immediate value to destination register
+    %0100`0100  $44   SUB       immVal reg     Subtract immediate value from destination register
+    %0100`0101  $45   MUL       immVal reg     Multiply destination register by immediate value
+    %0100`0110  $46   DIV       immVal reg     Divide destination register by immediate value
+    %0100`0111  $47   MOD       immVal reg     Modulo destination register by immediate value
+    %0100`1000  $48   AND       immVal reg     Bitwise AND destination register with immediate value
+    %0100`1001  $49   OR        immVal reg     Bitwise OR destination register with immediate value
+    %0100`1010  $4A   NOR       immVal reg     Bitwise NOR destination register with immediate value
+    %0100`1011  $4B   NAND      immVal reg     Bitwise NAND destination register with immediate value
+    %0100`1100  $4C   XOR       immVal reg     Bitwise XOR destination register with immediate value
+    %0100`1101  $4D   SHL       immVal reg     Shift value in destination register left by immediate value
+    %0100`1110  $4E   SHR       immVal reg     Shift value in destination register right by immediate value
+    %0100`1111  $4F   CMP       immVal reg     Set flags by subtracting immediate value from destination register
+    %0101`0000  $50   TEST      immVal reg     Set flags by ANDing immediate value with destination register
     %0101`0001  $51             reserved       
     %0101`0010  $52             reserved       
     %0101`0011  $53             reserved       
-    %0101`0100  $54   OUT       imm imm        Output immediate value to destination port
-    %0101`0101  $55   LNGJMP    imm            Jump to immediate segment and address and continue execution (privileged)
-    %0101`0110  $56   JMP       imm            Jump to immediate address and continue execution
-    %0101`0111  $57   JZ        imm            If Zero flag is set, jump to immediate address and continue execution
-    %0101`1000  $58   JNZ       imm            If Zero flag is not set, jump to immediate address and continue execution
-    %0101`1001  $59   JLT       imm            If Negative flag is not equal to Overflow flag, jump to immediate address and continue execution
-    %0101`1010  $5A   JB        imm            If Carry flag is set, jump to immediate address and continue execution
-    %0101`1011  $5B   JGT       imm            If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to immediate address and continue execution
-    %0101`1100  $5C   JA        imm            If Carry flag is clear and Zero flag is clear, jump to immediate address and continue execution
-    %0101`1101  $5D   CALL      imm            Push PC.H0 to stack, jump to immediate address and continue execution until RET is executed
-    %0101`1110  $5E   OUTR      imm reg        Output immediate value to port in destination register
-    %0101`1111  $5F   IN        imm reg        Read value from port in immediate value into destination register
-    %0110`0000  $60   PUSH      imm            Copy immediate value into memory at location in S.H0, decrement S.H0 by size of immediate value
+    %0101`0100  $54   OUT       immVal imm     Output immediate value to destination port
+    %0101`0101  $55   LNGJMP    immVal         Jump to immediate segment and address and continue execution (privileged)
+    %0101`0110  $56   JMP       immVal         Jump to immediate address and continue execution
+    %0101`0111  $57   JZ        immVal         If Zero flag is set, jump to immediate address and continue execution
+    %0101`1000  $58   JNZ       immVal         If Zero flag is not set, jump to immediate address and continue execution
+    %0101`1001  $59   JLT       immVal         If Negative flag is not equal to Overflow flag, jump to immediate address and continue execution
+    %0101`1010  $5A   JB        immVal         If Carry flag is set, jump to immediate address and continue execution
+    %0101`1011  $5B   JGT       immVal         If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to immediate address and continue execution
+    %0101`1100  $5C   JA        immVal         If Carry flag is clear and Zero flag is clear, jump to immediate address and continue execution
+    %0101`1101  $5D   CALL      immVal         Push PC.H0 to stack, jump to immediate address and continue execution until RET is executed
+    %0101`1110  $5E   OUTR      immVal reg     Output immediate value to port in destination register
+    %0101`1111  $5F   IN        immVal reg     Read value from port in immediate value into destination register
+    %0110`0000  $60   PUSH      immVal         Copy immediate value into memory at location in S.H0, decrement S.H0 by size of immediate value
     %0110`0001  $61             reserved       
     %0110`0010  $62             reserved       
-    %0110`0011  $63   CMPIND    imm regAddr    Set flags by subtracting immediate value from value at address in destination register
-    %0110`0100  $64   INT       imm            Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
-    %0110`0101  $65   TSTIND    imm regAddr    Set flags by ANDing immediate value with value at address in destination register
+    %0110`0011  $63   CMPIND    immVal regAddr Set flags by subtracting immediate value from value at address in destination register
+    %0110`0100  $64   INT       immVal         Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
+    %0110`0101  $65   TSTIND    immVal regAddr Set flags by ANDing immediate value with value at address in destination register
     %0110`0110  $66             reserved       
     %0110`0111  $67             reserved       
     %0110`1000  $68             reserved       
