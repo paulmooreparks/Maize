@@ -306,7 +306,51 @@ namespace maize {
 		size_t load_count{0};
 		reg_op_info load_array[max_load_count];
 
-		struct reg : public reg_value {
+		class bus : public reg_value {
+		public:
+			bus() = default;
+
+		protected:
+			reg* penabled_reg {nullptr};
+			subreg_mask_enum enable_subreg_mask {0};
+			uint8_t enable_offset {0};
+
+			static const size_t max_bus_set = 16;
+			size_t set_count {0};
+			reg_op_info bus_set_array[max_bus_set];
+
+		public:
+			void enable_reg(reg& en_reg, subreg_enum subreg) {
+				enable_reg(&en_reg, subreg);
+			}
+
+			void enable_reg(reg* pen_reg, subreg_enum subreg) {
+				enable_subreg_mask = subreg_mask_map[static_cast<size_t>(subreg)];
+				enable_offset = offset_map[static_cast<size_t>(subreg)];
+				penabled_reg = pen_reg;
+			}
+
+			void set_reg(reg& rset_reg, subreg_enum subreg) {
+				set_reg(&rset_reg, subreg);
+			}
+
+			void set_reg(reg* pset_reg, subreg_enum subreg) {
+				if (set_count < max_bus_set) {
+					bus_set_array[set_count].op_reg = pset_reg;
+					bus_set_array[set_count].mask = subreg_mask_map[static_cast<size_t>(subreg)];
+					bus_set_array[set_count].offset = offset_map[static_cast<size_t>(subreg)];
+					++set_count;
+				}
+			}
+
+			void on_enable();
+
+			void on_set();
+		};
+
+
+		class reg : public reg_value {
+		public:
 			reg() : reg_value() {}
 			reg(uint64_t init) : reg_value(init) {}
 
@@ -355,6 +399,14 @@ namespace maize {
 				}
 			}
 
+			void enable_to_bus(bus& en_bus, subreg_enum subreg) {
+				en_bus.enable_reg(this, subreg);
+			}
+
+			void set_from_bus(bus& set_bus, subreg_enum subreg) {
+				set_bus.set_reg(this, subreg);
+			}
+
 			virtual void on_enable() {
 			}
 
@@ -366,63 +418,6 @@ namespace maize {
 			uint64_t privilege_mask {0};
 		};
 
-		class bus : public reg {
-		public:
-			bus() = default;
-
-		protected:
-			reg* penabled_reg{nullptr};
-			subreg_mask_enum enable_subreg_mask{0};
-			uint8_t enable_offset{0};
-
-			static const size_t max_bus_set = 16;
-			size_t set_count{0};
-			reg_op_info bus_set_array[max_bus_set];
-
-		public:
-			void enable_reg(reg* pen_reg, subreg_enum subreg) {
-				enable_reg(*pen_reg, subreg);
-			}
-
-			void enable_reg(reg& en_reg, subreg_enum subreg) {
-				enable_subreg_mask = subreg_mask_map[static_cast<size_t>(subreg)];
-				enable_offset = offset_map[static_cast<size_t>(subreg)];
-				penabled_reg = &en_reg;
-			}
-
-			void set_reg(reg* pset_reg, subreg_enum subreg) {
-				set_reg(*pset_reg, subreg);
-			}
-
-			void set_reg(reg& set_reg, subreg_enum subreg) {
-				if (set_count < max_bus_set) {
-					bus_set_array[set_count].op_reg = &set_reg;
-					bus_set_array[set_count].mask = subreg_mask_map[static_cast<size_t>(subreg)];
-					bus_set_array[set_count].offset = offset_map[static_cast<size_t>(subreg)];
-					++set_count;
-				}
-			}
-
-			void on_enable() {
-				if (penabled_reg) {
-					penabled_reg->on_enable();
-					w0 = (penabled_reg->w0 & (uint64_t)enable_subreg_mask) >> enable_offset;
-					penabled_reg = nullptr;
-				}
-			}
-
-			void on_set() {
-				// privilege_check();
-				for (size_t idx = 0; idx < set_count; ++idx) {
-					auto & info = bus_set_array[idx];
-					info.op_reg->w0 = (~(uint64_t)info.mask & info.op_reg->w0) | (w0 << info.offset) & (uint64_t)info.mask;
-					info.op_reg->on_set();
-				}
-
-				set_count = 0;
-			}
-		};
-
 		class device : public reg {
 		public:
 			device() = default;
@@ -431,22 +426,46 @@ namespace maize {
 			reg address_reg;
 
 		public:
-			void set_address_from_bus(bus& set_bus) {
-				set_bus.set_reg(address_reg, subreg_enum::w0);
-			}
-
 			void enable_address_to_bus(bus& enable_bus) {
-				enable_bus.enable_reg(address_reg, subreg_enum::w0);
+				// enable_bus.enable_reg(address_reg, subreg_enum::w0);
+				address_reg.enable_to_bus(enable_bus, subreg_enum::w0);
 			}
 
-			void set_io_from_bus(bus& source_bus) {
-				source_bus.set_reg(this, subreg_enum::w0);
+			void set_address_from_bus(bus& set_bus) {
+				// set_bus.set_reg(address_reg, subreg_enum::w0);
+				address_reg.set_from_bus(set_bus, subreg_enum::w0);
 			}
 
 			void enable_io_to_bus(bus& io_bus) {
-				io_bus.enable_reg(this, subreg_enum::w0);
+				// io_bus.enable_reg(this, subreg_enum::w0);
+				enable_to_bus(io_bus, subreg_enum::w0);
+			}
+
+			void set_io_from_bus(bus& source_bus) {
+				// source_bus.set_reg(this, subreg_enum::w0);
+				set_from_bus(source_bus, subreg_enum::w0);
 			}
 		};
+
+		void bus::on_enable() {
+			if (penabled_reg) {
+				penabled_reg->on_enable();
+				w0 = (penabled_reg->w0 & (uint64_t)enable_subreg_mask) >> enable_offset;
+				penabled_reg = nullptr;
+			}
+		}
+
+		void bus::on_set() {
+			// privilege_check();
+			for (size_t idx = 0; idx < set_count; ++idx) {
+				auto& info = bus_set_array[idx];
+				info.op_reg->w0 = (~(uint64_t)info.mask & info.op_reg->w0) | (w0 << info.offset) & (uint64_t)info.mask;
+				info.op_reg->on_set();
+			}
+
+			set_count = 0;
+		}
+
 
 		std::map<uint16_t, device*> devices;
 
@@ -465,6 +484,11 @@ namespace maize {
 				load_size = size;
 			}
 
+			void enable_memory_to_bus(bus& load_bus, subreg_enum subreg) {
+				pload_bus = &load_bus;
+				load_size = size_map[static_cast<size_t>(subreg)];
+			}
+
 			bool enable_memory_scheduled() {
 				return (pload_bus);
 			}
@@ -479,7 +503,8 @@ namespace maize {
 					switch (load_size) {
 						case sizeof(uint8_t) :
 							b0 = cache[idx];
-							pload_bus->enable_reg(this, subreg_enum::b0);
+							// pload_bus->enable_reg(this, subreg_enum::b0);
+							this->enable_to_bus(*pload_bus, subreg_enum::b0);
 							break;
 
 						case sizeof(uint16_t) :
@@ -492,7 +517,8 @@ namespace maize {
 								b1 = cache[cache_address.b0];
 							}
 
-							pload_bus->enable_reg(this, subreg_enum::q0);
+							// pload_bus->enable_reg(this, subreg_enum::q0);
+							this->enable_to_bus(*pload_bus, subreg_enum::q0);
 							break;
 
 						case sizeof(uint32_t) :
@@ -509,7 +535,8 @@ namespace maize {
 								b3 = cache[cache_address.b0];
 							}
 
-							pload_bus->enable_reg(this, subreg_enum::h0);
+							// pload_bus->enable_reg(this, subreg_enum::h0);
+							this->enable_to_bus(*pload_bus, subreg_enum::h0);
 							break;
 
 						case sizeof(uint64_t):
@@ -534,7 +561,8 @@ namespace maize {
 								b7 = cache[cache_address.b0];
 							}
 
-							pload_bus->enable_reg(this, subreg_enum::w0);
+							// pload_bus->enable_reg(this, subreg_enum::w0);
+							this->enable_to_bus(*pload_bus, subreg_enum::w0);
 							break;
 
 					}
@@ -551,7 +579,8 @@ namespace maize {
 			void set_memory_from_bus(bus& store_bus, subreg_enum subreg) {
 				pstore_bus = &store_bus;
 				store_mask = subreg_mask_map[static_cast<size_t>(subreg)];
-				store_bus.set_reg(this, subreg);
+				// store_bus.set_reg(this, subreg);
+				this->set_from_bus(store_bus, subreg);
 			}
 
 			bool set_memory_scheduled() {
@@ -849,8 +878,8 @@ namespace maize {
 			return static_cast<subreg_enum>(in.b1 & opflag_subreg);
 		}
 
-		reg* src_reg() {
-			return reg_map[(in.b1 & opflag_reg) >> 4];
+		reg& src_reg() {
+			return *reg_map[(in.b1 & opflag_reg) >> 4];
 		}
 
 		uint8_t dest_imm_size_flag() {
@@ -877,8 +906,16 @@ namespace maize {
 			return static_cast<subreg_enum>(in.b2 & opflag_subreg);
 		}
 
-		reg* dest_reg() {
-			return reg_map[(in.b2 & opflag_reg) >> 4];
+		reg& dest_reg() {
+			return *reg_map[(in.b2 & opflag_reg) >> 4];
+		}
+
+		subreg_enum pc_src_imm_subreg_flag() {
+			return imm_size_subreg_map[src_imm_size_flag()];
+		}
+
+		subreg_enum pc_dest_imm_subreg_flag() {
+			return imm_size_subreg_map[dest_imm_size_flag()];
 		}
 
 		namespace instr {
@@ -903,7 +940,7 @@ namespace maize {
 
 			const opcode mul_regVal_reg			{0x05};
 			const opcode mul_immVal_reg			{0x45};
-			const opcode mul_regAddr_reg		{0x86};
+			const opcode mul_regAddr_reg		{0x85};
 			const opcode mul_immAddr_reg		{0xC5};
 
 			const opcode div_regVal_reg			{0x06};
@@ -1051,7 +1088,7 @@ namespace maize {
 
 			const opcode setcry					{0x31};
 
-			const opcode clrcrt					{0x32};
+			const opcode clrcry					{0x32};
 
 			const opcode nop					{0xAA};
 
@@ -1103,15 +1140,18 @@ namespace maize {
 			}
 
 			void set_src_from_bus(bus& source_bus, subreg_enum subreg = subreg_enum::w0) {
-				source_bus.set_reg(src_reg, subreg);
+				// source_bus.set_reg(src_reg, subreg);
+				src_reg.set_from_bus(source_bus, subreg);
 			}
 
 			void set_dest_from_bus(bus& source_bus, subreg_enum subreg = subreg_enum::w0) {
-				source_bus.set_reg(this, subreg);
+				// source_bus.set_reg(this, subreg);
+				set_from_bus(source_bus, subreg);
 			}
 
 			void enable_dest_to_bus(bus& dest_bus, subreg_enum subreg = subreg_enum::w0) {
-				dest_bus.enable_reg(this, subreg);
+				// dest_bus.enable_reg(this, subreg);
+				enable_to_bus(dest_bus, subreg);
 			}
 
 			reg src_reg;
@@ -1182,14 +1222,14 @@ namespace maize {
 					case run_states::decode: {
 						switch (cycle) {
 							case 0:
-								address_bus.enable_reg(pc, subreg_enum::h0);
+								pc.enable_to_bus(address_bus, subreg_enum::h0);
 								mm.set_address_from_bus(address_bus);
 								break;
 
 							case 1:
 								pc.increment(1);
 								mm.enable_memory_to_bus(data_bus_0, 8);
-								data_bus_0.set_reg(in, subreg_enum::w0);
+								in.set_from_bus(data_bus_0, subreg_enum::w0);
 								run_state = run_states::execute;
 								step = 0;
 								break;
@@ -1219,38 +1259,8 @@ namespace maize {
 								switch (step) {
 									case 0: {
 										pc.increment(2);
-										data_bus_0.enable_reg(src_reg(), src_subreg_flag());
-										data_bus_0.set_reg(dest_reg(), dest_subreg_flag());
-										instr_complete();
-										break;
-									}
-								}
-
-								break;
-							}
-
-							case instr::out_regVal_imm: {
-								switch (step) {
-									case 0: {
-										pc.increment(2);
-										address_bus.enable_reg(pc, subreg_enum::h0);
-										mm.set_address_from_bus(address_bus);
-										data_bus_0.enable_reg(src_reg(), src_subreg_flag());
-										break;
-									}
-
-									case 1: {
-										size_t dest_size = dest_imm_size();
-										pc.increment(dest_size);
-										mm.enable_memory_to_bus(data_bus_1, dest_size);
-										data_bus_1.set_reg(operand1, src_subreg_flag());
-										break;
-									}
-
-									case 2: {
-										device* pdevice = devices[operand1.q0];
-										pdevice->set_io_from_bus(data_bus_0);
-										pdevice->set_address_from_bus(data_bus_1);
+										src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
+										dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
 										instr_complete();
 										break;
 									}
@@ -1263,7 +1273,7 @@ namespace maize {
 								switch (step) {
 									case 0: {
 										pc.increment(2);
-										address_bus.enable_reg(pc, subreg_enum::h0);
+										pc.enable_to_bus(address_bus, subreg_enum::w0);
 										mm.set_address_from_bus(address_bus);
 										break;
 									}
@@ -1272,7 +1282,54 @@ namespace maize {
 										size_t src_size = src_imm_size();
 										pc.increment(src_size);
 										mm.enable_memory_to_bus(data_bus_0, src_size);
-										data_bus_0.set_reg(dest_reg(), dest_subreg_flag());
+										dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
+										instr_complete();
+										break;
+									}
+								}
+
+								break;
+							}
+
+							case instr::ld_regAddr_reg: {
+								switch (step) {
+									case 0: {
+										pc.increment(2);
+										src_reg().enable_to_bus(address_bus, src_subreg_flag());
+										mm.set_address_from_bus(address_bus);
+										break;
+									}
+
+									case 1: {
+										mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
+										dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
+										instr_complete();
+										break;
+									}
+								}
+
+								break;
+							}
+
+							case instr::ld_immAddr_reg: {
+								switch (step) {
+									case 0: {
+										pc.increment(2);
+										pc.enable_to_bus(address_bus, subreg_enum::w0);
+										mm.set_address_from_bus(address_bus);
+										break;
+									}
+
+									case 1: {
+										pc.increment(src_imm_size());
+										mm.enable_memory_to_bus(address_bus, subreg_enum::w0);
+										mm.set_address_from_bus(address_bus);
+										break;
+									}
+
+									case 2: {
+										mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
+										dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
 										instr_complete();
 										break;
 									}
@@ -1285,8 +1342,8 @@ namespace maize {
 								switch (step) {
 									case 0: {
 										pc.increment(2);
-										data_bus_0.enable_reg(src_reg(), src_subreg_flag());
-										address_bus.enable_reg(dest_reg(), dest_subreg_flag());
+										src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
+										dest_reg().enable_to_bus(address_bus, dest_subreg_flag());
 										mm.set_address_from_bus(address_bus);
 										mm.set_memory_from_bus(data_bus_0, src_subreg_flag());
 										instr_complete();
@@ -1301,12 +1358,13 @@ namespace maize {
 							case instr::sub_regVal_reg:
 							case instr::mul_regVal_reg:
 							case instr::div_regVal_reg:
+							case instr::mod_regVal_reg:
 							{
 								switch (step) {
 									case 0: {
 										pc.increment(2);
-										data_bus_0.enable_reg(src_reg(), src_subreg_flag());
-										data_bus_1.enable_reg(dest_reg(), dest_subreg_flag());
+										src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
+										dest_reg().enable_to_bus(data_bus_1, dest_subreg_flag());
 										al.set_src_from_bus(data_bus_0);
 										al.set_dest_from_bus(data_bus_1);
 										instr_jmp_alu();
@@ -1315,7 +1373,118 @@ namespace maize {
 
 									case 1: {
 										al.enable_dest_to_bus(data_bus_0);
-										data_bus_0.set_reg(dest_reg(), dest_subreg_flag());
+										dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
+										instr_complete();
+										break;
+									}
+								}
+
+								break;
+							}
+
+							case instr::add_immVal_reg:
+							case instr::sub_immVal_reg:
+							case instr::mul_immVal_reg:
+							case instr::div_immVal_reg:
+							case instr::mod_immVal_reg:
+							{
+								switch (step) {
+									case 0: {
+										pc.increment(2);
+										pc.enable_to_bus(address_bus, subreg_enum::w0);
+										mm.set_address_from_bus(address_bus);
+										break;
+									}
+
+									case 1: {
+										size_t src_size = src_imm_size();
+										pc.increment(src_size);
+										mm.enable_memory_to_bus(data_bus_0, src_size);
+										dest_reg().enable_to_bus(data_bus_1, dest_subreg_flag());
+										al.set_src_from_bus(data_bus_0);
+										al.set_dest_from_bus(data_bus_1);
+										instr_jmp_alu();
+										break;
+									}
+
+									case 2: {
+										al.enable_dest_to_bus(data_bus_0);
+										dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
+										instr_complete();
+										break;
+									}
+								}
+
+								break;
+							}
+
+							case instr::add_regAddr_reg:
+							case instr::sub_regAddr_reg:
+							case instr::mul_regAddr_reg:
+							case instr::div_regAddr_reg:
+							case instr::mod_regAddr_reg:
+							{
+								switch (step) {
+									case 0: {
+										pc.increment(2);
+										src_reg().enable_to_bus(address_bus, src_subreg_flag());
+										mm.set_address_from_bus(address_bus);
+										break;
+									}
+
+									case 1: {
+										mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
+										dest_reg().enable_to_bus(data_bus_1, dest_subreg_flag());
+										al.set_src_from_bus(data_bus_0);
+										al.set_dest_from_bus(data_bus_1);
+										instr_jmp_alu();
+										break;
+									}
+
+									case 2: {
+										al.enable_dest_to_bus(data_bus_0);
+										dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
+										instr_complete();
+										break;
+									}
+								}
+
+								break;
+							}
+
+							case instr::add_immAddr_reg:
+							case instr::sub_immAddr_reg:
+							case instr::mul_immAddr_reg:
+							case instr::div_immAddr_reg:
+							case instr::mod_immAddr_reg:
+							{
+								switch (step) {
+									case 0: {
+										pc.increment(2);
+										pc.enable_to_bus(address_bus, subreg_enum::w0);
+										mm.set_address_from_bus(address_bus);
+										break;
+									}
+
+									case 1: {
+										pc.increment(src_imm_size());
+										mm.enable_memory_to_bus(address_bus, subreg_enum::w0);
+										mm.set_address_from_bus(address_bus);
+										break;
+									}
+
+									case 2: {
+										mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
+										dest_reg().enable_to_bus(data_bus_1, dest_subreg_flag());
+										al.set_src_from_bus(data_bus_0);
+										al.set_dest_from_bus(data_bus_1);
+										instr_jmp_alu();
+										break;
+									}
+
+									case 3: {
+										al.enable_dest_to_bus(data_bus_0);
+										dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
 										instr_complete();
 										break;
 									}
@@ -1331,7 +1500,7 @@ namespace maize {
 								switch (step) {
 									case 0: {
 										pc.increment(1);
-										data_bus_0.enable_reg(src_reg(), src_subreg_flag());
+										src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
 										al.set_src_from_bus(data_bus_0);
 										instr_jmp_alu();
 										break;
@@ -1339,7 +1508,7 @@ namespace maize {
 
 									case 1: {
 										al.enable_dest_to_bus(data_bus_0);
-										data_bus_0.set_reg(src_reg(), src_subreg_flag());
+										src_reg().set_from_bus(data_bus_0, src_subreg_flag());
 										instr_complete();
 										break;
 									}
@@ -1347,6 +1516,37 @@ namespace maize {
 
 								break;
 							}
+
+							case instr::out_regVal_imm: {
+								switch (step) {
+									case 0: {
+										pc.increment(2);
+										pc.enable_to_bus(address_bus, subreg_enum::h0);
+										mm.set_address_from_bus(address_bus);
+										src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
+										break;
+									}
+
+									case 1: {
+										size_t dest_size = dest_imm_size();
+										pc.increment(dest_size);
+										mm.enable_memory_to_bus(data_bus_1, dest_size);
+										operand1.set_from_bus(data_bus_1, src_subreg_flag());
+										break;
+									}
+
+									case 2: {
+										device* pdevice = devices[operand1.q0];
+										pdevice->set_io_from_bus(data_bus_0);
+										pdevice->set_address_from_bus(data_bus_1);
+										instr_complete();
+										break;
+									}
+								}
+
+								break;
+							}
+
 						}
 
 						++step;
@@ -1513,6 +1713,46 @@ namespace maize {
 
 									case alu::opsize_word: {
 										uint64_t result = al.w0 / al.src_reg.w0;
+										zero_flag = result == 0;
+										negative_flag = result & 0x8000000000000000;
+										al.w0 = result;
+										break;
+									}
+								}
+
+								break;
+							}
+
+							case alu::op_mod: {
+								overflow_flag = false;
+
+								switch (op_size) {
+									case alu::opsize_byte: {
+										uint8_t result = al.b0 % al.src_reg.b0;
+										zero_flag = result == 0;
+										negative_flag = result & 0x80;
+										al.w0 = result;
+										break;
+									}
+
+									case alu::opsize_qword: {
+										uint16_t result = al.q0 % al.src_reg.q0;
+										zero_flag = result == 0;
+										negative_flag = result & 0x8000;
+										al.w0 = result;
+										break;
+									}
+
+									case alu::opsize_hword: {
+										uint32_t result = al.h0 % al.src_reg.h0;
+										zero_flag = result == 0;
+										negative_flag = result & 0x80000000;
+										al.w0 = result;
+										break;
+									}
+
+									case alu::opsize_word: {
+										uint64_t result = al.w0 % al.src_reg.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
 										al.w0 = result;
@@ -1727,7 +1967,7 @@ namespace maize {
 			std::counting_semaphore<16> io_set {0};
 			std::condition_variable io_run_event;
 			std::condition_variable io_close_event;
-			bool is_open;
+			bool is_open {false};
 
 		public:
 			virtual void on_set() {
@@ -1880,7 +2120,9 @@ int main() {
 		/* LD B.B1 C.Q0         */	cpu::instr::ld_regVal_reg, 0x11, 0x28,
 		/* LD 0x00002000 A.H0   */	cpu::instr::ld_immVal_reg, 0x02, 0x0C, 0x00, 0x20, 0x00, 0x00,
 		/* ST B @A.H0           */	cpu::instr::st_regVal_regAddr, 0x1E, 0x0C,
+		/* LD @A.H0 D */			cpu::instr::ld_regAddr_reg, 0x0C, 0x3E,
 		/* INC B.B1             */	cpu::instr::inc_regVal, 0x11,
+		/* LD @0x00002000 E.H0  */	cpu::instr::ld_immAddr_reg, 0x02, 0x4C, 0x00, 0x10, 0x00, 0x00,
 		/* HALT                 */	cpu::instr::halt
 	};
 
