@@ -1,5 +1,5 @@
-/* Right now, I have everything crammed into this file. I'm going to break it up into headers and 
-various cpp files eventually. I find it a little easier to work in one file for the moment. I'm 
+/* Right now, I have everything crammed into this file. I'm going to break it up into headers and
+various cpp files eventually. I find it a little easier to work in one file for the moment. I'm
 still playing with the structure a bit. */
 
 #include <iostream>
@@ -11,24 +11,27 @@ still playing with the structure a bit. */
 #include <semaphore>
 #include <condition_variable>
 
-// TODO: wrap this in an #ifdef
+#ifdef __linux__ 
+// Linux-specific code
+#elif _WIN32
+// Windows-specific code
+#define NOMINMAX
 #include <Windows.h>
-#undef min
-#undef max
+#else
+// Oops....
+#endif
 
-
-
-/* The main tick loop is farther below, in the "tick" function. That's where you'll find the 
+/* The main tick loop is farther below, in the "tick" function. That's where you'll find the
 state machine that implements the machine-code instructions. */
 
-/* Right now, the code is still a bit scattered and not up to my usual standards, but I'll 
-clean it up soon. This is not intended to be pure OO code; my priorities are speed and 
+/* Right now, the code is still a bit scattered and not up to my usual standards, but I'll
+clean it up soon. This is not intended to be pure OO code; my priorities are speed and
 super-tight generated assembly. */
 
-/* This program doesn't really "do" anything yet, at least not as visible output. So far it's 
-just a platform for testing instructions as I implement them. There's some code implemented as 
-machine language in the vector in the main function (at the bottom of this file) that I load 
-into memory before starting the main loop. You'll need to run this in the debugger to watch 
+/* This program doesn't really "do" anything yet, at least not as visible output. So far it's
+just a platform for testing instructions as I implement them. There's some code implemented as
+machine language in the vector in the main function (at the bottom of this file) that I load
+into memory before starting the main loop. You'll need to run this in the debugger to watch
 the data move around as it executes. */
 
 namespace maize {
@@ -66,10 +69,10 @@ namespace maize {
 
 		struct reg_value {
 			reg_value() {};
-			explicit reg_value(uint64_t init) : word{init} {}
-			explicit reg_value(uint32_t init) : hword{init} {}
-			explicit reg_value(uint16_t init) : qword{init} {}
-			explicit reg_value(uint8_t init) : byte{init} {}
+			explicit reg_value(uint64_t init) : word {init} {}
+			explicit reg_value(uint32_t init) : hword {init} {}
+			explicit reg_value(uint16_t init) : qword {init} {}
+			explicit reg_value(uint8_t init) : byte {init} {}
 
 			template<typename T = uint8_t> T operator[](size_t index) {
 				return byte_array[index];
@@ -165,7 +168,7 @@ namespace maize {
 		const uint8_t opcode_flag_srcImm = 0b01000000;
 		const uint8_t opcode_flag_srcAddr = 0b10000000;
 
-		const uint8_t opflag_reg  = 0b11110000;
+		const uint8_t opflag_reg = 0b11110000;
 		const uint8_t opflag_reg_a = 0b00000000;
 		const uint8_t opflag_reg_b = 0b00010000;
 		const uint8_t opflag_reg_c = 0b00100000;
@@ -189,7 +192,7 @@ namespace maize {
 		const uint8_t opflag_reg_cs = 0b11101101; // P.H1 = program segment
 		const uint8_t opflag_reg_fl = 0b11001100; // F.H0 = flags
 
-		const uint8_t opflag_subreg =	 0b00001111;
+		const uint8_t opflag_subreg = 0b00001111;
 		const uint8_t opflag_subreg_b0 = 0b00000000;
 		const uint8_t opflag_subreg_b1 = 0b00000001;
 		const uint8_t opflag_subreg_b2 = 0b00000010;
@@ -285,26 +288,29 @@ namespace maize {
 			8
 		};
 
-		struct reg;
+		class reg;
+		class bus;
 		static const size_t max_increment_count = 32;
-		size_t increment_count{0};
+		size_t increment_count {0};
 		std::pair<reg*, int64_t> increment_array[max_increment_count];
 
 		struct reg_op_info {
 			reg_op_info() = default;
+			reg_op_info(bus* pbus, reg* preg, subreg_mask_enum mask, uint8_t offset) :
+				pbus(pbus), preg(preg), mask(mask), offset(offset) {}
+			reg_op_info(const reg_op_info&) = default;
+			reg_op_info(reg_op_info&&) = default;
+			reg_op_info& operator=(const reg_op_info&) = default;
 
-			reg* op_reg{nullptr};
-			subreg_mask_enum mask{0};
-			uint8_t offset{0};
+			bus* pbus {nullptr};
+			reg* preg {nullptr};
+
+			subreg_mask_enum mask {0};
+			uint8_t offset {0};
 		};
 
-		static const size_t max_store_count = 32;
-		size_t store_count{0};
-		reg_op_info store_array[max_store_count];
-
-		static const size_t max_load_count = 32;
-		size_t load_count{0};
-		reg_op_info load_array[max_load_count];
+		std::vector<reg_op_info> bus_enable_array;
+		std::vector<reg_op_info> bus_set_array;
 
 		class bus : public reg_value {
 		public:
@@ -314,38 +320,6 @@ namespace maize {
 			reg* penabled_reg {nullptr};
 			subreg_mask_enum enable_subreg_mask {0};
 			uint8_t enable_offset {0};
-
-			static const size_t max_bus_set = 16;
-			size_t set_count {0};
-			reg_op_info bus_set_array[max_bus_set];
-
-		public:
-			void enable_reg(reg& en_reg, subreg_enum subreg) {
-				enable_reg(&en_reg, subreg);
-			}
-
-			void enable_reg(reg* pen_reg, subreg_enum subreg) {
-				enable_subreg_mask = subreg_mask_map[static_cast<size_t>(subreg)];
-				enable_offset = offset_map[static_cast<size_t>(subreg)];
-				penabled_reg = pen_reg;
-			}
-
-			void set_reg(reg& rset_reg, subreg_enum subreg) {
-				set_reg(&rset_reg, subreg);
-			}
-
-			void set_reg(reg* pset_reg, subreg_enum subreg) {
-				if (set_count < max_bus_set) {
-					bus_set_array[set_count].op_reg = pset_reg;
-					bus_set_array[set_count].mask = subreg_mask_map[static_cast<size_t>(subreg)];
-					bus_set_array[set_count].offset = offset_map[static_cast<size_t>(subreg)];
-					++set_count;
-				}
-			}
-
-			void on_enable();
-
-			void on_set();
 		};
 
 
@@ -400,11 +374,13 @@ namespace maize {
 			}
 
 			void enable_to_bus(bus& en_bus, subreg_enum subreg) {
-				en_bus.enable_reg(this, subreg);
+				bus_enable_array.push_back(
+					reg_op_info(&en_bus, this, subreg_mask_map[static_cast<size_t>(subreg)], offset_map[static_cast<size_t>(subreg)]));
 			}
 
 			void set_from_bus(bus& set_bus, subreg_enum subreg) {
-				set_bus.set_reg(this, subreg);
+				bus_set_array.push_back(
+					reg_op_info(&set_bus, this, subreg_mask_map[static_cast<size_t>(subreg)], offset_map[static_cast<size_t>(subreg)]));
 			}
 
 			virtual void on_enable() {
@@ -427,45 +403,21 @@ namespace maize {
 
 		public:
 			void enable_address_to_bus(bus& enable_bus) {
-				// enable_bus.enable_reg(address_reg, subreg_enum::w0);
 				address_reg.enable_to_bus(enable_bus, subreg_enum::w0);
 			}
 
 			void set_address_from_bus(bus& set_bus) {
-				// set_bus.set_reg(address_reg, subreg_enum::w0);
 				address_reg.set_from_bus(set_bus, subreg_enum::w0);
 			}
 
 			void enable_io_to_bus(bus& io_bus) {
-				// io_bus.enable_reg(this, subreg_enum::w0);
 				enable_to_bus(io_bus, subreg_enum::w0);
 			}
 
 			void set_io_from_bus(bus& source_bus) {
-				// source_bus.set_reg(this, subreg_enum::w0);
 				set_from_bus(source_bus, subreg_enum::w0);
 			}
 		};
-
-		void bus::on_enable() {
-			if (penabled_reg) {
-				penabled_reg->on_enable();
-				w0 = (penabled_reg->w0 & (uint64_t)enable_subreg_mask) >> enable_offset;
-				penabled_reg = nullptr;
-			}
-		}
-
-		void bus::on_set() {
-			// privilege_check();
-			for (size_t idx = 0; idx < set_count; ++idx) {
-				auto& info = bus_set_array[idx];
-				info.op_reg->w0 = (~(uint64_t)info.mask & info.op_reg->w0) | (w0 << info.offset) & (uint64_t)info.mask;
-				info.op_reg->on_set();
-			}
-
-			set_count = 0;
-		}
-
 
 		std::map<uint16_t, device*> devices;
 
@@ -476,7 +428,7 @@ namespace maize {
 
 		struct memory_module : public reg {
 			void set_address_from_bus(bus& source_bus) {
-				source_bus.set_reg(address_reg, subreg_enum::h0);
+				address_reg.set_from_bus(source_bus, subreg_enum::h0);
 			}
 
 			void enable_memory_to_bus(bus& load_bus, size_t size) {
@@ -503,65 +455,61 @@ namespace maize {
 					switch (load_size) {
 						case sizeof(uint8_t) :
 							b0 = cache[idx];
-							// pload_bus->enable_reg(this, subreg_enum::b0);
 							this->enable_to_bus(*pload_bus, subreg_enum::b0);
 							break;
 
-						case sizeof(uint16_t) :
-							if (rem >= sizeof(uint16_t)) {
-								q0 = *((uint16_t*)(cache + idx));
-							}
-							else {
-								b0 = cache[cache_address.b0];
-								set_cache_address(address);
-								b1 = cache[cache_address.b0];
-							}
+							case sizeof(uint16_t) :
+								if (rem >= sizeof(uint16_t)) {
+									q0 = *((uint16_t*)(cache + idx));
+								}
+								else {
+									b0 = cache[cache_address.b0];
+									set_cache_address(address);
+									b1 = cache[cache_address.b0];
+								}
 
-							// pload_bus->enable_reg(this, subreg_enum::q0);
 							this->enable_to_bus(*pload_bus, subreg_enum::q0);
 							break;
 
-						case sizeof(uint32_t) :
-							if (rem >= sizeof(uint32_t)) {
-								h0 = *((uint32_t*)(cache + idx));
-							}
-							else {
-								b0 = cache[cache_address.b0];
-								set_cache_address(address);
-								b1 = cache[cache_address.b0];
-								set_cache_address(address);
-								b2 = cache[cache_address.b0];
-								set_cache_address(address);
-								b3 = cache[cache_address.b0];
-							}
+							case sizeof(uint32_t) :
+								if (rem >= sizeof(uint32_t)) {
+									h0 = *((uint32_t*)(cache + idx));
+								}
+								else {
+									b0 = cache[cache_address.b0];
+									set_cache_address(address);
+									b1 = cache[cache_address.b0];
+									set_cache_address(address);
+									b2 = cache[cache_address.b0];
+									set_cache_address(address);
+									b3 = cache[cache_address.b0];
+								}
 
-							// pload_bus->enable_reg(this, subreg_enum::h0);
 							this->enable_to_bus(*pload_bus, subreg_enum::h0);
 							break;
 
-						case sizeof(uint64_t):
-							if (rem >= sizeof(uint64_t)) {
-								w0 = *((uint64_t*)(cache + idx));
-							}
-							else {
-								b0 = cache[cache_address.b0];
-								set_cache_address(address);
-								b1 = cache[cache_address.b0];
-								set_cache_address(address);
-								b2 = cache[cache_address.b0];
-								set_cache_address(address);
-								b3 = cache[cache_address.b0];
-								set_cache_address(address);
-								b4 = cache[cache_address.b0];
-								set_cache_address(address);
-								b5 = cache[cache_address.b0];
-								set_cache_address(address);
-								b6 = cache[cache_address.b0];
-								set_cache_address(address);
-								b7 = cache[cache_address.b0];
-							}
+							case sizeof(uint64_t) :
+								if (rem >= sizeof(uint64_t)) {
+									w0 = *((uint64_t*)(cache + idx));
+								}
+								else {
+									b0 = cache[cache_address.b0];
+									set_cache_address(address);
+									b1 = cache[cache_address.b0];
+									set_cache_address(address);
+									b2 = cache[cache_address.b0];
+									set_cache_address(address);
+									b3 = cache[cache_address.b0];
+									set_cache_address(address);
+									b4 = cache[cache_address.b0];
+									set_cache_address(address);
+									b5 = cache[cache_address.b0];
+									set_cache_address(address);
+									b6 = cache[cache_address.b0];
+									set_cache_address(address);
+									b7 = cache[cache_address.b0];
+								}
 
-							// pload_bus->enable_reg(this, subreg_enum::w0);
 							this->enable_to_bus(*pload_bus, subreg_enum::w0);
 							break;
 
@@ -579,7 +527,6 @@ namespace maize {
 			void set_memory_from_bus(bus& store_bus, subreg_enum subreg) {
 				pstore_bus = &store_bus;
 				store_mask = subreg_mask_map[static_cast<size_t>(subreg)];
-				// store_bus.set_reg(this, subreg);
 				this->set_from_bus(store_bus, subreg);
 			}
 
@@ -738,7 +685,7 @@ namespace maize {
 		protected:
 			reg address_reg {0};
 			uint64_t address_mask {0xFFFFFFFFFFFFFF00};
-			uint64_t cache_base	{0xFFFFFFFFFFFFFFFF};
+			uint64_t cache_base {0xFFFFFFFFFFFFFFFF};
 			reg_value cache_address;
 
 			size_t load_size {3};
@@ -783,9 +730,9 @@ namespace maize {
 		reg pc {0x0000000000001000}; // program execution register
 		reg sp; // stack register
 
-		template <uint64_t flag_bit> class flag{
+		template <uint64_t flag_bit> class flag {
 		public:
-			flag(reg& reg_init, bool value = false) : flag_reg{reg_init} {
+			flag(reg& reg_init, bool value = false) : flag_reg {reg_init} {
 				set(value);
 			}
 
@@ -823,19 +770,19 @@ namespace maize {
 			reg& flag_reg;
 		};
 
-											//      6         5         4         3         2         1         0
-											//   3210987654321098765432109876543210987654321098765432109876543210
-		const uint64_t bit_carryout =          0b0000000000000000000000000000000000000000000000000000000000000001;
-		const uint64_t bit_negative =          0b0000000000000000000000000000000000000000000000000000000000000010;
-		const uint64_t bit_overflow =          0b0000000000000000000000000000000000000000000000000000000000000100;
-		const uint64_t bit_parity =            0b0000000000000000000000000000000000000000000000000000000000001000;
-		const uint64_t bit_zero =              0b0000000000000000000000000000000000000000000000000000000000010000;
-		const uint64_t bit_sign =              0b0000000000000000000000000000000000000000000000000000000000100000;
-		const uint64_t bit_reserved =          0b0000000000000000000000000000000000000000000000000000000001000000;
-		const uint64_t bit_privilege =         0b0000000000000000000000000000000100000000000000000000000000000000;
+		//      6         5         4         3         2         1         0
+		//   3210987654321098765432109876543210987654321098765432109876543210
+		const uint64_t bit_carryout = 0b0000000000000000000000000000000000000000000000000000000000000001;
+		const uint64_t bit_negative = 0b0000000000000000000000000000000000000000000000000000000000000010;
+		const uint64_t bit_overflow = 0b0000000000000000000000000000000000000000000000000000000000000100;
+		const uint64_t bit_parity = 0b0000000000000000000000000000000000000000000000000000000000001000;
+		const uint64_t bit_zero = 0b0000000000000000000000000000000000000000000000000000000000010000;
+		const uint64_t bit_sign = 0b0000000000000000000000000000000000000000000000000000000000100000;
+		const uint64_t bit_reserved = 0b0000000000000000000000000000000000000000000000000000000001000000;
+		const uint64_t bit_privilege = 0b0000000000000000000000000000000100000000000000000000000000000000;
 		const uint64_t bit_interrupt_enabled = 0b0000000000000000000000000000001000000000000000000000000000000000;
-		const uint64_t bit_interrupt_set =     0b0000000000000000000000000000010000000000000000000000000000000000;
-		const uint64_t bit_running =           0b0000000000000000000000000000100000000000000000000000000000000000;
+		const uint64_t bit_interrupt_set = 0b0000000000000000000000000000010000000000000000000000000000000000;
+		const uint64_t bit_running = 0b0000000000000000000000000000100000000000000000000000000000000000;
 
 		flag<bit_carryout> carryout_flag {fl};
 		flag<bit_negative> negative_flag {fl};
@@ -874,7 +821,7 @@ namespace maize {
 			return in.b1 & opflag_subreg;
 		}
 
-		subreg_enum src_subreg_flag()  {
+		subreg_enum src_subreg_flag() {
 			return static_cast<subreg_enum>(in.b1 & opflag_subreg);
 		}
 
@@ -919,180 +866,180 @@ namespace maize {
 		}
 
 		namespace instr {
-			const opcode halt					{0x00};
+			const opcode halt {0x00};
 
-			const opcode ld_regVal_reg			{0x01};
-			const opcode ld_immVal_reg			{0x41};
-			const opcode ld_regAddr_reg			{0x81};
-			const opcode ld_immAddr_reg			{0xC1};
+			const opcode ld_regVal_reg {0x01};
+			const opcode ld_immVal_reg {0x41};
+			const opcode ld_regAddr_reg {0x81};
+			const opcode ld_immAddr_reg {0xC1};
 
-			const opcode st_regVal_regAddr		{0x02};
+			const opcode st_regVal_regAddr {0x02};
 
-			const opcode add_regVal_reg			{0x03};
-			const opcode add_immVal_reg			{0x43};
-			const opcode add_regAddr_reg		{0x83};
-			const opcode add_immAddr_reg		{0xC3};
+			const opcode add_regVal_reg {0x03};
+			const opcode add_immVal_reg {0x43};
+			const opcode add_regAddr_reg {0x83};
+			const opcode add_immAddr_reg {0xC3};
 
-			const opcode sub_regVal_reg			{0x04};
-			const opcode sub_immVal_reg			{0x44};
-			const opcode sub_regAddr_reg		{0x84};
-			const opcode sub_immAddr_reg		{0xC4};
+			const opcode sub_regVal_reg {0x04};
+			const opcode sub_immVal_reg {0x44};
+			const opcode sub_regAddr_reg {0x84};
+			const opcode sub_immAddr_reg {0xC4};
 
-			const opcode mul_regVal_reg			{0x05};
-			const opcode mul_immVal_reg			{0x45};
-			const opcode mul_regAddr_reg		{0x85};
-			const opcode mul_immAddr_reg		{0xC5};
+			const opcode mul_regVal_reg {0x05};
+			const opcode mul_immVal_reg {0x45};
+			const opcode mul_regAddr_reg {0x85};
+			const opcode mul_immAddr_reg {0xC5};
 
-			const opcode div_regVal_reg			{0x06};
-			const opcode div_immVal_reg			{0x46};
-			const opcode div_regAddr_reg		{0x86};
-			const opcode div_immAddr_reg		{0xC6};
+			const opcode div_regVal_reg {0x06};
+			const opcode div_immVal_reg {0x46};
+			const opcode div_regAddr_reg {0x86};
+			const opcode div_immAddr_reg {0xC6};
 
-			const opcode mod_regVal_reg			{0x07};
-			const opcode mod_immVal_reg			{0x47};
-			const opcode mod_regAddr_reg		{0x87};
-			const opcode mod_immAddr_reg		{0xC7};
+			const opcode mod_regVal_reg {0x07};
+			const opcode mod_immVal_reg {0x47};
+			const opcode mod_regAddr_reg {0x87};
+			const opcode mod_immAddr_reg {0xC7};
 
-			const opcode and_regVal_reg			{0x08};
-			const opcode and_immVal_reg			{0x48};
-			const opcode and_regAddr_reg		{0x88};
-			const opcode and_immAddr_reg		{0xC8};
+			const opcode and_regVal_reg {0x08};
+			const opcode and_immVal_reg {0x48};
+			const opcode and_regAddr_reg {0x88};
+			const opcode and_immAddr_reg {0xC8};
 
-			const opcode or_regVal_reg			{0x09};
-			const opcode or_immVal_reg			{0x49};
-			const opcode or_regAddr_reg			{0x89};
-			const opcode or_immAddr_reg			{0xC9};
+			const opcode or_regVal_reg {0x09};
+			const opcode or_immVal_reg {0x49};
+			const opcode or_regAddr_reg {0x89};
+			const opcode or_immAddr_reg {0xC9};
 
-			const opcode nor_regVal_reg			{0x0A};
-			const opcode nor_immVal_reg			{0x4A};
-			const opcode nor_regAddr_reg		{0x8A};
-			const opcode nor_immAddr_reg		{0xCA};
+			const opcode nor_regVal_reg {0x0A};
+			const opcode nor_immVal_reg {0x4A};
+			const opcode nor_regAddr_reg {0x8A};
+			const opcode nor_immAddr_reg {0xCA};
 
-			const opcode nand_regVal_reg		{0x0B};
-			const opcode nand_immVal_reg		{0x4B};
-			const opcode nand_regAddr_reg		{0x8B};
-			const opcode nand_immAddr_reg		{0xCB};
+			const opcode nand_regVal_reg {0x0B};
+			const opcode nand_immVal_reg {0x4B};
+			const opcode nand_regAddr_reg {0x8B};
+			const opcode nand_immAddr_reg {0xCB};
 
-			const opcode xor_regVal_reg			{0x0C};
-			const opcode xor_immVal_reg			{0x4C};
-			const opcode xor_regAddr_reg		{0x8C};
-			const opcode xor_immAddr_reg		{0xCC};
+			const opcode xor_regVal_reg {0x0C};
+			const opcode xor_immVal_reg {0x4C};
+			const opcode xor_regAddr_reg {0x8C};
+			const opcode xor_immAddr_reg {0xCC};
 
-			const opcode shl_regVal_reg			{0x0D};
-			const opcode shl_immVal_reg			{0x4D};
-			const opcode shl_regAddr_reg		{0x8D};
-			const opcode shl_immAddr_reg		{0xCD};
+			const opcode shl_regVal_reg {0x0D};
+			const opcode shl_immVal_reg {0x4D};
+			const opcode shl_regAddr_reg {0x8D};
+			const opcode shl_immAddr_reg {0xCD};
 
-			const opcode shr_regVal_reg			{0x0E};
-			const opcode shr_immVal_reg			{0x4E};
-			const opcode shr_regAddr_reg		{0x8E};
-			const opcode shr_immAddr_reg		{0xCE};
+			const opcode shr_regVal_reg {0x0E};
+			const opcode shr_immVal_reg {0x4E};
+			const opcode shr_regAddr_reg {0x8E};
+			const opcode shr_immAddr_reg {0xCE};
 
-			const opcode cmp_regVal_reg			{0x0F};
-			const opcode cmp_immVal_reg			{0x4F};
-			const opcode cmp_regAddr_reg		{0x8F};
-			const opcode cmp_immAddr_reg		{0xCF};
+			const opcode cmp_regVal_reg {0x0F};
+			const opcode cmp_immVal_reg {0x4F};
+			const opcode cmp_regAddr_reg {0x8F};
+			const opcode cmp_immAddr_reg {0xCF};
 
-			const opcode test_regVal_reg		{0x10};
-			const opcode test_immVal_reg		{0x50};
-			const opcode test_regAddr_reg		{0x90};
-			const opcode test_immAddr_reg		{0xD0};
+			const opcode test_regVal_reg {0x10};
+			const opcode test_immVal_reg {0x50};
+			const opcode test_regAddr_reg {0x90};
+			const opcode test_immAddr_reg {0xD0};
 
-			const opcode inc_regVal				{0x11};
-			const opcode dec_regVal				{0x12};
-			const opcode not_regVal				{0x13};
+			const opcode inc_regVal {0x11};
+			const opcode dec_regVal {0x12};
+			const opcode not_regVal {0x13};
 
-			const opcode out_regVal_imm			{0x14};
-			const opcode out_immVal_imm			{0x54};
-			const opcode out_regAddr_imm		{0x94};
-			const opcode out_immAddr_imm		{0xD4};
+			const opcode out_regVal_imm {0x14};
+			const opcode out_immVal_imm {0x54};
+			const opcode out_regAddr_imm {0x94};
+			const opcode out_immAddr_imm {0xD4};
 
-			const opcode lngjmp_regVal_reg		{0x15};
-			const opcode lngjmp_immVal_reg		{0x55};
-			const opcode lngjmp_regAddr_reg		{0x95};
-			const opcode lngjmp_immAddr_reg		{0xD5};
+			const opcode lngjmp_regVal_reg {0x15};
+			const opcode lngjmp_immVal_reg {0x55};
+			const opcode lngjmp_regAddr_reg {0x95};
+			const opcode lngjmp_immAddr_reg {0xD5};
 
-			const opcode jmp_regVal_imm			{0x16};
-			const opcode jmp_immVal_imm			{0x56};
-			const opcode jmp_regAddr_imm		{0x96};
-			const opcode jmp_immAddr_imm		{0xD6};
+			const opcode jmp_regVal_imm {0x16};
+			const opcode jmp_immVal_imm {0x56};
+			const opcode jmp_regAddr_imm {0x96};
+			const opcode jmp_immAddr_imm {0xD6};
 
-			const opcode jz_regVal_imm			{0x17};
-			const opcode jz_immVal_imm			{0x57};
-			const opcode jz_regAddr_imm			{0x97};
-			const opcode jz_immAddr_imm			{0xD7};
+			const opcode jz_regVal_imm {0x17};
+			const opcode jz_immVal_imm {0x57};
+			const opcode jz_regAddr_imm {0x97};
+			const opcode jz_immAddr_imm {0xD7};
 
-			const opcode jnz_regVal_imm			{0x18};
-			const opcode jnz_immVal_imm			{0x58};
-			const opcode jnz_regAddr_imm		{0x98};
-			const opcode jnz_immAddr_imm		{0xD8};
+			const opcode jnz_regVal_imm {0x18};
+			const opcode jnz_immVal_imm {0x58};
+			const opcode jnz_regAddr_imm {0x98};
+			const opcode jnz_immAddr_imm {0xD8};
 
-			const opcode jlt_regVal_imm			{0x19};
-			const opcode jlt_immVal_imm			{0x59};
-			const opcode jlt_regAddr_imm		{0x99};
-			const opcode jlt_immAddr_imm		{0xD9};
+			const opcode jlt_regVal_imm {0x19};
+			const opcode jlt_immVal_imm {0x59};
+			const opcode jlt_regAddr_imm {0x99};
+			const opcode jlt_immAddr_imm {0xD9};
 
-			const opcode jb_regVal_imm			{0x1A};
-			const opcode jb_immVal_imm			{0x5A};
-			const opcode jb_regAddr_imm			{0x9A};
-			const opcode jb_immAddr_imm			{0xDA};
+			const opcode jb_regVal_imm {0x1A};
+			const opcode jb_immVal_imm {0x5A};
+			const opcode jb_regAddr_imm {0x9A};
+			const opcode jb_immAddr_imm {0xDA};
 
-			const opcode jgt_regVal_imm			{0x1B};
-			const opcode jgt_immVal_imm			{0x5B};
-			const opcode jgt_regAddr_imm		{0x9B};
-			const opcode jgt_immAddr_imm		{0xDB};
+			const opcode jgt_regVal_imm {0x1B};
+			const opcode jgt_immVal_imm {0x5B};
+			const opcode jgt_regAddr_imm {0x9B};
+			const opcode jgt_immAddr_imm {0xDB};
 
-			const opcode ja_regVal_imm			{0x1C};
-			const opcode ja_immVal_imm			{0x5C};
-			const opcode ja_regAddr_imm			{0x9C};
-			const opcode ja_immAddr_imm			{0xDC};
+			const opcode ja_regVal_imm {0x1C};
+			const opcode ja_immVal_imm {0x5C};
+			const opcode ja_regAddr_imm {0x9C};
+			const opcode ja_immAddr_imm {0xDC};
 
-			const opcode call_regVal_reg		{0x1D};
-			const opcode call_immVal_imm		{0x5D};
-			const opcode call_regAddr_imm		{0x9D};
-			const opcode call_immAddr_imm		{0xDD};
+			const opcode call_regVal_reg {0x1D};
+			const opcode call_immVal_imm {0x5D};
+			const opcode call_regAddr_imm {0x9D};
+			const opcode call_immAddr_imm {0xDD};
 
-			const opcode outr_regVal_reg		{0x1E};
-			const opcode outr_immVal_imm		{0x5E};
-			const opcode outr_regAddr_imm		{0x9E};
-			const opcode outr_immAddr_imm		{0xDE};
+			const opcode outr_regVal_reg {0x1E};
+			const opcode outr_immVal_imm {0x5E};
+			const opcode outr_regAddr_imm {0x9E};
+			const opcode outr_immAddr_imm {0xDE};
 
-			const opcode in_regVal_imm			{0x1F};
-			const opcode in_immVal_imm			{0x5F};
-			const opcode in_regAddr_imm			{0x9F};
-			const opcode in_immAddr_imm			{0xDF};
+			const opcode in_regVal_imm {0x1F};
+			const opcode in_immVal_imm {0x5F};
+			const opcode in_regAddr_imm {0x9F};
+			const opcode in_immAddr_imm {0xDF};
 
-			const opcode push_regVal			{0x20};
-			const opcode push_immVal			{0x60};
+			const opcode push_regVal {0x20};
+			const opcode push_immVal {0x60};
 
-			const opcode clr_regVal				{0x20};
+			const opcode clr_regVal {0x20};
 
-			const opcode cmpind_regVal_regAddr	{0x23};
-			const opcode cmpind_immVal_regAddr	{0x63};
+			const opcode cmpind_regVal_regAddr {0x23};
+			const opcode cmpind_immVal_regAddr {0x63};
 
-			const opcode int_regVal				{0x24};
-			const opcode int_immVal				{0x64};
+			const opcode int_regVal {0x24};
+			const opcode int_immVal {0x64};
 
-			const opcode tstind_regVal_regAddr	{0x25};
-			const opcode tstind_immVal_regAddr	{0x65};
+			const opcode tstind_regVal_regAddr {0x25};
+			const opcode tstind_immVal_regAddr {0x65};
 
-			const opcode pop_regVal				{0x26};
+			const opcode pop_regVal {0x26};
 
-			const opcode ret					{0x27};
+			const opcode ret {0x27};
 
-			const opcode iret					{0x28};
+			const opcode iret {0x28};
 
-			const opcode setint					{0x29};
+			const opcode setint {0x29};
 
-			const opcode clrint					{0x30};
+			const opcode clrint {0x30};
 
-			const opcode setcry					{0x31};
+			const opcode setcry {0x31};
 
-			const opcode clrcry					{0x32};
+			const opcode clrcry {0x32};
 
-			const opcode nop					{0xAA};
+			const opcode nop {0xAA};
 
-			const opcode brk					{0xFF};
+			const opcode brk {0xFF};
 
 		}
 
@@ -1111,15 +1058,12 @@ namespace maize {
 			static const opcode op_shl {0x0D};
 			static const opcode op_shr {0x0E};
 			static const opcode op_cmp {0x0F};
+			static const opcode op_cmdind {0x23};
 			static const opcode op_test {0x10};
+			static const opcode op_tstind {0x25};
 			static const opcode op_inc {0x11};
 			static const opcode op_dec {0x12};
 			static const opcode op_not {0x13};
-
-			static const opcode opsize_byte {0x00};
-			static const opcode opsize_qword {0x10};
-			static const opcode opsize_hword {0x20};
-			static const opcode opsize_word {0x30};
 
 			static const opcode opctrl_carryin {0x80};
 
@@ -1140,17 +1084,14 @@ namespace maize {
 			}
 
 			void set_src_from_bus(bus& source_bus, subreg_enum subreg = subreg_enum::w0) {
-				// source_bus.set_reg(src_reg, subreg);
 				src_reg.set_from_bus(source_bus, subreg);
 			}
 
 			void set_dest_from_bus(bus& source_bus, subreg_enum subreg = subreg_enum::w0) {
-				// source_bus.set_reg(this, subreg);
 				set_from_bus(source_bus, subreg);
 			}
 
 			void enable_dest_to_bus(bus& dest_bus, subreg_enum subreg = subreg_enum::w0) {
-				// dest_bus.enable_reg(this, subreg);
 				enable_to_bus(dest_bus, subreg);
 			}
 
@@ -1158,24 +1099,6 @@ namespace maize {
 		};
 
 		alu al;
-
-		uint8_t alu_op_size_map[] {
-			alu::opsize_byte,
-			alu::opsize_byte,
-			alu::opsize_byte,
-			alu::opsize_byte,
-			alu::opsize_byte,
-			alu::opsize_byte,
-			alu::opsize_byte,
-			alu::opsize_byte,
-			alu::opsize_qword,
-			alu::opsize_qword,
-			alu::opsize_qword,
-			alu::opsize_qword,
-			alu::opsize_hword,
-			alu::opsize_hword,
-			alu::opsize_word
-		};
 
 		uint8_t cycle {0};
 		uint8_t step {0};
@@ -1354,7 +1277,7 @@ namespace maize {
 								break;
 							}
 
-							case instr::add_regVal_reg: 
+							case instr::add_regVal_reg:
 							case instr::sub_regVal_reg:
 							case instr::mul_regVal_reg:
 							case instr::div_regVal_reg:
@@ -1554,12 +1477,12 @@ namespace maize {
 					}
 
 					case run_states::alu: {
-						uint8_t op_size = alu_op_size_map[dest_subreg_index()];
+						uint8_t op_size = size_map[dest_subreg_index()];
 
 						switch (in.b0 & alu::opflag_code) {
 							case alu::op_add: {
 								switch (op_size) {
-									case alu::opsize_byte: {
+									case 1: {
 										uint8_t result = al.b0 + al.src_reg.b0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
@@ -1568,7 +1491,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_qword: {
+									case 2: {
 										uint16_t result = al.q0 + al.src_reg.q0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
@@ -1577,7 +1500,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_hword: {
+									case 4: {
 										uint32_t result = al.h0 + al.src_reg.h0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
@@ -1586,7 +1509,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_word: {
+									case 8: {
 										uint64_t result = al.w0 + al.src_reg.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
@@ -1601,7 +1524,7 @@ namespace maize {
 
 							case alu::op_sub: {
 								switch (op_size) {
-									case alu::opsize_byte: {
+									case 1: {
 										uint8_t result = al.b0 - al.src_reg.b0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
@@ -1610,7 +1533,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_qword: {
+									case 2: {
 										uint16_t result = al.q0 - al.src_reg.q0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
@@ -1619,7 +1542,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_hword: {
+									case 4: {
 										uint32_t result = al.h0 - al.src_reg.h0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
@@ -1628,7 +1551,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_word: {
+									case 8: {
 										uint64_t result = al.w0 - al.src_reg.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
@@ -1643,7 +1566,7 @@ namespace maize {
 
 							case alu::op_mul: {
 								switch (op_size) {
-									case alu::opsize_byte: {
+									case 1: {
 										uint8_t result = al.b0 - al.src_reg.b0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
@@ -1652,7 +1575,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_qword: {
+									case 2: {
 										uint16_t result = al.q0 - al.src_reg.q0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
@@ -1661,7 +1584,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_hword: {
+									case 4: {
 										uint32_t result = al.h0 - al.src_reg.h0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
@@ -1670,7 +1593,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_word: {
+									case 8: {
 										uint64_t result = al.w0 - al.src_reg.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
@@ -1687,7 +1610,7 @@ namespace maize {
 								overflow_flag = false;
 
 								switch (op_size) {
-									case alu::opsize_byte: {
+									case 1: {
 										uint8_t result = al.b0 / al.src_reg.b0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
@@ -1695,7 +1618,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_qword: {
+									case 2: {
 										uint16_t result = al.q0 / al.src_reg.q0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
@@ -1703,7 +1626,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_hword: {
+									case 4: {
 										uint32_t result = al.h0 / al.src_reg.h0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
@@ -1711,7 +1634,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_word: {
+									case 8: {
 										uint64_t result = al.w0 / al.src_reg.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
@@ -1727,7 +1650,7 @@ namespace maize {
 								overflow_flag = false;
 
 								switch (op_size) {
-									case alu::opsize_byte: {
+									case 1: {
 										uint8_t result = al.b0 % al.src_reg.b0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
@@ -1735,7 +1658,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_qword: {
+									case 2: {
 										uint16_t result = al.q0 % al.src_reg.q0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
@@ -1743,7 +1666,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_hword: {
+									case 4: {
 										uint32_t result = al.h0 % al.src_reg.h0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
@@ -1751,7 +1674,47 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_word: {
+									case 8: {
+										uint64_t result = al.w0 % al.src_reg.w0;
+										zero_flag = result == 0;
+										negative_flag = result & 0x8000000000000000;
+										al.w0 = result;
+										break;
+									}
+								}
+
+								break;
+							}
+
+							case alu::op_and: {
+								overflow_flag = false;
+
+								switch (op_size) {
+									case 1: {
+										uint8_t result = al.b0 % al.src_reg.b0;
+										zero_flag = result == 0;
+										negative_flag = result & 0x80;
+										al.w0 = result;
+										break;
+									}
+
+									case 2: {
+										uint16_t result = al.q0 % al.src_reg.q0;
+										zero_flag = result == 0;
+										negative_flag = result & 0x8000;
+										al.w0 = result;
+										break;
+									}
+
+									case 4: {
+										uint32_t result = al.h0 % al.src_reg.h0;
+										zero_flag = result == 0;
+										negative_flag = result & 0x80000000;
+										al.w0 = result;
+										break;
+									}
+
+									case 8: {
 										uint64_t result = al.w0 % al.src_reg.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
@@ -1765,7 +1728,7 @@ namespace maize {
 
 							case alu::op_inc: {
 								switch (op_size) {
-									case alu::opsize_byte: {
+									case 1: {
 										uint8_t result = al.b0 + uint8_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
@@ -1774,7 +1737,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_qword: {
+									case 2: {
 										uint16_t result = al.q0 + uint16_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
@@ -1783,7 +1746,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_hword: {
+									case 4: {
 										uint32_t result = al.h0 + uint32_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
@@ -1792,7 +1755,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_word: {
+									case 8: {
 										uint64_t result = al.w0 + uint64_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
@@ -1807,7 +1770,7 @@ namespace maize {
 
 							case alu::op_dec: {
 								switch (op_size) {
-									case alu::opsize_byte: {
+									case 1: {
 										uint8_t result = al.b0 - uint8_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
@@ -1816,7 +1779,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_qword: {
+									case 2: {
 										uint16_t result = al.q0 - uint16_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
@@ -1825,7 +1788,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_hword: {
+									case 4: {
 										uint32_t result = al.h0 - uint32_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
@@ -1834,7 +1797,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_word: {
+									case 8: {
 										uint64_t result = al.w0 - uint64_t(1);
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
@@ -1851,7 +1814,7 @@ namespace maize {
 								overflow_flag = 0;
 
 								switch (op_size) {
-									case alu::opsize_byte: {
+									case 1: {
 										uint8_t result = ~al.b0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80;
@@ -1859,7 +1822,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_qword: {
+									case 2: {
 										uint16_t result = ~al.q0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000;
@@ -1867,7 +1830,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_hword: {
+									case 4: {
 										uint32_t result = ~al.h0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x80000000;
@@ -1875,7 +1838,7 @@ namespace maize {
 										break;
 									}
 
-									case alu::opsize_word: {
+									case 8: {
 										uint64_t result = ~al.w0;
 										zero_flag = result == 0;
 										negative_flag = result & 0x8000000000000000;
@@ -1913,17 +1876,23 @@ namespace maize {
 					mm.on_enable_memory();
 				}
 
-				/* enable registers to buses */
-				address_bus.on_enable();
-				data_bus_0.on_enable();
-				data_bus_1.on_enable();
-				io_bus.on_enable();
+				if (bus_enable_array.size()) {
+					for (auto& info : bus_enable_array) {
+						info.preg->on_enable();
+						info.pbus->w0 = (info.preg->w0 & (uint64_t)info.mask) >> info.offset;
+					}
 
-				/* set registers from buses */
-				address_bus.on_set();
-				data_bus_0.on_set();
-				data_bus_1.on_set();
-				io_bus.on_set();
+					bus_enable_array.clear();
+				}
+
+				if (bus_set_array.size()) {
+					for (auto& info : bus_set_array) {
+						info.preg->w0 = (~(uint64_t)info.mask & info.preg->w0) | (info.pbus->w0 << info.offset) & (uint64_t)info.mask;
+						info.preg->on_set();
+					}
+
+					bus_set_array.clear();
+				}
 
 				/* set memory from buses*/
 				if (mm.set_memory_scheduled()) {
@@ -2055,7 +2024,8 @@ namespace maize {
 
 							switch (opcode) {
 								case 0x0A: {
-									WCHAR buf[1] {b0};
+									WCHAR c = static_cast<WCHAR>(b0);
+									WCHAR buf[1] {c};
 									WriteConsole(hStdout, buf, 1, nullptr, nullptr);
 									break;
 								}
@@ -2106,7 +2076,7 @@ namespace maize {
 using namespace maize;
 
 int main() {
-	/* This is a sample program that I load into memory before starting the main loop. Eventually, 
+	/* This is a sample program that I load into memory before starting the main loop. Eventually,
 	I'll load a binary file with BIOS, OS image, etc. */
 
 	/* This is the address where the CPU starts executing code. */
@@ -2127,7 +2097,7 @@ int main() {
 	};
 
 	/* Load the program above into memory. */
-	for (auto & b : mem) {
+	for (auto& b : mem) {
 		cpu::mm.write(address, b);
 		++address;
 	}
