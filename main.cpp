@@ -67,48 +67,6 @@ namespace maize {
 		};
 
 
-		struct reg_value {
-			reg_value() {};
-			explicit reg_value(uint64_t init) : word {init} {}
-			explicit reg_value(uint32_t init) : hword {init} {}
-			explicit reg_value(uint16_t init) : qword {init} {}
-			explicit reg_value(uint8_t init) : byte {init} {}
-
-			template<typename T = uint8_t> T operator[](size_t index) {
-				return byte_array[index];
-			}
-
-			template<typename T = uint8_t> const T operator[](size_t index) const {
-				return byte_array[index];
-			}
-
-			uint64_t& w0 {word.w0};
-			uint32_t& h0 {hword.h0};
-			uint32_t& h1 {hword.h1};
-			uint16_t& q0 {qword.q0};
-			uint16_t& q1 {qword.q1};
-			uint16_t& q2 {qword.q2};
-			uint16_t& q3 {qword.q3};
-			uint8_t& b0 {byte.b0};
-			uint8_t& b1 {byte.b1};
-			uint8_t& b2 {byte.b2};
-			uint8_t& b3 {byte.b3};
-			uint8_t& b4 {byte.b4};
-			uint8_t& b5 {byte.b5};
-			uint8_t& b6 {byte.b6};
-			uint8_t& b7 {byte.b7};
-
-		protected:
-			union {
-				reg_word word {0};
-				reg_hword hword;
-				reg_qword qword;
-				reg_byte byte;
-				uint8_t byte_array[8];
-			};
-
-		};
-
 		enum class reg_enum {
 			a = 0x00,
 			b = 0x01,
@@ -288,11 +246,52 @@ namespace maize {
 			8
 		};
 
+		struct reg_value {
+			reg_value() {};
+			explicit reg_value(uint64_t init) : w {init} {}
+			explicit reg_value(uint32_t init) : h {init} {}
+			explicit reg_value(uint16_t init) : q {init} {}
+			explicit reg_value(uint8_t init) : b {init} {}
+
+			template<typename T = uint8_t> T operator[](size_t index) {
+				return byte_array[index];
+			}
+
+			template<typename T = uint8_t> const T operator[](size_t index) const {
+				return byte_array[index];
+			}
+
+			uint64_t& w0 {w.w0};
+			uint32_t& h0 {h.h0};
+			uint32_t& h1 {h.h1};
+			uint16_t& q0 {q.q0};
+			uint16_t& q1 {q.q1};
+			uint16_t& q2 {q.q2};
+			uint16_t& q3 {q.q3};
+			uint8_t& b0 {b.b0};
+			uint8_t& b1 {b.b1};
+			uint8_t& b2 {b.b2};
+			uint8_t& b3 {b.b3};
+			uint8_t& b4 {b.b4};
+			uint8_t& b5 {b.b5};
+			uint8_t& b6 {b.b6};
+			uint8_t& b7 {b.b7};
+
+		private:
+			union {
+				reg_word w {0};
+				reg_hword h;
+				reg_qword q;
+				reg_byte b;
+				uint8_t byte_array[8];
+			};
+
+		};
+
 		class reg;
 		class bus;
-		static const size_t max_increment_count = 32;
-		size_t increment_count {0};
-		std::pair<reg*, int64_t> increment_array[max_increment_count];
+		
+		std::vector<std::pair<reg*, int64_t>> increment_array;
 
 		struct reg_op_info {
 			reg_op_info() = default;
@@ -304,24 +303,17 @@ namespace maize {
 
 			bus* pbus {nullptr};
 			reg* preg {nullptr};
-
 			subreg_mask_enum mask {0};
 			uint8_t offset {0};
 		};
 
-		std::vector<reg_op_info> bus_enable_array;
-		std::vector<reg_op_info> bus_set_array;
-
 		class bus : public reg_value {
 		public:
 			bus() = default;
-
-		protected:
-			reg* penabled_reg {nullptr};
-			subreg_mask_enum enable_subreg_mask {0};
-			uint8_t enable_offset {0};
 		};
 
+		std::vector<reg_op_info> bus_enable_array;
+		std::vector<reg_op_info> bus_set_array;
 
 		class reg : public reg_value {
 		public:
@@ -356,31 +348,23 @@ namespace maize {
 			}
 
 			void increment(int64_t value = 1) {
-				if (increment_count < max_increment_count) {
-					auto& info = increment_array[increment_count];
-					info.first = this;
-					info.second = value;
-					++increment_count;
-				}
+				increment_array.push_back(std::make_pair(this, value));
 			}
 
 			void decrement(int64_t value = 1) {
-				if (increment_count < max_increment_count) {
-					auto& info = increment_array[increment_count];
-					info.first = this;
-					info.second = -value;
-					++increment_count;
-				}
+				increment_array.push_back(std::make_pair(this, -value));
 			}
 
 			void enable_to_bus(bus& en_bus, subreg_enum subreg) {
 				bus_enable_array.push_back(
-					reg_op_info(&en_bus, this, subreg_mask_map[static_cast<size_t>(subreg)], offset_map[static_cast<size_t>(subreg)]));
+					reg_op_info(&en_bus, this, subreg_mask_map[static_cast<size_t>(subreg)], offset_map[static_cast<size_t>(subreg)])
+				);
 			}
 
 			void set_from_bus(bus& set_bus, subreg_enum subreg) {
 				bus_set_array.push_back(
-					reg_op_info(&set_bus, this, subreg_mask_map[static_cast<size_t>(subreg)], offset_map[static_cast<size_t>(subreg)]));
+					reg_op_info(&set_bus, this, subreg_mask_map[static_cast<size_t>(subreg)], offset_map[static_cast<size_t>(subreg)])
+				);
 			}
 
 			virtual void on_enable() {
@@ -1862,13 +1846,12 @@ namespace maize {
 				}
 
 				/* increment */
-				if (increment_count) {
-					for (size_t idx = 0; idx < increment_count; ++idx) {
-						auto& info = increment_array[idx];
+				if (increment_array.size()) {
+					for (auto & info : increment_array) {
 						info.first->w0 = info.first->w0 + info.second;
 					}
 
-					increment_count = 0;
+					increment_array.clear();
 				}
 
 				/* enable memory to bus */
