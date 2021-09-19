@@ -449,9 +449,12 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     
     %0011`0010  $32   CLRCRY                   Clear the Carry flag
     
+    %0011`0100  $34   SYS       regVal         Execute a system call using the system-call index stored in register (privileged)
+    %0111`0100  $74   SYS       immVal         Execute a system call using the immediate index (privileged)
+    
     %1010`1010  $AA   NOP                      No operation. Used as an instruction placeholder.
     
-    %1111`1111  $FF   BRK                      Trigger a debug break (INT 3)
+    %1111`1111  $FF   BRK                      Trigger a debug break
 
 
 ## Register Parameter
@@ -667,7 +670,7 @@ Other syntax, to be described more fully later:
     %0011`0001  $31   SETCRY                   Set the Carry flag
     %0011`0010  $32   CLRCRY                   Clear the Carry flag
     %0011`0011  $33             reserved       
-    %0011`0100  $34             reserved       
+    %0011`0100  $34   SYS       regVal         Execute a system call using the system-call index stored in register (privileged)
     %0011`0101  $35             reserved       
     %0011`0110  $36             reserved       
     %0011`0111  $37             reserved       
@@ -731,7 +734,7 @@ Other syntax, to be described more fully later:
     %0111`0001  $71             reserved       
     %0111`0010  $72             reserved       
     %0111`0011  $73             reserved       
-    %0111`0100  $74             reserved       
+    %0111`0100  $74   SYS       immVal         Execute a system call using the immediate index (privileged)
     %0111`0101  $75             reserved       
     %0111`0110  $76             reserved       
     %0111`0111  $77             reserved       
@@ -869,4 +872,4 @@ Other syntax, to be described more fully later:
     %1111`1100  $FC             reserved       
     %1111`1101  $FD             reserved       
     %1111`1110  $FE             reserved       
-    %1111`1111  $FF   BRK       (INT 3)        Trigger a debug break (INT 3)
+    %1111`1111  $FF   BRK       (INT 3)        Trigger a debug break

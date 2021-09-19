@@ -1,9 +1,87 @@
-#include "maize_sys.h"
+#include "maize.h"
+// #include "maize_sys.h"
 
 /* This is all very broken right now, but I'm going to replace it with a sys_call architecture instead. */
 
 namespace maize {
 	namespace sys {
+		bool syscall_running {false};
+		qword syscall_id {0};
+		byte syscall_step {0};
+
+		HANDLE hStdin {INVALID_HANDLE_VALUE};
+		HANDLE hStdout {INVALID_HANDLE_VALUE};
+		HANDLE hStderr {INVALID_HANDLE_VALUE};
+		CONSOLE_SCREEN_BUFFER_INFO csbiInfo {0};
+
+		void init() {
+			hStdin = GetStdHandle(STD_INPUT_HANDLE);
+			// TODO: error handling
+			hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+			// TODO: error handling
+			hStderr = GetStdHandle(STD_ERROR_HANDLE);
+			// TODO: error handling
+
+			DWORD dwMode {0};
+
+			if (!GetConsoleMode(hStdout, &dwMode)) {
+				// TODO: error handling
+			}
+
+			dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+
+			if (!SetConsoleMode(hStdout, dwMode)) {
+				// TODO: error handling
+			}
+		}
+
+		void enter_syscall(qword id) {
+			syscall_id = id;
+			syscall_running = true;
+			syscall_step = 0;
+		}
+
+		void exit_syscall() {
+			syscall_running = false;
+		}
+
+		void call() {
+			using namespace cpu;
+
+			switch (syscall_id) {
+				/* sys_read */
+				case 0x0000: {
+					break;
+				}
+
+				/* sys_write */
+				case 0x0001: {
+					word fd {regs::g.w0};
+					word address {regs::h.w0};
+					hword count {regs::j.h0};
+
+					std::vector<byte> str = mm.read(address, count);
+					byte* buf {&str[0]};
+					WriteConsole(hStdout, buf, count, nullptr, nullptr);
+					break;
+				}
+
+				/* sys_exit */
+				case 0x003C: {
+					break;
+				}
+
+				/* sys_reboot */
+				case 0x00A9: {
+					break;
+				}
+			}
+		}
+
+		void exit() {
+
+		}
+
 		void console::on_set() {
 			cpu::reg::on_set();
 			set(w0);

@@ -1,9 +1,14 @@
 #pragma once
 
-#include "maize.h"
-
 namespace maize {
 	namespace sys {
+
+		void init();
+		void call();
+		void exit();
+
+		void enter_syscall(qword id);
+
 		class console : public cpu::device {
 		public:
 			word enable();
@@ -34,9 +39,6 @@ namespace maize {
 // Windows-specific code
 #define NOMINMAX
 #include <Windows.h>
-#else
-// Oops....
-#endif
 
 namespace maize {
 	namespace sys {
@@ -60,3 +62,8 @@ namespace maize {
 	} // namespace sys
 
 } // namespace maize
+
+
+#else
+// Oops....
+#endif

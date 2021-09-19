@@ -19,15 +19,24 @@ the data move around as it executes. */
 using namespace maize;
 
 int main() {
+	using namespace cpu;
+
+	regs::a.w0 = 0xFEDCBA9876543210;
+	byte b = regs::a[1];
+	qword q = regs::a.qword_index(1);
+	hword h = regs::a.hword_index(1);
+
+
 	/* This is a sample program that I load into memory before starting the main loop. Eventually,
 	I'll load a binary file with BIOS, OS image, etc. */
 
 	/* This is the address where the CPU starts executing code. */
 	maize::word address {0x0000000000001000};
 
+#if false
 	std::vector<maize::byte> mem {
-		/* LD B.B0 0x41         */	cpu::instr::ld_immVal_reg, 0x00, 0x10, 0x41,
-		/* LD B.B1 0x0A         */	cpu::instr::ld_immVal_reg, 0x00, 0x11, 0x0A,
+		/* LD 0x41 B.B0         */	cpu::instr::ld_immVal_reg, 0x00, 0x10, 0x41,
+		/* LD 0x0A B.B1         */	cpu::instr::ld_immVal_reg, 0x00, 0x11, 0x0A,
 		/* OUT B 0x7F           */	cpu::instr::out_regVal_imm, 0x1E, 0x00, 0x7F,
 		/* ADD B.B0 B.B1        */	cpu::instr::add_regVal_reg, 0x10, 0x11,
 		/* LD B.B1 C.Q0         */	cpu::instr::ld_regVal_reg, 0x11, 0x28,
@@ -38,6 +47,16 @@ int main() {
 		/* LD @0x00002000 E.H0  */	cpu::instr::ld_immAddr_reg, 0x02, 0x4C, 0x00, 0x10, 0x00, 0x00,
 		/* HALT                 */	cpu::instr::halt
 	};
+#endif
+
+	std::vector<maize::byte> mem {
+	/* 0x00001000 LD $01 G */			cpu::instr::ld_immVal_reg, 0x00, 0x50, 0x01,
+	/* 0x00001004 LD 0x00001017 H.H0 */	cpu::instr::ld_immVal_reg, 0x02, 0x6C, 0x13, 0x10, 0x00, 0x00,
+	/* 0x0000100B LD 0x0D J */			cpu::instr::ld_immVal_reg, 0x00, 0x70, 0x0D,
+	/* 0x0000100F SYS $01 */			cpu::instr::sys_immVal, 0x00, 0x01,
+	/* 0x00001012 HALT */				cpu::instr::halt,
+	/* 0x00001013 hw_string: */			'H', 'e', 'l', 'l', 'o', ',', ' ', 'w', 'o', 'r', 'l', 'd', '!'
+	};
 
 	/* Load the program above into memory. */
 	for (auto& b : mem) {
@@ -45,10 +64,8 @@ int main() {
 		++address;
 	}
 
-	sys::win::console con;
-	con.open();
-	cpu::add_device(0x7F, con);
+	sys::init();
 	cpu::run();
-	con.close();
+	sys::exit();
 }
 

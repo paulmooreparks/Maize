@@ -88,63 +88,63 @@ namespace maize {
 				reg& flag_reg;
 			};
 
-
-			enum class reg_enum {
-				a = 0x00,
-				b = 0x01,
-				c = 0x02,
-				d = 0x03,
-				e = 0x04,
-				g = 0x05,
-				h = 0x06,
-				j = 0x07,
-				k = 0x08,
-				l = 0x09,
-				m = 0x0A,
-				z = 0x0B,
-				fl = 0x0C,
-				in = 0x0D,
-				pc = 0x0E,
-				sp = 0x0F
-			};
-
-			enum class subreg_enum {
-				b0 = 0x00,
-				b1 = 0x01,
-				b2 = 0x02,
-				b3 = 0x03,
-				b4 = 0x04,
-				b5 = 0x05,
-				b6 = 0x06,
-				b7 = 0x07,
-				q0 = 0x08,
-				q1 = 0x09,
-				q2 = 0x0A,
-				q3 = 0x0B,
-				h0 = 0x0C,
-				h1 = 0x0D,
-				w0 = 0x0E
-			};
-
-			/* Defines a bit mask for each subregister in a register. */
-			enum class subreg_mask_enum : word {
-				b0 = 0b0000000000000000000000000000000000000000000000000000000011111111,
-				b1 = 0b0000000000000000000000000000000000000000000000001111111100000000,
-				b2 = 0b0000000000000000000000000000000000000000111111110000000000000000,
-				b3 = 0b0000000000000000000000000000000011111111000000000000000000000000,
-				b4 = 0b0000000000000000000000001111111100000000000000000000000000000000,
-				b5 = 0b0000000000000000111111110000000000000000000000000000000000000000,
-				b6 = 0b0000000011111111000000000000000000000000000000000000000000000000,
-				b7 = 0b1111111100000000000000000000000000000000000000000000000000000000,
-				q0 = 0b0000000000000000000000000000000000000000000000001111111111111111,
-				q1 = 0b0000000000000000000000000000000011111111111111110000000000000000,
-				q2 = 0b0000000000000000111111111111111100000000000000000000000000000000,
-				q3 = 0b1111111111111111000000000000000000000000000000000000000000000000,
-				h0 = 0b0000000000000000000000000000000011111111111111111111111111111111,
-				h1 = 0b1111111111111111111111111111111100000000000000000000000000000000,
-				w0 = 0b1111111111111111111111111111111111111111111111111111111111111111,
-			};
 		}
+
+		enum class reg_enum {
+			a = 0x00,
+			b = 0x01,
+			c = 0x02,
+			d = 0x03,
+			e = 0x04,
+			g = 0x05,
+			h = 0x06,
+			j = 0x07,
+			k = 0x08,
+			l = 0x09,
+			m = 0x0A,
+			z = 0x0B,
+			fl = 0x0C,
+			in = 0x0D,
+			pc = 0x0E,
+			sp = 0x0F
+		};
+
+		enum class subreg_enum {
+			b0 = 0x00,
+			b1 = 0x01,
+			b2 = 0x02,
+			b3 = 0x03,
+			b4 = 0x04,
+			b5 = 0x05,
+			b6 = 0x06,
+			b7 = 0x07,
+			q0 = 0x08,
+			q1 = 0x09,
+			q2 = 0x0A,
+			q3 = 0x0B,
+			h0 = 0x0C,
+			h1 = 0x0D,
+			w0 = 0x0E
+		};
+
+		/* Defines a bit mask for each subregister in a register. */
+		enum class subreg_mask_enum : word {
+			b0 = 0b0000000000000000000000000000000000000000000000000000000011111111,
+			b1 = 0b0000000000000000000000000000000000000000000000001111111100000000,
+			b2 = 0b0000000000000000000000000000000000000000111111110000000000000000,
+			b3 = 0b0000000000000000000000000000000011111111000000000000000000000000,
+			b4 = 0b0000000000000000000000001111111100000000000000000000000000000000,
+			b5 = 0b0000000000000000111111110000000000000000000000000000000000000000,
+			b6 = 0b0000000011111111000000000000000000000000000000000000000000000000,
+			b7 = 0b1111111100000000000000000000000000000000000000000000000000000000,
+			q0 = 0b0000000000000000000000000000000000000000000000001111111111111111,
+			q1 = 0b0000000000000000000000000000000011111111111111110000000000000000,
+			q2 = 0b0000000000000000111111111111111100000000000000000000000000000000,
+			q3 = 0b1111111111111111000000000000000000000000000000000000000000000000,
+			h0 = 0b0000000000000000000000000000000011111111111111111111111111111111,
+			h1 = 0b1111111111111111111111111111111100000000000000000000000000000000,
+			w0 = 0b1111111111111111111111111111111111111111111111111111111111111111,
+		};
 
 		struct reg_value {
 			reg_value() {};
@@ -168,11 +168,27 @@ namespace maize {
 				return w0 = value;
 			}
 
-			template<typename T = byte> T operator[](size_t index) {
+			byte operator[](size_t index) {
+				// TODO: range error handling
+				return byte_index(index);
+			}
+
+			byte byte_index(size_t index) const {
+				// TODO: range error handling
 				return byte_array[index];
 			}
 
-			template<typename T = byte> const T operator[](size_t index) const {
+			qword qword_index(size_t index) const {
+				// TODO: range error handling
+				return qword_array[index];
+			}
+
+			hword hword_index(size_t index) const {
+				// TODO: range error handling
+				return hword_array[index];
+			}
+
+			const byte operator[](size_t index) const {
 				return byte_array[index];
 			}
 
@@ -198,6 +214,8 @@ namespace maize {
 				reg_hword h;
 				reg_qword q;
 				reg_byte b;
+				hword hword_array[2];
+				qword qword_array[4];
 				byte byte_array[8];
 			};
 
@@ -267,6 +285,7 @@ namespace maize {
 			void on_enable_memory();
 
 			void write(word address, byte value);
+			std::vector<byte> read(word address, hword count);
 			void set_memory_from_bus(bus& store_bus, subreg_enum subreg);
 			bool set_memory_scheduled();
 			void on_set_memory();
@@ -488,8 +507,8 @@ namespace maize {
 			const opcode cmpind_regVal_regAddr {0x23};
 			const opcode cmpind_immVal_regAddr {0x63};
 
-			const opcode int_regVal {0x24};
-			const opcode int_immVal {0x64};
+			const opcode sys_regVal {0x34};
+			const opcode sys_immVal {0x74};
 
 			const opcode tstind_regVal_regAddr {0x25};
 			const opcode tstind_immVal_regAddr {0x65};
@@ -514,13 +533,37 @@ namespace maize {
 
 		}
 
-		void tick();
+		namespace regs {
+			// The CPU's general registers are defined here
+			extern reg a;
+			extern reg b;
+			extern reg c;
+			extern reg d;
+			extern reg e;
+			extern reg g;
+			extern reg h;
+			extern reg j;
+			extern reg k;
+			extern reg l;
+			extern reg m;
+			extern reg z;
+			extern reg fl; // flags register
+			extern reg in; // instruction register
+			extern reg pc; // program execution register
+			extern reg sp; // stack register
+		}
 
-		void add_device(qword id, device& new_device);
-
-		void run();
+		extern bus address_bus;
+		extern bus data_bus_0;
+		extern bus data_bus_1;
+		extern bus io_bus;
 
 		extern memory_module mm;
+		extern alu al;
+
+		void add_device(qword id, device& new_device);
+		void run();
+
 
 	} // namespace cpu; 
 
