@@ -26,7 +26,7 @@ hw_start:
 
    ; The basic ABI is for function arguments to be placed, from left to 
    ; right, into the G, H, J, K, L, and M registers. Any additional parameters 
-   ; are pushed onto the stack.
+   ; are pushed onto the stack. The return value is in the A register.
 
    ; Get string length.
    LD hw_string G          ; Load the local pointer (current segment) to the string into G register
@@ -35,23 +35,21 @@ hw_start:
 
    ; Write string
 
-   ; The kernel also implements a subset of Linux syscalls. 
-   ; The syscall number is placed into the A register, and the first 
-   ; six syscall arguments are placed, from left to right, into the 
-   ; G, H, J, K, L, and M registers. Any remaining arguments are  
-   ; pushed onto the stack. 
+   ; The Maize runtime implements a set of Linux syscalls. 
+   ; The first six syscall arguments are placed, from left to right, 
+   ; into the G, H, J, K, L, and M registers. Any remaining arguments are  
+   ; pushed onto the stack. The return value is in the A register.
 
    LD G H.H0               ; Load the local pointer (current segment) to the string into H.H0 register
    CLR H.H1                ; We're running in segment zero
-   LD $01 A                ; Load syscall opcode $01 (write) into A register
    LD $01 G                ; Load file descriptor $01 (STDOUT) into G register
-   INT $80                 ; Call interrupt $80 to execute write syscall
+   SYS $01                 ; Execute syscall $01 (sys_write)
 
    ; "Power down" the system, which actually means to exit the Maize CPU loop and return to the host OS.
 
    LD $A9 A                ; Load syscall opcode $A9 (169, sys_reboot) into A register
    LD $4321FEDC J          ; Load "magic" code for power down ($4321FEDC) into J register
-   INT $80
+   SYS $A9                 ; Execute syscall $A9 (sys_reboot)
 
 ;******************************************************************************
 ; This label points to the start of the string we want to output.
