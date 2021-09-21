@@ -580,7 +580,14 @@ will be placed into the A register prior to calling the interrupt.
     SUB hello_world J    ; string length in register J
     INT $80              ; call sys_write
 
-User applications should follow this convention where reasonable to do so.
+The same syscall may be made with the SYS instruction, which will execute the syscall directly.
+
+    ; Output a string using sys_write, calling directly via SYS instruction
+    LD $01 G             ; file descriptor 1 (STDOUT) in register G
+    LD hello_world H.H0  ; string address in register H
+    LD hello_world_end J
+    SUB hello_world J    ; string length in register J
+    SYS $01              ; call sys_write
 
 
 ## Assembler Syntax
