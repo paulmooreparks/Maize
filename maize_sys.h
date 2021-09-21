@@ -2,13 +2,32 @@
 
 namespace maize {
 	namespace sys {
-
 		void init();
-		void call();
+		word call(qword syscall_id);
 		void exit();
+	} // namespace sys
 
-		void enter_syscall(qword id);
+	namespace syscall {
+		void init();
+		void exit();
+		word write(word fd, const void *buf, hword count);
+	}
 
+} // namespace maize
+
+
+#ifdef __linux__ 
+// Linux-specific code
+#elif _WIN32
+// Windows-specific code
+#define NOMINMAX
+#include <Windows.h>
+
+/* Old stuff from here down. I may yet find a use for this. */
+
+#if false
+namespace maize {
+	namespace sys {
 		class console : public cpu::device {
 		public:
 			word enable();
@@ -28,20 +47,6 @@ namespace maize {
 			bool is_open {false};
 		};
 
-	} // namespace sys
-
-} // namespace maize
-
-
-#ifdef __linux__ 
-// Linux-specific code
-#elif _WIN32
-// Windows-specific code
-#define NOMINMAX
-#include <Windows.h>
-
-namespace maize {
-	namespace sys {
 		namespace win {
 			class console : public maize::sys::console {
 			public:
@@ -62,7 +67,7 @@ namespace maize {
 	} // namespace sys
 
 } // namespace maize
-
+#endif
 
 #else
 // Oops....

@@ -5,10 +5,57 @@
 
 namespace maize {
 	namespace sys {
-		bool syscall_running {false};
-		qword syscall_id {0};
-		byte syscall_step {0};
 
+		HANDLE hStdin {INVALID_HANDLE_VALUE};
+		HANDLE hStdout {INVALID_HANDLE_VALUE};
+		HANDLE hStderr {INVALID_HANDLE_VALUE};
+		CONSOLE_SCREEN_BUFFER_INFO csbiInfo {0};
+
+		void init() {
+			syscall::init();
+		}
+
+		word call(qword syscall_id) {
+			using namespace cpu;
+
+			switch (syscall_id) {
+				/* sys_read */
+				case 0x0000: {
+					break;
+				}
+
+				/* sys_write */
+				case 0x0001: {
+					word fd {regs::g.w0};
+					word address {regs::h.w0};
+					hword count {regs::j.h0};
+
+					std::vector<byte> str = mm.read(address, count);
+					byte const* buf {&str[0]};
+					return syscall::write(fd, buf, count);
+				}
+
+				/* sys_exit */
+				case 0x003C: {
+					break;
+				}
+
+				/* sys_reboot */
+				case 0x00A9: {
+					break;
+				}
+			}
+
+			return 0;
+		}
+
+		void exit() {
+			syscall::exit();
+		}
+
+	} // namespace sys 
+
+	namespace syscall {
 		HANDLE hStdin {INVALID_HANDLE_VALUE};
 		HANDLE hStdout {INVALID_HANDLE_VALUE};
 		HANDLE hStderr {INVALID_HANDLE_VALUE};
@@ -35,53 +82,36 @@ namespace maize {
 			}
 		}
 
-		void enter_syscall(qword id) {
-			syscall_id = id;
-			syscall_running = true;
-			syscall_step = 0;
-		}
-
-		void exit_syscall() {
-			syscall_running = false;
-		}
-
-		void call() {
-			using namespace cpu;
-
-			switch (syscall_id) {
-				/* sys_read */
-				case 0x0000: {
-					break;
-				}
-
-				/* sys_write */
-				case 0x0001: {
-					word fd {regs::g.w0};
-					word address {regs::h.w0};
-					hword count {regs::j.h0};
-
-					std::vector<byte> str = mm.read(address, count);
-					byte* buf {&str[0]};
-					WriteConsole(hStdout, buf, count, nullptr, nullptr);
-					break;
-				}
-
-				/* sys_exit */
-				case 0x003C: {
-					break;
-				}
-
-				/* sys_reboot */
-				case 0x00A9: {
-					break;
-				}
-			}
-		}
-
 		void exit() {
 
 		}
 
+		word write(word fd, const void* buf, hword count) {
+			if (fd == 0) {
+				return (word)-1;
+			}
+
+			if (fd < 3) {
+				HANDLE hStdHandle {hStdout};
+
+				if (fd == 2) {
+					hStdHandle = hStderr;
+				} 
+
+				DWORD charsWritten {0};
+				WriteConsole(hStdHandle, buf, count, &charsWritten, nullptr);
+				return charsWritten;
+			}
+
+			return (word)-1;
+		}
+
+	}
+} // namespace maize
+  
+/* Old stuff from here down. I may yet find a use for this. */
+
+#if false
 		void console::on_set() {
 			cpu::reg::on_set();
 			set(w0);
@@ -211,8 +241,5 @@ namespace maize {
 
 				io_close_event.notify_all();
 			}
-		} // namespace win
+#endif
 
-	} // namespace sys 
-
-} // namespace maize

@@ -169,7 +169,10 @@ namespace maize {
 			}
 
 			byte operator[](size_t index) {
-				// TODO: range error handling
+				return byte_index(index);
+			}
+
+			byte operator[](size_t index) const {
 				return byte_index(index);
 			}
 
@@ -186,10 +189,6 @@ namespace maize {
 			hword hword_index(size_t index) const {
 				// TODO: range error handling
 				return hword_array[index];
-			}
-
-			const byte operator[](size_t index) const {
-				return byte_array[index];
 			}
 
 			word& w0 {w.w0};
@@ -232,27 +231,28 @@ namespace maize {
 			reg(word init) : reg_value(init) {}
 
 			word& operator++() {
-				increment();
+				increment(1);
 				return w0;
 			}
 
 			word operator++(int) {
-				increment();
+				increment(1);
 				return w0;
 			}
 
 			word operator--() {
-				decrement();
+				decrement(1);
 				return w0;
 			}
 
 			word operator--(int) {
-				decrement();
+				decrement(1);
 				return w0;
 			}
 
-			void increment(int64_t value = 1);
-			void decrement(int64_t value = 1);
+			void increment(int8_t value, subreg_enum subreg = subreg_enum::w0);
+			void decrement(int8_t value, subreg_enum subreg = subreg_enum::w0);
+
 			void enable_to_bus(bus& en_bus, subreg_enum subreg);
 			void set_from_bus(bus& set_bus, subreg_enum subreg);
 			virtual void on_enable();
@@ -278,14 +278,15 @@ namespace maize {
 		};
 
 		struct memory_module : public reg {
+			void set_segment_from_bus(bus& source_bus);
 			void set_address_from_bus(bus& source_bus);
 			void enable_memory_to_bus(bus& load_bus, size_t size);
 			void enable_memory_to_bus(bus& load_bus, subreg_enum subreg);
 			bool enable_memory_scheduled();
 			void on_enable_memory();
 
-			void write(word address, byte value);
-			std::vector<byte> read(word address, hword count);
+			void write(reg_value address, byte value);
+			std::vector<byte> read(reg_value address, hword count);
 			void set_memory_from_bus(bus& store_bus, subreg_enum subreg);
 			bool set_memory_scheduled();
 			void on_set_memory();
@@ -304,7 +305,7 @@ namespace maize {
 			std::map<word, byte*> memory_map;
 			byte* cache {nullptr};
 
-			size_t set_cache_address(word address);
+			size_t set_cache_address(reg_value address);
 		};
 
 		class alu : public reg {

@@ -163,16 +163,16 @@ namespace maize {
 
 			std::vector<reg_op_info> bus_enable_array;
 			std::vector<reg_op_info> bus_set_array;
-			std::vector<std::pair<reg*, int64_t>> increment_array;
+			std::vector<std::pair<std::pair<reg*, subreg_enum>, int8_t>> increment_array;
 			std::map<qword, device*> devices;
 		}
 
-		void reg::increment(int64_t value) {
-			increment_array.push_back(std::make_pair(this, value));
+		void reg::increment(int8_t value, subreg_enum subreg) {
+			increment_array.push_back(std::make_pair(std::make_pair(this, subreg), value));
 		}
 
-		void reg::decrement(int64_t value) {
-			increment_array.push_back(std::make_pair(this, -value));
+		void reg::decrement(int8_t value, subreg_enum subreg) {
+			increment_array.push_back(std::make_pair(std::make_pair(this, subreg), -value));
 		}
 
 		void reg::enable_to_bus(bus& en_bus, subreg_enum subreg) {
@@ -197,6 +197,11 @@ namespace maize {
 			address_reg.set_from_bus(source_bus, subreg_enum::h0);
 		}
 
+		void memory_module::set_segment_from_bus(bus& source_bus) {
+			address_reg.set_from_bus(source_bus, subreg_enum::h1);
+		}
+
+
 		void memory_module::enable_memory_to_bus(bus& load_bus, size_t size) {
 			pload_bus = &load_bus;
 			load_size = size;
@@ -216,7 +221,7 @@ namespace maize {
 			but I'm making that check in enable_memory_scheduled() to avoid a
 			function call anyway, so I'll assume it's non-null here. */
 			w0 = 0;
-			word address = address_reg.w0;
+			reg_value address = address_reg.w0;
 			size_t rem = set_cache_address(address);
 			size_t idx = cache_address.b0;
 
@@ -232,7 +237,7 @@ namespace maize {
 					}
 					else {
 						b0 = cache[cache_address.b0];
-						set_cache_address(++address);
+						set_cache_address(++address.h0);
 						b1 = cache[cache_address.b0];
 					}
 
@@ -245,11 +250,11 @@ namespace maize {
 					}
 					else {
 						b0 = cache[cache_address.b0];
-						set_cache_address(++address);
+						set_cache_address(++address.h0);
 						b1 = cache[cache_address.b0];
-						set_cache_address(++address);
+						set_cache_address(++address.h0);
 						b2 = cache[cache_address.b0];
-						set_cache_address(++address);
+						set_cache_address(++address.h0);
 						b3 = cache[cache_address.b0];
 					}
 
@@ -262,19 +267,19 @@ namespace maize {
 					}
 					else {
 						b0 = cache[cache_address.b0];
-						set_cache_address(++address);
+						set_cache_address(++address.h0);
 						b1 = cache[cache_address.b0];
-						set_cache_address(++address);
+						set_cache_address(++address.h0);
 						b2 = cache[cache_address.b0];
-						set_cache_address(++address);
+						set_cache_address(++address.h0);
 						b3 = cache[cache_address.b0];
-						set_cache_address(++address);
+						set_cache_address(++address.h0);
 						b4 = cache[cache_address.b0];
-						set_cache_address(++address);
+						set_cache_address(++address.h0);
 						b5 = cache[cache_address.b0];
-						set_cache_address(++address);
+						set_cache_address(++address.h0);
 						b6 = cache[cache_address.b0];
-						set_cache_address(++address);
+						set_cache_address(++address.h0);
 						b7 = cache[cache_address.b0];
 					}
 
@@ -299,7 +304,7 @@ namespace maize {
 		void memory_module::on_set_memory() {
 			if (pstore_bus) {
 				pstore_bus = nullptr;
-				word address = address_reg.w0;
+				reg_value address = address_reg.w0;
 				size_t rem = set_cache_address(address);
 				size_t idx = cache_address.b0;
 				size_t subreg_index = static_cast<size_t>(store_mask);
@@ -343,7 +348,7 @@ namespace maize {
 						}
 						else {
 							cache[cache_address.b0] = b0;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b1;
 						}
 
@@ -355,7 +360,7 @@ namespace maize {
 						}
 						else {
 							cache[cache_address.b0] = b2;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b3;
 						}
 
@@ -367,7 +372,7 @@ namespace maize {
 						}
 						else {
 							cache[cache_address.b0] = b4;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b5;
 						}
 
@@ -379,7 +384,7 @@ namespace maize {
 						}
 						else {
 							cache[cache_address.b0] = b6;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b7;
 						}
 
@@ -391,11 +396,11 @@ namespace maize {
 						}
 						else {
 							cache[cache_address.b0] = b0;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b1;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b2;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b3;
 						}
 
@@ -407,11 +412,11 @@ namespace maize {
 						}
 						else {
 							cache[cache_address.b0] = b4;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b5;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b6;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b7;
 						}
 
@@ -423,19 +428,19 @@ namespace maize {
 						}
 						else {
 							cache[cache_address.b0] = b0;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b1;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b2;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b3;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b4;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b5;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b6;
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							cache[cache_address.b0] = b7;
 						}
 
@@ -444,15 +449,17 @@ namespace maize {
 			}
 		}
 
-		void memory_module::write(word address, byte value) {
+		void memory_module::write(reg_value address, byte value) {
 			set_cache_address(address);
 			cache[cache_address.b0] = value;
 		}
 
-		std::vector<byte> memory_module::read(word address, hword count) {
+		std::vector<byte> memory_module::read(reg_value address, hword count) {
 			std::vector<byte> retval;
 
 			if (count) {
+				retval.reserve(count);
+
 				do {
 					auto rem = set_cache_address(address);
 					size_t idx = cache_address.b0;
@@ -467,7 +474,7 @@ namespace maize {
 					else {
 						while (count) {
 							retval.push_back(cache[cache_address.b0]);
-							set_cache_address(++address);
+							set_cache_address(++address.h0);
 							--count;
 						}
 					}
@@ -478,7 +485,7 @@ namespace maize {
 			return retval;
 		}
 
-		size_t memory_module::set_cache_address(word address) {
+		size_t memory_module::set_cache_address(reg_value address) {
 			if (cache_base != (address & address_mask)) {
 				cache_base = address & address_mask;
 
@@ -600,6 +607,10 @@ namespace maize {
 				return static_cast<subreg_enum>(regs::in.b1 & opflag_subreg);
 			}
 
+			size_t src_subreg_size() {
+				return subreg_size_map[regs::in.b1 & opflag_subreg];
+			}
+
 			reg& src_reg() {
 				return *reg_map[(regs::in.b1 & opflag_reg) >> 4];
 			}
@@ -626,6 +637,10 @@ namespace maize {
 
 			subreg_enum dest_subreg_flag() {
 				return static_cast<subreg_enum>(regs::in.b2 & opflag_subreg);
+			}
+
+			size_t dest_subreg_size() {
+				return subreg_size_map[regs::in.b2 & opflag_subreg];
 			}
 
 			reg& dest_reg() {
@@ -664,7 +679,6 @@ namespace maize {
 			}
 
 			void instr_syscall(qword id) {
-				sys::enter_syscall(id);
 				run_state = run_states::syscall;
 			}
 
@@ -727,18 +741,20 @@ namespace maize {
 				switch (run_state) {
 					case run_states::decode: {
 						switch (cycle) {
-							case 0:
+							case 0: {
 								regs::pc.enable_to_bus(address_bus, subreg_enum::h0);
 								mm.set_address_from_bus(address_bus);
 								break;
+							}
 
-							case 1:
+							case 1: {
 								regs::pc.increment(1);
 								mm.enable_memory_to_bus(data_bus_0, 8);
 								regs::in.set_from_bus(data_bus_0, subreg_enum::w0);
 								run_state = run_states::execute;
 								step = 0;
 								break;
+							}
 						}
 
 						++cycle;
@@ -751,11 +767,12 @@ namespace maize {
 						switch (regs::in.b0) {
 							case instr::halt: {
 								switch (step) {
-									case 0:
+									case 0: {
 										running_flag = false;
 										is_power_on = false; // just temporary
 										instr_complete();
 										break;
+									}
 								}
 
 								break;
@@ -1071,11 +1088,9 @@ namespace maize {
 									}
 
 									case 2: {
-										instr_syscall(operand1.b0);
-										break;
-									}
-
-									default: {
+										operand1.w0 = sys::call(operand1.b0);
+										operand1.enable_to_bus(data_bus_0, subreg_enum::w0);
+										regs::a.set_from_bus(data_bus_0, subreg_enum::w0);
 										instr_complete();
 										break;
 									}
@@ -1084,15 +1099,90 @@ namespace maize {
 								break;
 							}
 
+							case instr::sys_regVal: {
+								regs::pc.increment(1);
+								operand1.w0 = sys::call(src_reg().b0);
+								operand1.enable_to_bus(data_bus_0, subreg_enum::w0);
+								regs::a.set_from_bus(data_bus_0, subreg_enum::w0);
+								instr_complete();
+								break;
+							}
+
+							case instr::pop_regVal: {
+								switch (step) {
+									case 0: {
+										regs::pc.increment(1);
+										regs::sp.enable_to_bus(address_bus, subreg_enum::h0);
+										mm.set_address_from_bus(address_bus);
+										break;
+									}
+
+									case 1: {
+										regs::sp.increment(src_subreg_size(), subreg_enum::h0);
+										mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
+										src_reg().set_from_bus(data_bus_0, src_subreg_flag());
+										instr_complete();
+										break;
+									}
+								}
+
+								break;
+							}
+
+							case instr::push_regVal: {
+								switch (step) {
+									case 0: {
+										regs::pc.increment(1);
+										regs::sp.decrement(src_subreg_size(), subreg_enum::h0);
+										regs::sp.enable_to_bus(address_bus, subreg_enum::h0);
+										mm.set_address_from_bus(address_bus);
+										break;
+									}
+
+									case 1: {
+										src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
+										mm.set_memory_from_bus(data_bus_0, src_subreg_flag());
+										instr_complete();
+										break;
+									}
+								}
+
+								break;
+							}
+
+							case instr::push_immVal: {
+								switch (step) {
+									case 0: {
+										regs::pc.increment(1);
+										regs::pc.enable_to_bus(address_bus, subreg_enum::w0);
+										mm.set_address_from_bus(address_bus);
+										break;
+									}
+
+									case 1: {
+										size_t src_size = src_imm_size();
+										regs::pc.increment(src_size);
+										regs::sp.decrement(src_size, subreg_enum::h0);
+										regs::sp.enable_to_bus(address_bus, subreg_enum::h0);
+										mm.enable_memory_to_bus(data_bus_0, src_size);
+										mm.set_address_from_bus(address_bus);
+										operand1.set_from_bus(data_bus_0, subreg_enum::w0);
+										break;
+									}
+
+									case 2: {
+										operand1.enable_to_bus(data_bus_0, subreg_enum::w0);
+										mm.set_memory_from_bus(data_bus_0, subreg_enum::w0);
+										instr_complete();
+										break;
+									}
+								}
+								break;
+							}
+
 						}
 
 						++step;
-						break;
-					}
-
-					case run_states::syscall: {
-						sys::call();
-						run_state = run_states::execute;
 						break;
 					}
 
@@ -1484,7 +1574,84 @@ namespace maize {
 				/* increment */
 				if (increment_array.size()) {
 					for (auto& info : increment_array) {
-						info.first->w0 = info.first->w0 + info.second;
+						switch (info.first.second) {
+							case subreg_enum::b0: {
+								info.first.first->b0 = info.first.first->b0 + info.second;
+								break;
+							}
+
+							case subreg_enum::b1: {
+								info.first.first->b1 = info.first.first->b1 + info.second;
+								break;
+							}
+
+							case subreg_enum::b2: {
+								info.first.first->b2 = info.first.first->b2 + info.second;
+								break;
+							}
+
+							case subreg_enum::b3: {
+								info.first.first->b3 = info.first.first->b3 + info.second;
+								break;
+							}
+
+							case subreg_enum::b4: {
+								info.first.first->b4 = info.first.first->b4 + info.second;
+								break;
+							}
+
+							case subreg_enum::b5: {
+								info.first.first->b5 = info.first.first->b5 + info.second;
+								break;
+							}
+
+							case subreg_enum::b6: {
+								info.first.first->b6 = info.first.first->b6 + info.second;
+								break;
+							}
+
+							case subreg_enum::b7: {
+								info.first.first->b7 = info.first.first->b7 + info.second;
+								break;
+							}
+
+							case subreg_enum::q0: {
+								info.first.first->q0 = info.first.first->q0 + info.second;
+								break;
+							}
+
+							case subreg_enum::q1: {
+								info.first.first->q1 = info.first.first->q1 + info.second;
+								break;
+							}
+
+							case subreg_enum::q2: {
+								info.first.first->q2 = info.first.first->q2 + info.second;
+								break;
+							}
+
+							case subreg_enum::q3: {
+								info.first.first->q3 = info.first.first->q3 + info.second;
+								break;
+							}
+
+							case subreg_enum::h0: {
+								info.first.first->h0 = info.first.first->h0 + info.second;
+								break;
+							}
+
+							case subreg_enum::h1: {
+								info.first.first->h1 = info.first.first->h1 + info.second;
+								break;
+							}
+
+							case subreg_enum::w0: {
+								info.first.first->w0 = info.first.first->w0 + info.second;
+								break;
+							}
+
+						}
+
 					}
 
 					increment_array.clear();

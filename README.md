@@ -499,43 +499,36 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
 
 ## Immediate Parameter
 
-### Value Size Bit Field
-
-    %xxxx`x000  $00   instruction reads 1 byte immediate (8 bits)
-    %xxxx`x001  $01   instruction reads 2-byte immediate (16 bits)
-    %xxxx`x010  $02   instruction reads 4-byte immediate (32 bits)
-    %xxxx`x011  $03   instruction reads 8-byte immediate (64 bits)
-
 ### Immediate Operation Bit
 
-    %xxxx`0xxx  Read immediate value as operand
-    %xxxx`1xxx  Perform math operation with value (not implemented yet)
+    %xxxx`0xxx       Read immediate value as operand
+    %xxxx`1xxx       Perform math operation with value (not implemented yet)
 
 ### Immediate Value Bit Field
 
-    %xxxx`x000  instruction reads 1 byte immediate (8 bits)
-    %xxxx`x001  instruction reads 2-byte immediate (16 bits)
-    %xxxx`x010  instruction reads 4-byte immediate (32 bits)
-    %xxxx`x011  instruction reads 8-byte immediate (64 bits)
+    %xxxx`x000  $x0  instruction reads 1 byte immediate (8 bits)
+    %xxxx`x001  $x1  instruction reads 2-byte immediate (16 bits)
+    %xxxx`x010  $x2  instruction reads 4-byte immediate (32 bits)
+    %xxxx`x011  $x3  instruction reads 8-byte immediate (64 bits)
 
 ### Immediate Math Bit Field
 
-    %0000`xxxx  ADD immediate to previous operand
-    %0001`xxxx  SUB immediate from previous operand
-    %0010`xxxx  MUL previous operand by immediate
-    %0011`xxxx  DIV previous operand by immediate
-    %0100`xxxx  AND previous operand with immediate
-    %0101`xxxx  OR previous operand with immediate
-    %0110`xxxx  XOR previous operand with immediate
-    %0111`xxxx  NOR previous operand with immediate
-    %1000`xxxx  NAND previous operand with immediate
-    %1001`xxxx  SHL previous operand by immediate
-    %1010`xxxx  SHR previous operand by immediate
-    %1011`xxxx  reserved
-    %1100`xxxx  reserved
-    %1101`xxxx  reserved
-    %1110`xxxx  reserved
-    %1111`xxxx  reserved
+    %0000`xxxx  $0x  ADD immediate to previous operand
+    %0001`xxxx  $1x  SUB immediate from previous operand
+    %0010`xxxx  $2x  MUL previous operand by immediate
+    %0011`xxxx  $3x  DIV previous operand by immediate
+    %0100`xxxx  $4x  AND previous operand with immediate
+    %0101`xxxx  $5x  OR previous operand with immediate
+    %0110`xxxx  $6x  XOR previous operand with immediate
+    %0111`xxxx  $7x  NOR previous operand with immediate
+    %1000`xxxx  $8x  NAND previous operand with immediate
+    %1001`xxxx  $9x  SHL previous operand by immediate
+    %1010`xxxx  $Ax  SHR previous operand by immediate
+    %1011`xxxx  $Bx  reserved
+    %1100`xxxx  $Cx  reserved
+    %1101`xxxx  $Dx  reserved
+    %1110`xxxx  $Ex  reserved
+    %1111`xxxx  $Fx  reserved
 
 
 ## BIOS Interface
