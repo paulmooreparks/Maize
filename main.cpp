@@ -3,6 +3,7 @@ and maintainability are still important, though, because I want this to become s
 that I can use to write any CPU implementation. */
 
 #include <vector>
+#include <iostream>
 #include "maize.h"
 
 /* Right now, the code is still a bit scattered and not up to my usual standards, but I'll
@@ -74,6 +75,9 @@ int main() {
 
 	sys::init();
 	cpu::run();
+#ifdef __linux__ 
+	std::cout << std::endl;
+#endif
 	sys::exit();
 }
 

@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cstddef>
 #include <vector>
 #include <map>
 #include <array>
@@ -250,8 +251,8 @@ namespace maize {
 				return w0;
 			}
 
-			void increment(int8_t value, subreg_enum subreg = subreg_enum::w0);
-			void decrement(int8_t value, subreg_enum subreg = subreg_enum::w0);
+			void increment(byte value, subreg_enum subreg = subreg_enum::w0);
+			void decrement(byte value, subreg_enum subreg = subreg_enum::w0);
 
 			void enable_to_bus(bus& en_bus, subreg_enum subreg);
 			void set_from_bus(bus& set_bus, subreg_enum subreg);

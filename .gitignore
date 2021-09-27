@@ -29,3 +29,7 @@
 /.vs/Maize/v17/TestStore/0/testlog.manifest
 /.vs/cmake.db
 *.ipch
+/out
+/.vs/1108784610.scan.fgp
+*.fgp
+/.vs/Maize/config/applicationhost.config
