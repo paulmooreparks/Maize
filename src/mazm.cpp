@@ -952,13 +952,9 @@ namespace {
         {"M", cpu::opflag_reg_m},
         {"Z", cpu::opflag_reg_z},
         {"F", cpu::opflag_reg_f},
-        {"FL", cpu::opflag_reg_f},
-        {"I", cpu::opflag_reg_in},
         {"IN", cpu::opflag_reg_in},
         {"P", cpu::opflag_reg_p},
-        {"PC", cpu::opflag_reg_p},
-        {"S", cpu::opflag_reg_s},
-        {"SP", cpu::opflag_reg_s}
+        {"S", cpu::opflag_reg_s}
     };
 
     std::unordered_map<std::string, byte> subreg_map {
@@ -982,21 +978,40 @@ namespace {
 
     byte compile_register(std::string &reg_str) {
         byte reg_byte {cpu::opflag_subreg_w0};
-        std::string reg {reg_str};
-        std::string subreg {};
-        auto subreg_sep {reg_str.find('.')};
 
-        if (subreg_sep) {
-            reg = reg_str.substr(0, subreg_sep);
-            subreg = reg_str.substr(subreg_sep + 1);
-
-            if (subreg_map.contains(subreg)) {
-                reg_byte |= subreg_map[subreg];
-            }
+        /* Get some special cases out of the way */
+        if (reg_str == "SP") {
+            reg_byte = cpu::opflag_reg_s | cpu::opflag_subreg_h0;
         }
+        else if (reg_str == "BP") {
+            reg_byte = cpu::opflag_reg_s | cpu::opflag_subreg_h1;
+        }
+        else if (reg_str == "PC") {
+            reg_byte = cpu::opflag_reg_p | cpu::opflag_subreg_h0;
+        }
+        else if (reg_str == "CS") {
+            reg_byte = cpu::opflag_reg_p | cpu::opflag_subreg_h1;
+        }
+        else if (reg_str == "FL") {
+            reg_byte = cpu::opflag_reg_f | cpu::opflag_subreg_h0;
+        }
+        else {
+            std::string reg {reg_str};
+            std::string subreg {};
+            auto subreg_sep {reg_str.find('.')};
 
-        if (reg_map.contains(reg)) {
-            reg_byte |= reg_map[reg];
+            if (subreg_sep) {
+                reg = reg_str.substr(0, subreg_sep);
+                subreg = reg_str.substr(subreg_sep + 1);
+
+                if (subreg_map.contains(subreg)) {
+                    reg_byte |= subreg_map[subreg];
+                }
+            }
+
+            if (reg_map.contains(reg)) {
+                reg_byte |= reg_map[reg];
+            }
         }
 
         return reg_byte;

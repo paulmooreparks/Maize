@@ -1,13 +1,15 @@
 LABEL stdlib_strlen     AUTO
 LABEL hw_string         AUTO
 
-$00001000:
+; Execution begins at address $00000000:00000000
+
+$00000000:
     ; Set stack pointer. The back-tick (`)  is used as a number separator. 
     ; Underscore (_) and comma (,) may also be used as separators.
-    LD $FFFF`FFFF S.H0          ;00001000
+    LD $0000`1100 SP            ;00001000
 
     ; Set base pointer
-    LD S.H0 S.H1                ;00001007
+    LD SP BP                    ;00001007
 
     CLR G                       ;0000100A
     LD hw_string G              ;0000100C

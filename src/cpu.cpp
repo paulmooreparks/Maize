@@ -604,23 +604,23 @@ namespace maize {
             reg l;
             reg m;
             reg z;
-            reg fl; // flags register
+            reg f; // flags register
             reg in; // instruction register
-            reg pc {0x0000000000001000}; // program execution register
-            reg sp; // stack register
+            reg p {0x0000000000000000}; // program execution register
+            reg s; // stack register
         }
 
         namespace {
-            flag<bit_carryout> carryout_flag {regs::fl};
-            flag<bit_negative> negative_flag {regs::fl};
-            flag<bit_overflow> overflow_flag {regs::fl};
-            flag<bit_parity> parity_flag {regs::fl};
-            flag<bit_zero> zero_flag {regs::fl};
-            flag<bit_sign> sign_flag {regs::fl};
-            flag<bit_privilege> privilege_flag {regs::fl};
-            flag<bit_interrupt_enabled> interrupt_enabled_flag {regs::fl};
-            flag<bit_interrupt_set> interrupt_set_flag {regs::fl};
-            flag<bit_running> running_flag {regs::fl};
+            flag<bit_carryout> carryout_flag {regs::f};
+            flag<bit_negative> negative_flag {regs::f};
+            flag<bit_overflow> overflow_flag {regs::f};
+            flag<bit_parity> parity_flag {regs::f};
+            flag<bit_zero> zero_flag {regs::f};
+            flag<bit_sign> sign_flag {regs::f};
+            flag<bit_privilege> privilege_flag {regs::f};
+            flag<bit_interrupt_enabled> interrupt_enabled_flag {regs::f};
+            flag<bit_interrupt_set> interrupt_set_flag {regs::f};
+            flag<bit_running> running_flag {regs::f};
 
             /* Map an instruction's register-flag nybble value to an actual register reference. */
             std::array<reg*, 16> reg_map {
@@ -636,10 +636,10 @@ namespace maize {
                 &regs::l,
                 &regs::m,
                 &regs::z,
-                &regs::fl,
+                &regs::f,
                 &regs::in,
-                &regs::pc,
-                &regs::sp
+                &regs::p,
+                &regs::s
             };
 
             size_t src_imm_size_flag() {
@@ -801,13 +801,13 @@ namespace maize {
                     case run_states::decode: {
                         switch (cycle) {
                             case 0: {
-                                regs::pc.enable_to_bus(address_bus, subreg_enum::h0);
+                                regs::p.enable_to_bus(address_bus, subreg_enum::h0);
                                 mm.set_address_from_bus(address_bus);
                                 break;
                             }
 
                             case 1: {
-                                regs::pc.increment(1);
+                                regs::p.increment(1);
                                 mm.enable_memory_to_bus(data_bus_0, 8);
                                 regs::in.set_from_bus(data_bus_0, subreg_enum::w0);
                                 run_state = run_states::execute;
@@ -840,7 +840,7 @@ namespace maize {
                             case instr::clr_regVal: {
                                 switch (step) {
                                 case 0:
-                                    regs::pc.increment(1);
+                                    regs::p.increment(1);
                                     operand1.w0 = 0;
                                     operand1.enable_to_bus(data_bus_0, subreg_enum::w0);
                                     src_reg().set_from_bus(data_bus_0, src_subreg_flag());
@@ -854,7 +854,7 @@ namespace maize {
                             case instr::ld_regVal_reg: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(2);
+                                        regs::p.increment(2);
                                         src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
                                         dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
                                         instr_complete();
@@ -868,15 +868,15 @@ namespace maize {
                             case instr::ld_immVal_reg: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(2);
-                                        regs::pc.enable_to_bus(address_bus, subreg_enum::w0);
+                                        regs::p.increment(2);
+                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
 
                                     case 1: {
                                         byte src_size = src_imm_size();
-                                        regs::pc.increment(src_size);
+                                        regs::p.increment(src_size);
                                         mm.enable_memory_to_bus(data_bus_0, src_size);
                                         dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
                                         instr_complete();
@@ -890,7 +890,7 @@ namespace maize {
                             case instr::ld_regAddr_reg: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(2);
+                                        regs::p.increment(2);
                                         src_reg().enable_to_bus(address_bus, src_subreg_flag());
                                         mm.set_address_from_bus(address_bus);
                                         break;
@@ -910,14 +910,14 @@ namespace maize {
                             case instr::ld_immAddr_reg: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(2);
-                                        regs::pc.enable_to_bus(address_bus, subreg_enum::w0);
+                                        regs::p.increment(2);
+                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
 
                                     case 1: {
-                                        regs::pc.increment(src_imm_size());
+                                        regs::p.increment(src_imm_size());
                                         mm.enable_memory_to_bus(address_bus, subreg_enum::w0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
@@ -937,7 +937,7 @@ namespace maize {
                             case instr::st_regVal_regAddr: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(2);
+                                        regs::p.increment(2);
                                         src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
                                         dest_reg().enable_to_bus(address_bus, dest_subreg_flag());
                                         mm.set_address_from_bus(address_bus);
@@ -959,7 +959,7 @@ namespace maize {
                                 switch (step) {
                                     case 0: {
                                         al.b0 = regs::in.b0;
-                                        regs::pc.increment(2);
+                                        regs::p.increment(2);
                                         src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
                                         al.b1 = src_subreg_size();
                                         dest_reg().enable_to_bus(data_bus_1, dest_subreg_flag());
@@ -990,8 +990,8 @@ namespace maize {
                                 switch (step) {
                                     case 0: {
                                         al.b0 = regs::in.b0;
-                                        regs::pc.increment(2);
-                                        regs::pc.enable_to_bus(address_bus, subreg_enum::w0);
+                                        regs::p.increment(2);
+                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
@@ -999,7 +999,7 @@ namespace maize {
                                     case 1: {
                                         byte src_size = src_imm_size();
                                         al.b1 = src_size;
-                                        regs::pc.increment(src_size);
+                                        regs::p.increment(src_size);
                                         mm.enable_memory_to_bus(data_bus_0, src_size);
                                         dest_reg().enable_to_bus(data_bus_1, dest_subreg_flag());
                                         al.b2 = dest_subreg_size();
@@ -1025,8 +1025,8 @@ namespace maize {
                                 switch (step) {
                                     case 0: {
                                         al.b0 = regs::in.b0;
-                                        regs::pc.increment(2);
-                                        regs::pc.enable_to_bus(address_bus, subreg_enum::w0);
+                                        regs::p.increment(2);
+                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
@@ -1035,7 +1035,7 @@ namespace maize {
                                         byte src_size = src_imm_size();
                                         al.b1 = src_size;
                                         al.b2 = src_size;
-                                        regs::pc.increment(src_size);
+                                        regs::p.increment(src_size);
                                         mm.enable_memory_to_bus(data_bus_0, src_size);
                                         al.set_src_from_bus(data_bus_0);
                                         break;
@@ -1072,7 +1072,7 @@ namespace maize {
                                 switch (step) {
                                     case 0: {
                                         al.b0 = regs::in.b0;
-                                        regs::pc.increment(2);
+                                        regs::p.increment(2);
                                         src_reg().enable_to_bus(address_bus, src_subreg_flag());
                                         mm.set_address_from_bus(address_bus);
                                         break;
@@ -1110,15 +1110,15 @@ namespace maize {
                                 switch (step) {
                                     case 0: {
                                         al.b0 = regs::in.b0;
-                                        regs::pc.increment(2);
-                                        regs::pc.enable_to_bus(address_bus, subreg_enum::w0);
+                                        regs::p.increment(2);
+                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
 
                                     case 1: {
                                         byte size = src_imm_size();
-                                        regs::pc.increment(size);
+                                        regs::p.increment(size);
                                         al.b1 = size;
                                         mm.enable_memory_to_bus(address_bus, subreg_enum::w0);
                                         mm.set_address_from_bus(address_bus);
@@ -1153,7 +1153,7 @@ namespace maize {
                                 switch (step) {
                                     case 0: {
                                         al.b0 = regs::in.b0;
-                                        regs::pc.increment(1);
+                                        regs::p.increment(1);
                                         src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
                                         al.set_dest_from_bus(data_bus_0);
                                         al.b1 = src_subreg_size();
@@ -1175,8 +1175,8 @@ namespace maize {
                             case instr::out_regVal_imm: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(2);
-                                        regs::pc.enable_to_bus(address_bus, subreg_enum::h0);
+                                        regs::p.increment(2);
+                                        regs::p.enable_to_bus(address_bus, subreg_enum::h0);
                                         mm.set_address_from_bus(address_bus);
                                         src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
                                         break;
@@ -1184,7 +1184,7 @@ namespace maize {
 
                                     case 1: {
                                         byte dest_size = dest_imm_size();
-                                        regs::pc.increment(dest_size);
+                                        regs::p.increment(dest_size);
                                         mm.enable_memory_to_bus(data_bus_1, dest_size);
                                         operand1.set_from_bus(data_bus_1, src_subreg_flag());
                                         break;
@@ -1205,15 +1205,15 @@ namespace maize {
                             case instr::sys_immVal: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(1);
-                                        regs::pc.enable_to_bus(address_bus, subreg_enum::w0);
+                                        regs::p.increment(1);
+                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
 
                                     case 1: {
                                         byte src_size = src_imm_size();
-                                        regs::pc.increment(src_size);
+                                        regs::p.increment(src_size);
                                         mm.enable_memory_to_bus(data_bus_0, src_size);
                                         operand1.set_from_bus(data_bus_0, subreg_enum::w0);
                                         break;
@@ -1232,7 +1232,7 @@ namespace maize {
                             }
 
                             case instr::sys_regVal: {
-                                regs::pc.increment(1);
+                                regs::p.increment(1);
                                 operand1.w0 = sys::call(src_reg().b0);
                                 operand1.enable_to_bus(data_bus_0, subreg_enum::w0);
                                 regs::a.set_from_bus(data_bus_0, subreg_enum::w0);
@@ -1243,14 +1243,14 @@ namespace maize {
                             case instr::pop_regVal: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(1);
-                                        regs::sp.enable_to_bus(address_bus, subreg_enum::h0);
+                                        regs::p.increment(1);
+                                        regs::s.enable_to_bus(address_bus, subreg_enum::h0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
 
                                     case 1: {
-                                        regs::sp.increment(src_subreg_size(), subreg_enum::h0);
+                                        regs::s.increment(src_subreg_size(), subreg_enum::h0);
                                         mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
                                         src_reg().set_from_bus(data_bus_0, src_subreg_flag());
                                         instr_complete();
@@ -1264,17 +1264,17 @@ namespace maize {
                             case instr::push_immVal: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(1);
-                                        regs::pc.enable_to_bus(address_bus, subreg_enum::w0);
+                                        regs::p.increment(1);
+                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
 
                                     case 1: {
                                         byte src_size = src_imm_size();
-                                        regs::pc.increment(src_size);
-                                        regs::sp.decrement(src_size, subreg_enum::h0);
-                                        regs::sp.enable_to_bus(address_bus, subreg_enum::h0);
+                                        regs::p.increment(src_size);
+                                        regs::s.decrement(src_size, subreg_enum::h0);
+                                        regs::s.enable_to_bus(address_bus, subreg_enum::h0);
                                         mm.set_address_from_bus(address_bus);
                                         mm.enable_memory_to_bus(data_bus_0, src_size);
                                         operand1.set_from_bus(data_bus_0, subreg_enum::w0);
@@ -1294,9 +1294,9 @@ namespace maize {
                             case instr::push_regVal: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(1);
-                                        regs::sp.decrement(src_subreg_size(), subreg_enum::h0);
-                                        regs::sp.enable_to_bus(address_bus, subreg_enum::h0);
+                                        regs::p.increment(1);
+                                        regs::s.decrement(src_subreg_size(), subreg_enum::h0);
+                                        regs::s.enable_to_bus(address_bus, subreg_enum::h0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
@@ -1315,32 +1315,32 @@ namespace maize {
                             case instr::call_immVal: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(1);
-                                        regs::pc.enable_to_bus(address_bus, subreg_enum::w0);
+                                        regs::p.increment(1);
+                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
                                     case 1: {
                                         byte src_size = src_imm_size();
-                                        regs::pc.increment(src_size);
+                                        regs::p.increment(src_size);
                                         mm.enable_memory_to_bus(data_bus_0, src_size);
                                         operand1.set_from_bus(data_bus_0, subreg_enum::w0);
                                         break;
                                     }
                                     case 2: {
-                                        regs::sp.decrement(src_subreg_size(), subreg_enum::h0);
-                                        regs::sp.enable_to_bus(address_bus, subreg_enum::h0);
+                                        regs::s.decrement(sizeof(hword), subreg_enum::h0);
+                                        regs::s.enable_to_bus(address_bus, subreg_enum::h0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
                                     case 3: {
-                                        regs::pc.enable_to_bus(data_bus_1, subreg_enum::w0);
+                                        regs::p.enable_to_bus(data_bus_1, subreg_enum::w0);
                                         mm.set_memory_from_bus(data_bus_1, subreg_enum::w0);
                                         break;
                                     }
                                     case 4: {
                                         operand1.enable_to_bus(data_bus_0, subreg_enum::h0);
-                                        regs::pc.set_from_bus(data_bus_0, subreg_enum::h0);
+                                        regs::p.set_from_bus(data_bus_0, subreg_enum::h0);
                                         instr_complete();
                                         break;
                                     }
@@ -1351,14 +1351,14 @@ namespace maize {
                             case instr::ret_opcode: {
                                 switch (step) {
                                     case 0: {
-                                        regs::sp.enable_to_bus(address_bus, subreg_enum::h0);
+                                        regs::s.enable_to_bus(address_bus, subreg_enum::h0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
                                     case 1: {
-                                        regs::sp.increment(src_subreg_size(), subreg_enum::h0);
+                                        regs::s.increment(src_subreg_size(), subreg_enum::h0);
                                         mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
-                                        regs::pc.set_from_bus(data_bus_0, subreg_enum::h0);
+                                        regs::p.set_from_bus(data_bus_0, subreg_enum::h0);
                                         instr_complete();
                                         break;
                                     }
@@ -1369,14 +1369,14 @@ namespace maize {
                             case instr::jmp_immVal: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(1);
-                                        regs::pc.enable_to_bus(address_bus, subreg_enum::w0);
+                                        regs::p.increment(1);
+                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
                                     case 1: {
                                         mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
-                                        regs::pc.set_from_bus(data_bus_0, subreg_enum::h0);
+                                        regs::p.set_from_bus(data_bus_0, subreg_enum::h0);
                                         instr_complete();
                                         break;
                                     }
@@ -1387,17 +1387,17 @@ namespace maize {
                             case instr::jz_immVal: {
                                 switch (step) {
                                     case 0: {
-                                        regs::pc.increment(1);
-                                        regs::pc.enable_to_bus(address_bus, subreg_enum::w0);
+                                        regs::p.increment(1);
+                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
                                         mm.set_address_from_bus(address_bus);
                                         break;
                                     }
                                     case 1: {
                                         byte src_size = src_imm_size();
-                                        regs::pc.increment(src_size);
+                                        regs::p.increment(src_size);
                                         if (cpu::zero_flag) {
                                             mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
-                                            regs::pc.set_from_bus(data_bus_0, subreg_enum::h0);
+                                            regs::p.set_from_bus(data_bus_0, subreg_enum::h0);
                                         }
                                         instr_complete();
                                         break;

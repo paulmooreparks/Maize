@@ -42,11 +42,11 @@ namespace maize {
 		const byte opflag_reg_s = 0b11110000;
 
 #if false
-		const byte opflag_reg_sp = 0b11111100; // SP.H0 = stack pointer
-		const byte opflag_reg_bp = 0b11111101; // SP.H1 = base pointer
-		const byte opflag_reg_pc = 0b11101100; // PC.H0 = program counter
-		const byte opflag_reg_cs = 0b11101101; // PC.H1 = program segment
-		const byte opflag_reg_fl = 0b11001100; // FL.H0 = flags
+		const byte opflag_reg_sp = 0b11111100; // S.H0 = stack pointer
+		const byte opflag_reg_bp = 0b11111101; // S.H1 = base pointer
+		const byte opflag_reg_pc = 0b11101100; // P.H0 = program counter
+		const byte opflag_reg_cs = 0b11101101; // P.H1 = program segment
+		const byte opflag_reg_fl = 0b11001100; // F.H0 = flags
 #endif
 
 		const byte opflag_subreg = 0b00001111;

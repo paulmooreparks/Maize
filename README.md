@@ -168,10 +168,10 @@ Registers are 64-bits wide (a "word") and are each divided into smaller sub-regi
     M  General purpose
     Z  General purpose
     
-    FL  Flag register
-    IN  Instruction register
-    PC  Program execution register
-    SP  Stack register
+    F  Flag register
+    IN Instruction register
+    P  Program execution register
+    S  Stack register
 
 
 ### Sub-registers
@@ -219,20 +219,21 @@ The value stored in register A could then be represented as follows:
 
 There are four special-purpose registers.
 
-    FL Flags register, which contains a bit field of individual flags. Flags in FL.H1 may only
-       be set in privileged mode.
+    F  Flags register. FL is an alias for F.H0, which contains a bit field of individual flags. 
+       Flags in F.H1 may only be set in privileged mode.
  
     IN Instruction register, set by the instruction decoder as instructions and parameters are
        read from memory. This register can only be set by the decoder.
  
-    PC Program execution register, which is the pointer to the next instruction to be decoded
-       and executed. This is further sub-divided into PC.H1, which is the current code segment,
-       and PC.H0, which is the effective program counter within the current segment. PC.H1 may
-       only be written to in privileged mode.
+    P  Program execution register, which is the pointer to the next instruction to be decoded
+       and executed. This is further sub-divided into P.H1, which is the current code segment,
+       and P.H0, which is the effective program counter within the current segment. P.H1 may
+       only be written to in privileged mode. PC is an alias for P.H0.
  
-    SP Stack register, which is the location within the current segment at which the stack
-       starts (growing downward in memory). This is further sub-divided into SP.H1, which is
-       the base pointer, and SP.H0, which is the current stack pointer.
+    S  Stack register, which is the location within the current segment at which the stack
+       starts (growing downward in memory). This is further sub-divided into S.H1, which is
+       the base pointer, and S.H0, which is the current stack pointer. SP is an alias for S.H0, 
+       and BP is an alias for S.H1.
 
 ### Flags
 
@@ -473,9 +474,9 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     %1010xxxx   $A    M register
     %1011xxxx   $B    Z register
     %1100xxxx   $C    F register (flags)
-    %1101xxxx   $D    I register (instruction)
-    %1110xxxx   $E    P register (program counter)
-    %1111xxxx   $F    S register (stack)
+    %1101xxxx   $D    IN register (instruction)
+    %1110xxxx   $E    P register (program segment / counter)
+    %1111xxxx   $F    S register (stack pointers)
 
 ### Sub-register bit field
 
