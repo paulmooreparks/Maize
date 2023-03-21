@@ -144,7 +144,7 @@ register name.
 
 Example: Store the value $FF into the byte pointed at by the A.H0 register:
 
-    ST $01 @A.H0
+    ST $FF @A.H0
 
 Example: Load the quarter-word located at the address stored in D.H0 into sub-register Z.Q3:
 
