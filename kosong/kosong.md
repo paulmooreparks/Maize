@@ -1,5 +1,8 @@
 # The Kosong Programming Language
 
+This is at the stage of still being the ramblings of a madman. As this gets fleshed out a bit, I'll add some explanation of what I'm 
+trying to accomplish.
+
 ## Operators
 
     # base 10 literal (default)
