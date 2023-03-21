@@ -1,8 +1,31 @@
 {
+  "DevContainersInfoBarHidden": true,
+  "ActiveTargetSystem": "Local Machine",
+  "MRUPresetsPerTargetSystem": {
+    "Local Machine": {
+      "configure": "windows-default"
+    },
+    "WSL: Ubuntu-22.04": {
+      "configure": "linux-default"
+    }
+  },
+  "OutputFoldersPerTargetSystem": {
+    "Local Machine": [
+      "out\\build\\x64-debug",
+      "out\\install\\x64-debug",
+      "out\\build\\x64-release",
+      "out\\install\\x64-release"
+    ],
+    "WSL: Ubuntu-22.04": [
+      "out\\1485900866\\build\\linux-default",
+      "out\\1485900866\\install\\linux-default"
+    ]
+  },
   "ExpandedNodes": [
     "",
-    "\\build"
+    "\\asm",
+    "\\src"
   ],
-  "PreviewInSolutionExplorer": false,
-  "ActiveTargetSystem": "Local Machine"
+  "SelectedNode": "\\CMakeLists.txt",
+  "PreviewInSolutionExplorer": false
 }

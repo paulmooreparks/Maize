@@ -1,0 +1,5 @@
+PUSH $0A
+LD $0A A.B1
+LD $0A B.B1
+LD $0A A.B1
+STRING "\nException \0"

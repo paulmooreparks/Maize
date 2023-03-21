@@ -1,0 +1,24 @@
+{
+  "version": "0.2.1",
+  "defaults": {},
+  "configurations": [
+    {
+      "type": "default",
+      "project": "CMakeLists.txt",
+      "projectTarget": "mazm.exe",
+      "name": "mazm.exe",
+      "args": [
+        "C:/Users/paul/source/repos/Maize/asm/hello.asm"
+      ]
+    },
+    {
+      "type": "default",
+      "project": "CMakeLists.txt",
+      "projectTarget": "maize.exe",
+      "name": "maize.exe",
+      "args": [
+        "C:/Users/paul/source/repos/Maize/asm/hello.bin"
+      ]
+    }
+  ]
+}

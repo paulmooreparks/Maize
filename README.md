@@ -424,14 +424,8 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     
     %0010`0010  $22   CLR       regVal         Set register to zero (0).
     
-    %0010`0001  $23   CMPIND    regVal regAddr Set flags by subtracting source register value from value at address in destination register
-    %0110`0001  $63   CMPIND    immVal regAddr Set flags by subtracting immediate value from value at address in destination register
-    
     %0010`0100  $24   INT       regVal         Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
     %0110`0100  $64   INT       immVal         Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
-    
-    %0010`0101  $25   TSTIND    regVal regAddr Set flags by ANDing source register value with value at address in destination register
-    %0110`0101  $65   TSTIND    immVal regAddr Set flags by ANDing immediate value with value at address in destination register
     
     %0010`0110  $26   POP       regVal         Increment SP.H0 by size of register, copy value at SP.H0 into register
     
@@ -441,11 +435,18 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     
     %0010`1001  $29   SETINT                   Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
     
-    %0011`0000  $30   CLRINT                   Clear the Interrupt flag, thereby disabling hardware interrupts (privileged)
+    %0010`1111  $2F   CMPIND    regVal regAddr Set flags by subtracting source register value from value at address in destination register
+    %0110`1111  $6F   CMPIND    immVal regAddr Set flags by subtracting immediate value from value at address in destination register
+    
+    %0011`0000  $30   TSTIND    regVal regAddr Set flags by ANDing source register value with value at address in destination register
+    %0111`0000  $70   TSTIND    immVal regAddr Set flags by ANDing immediate value with value at address in destination register
+    
     
     %0011`0001  $31   SETCRY                   Set the Carry flag
     
     %0011`0010  $32   CLRCRY                   Clear the Carry flag
+    
+    %0011`0011  $33   CLRINT                   Clear the Interrupt flag, thereby disabling hardware interrupts (privileged)
     
     %0011`0100  $34   SYS       regVal         Execute a system call using the system-call index stored in register (privileged)
     %0111`0100  $74   SYS       immVal         Execute a system call using the immediate index (privileged)
@@ -471,10 +472,10 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     %1001xxxx   $9    L register
     %1010xxxx   $A    M register
     %1011xxxx   $B    Z register
-    %1100xxxx   $C    FL register
-    %1101xxxx   $D    IN register
-    %1110xxxx   $E    PC register
-    %1111xxxx   $F    SP register
+    %1100xxxx   $C    F register (flags)
+    %1101xxxx   $D    I register (instruction)
+    %1110xxxx   $E    P register (program counter)
+    %1111xxxx   $F    S register (stack)
 
 ### Sub-register bit field
 
@@ -651,9 +652,9 @@ Other syntax, to be described more fully later:
     %0010`0000  $20   PUSH      regVal         Copy register value into memory at location in S.H0, decrement S.H0 by size of register
     %0010`0001  $21             reserved       
     %0010`0010  $22   CLR       regVal         Set register to zero (0).
-    %0010`0011  $23   CMPIND    regVal regAddr Set flags by subtracting source register value from value at address in destination register
+    %0010`0011  $23             reserved       
     %0010`0100  $24   INT       regVal         Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
-    %0010`0101  $25   TSTIND    regVal regAddr Set flags by ANDing source register value with value at address in destination register
+    %0010`0101                  reserved       
     %0010`0110  $26   POP       regVal         Increment SP.H0 by size of register, copy value at SP.H0 into register
     %0010`0111  $27   RET                      Pop PC.H0 from stack and continue execution at that address. Used to return from CALL.
     %0010`1000  $28   IRET                     Pop FL and PC from stack and continue execution at segment/address in PC. Used to return from interrupt (privileged).
@@ -663,11 +664,11 @@ Other syntax, to be described more fully later:
     %0010`1100  $2C             reserved       
     %0010`1101  $2D             reserved       
     %0010`1110  $2E             reserved       
-    %0010`1111  $2F             reserved       
-    %0011`0000  $30   CLRINT                   Clear the Interrupt flag, thereby disabling hardware interrupts (privileged)
+    %0010`1111  $2F   CMPIND    regVal regAddr Set flags by subtracting source register value from value at address in destination register
+    %0011`0000  $30   TSTIND    regVal regAddr Set flags by ANDing source register value with value at address in destination register
     %0011`0001  $31   SETCRY                   Set the Carry flag
     %0011`0010  $32   CLRCRY                   Clear the Carry flag
-    %0011`0011  $33             reserved       
+    %0011`0011  $33   CLRINT                   Clear the Interrupt flag, thereby disabling hardware interrupts (privileged)
     %0011`0100  $34   SYS       regVal         Execute a system call using the system-call index stored in register (privileged)
     %0011`0101  $35             reserved       
     %0011`0110  $36             reserved       
@@ -715,9 +716,9 @@ Other syntax, to be described more fully later:
     %0110`0000  $60   PUSH      immVal         Copy immediate value into memory at location in S.H0, decrement S.H0 by size of immediate value
     %0110`0001  $61             reserved       
     %0110`0010  $62             reserved       
-    %0110`0011  $63   CMPIND    immVal regAddr Set flags by subtracting immediate value from value at address in destination register
+    %0110`0011  $63             reserved       
     %0110`0100  $64   INT       immVal         Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
-    %0110`0101  $65   TSTIND    immVal regAddr Set flags by ANDing immediate value with value at address in destination register
+    %0110`0101  $65             reserved       
     %0110`0110  $66             reserved       
     %0110`0111  $67             reserved       
     %0110`1000  $68             reserved       
@@ -727,8 +728,8 @@ Other syntax, to be described more fully later:
     %0110`1100  $6C             reserved       
     %0110`1101  $6D             reserved       
     %0110`1110  $6E             reserved       
-    %0110`1111  $6F             reserved       
-    %0111`0000  $70             reserved       
+    %0110`1111  $6F   CMPIND    immVal regAddr Set flags by subtracting immediate value from value at address in destination register
+    %0111`0000  $70   TSTIND    immVal regAddr Set flags by ANDing immediate value with value at address in destination register
     %0111`0001  $71             reserved       
     %0111`0010  $72             reserved       
     %0111`0011  $73             reserved       

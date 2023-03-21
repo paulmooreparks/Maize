@@ -120,5 +120,4 @@ stdlib_getchar:
 stdlib_shutdown:
    LD $0000 A
    INT $40
-   ; In case an error occurs...
    RET

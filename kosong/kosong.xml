@@ -1,0 +1,20 @@
+<prog name="hello-world">
+    <entry>
+        
+    </entry>
+    <fn name="if">
+        <params>
+            <param name="operand1"/>
+            <param name="operand2" optional="true"/>
+            <param name="if_true"/>
+            <param name="else"/>
+        </params>
+        <eval>
+            <param name="operand1"/>
+            <param name="operand2"/>
+        </eval>
+    </fn>
+    <exit>
+        
+    </exit>
+</prog>
