@@ -644,7 +644,7 @@ namespace maize {
                 decode,
                 execute,
                 syscall,
-                alu
+                arithmetic_logic_unit
             };
 
             run_states run_state = run_states::decode;
@@ -659,7 +659,7 @@ namespace maize {
             }
 
             void instr_jmp_alu() {
-                run_state = run_states::alu;
+                run_state = run_states::arithmetic_logic_unit;
             }
 
             std::mutex int_mutex;
@@ -680,7 +680,7 @@ namespace maize {
         bus io_bus;
 
         memory_module mm;
-        alu al;
+        arithmetic_logic_unit alu;
 
         void add_device(qword id, device& new_device) {
             devices[id] = &new_device;
@@ -710,44 +710,44 @@ namespace maize {
         }
 
         void run_alu() {
-            byte op_size = al.b2; // Destination size
+            byte op_size = alu.b2; // Destination size
 
-            switch (al.b0 & alu::opflag_code) {
-                case alu::op_add: {
+            switch (alu.b0 & arithmetic_logic_unit::opflag_code) {
+                case arithmetic_logic_unit::op_add: {
                     switch (op_size) {
                         case 1: {
-                            byte result = al.dst_reg.b0 + al.src_reg.b0;
+                            byte result = alu.dst_reg.b0 + alu.src_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            overflow_flag = result < al.dst_reg.b0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.b0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = al.dst_reg.q0 + al.src_reg.q0;
+                            qword result = alu.dst_reg.q0 + alu.src_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            overflow_flag = result < al.dst_reg.q0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.q0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = al.dst_reg.h0 + al.src_reg.h0;
+                            hword result = alu.dst_reg.h0 + alu.src_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            overflow_flag = result < al.dst_reg.h0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.h0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = al.dst_reg.w0 + al.src_reg.w0;
+                            word result = alu.dst_reg.w0 + alu.src_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            overflow_flag = result < al.dst_reg.w0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.w0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -755,43 +755,43 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_cmp:
-                case alu::op_cmpind:
-                case alu::op_sub: {
+                case arithmetic_logic_unit::op_cmp:
+                case arithmetic_logic_unit::op_cmpind:
+                case arithmetic_logic_unit::op_sub: {
                     switch (op_size) {
                         case 1: {
-                            byte result = al.dst_reg.b0 - al.src_reg.b0;
+                            byte result = alu.dst_reg.b0 - alu.src_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            overflow_flag = result > al.dst_reg.b0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result > alu.dst_reg.b0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = al.dst_reg.q0 - al.src_reg.q0;
+                            qword result = alu.dst_reg.q0 - alu.src_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            overflow_flag = result > al.dst_reg.q0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result > alu.dst_reg.q0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = al.dst_reg.h0 - al.src_reg.h0;
+                            hword result = alu.dst_reg.h0 - alu.src_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            overflow_flag = result > al.dst_reg.h0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result > alu.dst_reg.h0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = al.dst_reg.w0 - al.src_reg.w0;
+                            word result = alu.dst_reg.w0 - alu.src_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            overflow_flag = result > al.dst_reg.w0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result > alu.dst_reg.w0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -799,41 +799,41 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_mul: {
+                case arithmetic_logic_unit::op_mul: {
                     switch (op_size) {
                         case 1: {
-                            byte result = al.dst_reg.b0 - al.src_reg.b0;
+                            byte result = alu.dst_reg.b0 - alu.src_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            overflow_flag = is_mul_overflow(al.src_reg.b0, al.dst_reg.b0) || is_mul_underflow(al.src_reg.b0, al.dst_reg.b0);
-                            al.dst_reg.w0 = result;
+                            overflow_flag = is_mul_overflow(alu.src_reg.b0, alu.dst_reg.b0) || is_mul_underflow(alu.src_reg.b0, alu.dst_reg.b0);
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = al.dst_reg.q0 - al.src_reg.q0;
+                            qword result = alu.dst_reg.q0 - alu.src_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            overflow_flag = is_mul_overflow(al.src_reg.q0, al.dst_reg.q0) || is_mul_underflow(al.src_reg.q0, al.dst_reg.q0);
-                            al.dst_reg.w0 = result;
+                            overflow_flag = is_mul_overflow(alu.src_reg.q0, alu.dst_reg.q0) || is_mul_underflow(alu.src_reg.q0, alu.dst_reg.q0);
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = al.dst_reg.h0 - al.src_reg.h0;
+                            hword result = alu.dst_reg.h0 - alu.src_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            overflow_flag = is_mul_overflow(al.src_reg.h0, al.dst_reg.h0) || is_mul_underflow(al.src_reg.h0, al.dst_reg.h0);
-                            al.dst_reg.w0 = result;
+                            overflow_flag = is_mul_overflow(alu.src_reg.h0, alu.dst_reg.h0) || is_mul_underflow(alu.src_reg.h0, alu.dst_reg.h0);
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = al.dst_reg.w0 - al.src_reg.w0;
+                            word result = alu.dst_reg.w0 - alu.src_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            overflow_flag = is_mul_overflow(al.src_reg.h0, al.dst_reg.h0) || is_mul_underflow(al.src_reg.h0, al.dst_reg.h0);
-                            al.dst_reg.w0 = result;
+                            overflow_flag = is_mul_overflow(alu.src_reg.h0, alu.dst_reg.h0) || is_mul_underflow(alu.src_reg.h0, alu.dst_reg.h0);
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -841,39 +841,39 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_div: {
+                case arithmetic_logic_unit::op_div: {
                     overflow_flag = false;
 
                     switch (op_size) {
                         case 1: {
-                            byte result = al.dst_reg.b0 / al.src_reg.b0;
+                            byte result = alu.dst_reg.b0 / alu.src_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = al.dst_reg.q0 / al.src_reg.q0;
+                            qword result = alu.dst_reg.q0 / alu.src_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = al.dst_reg.h0 / al.src_reg.h0;
+                            hword result = alu.dst_reg.h0 / alu.src_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = al.dst_reg.w0 / al.src_reg.w0;
+                            word result = alu.dst_reg.w0 / alu.src_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -881,39 +881,39 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_mod: {
+                case arithmetic_logic_unit::op_mod: {
                     overflow_flag = false;
 
                     switch (op_size) {
                         case 1: {
-                            byte result = al.dst_reg.b0 % al.src_reg.b0;
+                            byte result = alu.dst_reg.b0 % alu.src_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = al.dst_reg.q0 % al.src_reg.q0;
+                            qword result = alu.dst_reg.q0 % alu.src_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = al.dst_reg.h0 % al.src_reg.h0;
+                            hword result = alu.dst_reg.h0 % alu.src_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = al.dst_reg.w0 % al.src_reg.w0;
+                            word result = alu.dst_reg.w0 % alu.src_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -921,41 +921,41 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_test:
-                case alu::op_testind:
-                case alu::op_and: {
+                case arithmetic_logic_unit::op_test:
+                case arithmetic_logic_unit::op_testind:
+                case arithmetic_logic_unit::op_and: {
                     overflow_flag = false;
 
                     switch (op_size) {
                         case 1: {
-                            byte result = al.dst_reg.b0 & al.src_reg.b0;
+                            byte result = alu.dst_reg.b0 & alu.src_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = al.dst_reg.q0 & al.src_reg.q0;
+                            qword result = alu.dst_reg.q0 & alu.src_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = al.dst_reg.h0 & al.src_reg.h0;
+                            hword result = alu.dst_reg.h0 & alu.src_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = al.dst_reg.w0 & al.src_reg.w0;
+                            word result = alu.dst_reg.w0 & alu.src_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -963,39 +963,39 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_or: {
+                case arithmetic_logic_unit::op_or: {
                     overflow_flag = false;
 
                     switch (op_size) {
                         case 1: {
-                            byte result = al.dst_reg.b0 | al.src_reg.b0;
+                            byte result = alu.dst_reg.b0 | alu.src_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = al.dst_reg.q0 | al.src_reg.q0;
+                            qword result = alu.dst_reg.q0 | alu.src_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = al.dst_reg.h0 | al.src_reg.h0;
+                            hword result = alu.dst_reg.h0 | alu.src_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = al.dst_reg.w0 | al.src_reg.w0;
+                            word result = alu.dst_reg.w0 | alu.src_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -1003,39 +1003,39 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_nor: {
+                case arithmetic_logic_unit::op_nor: {
                     overflow_flag = false;
 
                     switch (op_size) {
                         case 1: {
-                            byte result = ~(al.dst_reg.b0 | al.src_reg.b0);
+                            byte result = ~(alu.dst_reg.b0 | alu.src_reg.b0);
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = ~(al.dst_reg.q0 | al.src_reg.q0);
+                            qword result = ~(alu.dst_reg.q0 | alu.src_reg.q0);
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = ~(al.dst_reg.h0 | al.src_reg.h0);
+                            hword result = ~(alu.dst_reg.h0 | alu.src_reg.h0);
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = ~(al.dst_reg.w0 | al.src_reg.w0);
+                            word result = ~(alu.dst_reg.w0 | alu.src_reg.w0);
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -1043,39 +1043,39 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_nand: {
+                case arithmetic_logic_unit::op_nand: {
                     overflow_flag = false;
 
                     switch (op_size) {
                         case 1: {
-                            byte result = ~(al.dst_reg.b0 & al.src_reg.b0);
+                            byte result = ~(alu.dst_reg.b0 & alu.src_reg.b0);
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = ~(al.dst_reg.q0 & al.src_reg.q0);
+                            qword result = ~(alu.dst_reg.q0 & alu.src_reg.q0);
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = ~(al.dst_reg.h0 & al.src_reg.h0);
+                            hword result = ~(alu.dst_reg.h0 & alu.src_reg.h0);
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = ~(al.dst_reg.w0 & al.src_reg.w0);
+                            word result = ~(alu.dst_reg.w0 & alu.src_reg.w0);
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -1083,39 +1083,39 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_xor: {
+                case arithmetic_logic_unit::op_xor: {
                     overflow_flag = false;
 
                     switch (op_size) {
                         case 1: {
-                            byte result = al.dst_reg.b0 ^ al.src_reg.b0;
+                            byte result = alu.dst_reg.b0 ^ alu.src_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = al.dst_reg.q0 ^ al.src_reg.q0;
+                            qword result = alu.dst_reg.q0 ^ alu.src_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = al.dst_reg.h0 ^ al.src_reg.h0;
+                            hword result = alu.dst_reg.h0 ^ alu.src_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = al.dst_reg.w0 ^ al.src_reg.w0;
+                            word result = alu.dst_reg.w0 ^ alu.src_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -1123,41 +1123,41 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_shl: {
+                case arithmetic_logic_unit::op_shl: {
                     switch (op_size) {
                         case 1: {
-                            byte result = al.dst_reg.b0 << al.src_reg.b0;
+                            byte result = alu.dst_reg.b0 << alu.src_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            overflow_flag = result < al.dst_reg.b0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.b0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = al.dst_reg.q0 << al.src_reg.q0;
+                            qword result = alu.dst_reg.q0 << alu.src_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            overflow_flag = result < al.dst_reg.q0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.q0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = al.dst_reg.h0 << al.src_reg.h0;
+                            hword result = alu.dst_reg.h0 << alu.src_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            overflow_flag = result < al.dst_reg.h0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.h0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = al.dst_reg.w0 << al.src_reg.w0;
+                            word result = alu.dst_reg.w0 << alu.src_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            overflow_flag = result < al.dst_reg.w0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.w0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -1165,41 +1165,41 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_shr: {
+                case arithmetic_logic_unit::op_shr: {
                     switch (op_size) {
                         case 1: {
-                            byte result = al.dst_reg.b0 >> al.src_reg.b0;
+                            byte result = alu.dst_reg.b0 >> alu.src_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            overflow_flag = result < al.dst_reg.b0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.b0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = al.dst_reg.q0 >> al.src_reg.q0;
+                            qword result = alu.dst_reg.q0 >> alu.src_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            overflow_flag = result < al.dst_reg.q0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.q0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = al.dst_reg.h0 >> al.src_reg.h0;
+                            hword result = alu.dst_reg.h0 >> alu.src_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            overflow_flag = result < al.dst_reg.h0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.h0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = al.dst_reg.w0 >> al.src_reg.w0;
+                            word result = alu.dst_reg.w0 >> alu.src_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            overflow_flag = result < al.dst_reg.w0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.w0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -1207,41 +1207,41 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_inc: {
+                case arithmetic_logic_unit::op_inc: {
                     switch (op_size) {
                         case 1: {
-                            byte result = al.dst_reg.b0 + byte(1);
+                            byte result = alu.dst_reg.b0 + byte(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            overflow_flag = result < al.dst_reg.b0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.b0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = al.dst_reg.q0 + qword(1);
+                            qword result = alu.dst_reg.q0 + qword(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            overflow_flag = result < al.dst_reg.q0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.q0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = al.dst_reg.h0 + hword(1);
+                            hword result = alu.dst_reg.h0 + hword(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            overflow_flag = result < al.dst_reg.h0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.h0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = al.dst_reg.w0 + word(1);
+                            word result = alu.dst_reg.w0 + word(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            overflow_flag = result < al.dst_reg.w0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result < alu.dst_reg.w0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -1249,41 +1249,41 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_dec: {
+                case arithmetic_logic_unit::op_dec: {
                     switch (op_size) {
                         case 1: {
-                            byte result = al.dst_reg.b0 - byte(1);
+                            byte result = alu.dst_reg.b0 - byte(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            overflow_flag = result > al.dst_reg.b0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result > alu.dst_reg.b0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = al.dst_reg.q0 - qword(1);
+                            qword result = alu.dst_reg.q0 - qword(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            overflow_flag = result > al.dst_reg.q0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result > alu.dst_reg.q0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = al.dst_reg.h0 - hword(1);
+                            hword result = alu.dst_reg.h0 - hword(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            overflow_flag = result > al.dst_reg.h0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result > alu.dst_reg.h0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = al.dst_reg.w0 - word(1);
+                            word result = alu.dst_reg.w0 - word(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            overflow_flag = result > al.dst_reg.w0;
-                            al.dst_reg.w0 = result;
+                            overflow_flag = result > alu.dst_reg.w0;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -1291,39 +1291,39 @@ namespace maize {
                     break;
                 }
 
-                case alu::op_not: {
+                case arithmetic_logic_unit::op_not: {
                     overflow_flag = 0;
 
                     switch (op_size) {
                         case 1: {
-                            byte result = ~al.dst_reg.b0;
+                            byte result = ~alu.dst_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            qword result = ~al.dst_reg.q0;
+                            qword result = ~alu.dst_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            hword result = ~al.dst_reg.h0;
+                            hword result = ~alu.dst_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            word result = ~al.dst_reg.w0;
+                            word result = ~alu.dst_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            al.dst_reg.w0 = result;
+                            alu.dst_reg.w0 = result;
                             break;
                         }
                     }
@@ -1421,13 +1421,13 @@ namespace maize {
                             case instr::cmp_regVal_reg:
                             case instr::test_regVal_reg: {
                                 regs::p.h0 += 2;
-                                copy_regval_reg(src_reg(), src_subreg_flag(), al.src_reg, subreg_enum::w0);
-                                copy_regval_reg(dst_reg(), dst_subreg_flag(), al.dst_reg, subreg_enum::w0);
-                                al.b0 = regs::in.b0;
-                                al.b1 = src_subreg_size();
-                                al.b2 = dst_subreg_size();
+                                copy_regval_reg(src_reg(), src_subreg_flag(), alu.src_reg, subreg_enum::w0);
+                                copy_regval_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, subreg_enum::w0);
+                                alu.b0 = regs::in.b0;
+                                alu.b1 = src_subreg_size();
+                                alu.b2 = dst_subreg_size();
                                 run_alu();
-                                copy_regval_reg(al.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
+                                copy_regval_reg(alu.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
                                 break;
                             }
 
@@ -1447,14 +1447,14 @@ namespace maize {
                             case instr::test_immVal_reg: {
                                 regs::p.h0 += 2;
                                 byte src_size = src_imm_size();
-                                copy_memval_reg(regs::p.h0, src_size, al.src_reg, subreg_enum::w0);
-                                copy_regval_reg(dst_reg(), dst_subreg_flag(), al.dst_reg, subreg_enum::w0);
-                                al.b0 = regs::in.b0;
-                                al.b1 = src_size;
-                                al.b2 = dst_subreg_size();
+                                copy_memval_reg(regs::p.h0, src_size, alu.src_reg, subreg_enum::w0);
+                                copy_regval_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, subreg_enum::w0);
+                                alu.b0 = regs::in.b0;
+                                alu.b1 = src_size;
+                                alu.b2 = dst_subreg_size();
                                 run_alu();
                                 regs::p.h0 += src_size;
-                                copy_regval_reg(al.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
+                                copy_regval_reg(alu.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
                                 break;
                             }
 
@@ -1473,13 +1473,13 @@ namespace maize {
                             case instr::cmp_regAddr_reg:
                             case instr::test_regAddr_reg: {
                                 regs::p.h0 += 2;
-                                copy_regaddr_reg(src_reg(), src_subreg_flag(), al.src_reg, subreg_enum::w0);
-                                copy_regval_reg(dst_reg(), dst_subreg_flag(), al.dst_reg, subreg_enum::w0);
-                                al.b0 = regs::in.b0;
-                                al.b1 = src_subreg_size();
-                                al.b2 = dst_subreg_size();
+                                copy_regaddr_reg(src_reg(), src_subreg_flag(), alu.src_reg, subreg_enum::w0);
+                                copy_regval_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, subreg_enum::w0);
+                                alu.b0 = regs::in.b0;
+                                alu.b1 = src_subreg_size();
+                                alu.b2 = dst_subreg_size();
                                 run_alu();
-                                copy_regval_reg(al.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
+                                copy_regval_reg(alu.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
                                 break;
 
 #if false
@@ -1528,14 +1528,14 @@ namespace maize {
                             case instr::test_immAddr_reg: {
                                 regs::p.h0 += 2;
                                 byte src_size = src_imm_size();
-                                copy_memaddr_reg(regs::p.h0, src_size, al.src_reg, subreg_enum::w0);
-                                copy_regval_reg(dst_reg(), dst_subreg_flag(), al.dst_reg, subreg_enum::w0);
-                                al.b0 = regs::in.b0;
-                                al.b1 = src_size;
-                                al.b2 = dst_subreg_size();
+                                copy_memaddr_reg(regs::p.h0, src_size, alu.src_reg, subreg_enum::w0);
+                                copy_regval_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, subreg_enum::w0);
+                                alu.b0 = regs::in.b0;
+                                alu.b1 = src_size;
+                                alu.b2 = dst_subreg_size();
                                 run_alu();
                                 regs::p.h0 += src_size;
-                                copy_regval_reg(al.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
+                                copy_regval_reg(alu.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
                                 break;
 #if false
                                 switch (step) {
@@ -1582,12 +1582,12 @@ namespace maize {
                             case instr::dec_regVal:
                             case instr::not_regVal: {
                                 regs::p.h0 += 1;
-                                copy_regval_reg(src_reg(), src_subreg_flag(), al.dst_reg, subreg_enum::w0);
-                                al.b0 = regs::in.b0;
-                                al.b1 = src_subreg_size();
-                                al.b2 = src_subreg_size();
+                                copy_regval_reg(src_reg(), src_subreg_flag(), alu.dst_reg, subreg_enum::w0);
+                                alu.b0 = regs::in.b0;
+                                alu.b1 = src_subreg_size();
+                                alu.b2 = src_subreg_size();
                                 run_alu();
-                                copy_regval_reg(al.dst_reg, subreg_enum::w0, src_reg(), src_subreg_flag());
+                                copy_regval_reg(alu.dst_reg, subreg_enum::w0, src_reg(), src_subreg_flag());
                                 break;
                             }
 
@@ -1596,12 +1596,12 @@ namespace maize {
                             {
                                 regs::p.h0 += 2;
                                 byte src_size = src_imm_size();
-                                copy_memval_reg(regs::p.h0, src_size, al.src_reg, subreg_enum::w0);
-                                copy_regaddr_reg(dst_reg(), dst_subreg_flag(), al.dst_reg, dst_subreg_flag());
+                                copy_memval_reg(regs::p.h0, src_size, alu.src_reg, subreg_enum::w0);
+                                copy_regaddr_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, dst_subreg_flag());
                                 regs::p.h0 += src_size;
-                                al.b0 = regs::in.b0;
-                                al.b1 = src_size;
-                                al.b2 = src_subreg_size();
+                                alu.b0 = regs::in.b0;
+                                alu.b1 = src_size;
+                                alu.b2 = src_subreg_size();
                                 run_alu();
                                 break;
 #if false
@@ -1652,11 +1652,11 @@ namespace maize {
                             {
                                 regs::p.h0 += 2;
                                 byte src_size = src_subreg_size();
-                                copy_regval_reg(src_reg(), src_subreg_flag(), al.src_reg, subreg_enum::w0);
-                                copy_regaddr_reg(dst_reg(), dst_subreg_flag(), al.dst_reg, dst_subreg_flag());
-                                al.b0 = regs::in.b0;
-                                al.b1 = src_size;
-                                al.b2 = src_subreg_size();
+                                copy_regval_reg(src_reg(), src_subreg_flag(), alu.src_reg, subreg_enum::w0);
+                                copy_regaddr_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, dst_subreg_flag());
+                                alu.b0 = regs::in.b0;
+                                alu.b1 = src_size;
+                                alu.b2 = src_subreg_size();
                                 run_alu();
                                 break;
                             }

@@ -359,7 +359,7 @@ namespace maize {
 			size_t set_cache_address(word address);
 		};
 
-		class alu : public reg {
+		class arithmetic_logic_unit : public reg {
 		public:
 			static const opcode op_add {0x03};
 			static const opcode op_sub {0x04};
@@ -639,7 +639,7 @@ namespace maize {
 		extern bus io_bus;
 
 		extern memory_module mm;
-		extern alu al;
+		extern arithmetic_logic_unit alu;
 
 		void add_device(qword id, device& new_device);
 		void run();
