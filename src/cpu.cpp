@@ -961,7 +961,6 @@ namespace maize {
                 }
             }
 
-            byte cycle {0};
             byte step {0};
 
             enum class run_states {
@@ -980,7 +979,6 @@ namespace maize {
 
             void instr_complete() {
                 run_state = run_states::decode;
-                cycle = 0;
                 step = 0;
             }
 
@@ -1665,138 +1663,83 @@ namespace maize {
 
         /* This is the state machine that implements the machine-code instructions. */
         void tick() {
-            std::vector<byte> instr_data;
             running_flag = true;
 
             while (running_flag) {
                 switch (run_state) {
                     case run_states::decode: {
-                        switch (cycle) {
-                            case 0: {
-                                mm.read(regs::p.h0, regs::in, subreg_enum::w0);
-                                ++regs::p.h0;
-                                run_state = run_states::execute;
-                                step = 0;
-                                break;
-                            }
-                        }
-
-                        ++cycle;
+                        mm.read(regs::p.h0, regs::in, subreg_enum::w0);
+                        ++regs::p.h0;
+                        run_state = run_states::execute;
+                        step = 0;
                         break;
                     }
 
-                    case run_states::execute: {
-                        ++cycle;
+                    /* Once I've completed the conversion to byte code interpreter, the notion of step 
+                    will go away, so I'll get rid of the switch statement and the call to instr_complete(). */
 
+                    case run_states::execute: {
                         switch (regs::in.b0) {
                             case instr::halt_opcode: {
-                                switch (step) {
-                                    case 0: {
-                                        running_flag = false;
-                                        is_power_on = false; // just temporary
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
+                                running_flag = false;
+                                is_power_on = false; // just temporary
+                                instr_complete();
                                 break;
                             }
 
                             case instr::clr_regVal: {
-                                switch (step) {
-                                    case 0:
-                                        regs::p.increment(1);
-                                        clr_reg(src_reg(), src_subreg_flag());
-                                        instr_complete();
-                                        break;
-                                    }
-
+                                regs::p.increment(1);
+                                clr_reg(src_reg(), src_subreg_flag());
+                                instr_complete();
                                 break;
                             }
 
                             case instr::ld_regVal_reg: {
-                                switch (step) {
-                                    case 0: {
-                                        regs::p.h0 += 2;
-                                        copy_regval_reg(src_reg(), src_subreg_flag(), dest_reg(), dest_subreg_flag());
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
+                                regs::p.h0 += 2;
+                                copy_regval_reg(src_reg(), src_subreg_flag(), dest_reg(), dest_subreg_flag());
+                                instr_complete();
                                 break;
                             }
 
                             case instr::ld_immVal_reg: {
-                                switch (step) {
-                                    case 0: {
-                                        regs::p.h0 += 2;
-                                        hword imm_size = src_imm_size();
-                                        copy_immval_reg(regs::p.h0, imm_size, dest_reg(), dest_subreg_flag());
-                                        regs::p.h0 += imm_size;
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
+                                regs::p.h0 += 2;
+                                hword imm_size = src_imm_size();
+                                copy_immval_reg(regs::p.h0, imm_size, dest_reg(), dest_subreg_flag());
+                                regs::p.h0 += imm_size;
+                                instr_complete();
                                 break;
                             }
 
                             case instr::ld_regAddr_reg: {
-                                switch (step) {
-                                    case 0: {
-                                        regs::p.h0 += 2;
-                                        copy_regaddr_reg(src_reg(), src_subreg_flag(), dest_reg(), dest_subreg_flag());
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
+                                regs::p.h0 += 2;
+                                copy_regaddr_reg(src_reg(), src_subreg_flag(), dest_reg(), dest_subreg_flag());
+                                instr_complete();
                                 break;
                             }
 
                             case instr::ld_immAddr_reg: {
-                                switch (step) {
-                                    case 0: {
-                                        regs::p.h0 += 2;
-                                        hword imm_size = src_imm_size();
-                                        hword dest_size = dest_subreg_size();
-                                        copy_immaddr_reg(regs::p.h0, dest_size, dest_reg(), dest_subreg_flag());
-                                        regs::p.h0 += imm_size;
-
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
+                                regs::p.h0 += 2;
+                                hword imm_size = src_imm_size();
+                                hword dest_size = dest_subreg_size();
+                                copy_immaddr_reg(regs::p.h0, dest_size, dest_reg(), dest_subreg_flag());
+                                regs::p.h0 += imm_size;
+                                instr_complete();
                                 break;
                             }
 
                             case instr::st_regVal_regAddr: {
-                                switch (step) {
-                                    case 0: {
-                                        regs::p.h0 += 2;
-                                        copy_regval_regaddr(src_reg(), src_subreg_flag(), dest_reg(), dest_subreg_flag());
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
+                                regs::p.h0 += 2;
+                                copy_regval_regaddr(src_reg(), src_subreg_flag(), dest_reg(), dest_subreg_flag());
+                                instr_complete();
                                 break;
                             }
 
                             case instr::st_immVal_regAddr: {
-                                switch (step) {
-                                    case 0: {
-                                        regs::p.h0 += 2;
-                                        hword imm_size = src_imm_size();
-                                        copy_immval_regaddr(regs::p.h0, imm_size, dest_reg(), dest_subreg_flag());
-                                        regs::p.h0 += imm_size;
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
+                                regs::p.h0 += 2;
+                                hword imm_size = src_imm_size();
+                                copy_immval_regaddr(regs::p.h0, imm_size, dest_reg(), dest_subreg_flag());
+                                regs::p.h0 += imm_size;
+                                instr_complete();
                                 break;
                             }
 
@@ -1815,21 +1758,15 @@ namespace maize {
                             case instr::cmp_regVal_reg:
                             case instr::test_regVal_reg:
                             {
-                                switch (step) {
-                                    case 0: {
-                                        regs::p.h0 += 2;
-                                        al.b0 = regs::in.b0;
-                                        copy_regval_reg(src_reg(), src_subreg_flag(), al.src_reg, subreg_enum::w0);
-                                        copy_regval_reg(dest_reg(), dest_subreg_flag(), al.dest_reg, subreg_enum::w0);
-                                        al.b1 = src_subreg_size();
-                                        al.b2 = dest_subreg_size();
-                                        run_alu();
-                                        copy_regval_reg(al.dest_reg, subreg_enum::w0, dest_reg(), dest_subreg_flag());
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
+                                regs::p.h0 += 2;
+                                al.b0 = regs::in.b0;
+                                copy_regval_reg(src_reg(), src_subreg_flag(), al.src_reg, subreg_enum::w0);
+                                copy_regval_reg(dest_reg(), dest_subreg_flag(), al.dest_reg, subreg_enum::w0);
+                                al.b1 = src_subreg_size();
+                                al.b2 = dest_subreg_size();
+                                run_alu();
+                                copy_regval_reg(al.dest_reg, subreg_enum::w0, dest_reg(), dest_subreg_flag());
+                                instr_complete();
                                 break;
                             }
 
@@ -1848,23 +1785,17 @@ namespace maize {
                             case instr::cmp_immVal_reg:
                             case instr::test_immVal_reg:
                             {
-                                switch (step) {
-                                    case 0: {
-                                        regs::p.h0 += 2;
-                                        al.b0 = regs::in.b0;
-                                        byte src_size = src_imm_size();
-                                        copy_immval_reg(regs::p.h0, src_size, al.src_reg, subreg_enum::w0);
-                                        copy_regval_reg(dest_reg(), dest_subreg_flag(), al.dest_reg, subreg_enum::w0);
-                                        al.b1 = src_size;
-                                        al.b2 = dest_subreg_size();
-                                        run_alu();
-                                        regs::p.h0 += src_size;
-                                        copy_regval_reg(al.dest_reg, subreg_enum::w0, dest_reg(), dest_subreg_flag());
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
+                                regs::p.h0 += 2;
+                                al.b0 = regs::in.b0;
+                                byte src_size = src_imm_size();
+                                copy_immval_reg(regs::p.h0, src_size, al.src_reg, subreg_enum::w0);
+                                copy_regval_reg(dest_reg(), dest_subreg_flag(), al.dest_reg, subreg_enum::w0);
+                                al.b1 = src_size;
+                                al.b2 = dest_subreg_size();
+                                run_alu();
+                                regs::p.h0 += src_size;
+                                copy_regval_reg(al.dest_reg, subreg_enum::w0, dest_reg(), dest_subreg_flag());
+                                instr_complete();
                                 break;
                             }
 
@@ -1883,19 +1814,17 @@ namespace maize {
                             case instr::cmp_regAddr_reg:
                             case instr::test_regAddr_reg:
                             {
-                                switch (step) {
-                                    case 0: {
-                                        regs::p.h0 += 2;
-                                        al.b0 = regs::in.b0;
-                                        copy_regaddr_reg(src_reg(), src_subreg_flag(), al.src_reg, subreg_enum::w0);
-                                        copy_regaddr_reg(dest_reg(), dest_subreg_flag(), al.dest_reg, subreg_enum::w0);
-                                        al.b1 = src_subreg_size();
-                                        al.b2 = dest_subreg_size();
-                                        run_alu();
-                                        copy_regval_reg(al.dest_reg, subreg_enum::w0, dest_reg(), dest_subreg_flag());
-                                        instr_complete();
-                                        break;
-                                    }
+                                regs::p.h0 += 2;
+                                al.b0 = regs::in.b0;
+                                copy_regaddr_reg(src_reg(), src_subreg_flag(), al.src_reg, subreg_enum::w0);
+                                copy_regval_reg(dest_reg(), dest_subreg_flag(), al.dest_reg, subreg_enum::w0);
+                                al.b1 = src_subreg_size();
+                                al.b2 = dest_subreg_size();
+                                run_alu();
+                                copy_regval_reg(al.dest_reg, subreg_enum::w0, dest_reg(), dest_subreg_flag());
+                                instr_complete();
+                                break;
+
 #if false
                                     case 0: {
                                         al.b0 = regs::in.b0;
@@ -1924,9 +1853,6 @@ namespace maize {
                                         break;
                                     }
 #endif
-                                }
-
-                                break;
                             }
 
                             case instr::add_immAddr_reg:
@@ -2338,6 +2264,11 @@ namespace maize {
                         continue;
                     }
                 }
+
+                /* Everything from here to the end of the loop will be going away. I'm moving away from a strict 
+                CPU simulator where instructions take multiple cycles to run and moving toward a bytecode 
+                interpreter where all instructions run in a single cycle. Once the conversion is complete, I'll 
+                delete the code below. */
 
                 /* increment */
                 if (increment_array.size()) {
