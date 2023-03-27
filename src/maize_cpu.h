@@ -170,7 +170,7 @@ namespace maize {
 			sp = 0x0F
 		};
 
-		enum class subreg_enum {
+		enum class subreg_enum : size_t {
 			b0 = 0x00,
 			b1 = 0x01,
 			b2 = 0x02,
@@ -229,12 +229,12 @@ namespace maize {
 				return w0 = value;
 			}
 
-			byte operator[](size_t index) {
-				return byte_index(index);
+			byte& operator[](size_t index) {
+				return byte_array[index];
 			}
 
-			byte operator[](size_t index) const {
-				return byte_index(index);
+			byte const& operator[](size_t index) const {
+				return byte_array[index];
 			}
 
 			byte byte_index(size_t index) const {
@@ -352,11 +352,17 @@ namespace maize {
 			template <> hword write<hword>(reg_value address, hword value);
 			template <> hword write<word>(reg_value address, word value);
 
+			size_t read(reg_value const &address, reg_value &reg, subreg_enum subreg);
+			size_t read(word address, reg_value &reg, subreg_enum subreg);
+			size_t read(reg_value const &address, reg_value &reg, size_t count, size_t dest_idx);
+			size_t read(word address, reg_value &reg, size_t count, size_t dest_idx);
+			size_t read(reg_value address, hword count, std::vector<byte> &retval);
 			std::vector<byte> read(reg_value address, hword count);
-			byte read_byte(reg_value address);
+			byte read_byte(word address);
 			void set_memory_from_bus(bus& store_bus, subreg_enum subreg);
 			bool set_memory_scheduled();
 			void on_set_memory();
+			void set_memory(maize::cpu::reg_value &address);
 			word last_block() const;
 			
 			const hword block_size {0x100};
@@ -375,7 +381,7 @@ namespace maize {
 			std::map<word, byte*> memory_map;
 			byte* cache {nullptr};
 
-			size_t set_cache_address(reg_value address);
+			size_t set_cache_address(word address);
 		};
 
 		class alu : public reg {
@@ -398,31 +404,19 @@ namespace maize {
 			static const opcode op_dec {0x12};
 			static const opcode op_not {0x13};
 			static const opcode op_cmpind {0x2F};
-			static const opcode op_tstind {0x30};
+			static const opcode op_testind {0x30};
 
 			static const opcode opctrl_carryin {0x80};
 
 			static const opcode opflag_code {0x3F}; // 0001`1111
 			static const opcode opflag_size {0x30}; // 1100`0000
 
-			template <typename T>
-			static constexpr bool is_mul_overflow(const T& a, const T& b) {
-				return ((b >= 0) && (a >= 0) && (a > std::numeric_limits<T>::max() / b))
-					|| ((b < 0) && (a < 0) && (a < std::numeric_limits<T>::max() / b));
-			}
-
-			template <typename T>
-			static constexpr bool is_mul_underflow(const T& a, const T& b) {
-				return ((b >= 0) && (a < 0) && (a < std::numeric_limits<T>::min() / b))
-					|| ((b < 0) && (a >= 0) && (a > std::numeric_limits<T>::min() / b));
-			}
+			reg src_reg;
+			reg dest_reg;
 
 			void set_src_from_bus(bus& source_bus, subreg_enum subreg = subreg_enum::w0);
 			void set_dest_from_bus(bus& source_bus, subreg_enum subreg = subreg_enum::w0);
 			void enable_dest_to_bus(bus& dest_bus, subreg_enum subreg = subreg_enum::w0);
-
-			reg src_reg;
-			reg dest_reg;
 		};
 
 
@@ -437,6 +431,7 @@ namespace maize {
 
 			const opcode st_opcode				{0x02};
 			const opcode st_regVal_regAddr		{st_opcode | opcode_flag_srcReg};
+			const opcode st_immVal_regAddr		{st_opcode | opcode_flag_srcImm};
 
 			const opcode add_opcode				{0x03};
 			const opcode add_regVal_reg			{add_opcode | opcode_flag_srcReg};
@@ -627,9 +622,9 @@ namespace maize {
 			const opcode cmpind_regVal_regAddr	{cmpind_opcode | opcode_flag_srcReg};
 			const opcode cmpind_immVal_regAddr	{cmpind_opcode | opcode_flag_srcImm};
 
-			const opcode tstind_opcode			{0x30};
-			const opcode tstind_regVal_regAddr	{tstind_opcode | opcode_flag_srcReg};
-			const opcode tstind_immVal_regAddr	{tstind_opcode | opcode_flag_srcImm};
+			const opcode testind_opcode			{0x30};
+			const opcode testind_regVal_regAddr	{testind_opcode | opcode_flag_srcReg};
+			const opcode testind_immVal_regAddr	{testind_opcode | opcode_flag_srcImm};
 
 			const opcode setcry_opcode			{0x31};
 
@@ -661,10 +656,10 @@ namespace maize {
 			extern reg l;
 			extern reg m;
 			extern reg z;
-			extern reg fl; // flags register
+			extern reg f; // flags register
 			extern reg in; // instruction register
-			extern reg pc; // program execution register
-			extern reg sp; // stack register
+			extern reg p; // program execution register
+			extern reg s; // stack register
 		}
 
 		extern bus address_bus;

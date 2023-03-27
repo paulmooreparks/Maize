@@ -283,6 +283,7 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     %1100`0001  $C1   LD        immAddr reg    Load value at immediate address into destination register
     
     %0000`0010  $02   ST        regVal regAddr Store source register value at address in second register
+    %0100`0010  $42   ST        immVal regAddr Store immediate value at address in destination register
     
     %0000`0011  $03   ADD       regVal reg     Add source register value to destination register
     %0100`0011  $43   ADD       immVal reg     Add immediate value to destination register
@@ -684,7 +685,7 @@ Other syntax, to be described more fully later:
     %0011`1111  $3F             reserved       
     %0100`0000  $40             reserved       
     %0100`0001  $41   LD        immVal reg     Load immediate value into destination register
-    %0100`0010  $42             reserved       
+    %0100`0010  $42   ST        immVal regAddr Store immediate value at address in destination register
     %0100`0011  $43   ADD       immVal reg     Add immediate value to destination register
     %0100`0100  $44   SUB       immVal reg     Subtract immediate value from destination register
     %0100`0101  $45   MUL       immVal reg     Multiply destination register by immediate value

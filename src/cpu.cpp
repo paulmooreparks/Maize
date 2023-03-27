@@ -1,5 +1,6 @@
 #include "maize_cpu.h"
 #include "maize_sys.h"
+#include <unordered_map>
 
 namespace maize {
     namespace cpu {
@@ -40,7 +41,7 @@ namespace maize {
             };
 
             /* Maps the value of a subreg_enum to the offset of the corresponding subregister in the register's 64-bit value. */
-            const byte subreg_offset_map[] = {
+            const maize::byte subreg_offset_map[] {
                 0,  // b0
                 8,  // b1
                 16, // b2
@@ -55,7 +56,25 @@ namespace maize {
                 48, // q3
                 0,  // h0
                 32, // h1
-                0   // w0
+                0  // w0
+            };
+
+            const maize::byte subreg_index_map[] {
+                0, // b0
+                1, // b1
+                2, // b2
+                3, // b3
+                4, // b4
+                5, // b5
+                6, // b6
+                7, // b7
+                0, // q0
+                2, // q1
+                4, // q2
+                6, // q3
+                0, // h0
+                4, // h1
+                0  // w0
             };
 
             const subreg_mask_enum imm_size_subreg_mask_map[] = {
@@ -111,6 +130,19 @@ namespace maize {
             std::vector<reg_op_info> bus_set_array;
             std::vector<std::pair<std::pair<reg*, subreg_enum>, int8_t>> increment_array;
             std::map<qword, device*> devices;
+        
+            template <typename T>
+            static constexpr bool is_mul_overflow(const T &a, const T &b) {
+                return ((b >= 0) && (a >= 0) && (a > std::numeric_limits<T>::max() / b))
+                    || ((b < 0) && (a < 0) && (a < std::numeric_limits<T>::max() / b));
+            }
+
+            template <typename T>
+            static constexpr bool is_mul_underflow(const T &a, const T &b) {
+                return ((b >= 0) && (a < 0) && (a < std::numeric_limits<T>::min() / b))
+                    || ((b < 0) && (a >= 0) && (a > std::numeric_limits<T>::min() / b));
+            }
+
         }
 
         void reg::increment(byte value, subreg_enum subreg) {
@@ -177,61 +209,64 @@ namespace maize {
                     this->enable_to_bus(*pload_bus, subreg_enum::b0);
                     break;
 
-                    case sizeof(qword) :
-                        if (rem >= sizeof(qword)) {
-                            q0 = *((qword*)(cache + idx));
-                        }
-                        else {
-                            b0 = cache[cache_address.b0];
-                            set_cache_address(++address.h0);
-                            b1 = cache[cache_address.b0];
-                        }
+                case sizeof(qword) :
+                    if (rem >= sizeof(qword)) {
+                        q0 = *((qword*)(cache + idx));
+                    }
+                    else {
+                        b0 = cache[cache_address.b0];
+                        set_cache_address(++address.h0);
+                        b1 = cache[cache_address.b0];
+                    }
 
                     this->enable_to_bus(*pload_bus, subreg_enum::q0);
                     break;
 
-                    case sizeof(hword) :
-                        if (rem >= sizeof(hword)) {
-                            h0 = *((hword*)(cache + idx));
-                        }
-                        else {
-                            b0 = cache[cache_address.b0];
-                            set_cache_address(++address.h0);
-                            b1 = cache[cache_address.b0];
-                            set_cache_address(++address.h0);
-                            b2 = cache[cache_address.b0];
-                            set_cache_address(++address.h0);
-                            b3 = cache[cache_address.b0];
-                        }
+                case sizeof(hword) :
+                    if (rem >= sizeof(hword)) {
+                        h0 = *((hword*)(cache + idx));
+                    }
+                    else {
+                        b0 = cache[cache_address.b0];
+                        set_cache_address(++address.h0);
+                        b1 = cache[cache_address.b0];
+                        set_cache_address(++address.h0);
+                        b2 = cache[cache_address.b0];
+                        set_cache_address(++address.h0);
+                        b3 = cache[cache_address.b0];
+                    }
 
                     this->enable_to_bus(*pload_bus, subreg_enum::h0);
                     break;
 
-                    case sizeof(word) :
-                        if (rem >= sizeof(word)) {
-                            w0 = *((word*)(cache + idx));
-                        }
-                        else {
-                            b0 = cache[cache_address.b0];
-                            set_cache_address(++address.h0);
-                            b1 = cache[cache_address.b0];
-                            set_cache_address(++address.h0);
-                            b2 = cache[cache_address.b0];
-                            set_cache_address(++address.h0);
-                            b3 = cache[cache_address.b0];
-                            set_cache_address(++address.h0);
-                            b4 = cache[cache_address.b0];
-                            set_cache_address(++address.h0);
-                            b5 = cache[cache_address.b0];
-                            set_cache_address(++address.h0);
-                            b6 = cache[cache_address.b0];
-                            set_cache_address(++address.h0);
-                            b7 = cache[cache_address.b0];
-                        }
+                case sizeof(word) :
+                    if (rem >= sizeof(word)) {
+                        w0 = *((word*)(cache + idx));
+                    }
+                    else {
+                        b0 = cache[cache_address.b0];
+                        set_cache_address(++address.h0);
+                        b1 = cache[cache_address.b0];
+                        set_cache_address(++address.h0);
+                        b2 = cache[cache_address.b0];
+                        set_cache_address(++address.h0);
+                        b3 = cache[cache_address.b0];
+                        set_cache_address(++address.h0);
+                        b4 = cache[cache_address.b0];
+                        set_cache_address(++address.h0);
+                        b5 = cache[cache_address.b0];
+                        set_cache_address(++address.h0);
+                        b6 = cache[cache_address.b0];
+                        set_cache_address(++address.h0);
+                        b7 = cache[cache_address.b0];
+                    }
 
                     this->enable_to_bus(*pload_bus, subreg_enum::w0);
                     break;
 
+                default:
+                    throw std::logic_error("Should not get here!");
+                    break;
             }
 
             pload_bus = nullptr;
@@ -251,147 +286,151 @@ namespace maize {
             if (pstore_bus) {
                 pstore_bus = nullptr;
                 reg_value address = address_reg.w0;
-                size_t rem = set_cache_address(address);
-                size_t idx = cache_address.b0;
-                size_t subreg_index = static_cast<size_t>(store_mask);
+                set_memory(address);
+            }
+        }
 
-                switch (store_mask) {
-                    case subreg_mask_enum::b0:
-                        cache[idx] = b0;
-                        break;
+        void memory_module::set_memory(maize::cpu::reg_value &address) {
+            size_t rem = set_cache_address(address);
+            size_t idx = cache_address.b0;
+            size_t subreg_index = static_cast<size_t>(store_mask);
 
-                    case subreg_mask_enum::b1:
-                        cache[idx] = b1;
-                        break;
+            switch (store_mask) {
+                case subreg_mask_enum::b0:
+                    cache[idx] = b0;
+                    break;
 
-                    case subreg_mask_enum::b2:
-                        cache[idx] = b2;
-                        break;
+                case subreg_mask_enum::b1:
+                    cache[idx] = b1;
+                    break;
 
-                    case subreg_mask_enum::b3:
-                        cache[idx] = b3;
-                        break;
+                case subreg_mask_enum::b2:
+                    cache[idx] = b2;
+                    break;
 
-                    case subreg_mask_enum::b4:
-                        cache[idx] = b4;
-                        break;
+                case subreg_mask_enum::b3:
+                    cache[idx] = b3;
+                    break;
 
-                    case subreg_mask_enum::b5:
-                        cache[idx] = b5;
-                        break;
+                case subreg_mask_enum::b4:
+                    cache[idx] = b4;
+                    break;
 
-                    case subreg_mask_enum::b6:
-                        cache[idx] = b6;
-                        break;
+                case subreg_mask_enum::b5:
+                    cache[idx] = b5;
+                    break;
 
-                    case subreg_mask_enum::b7:
-                        cache[idx] = b7;
-                        break;
+                case subreg_mask_enum::b6:
+                    cache[idx] = b6;
+                    break;
 
-                    case subreg_mask_enum::q0:
-                        if (rem >= 2) {
-                            *((qword*)(cache + idx)) = q0;
-                        }
-                        else {
-                            cache[cache_address.b0] = b0;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b1;
-                        }
+                case subreg_mask_enum::b7:
+                    cache[idx] = b7;
+                    break;
 
-                        break;
+                case subreg_mask_enum::q0:
+                    if (rem >= 2) {
+                        *((qword *)(cache + idx)) = q0;
+                    }
+                    else {
+                        cache[cache_address.b0] = b0;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b1;
+                    }
 
-                    case subreg_mask_enum::q1:
-                        if (rem >= 2) {
-                            *((qword*)(cache + idx)) = q1;
-                        }
-                        else {
-                            cache[cache_address.b0] = b2;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b3;
-                        }
+                    break;
 
-                        break;
+                case subreg_mask_enum::q1:
+                    if (rem >= 2) {
+                        *((qword *)(cache + idx)) = q1;
+                    }
+                    else {
+                        cache[cache_address.b0] = b2;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b3;
+                    }
 
-                    case subreg_mask_enum::q2:
-                        if (rem >= 2) {
-                            *((qword*)(cache + idx)) = q2;
-                        }
-                        else {
-                            cache[cache_address.b0] = b4;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b5;
-                        }
+                    break;
 
-                        break;
+                case subreg_mask_enum::q2:
+                    if (rem >= 2) {
+                        *((qword *)(cache + idx)) = q2;
+                    }
+                    else {
+                        cache[cache_address.b0] = b4;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b5;
+                    }
 
-                    case subreg_mask_enum::q3:
-                        if (rem >= 2) {
-                            *((qword*)(cache + idx)) = q3;
-                        }
-                        else {
-                            cache[cache_address.b0] = b6;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b7;
-                        }
+                    break;
 
-                        break;
+                case subreg_mask_enum::q3:
+                    if (rem >= 2) {
+                        *((qword *)(cache + idx)) = q3;
+                    }
+                    else {
+                        cache[cache_address.b0] = b6;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b7;
+                    }
 
-                    case subreg_mask_enum::h0:
-                        if (rem >= 4) {
-                            *((hword*)(cache + idx)) = h0;
-                        }
-                        else {
-                            cache[cache_address.b0] = b0;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b1;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b2;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b3;
-                        }
+                    break;
 
-                        break;
+                case subreg_mask_enum::h0:
+                    if (rem >= 4) {
+                        *((hword *)(cache + idx)) = h0;
+                    }
+                    else {
+                        cache[cache_address.b0] = b0;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b1;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b2;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b3;
+                    }
 
-                    case subreg_mask_enum::h1:
-                        if (rem >= 4) {
-                            *((hword*)(cache + idx)) = h1;
-                        }
-                        else {
-                            cache[cache_address.b0] = b4;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b5;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b6;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b7;
-                        }
+                    break;
 
-                        break;
+                case subreg_mask_enum::h1:
+                    if (rem >= 4) {
+                        *((hword *)(cache + idx)) = h1;
+                    }
+                    else {
+                        cache[cache_address.b0] = b4;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b5;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b6;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b7;
+                    }
 
-                    case subreg_mask_enum::w0:
-                        if (rem >= 8) {
-                            *((word*)(cache + idx)) = w0;
-                        }
-                        else {
-                            cache[cache_address.b0] = b0;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b1;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b2;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b3;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b4;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b5;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b6;
-                            set_cache_address(++address.h0);
-                            cache[cache_address.b0] = b7;
-                        }
+                    break;
 
-                        break;
-                }
+                case subreg_mask_enum::w0:
+                    if (rem >= 8) {
+                        *((word *)(cache + idx)) = w0;
+                    }
+                    else {
+                        cache[cache_address.b0] = b0;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b1;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b2;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b3;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b4;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b5;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b6;
+                        set_cache_address(++address.h0);
+                        cache[cache_address.b0] = b7;
+                    }
+
+                    break;
             }
         }
 
@@ -489,6 +528,87 @@ namespace maize {
             return sizeof(word);
         }
 
+        size_t memory_module::read(reg_value address, hword count, std::vector<byte> &retval) {
+            size_t read_count {0};
+
+            if (count) {
+                retval.clear();
+                retval.reserve(count);
+
+                do {
+                    auto rem = set_cache_address(address);
+                    size_t idx = cache_address.b0;
+
+                    if (rem >= count) {
+                        while (count && idx <= 0xFF) {
+                            retval.push_back(cache[idx]);
+                            ++idx;
+                            --count;
+                            ++read_count;
+                        }
+                    }
+                    else {
+                        while (count) {
+                            retval.push_back(cache[cache_address.b0]);
+                            set_cache_address(++address.h0);
+                            --count;
+                            ++read_count;
+                        }
+                    }
+
+                } while (count);
+            }
+
+            return read_count;
+        }
+
+        size_t memory_module::read(word address, reg_value &reg, subreg_enum subreg) {
+            auto count = subreg_size_map[static_cast<size_t>(subreg)];
+            size_t dest_idx {subreg_index_map[static_cast<size_t>(subreg)]};
+            return read(address, reg, count, dest_idx);
+        }
+
+        size_t memory_module::read(reg_value const &address, reg_value &reg, subreg_enum subreg) {
+            auto count = subreg_size_map[static_cast<size_t>(subreg)];
+            size_t dest_idx {subreg_index_map[static_cast<size_t>(subreg)]};
+            return read(address.w0, reg, count, dest_idx);
+        }
+
+        size_t memory_module::read(reg_value const &address, reg_value &reg, size_t count, size_t dest_idx) {
+            return read(address.w0, reg, count, dest_idx);
+        }
+
+        size_t memory_module::read(word address, reg_value &reg, size_t count, size_t dest_idx) {
+            size_t read_count {0};
+
+            do {
+                size_t rem {set_cache_address(address)};
+                size_t idx {cache_address.b0};
+
+                if (rem >= count) {
+                    while (count && idx <= 0xFF) {
+                        reg[dest_idx] = cache[idx];
+                        ++idx;
+                        ++dest_idx;
+                        --count;
+                        ++read_count;
+                    }
+                }
+                else {
+                    while (count) {
+                        reg[dest_idx] = cache[cache_address.b0];
+                        set_cache_address(++address);
+                        ++dest_idx;
+                        --count;
+                        ++read_count;
+                    }
+                }
+
+            } while (count);
+
+            return read_count;
+        }
+
         std::vector<byte> memory_module::read(reg_value address, hword count) {
             std::vector<byte> retval;
 
@@ -520,7 +640,7 @@ namespace maize {
             return retval;
         }
 
-        byte memory_module::read_byte(reg_value address) {
+        byte memory_module::read_byte(word address) {
             byte retval {};
 
             auto rem = set_cache_address(address);
@@ -533,7 +653,7 @@ namespace maize {
             }
             else {
                 retval = cache[cache_address.b0];
-                set_cache_address(++address.h0);
+                set_cache_address(++address);
             }
 
             return retval;
@@ -544,7 +664,7 @@ namespace maize {
             return last;
         }
 
-        size_t memory_module::set_cache_address(reg_value address) {
+        size_t memory_module::set_cache_address(word address) {
             if (cache_base != (address & address_mask)) {
                 cache_base = address & address_mask;
 
@@ -714,6 +834,133 @@ namespace maize {
                 return imm_size_subreg_map[dest_imm_size_flag()];
             }
 
+            void clr_reg(reg_value &dest, subreg_enum dst_subreg) {
+                auto dst_subreg_idx = static_cast<size_t>(dst_subreg);
+                auto dst_offset = subreg_offset_map[dst_subreg_idx];
+                auto dst_mask = subreg_mask_map[dst_subreg_idx];
+
+                word src_value = 0;
+                dest.w0 = (~static_cast<word>(dst_mask) & dest.w0) | (src_value << dst_offset) & static_cast<word>(dst_mask);
+            }
+
+            void copy_regval_reg(reg_value const &src, subreg_enum src_subreg, reg_value &dest, subreg_enum dst_subreg) {
+                auto src_subreg_idx = static_cast<size_t>(src_subreg);
+                auto src_offset = subreg_offset_map[src_subreg_idx];
+                auto src_mask = subreg_mask_map[src_subreg_idx];
+                
+                auto dst_subreg_idx = static_cast<size_t>(dst_subreg);
+                auto dst_offset = subreg_offset_map[dst_subreg_idx];
+                auto dst_mask = subreg_mask_map[dst_subreg_idx];
+
+                word src_value = (src.w0 & static_cast<word>(src_mask)) >> src_offset;
+                dest.w0 = (~static_cast<word>(dst_mask) & dest.w0) | (src_value << dst_offset) & static_cast<word>(dst_mask);
+            }
+
+            void copy_immval_reg(word address, size_t size, reg_value &dst_reg, subreg_enum dst_subreg) {
+                auto dst_subreg_idx = static_cast<size_t>(dst_subreg);
+                auto dst_index = subreg_index_map[dst_subreg_idx];
+                mm.read(address, dst_reg, size, dst_index);
+            }
+
+            void copy_regaddr_reg(reg_value const &src, subreg_enum src_subreg, reg_value &dest, subreg_enum dst_subreg) {
+                auto src_subreg_idx = static_cast<size_t>(src_subreg);
+                auto src_offset = subreg_offset_map[src_subreg_idx];
+                auto src_mask = subreg_mask_map[src_subreg_idx];
+
+                auto dst_subreg_idx = static_cast<size_t>(dst_subreg);
+                auto dst_offset = subreg_offset_map[dst_subreg_idx];
+                auto dst_mask = subreg_mask_map[dst_subreg_idx];
+
+                word src_address = (static_cast<word>(src_mask) & src.w0) >> src_offset;
+                reg src_data;
+                mm.read(src_address, src_data, subreg_enum::w0);
+                dest.w0 = (~static_cast<word>(dst_mask) & dest.w0) | (src_data.w0 << dst_offset) & static_cast<word>(dst_mask);
+            }
+
+            void copy_immaddr_reg(word address, size_t size, reg_value &dst_reg, subreg_enum dst_subreg) {
+                auto dst_subreg_idx = static_cast<size_t>(dst_subreg);
+                auto dst_offset = subreg_offset_map[dst_subreg_idx];
+
+                reg src_address;
+                mm.read(address, src_address, subreg_enum::w0);
+
+                mm.read(src_address.h0, dst_reg, size, dst_offset);
+            }
+
+            void copy_regval_regaddr(reg_value const &src, subreg_enum src_subreg, reg_value const &dest, subreg_enum dst_subreg) {
+                auto src_subreg_idx = static_cast<size_t>(src_subreg);
+                auto src_offset = subreg_offset_map[src_subreg_idx];
+                auto src_mask = subreg_mask_map[src_subreg_idx];
+                auto size = subreg_size_map[src_subreg_idx];
+
+                auto dst_subreg_idx = static_cast<size_t>(dst_subreg);
+                auto dst_offset = subreg_offset_map[dst_subreg_idx];
+                auto dst_mask = subreg_mask_map[dst_subreg_idx];
+
+                reg_value src_value = (src.w0 & static_cast<word>(src_mask)) >> src_offset;;
+                word dest_address = (dest.w0 & static_cast<word>(dst_mask)) >> dst_offset;
+
+                switch (size) {
+                    case 1: {
+                        mm.write(dest_address, src_value.b0);
+                        break;
+                    }
+
+                    case 2: {
+                        mm.write(dest_address, src_value.q0);
+                        break;
+                    }
+
+                    case 4: {
+                        mm.write(dest_address, src_value.h0);
+                        break;
+                    }
+
+                    case 8: {
+                        mm.write(dest_address, src_value.w0);
+                        break;
+                    }
+
+                    default:
+                        break;
+                }
+            }
+
+            void copy_immval_regaddr(word address, size_t size, reg_value const &dest, subreg_enum dst_subreg) {
+                auto dst_subreg_idx = static_cast<size_t>(dst_subreg);
+                auto dst_offset = subreg_offset_map[dst_subreg_idx];
+                auto dst_mask = subreg_mask_map[dst_subreg_idx];
+
+                reg_value src_value;
+                mm.read(address, src_value, size, 0);
+                word dest_address = (dest.w0 & static_cast<word>(dst_mask)) >> dst_offset;
+
+                switch (size) {
+                    case 1: {
+                        mm.write(dest_address, src_value.b0);
+                        break;
+                    }
+
+                    case 2: {
+                        mm.write(dest_address, src_value.q0);
+                        break;
+                    }
+
+                    case 4: {
+                        mm.write(dest_address, src_value.h0);
+                        break;
+                    }
+
+                    case 8: {
+                        mm.write(dest_address, src_value.w0);
+                        break;
+                    }
+
+                    default:
+                        break;
+                }
+            }
+
             byte cycle {0};
             byte step {0};
 
@@ -792,8 +1039,633 @@ namespace maize {
             }
         }
 
+        void run_alu() {
+            byte op_size = al.b2; // Destination size
+
+            switch (al.b0 & alu::opflag_code) {
+                case alu::op_add: {
+                    switch (op_size) {
+                        case 1: {
+                            byte result = al.dest_reg.b0 + al.src_reg.b0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            overflow_flag = result < al.dest_reg.b0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = al.dest_reg.q0 + al.src_reg.q0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            overflow_flag = result < al.dest_reg.q0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = al.dest_reg.h0 + al.src_reg.h0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            overflow_flag = result < al.dest_reg.h0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = al.dest_reg.w0 + al.src_reg.w0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            overflow_flag = result < al.dest_reg.w0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_cmp:
+                case alu::op_cmpind:
+                case alu::op_sub: {
+                    switch (op_size) {
+                        case 1: {
+                            byte result = al.dest_reg.b0 - al.src_reg.b0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            overflow_flag = result > al.dest_reg.b0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = al.dest_reg.q0 - al.src_reg.q0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            overflow_flag = result > al.dest_reg.q0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = al.dest_reg.h0 - al.src_reg.h0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            overflow_flag = result > al.dest_reg.h0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = al.dest_reg.w0 - al.src_reg.w0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            overflow_flag = result > al.dest_reg.w0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_mul: {
+                    switch (op_size) {
+                        case 1: {
+                            byte result = al.dest_reg.b0 - al.src_reg.b0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            overflow_flag = is_mul_overflow(al.src_reg.b0, al.dest_reg.b0) || is_mul_underflow(al.src_reg.b0, al.dest_reg.b0);
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = al.dest_reg.q0 - al.src_reg.q0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            overflow_flag = is_mul_overflow(al.src_reg.q0, al.dest_reg.q0) || is_mul_underflow(al.src_reg.q0, al.dest_reg.q0);
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = al.dest_reg.h0 - al.src_reg.h0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            overflow_flag = is_mul_overflow(al.src_reg.h0, al.dest_reg.h0) || is_mul_underflow(al.src_reg.h0, al.dest_reg.h0);
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = al.dest_reg.w0 - al.src_reg.w0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            overflow_flag = is_mul_overflow(al.src_reg.h0, al.dest_reg.h0) || is_mul_underflow(al.src_reg.h0, al.dest_reg.h0);
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_div: {
+                    overflow_flag = false;
+
+                    switch (op_size) {
+                        case 1: {
+                            byte result = al.dest_reg.b0 / al.src_reg.b0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = al.dest_reg.q0 / al.src_reg.q0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = al.dest_reg.h0 / al.src_reg.h0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = al.dest_reg.w0 / al.src_reg.w0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_mod: {
+                    overflow_flag = false;
+
+                    switch (op_size) {
+                        case 1: {
+                            byte result = al.dest_reg.b0 % al.src_reg.b0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = al.dest_reg.q0 % al.src_reg.q0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = al.dest_reg.h0 % al.src_reg.h0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = al.dest_reg.w0 % al.src_reg.w0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_test:
+                case alu::op_testind:
+                case alu::op_and: {
+                    overflow_flag = false;
+
+                    switch (op_size) {
+                        case 1: {
+                            byte result = al.dest_reg.b0 & al.src_reg.b0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = al.dest_reg.q0 & al.src_reg.q0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = al.dest_reg.h0 & al.src_reg.h0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = al.dest_reg.w0 & al.src_reg.w0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_or: {
+                    overflow_flag = false;
+
+                    switch (op_size) {
+                        case 1: {
+                            byte result = al.dest_reg.b0 | al.src_reg.b0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = al.dest_reg.q0 | al.src_reg.q0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = al.dest_reg.h0 | al.src_reg.h0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = al.dest_reg.w0 | al.src_reg.w0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_nor: {
+                    overflow_flag = false;
+
+                    switch (op_size) {
+                        case 1: {
+                            byte result = ~(al.dest_reg.b0 | al.src_reg.b0);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = ~(al.dest_reg.q0 | al.src_reg.q0);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = ~(al.dest_reg.h0 | al.src_reg.h0);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = ~(al.dest_reg.w0 | al.src_reg.w0);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_nand: {
+                    overflow_flag = false;
+
+                    switch (op_size) {
+                        case 1: {
+                            byte result = ~(al.dest_reg.b0 & al.src_reg.b0);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = ~(al.dest_reg.q0 & al.src_reg.q0);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = ~(al.dest_reg.h0 & al.src_reg.h0);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = ~(al.dest_reg.w0 & al.src_reg.w0);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_xor: {
+                    overflow_flag = false;
+
+                    switch (op_size) {
+                        case 1: {
+                            byte result = al.dest_reg.b0 ^ al.src_reg.b0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = al.dest_reg.q0 ^ al.src_reg.q0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = al.dest_reg.h0 ^ al.src_reg.h0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = al.dest_reg.w0 ^ al.src_reg.w0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_shl: {
+                    switch (op_size) {
+                        case 1: {
+                            byte result = al.dest_reg.b0 << al.src_reg.b0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            overflow_flag = result < al.dest_reg.b0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = al.dest_reg.q0 << al.src_reg.q0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            overflow_flag = result < al.dest_reg.q0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = al.dest_reg.h0 << al.src_reg.h0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            overflow_flag = result < al.dest_reg.h0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = al.dest_reg.w0 << al.src_reg.w0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            overflow_flag = result < al.dest_reg.w0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_shr: {
+                    switch (op_size) {
+                        case 1: {
+                            byte result = al.dest_reg.b0 >> al.src_reg.b0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            overflow_flag = result < al.dest_reg.b0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = al.dest_reg.q0 >> al.src_reg.q0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            overflow_flag = result < al.dest_reg.q0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = al.dest_reg.h0 >> al.src_reg.h0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            overflow_flag = result < al.dest_reg.h0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = al.dest_reg.w0 >> al.src_reg.w0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            overflow_flag = result < al.dest_reg.w0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_inc: {
+                    switch (op_size) {
+                        case 1: {
+                            byte result = al.dest_reg.b0 + byte(1);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            overflow_flag = result < al.dest_reg.b0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = al.dest_reg.q0 + qword(1);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            overflow_flag = result < al.dest_reg.q0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = al.dest_reg.h0 + hword(1);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            overflow_flag = result < al.dest_reg.h0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = al.dest_reg.w0 + word(1);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            overflow_flag = result < al.dest_reg.w0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_dec: {
+                    switch (op_size) {
+                        case 1: {
+                            byte result = al.dest_reg.b0 - byte(1);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            overflow_flag = result > al.dest_reg.b0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = al.dest_reg.q0 - qword(1);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            overflow_flag = result > al.dest_reg.q0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = al.dest_reg.h0 - hword(1);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            overflow_flag = result > al.dest_reg.h0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = al.dest_reg.w0 - word(1);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            overflow_flag = result > al.dest_reg.w0;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case alu::op_not: {
+                    overflow_flag = 0;
+
+                    switch (op_size) {
+                        case 1: {
+                            byte result = ~al.dest_reg.b0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            qword result = ~al.dest_reg.q0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            hword result = ~al.dest_reg.h0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            word result = ~al.dest_reg.w0;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            al.dest_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+            }
+        }
+
         /* This is the state machine that implements the machine-code instructions. */
         void tick() {
+            std::vector<byte> instr_data;
             running_flag = true;
 
             while (running_flag) {
@@ -801,15 +1673,8 @@ namespace maize {
                     case run_states::decode: {
                         switch (cycle) {
                             case 0: {
-                                regs::p.enable_to_bus(address_bus, subreg_enum::h0);
-                                mm.set_address_from_bus(address_bus);
-                                break;
-                            }
-
-                            case 1: {
-                                regs::p.increment(1);
-                                mm.enable_memory_to_bus(data_bus_0, 8);
-                                regs::in.set_from_bus(data_bus_0, subreg_enum::w0);
+                                mm.read(regs::p.h0, regs::in, subreg_enum::w0);
+                                ++regs::p.h0;
                                 run_state = run_states::execute;
                                 step = 0;
                                 break;
@@ -839,14 +1704,12 @@ namespace maize {
 
                             case instr::clr_regVal: {
                                 switch (step) {
-                                case 0:
-                                    regs::p.increment(1);
-                                    operand1.w0 = 0;
-                                    operand1.enable_to_bus(data_bus_0, subreg_enum::w0);
-                                    src_reg().set_from_bus(data_bus_0, src_subreg_flag());
-                                    instr_complete();
-                                    break;
-                                }
+                                    case 0:
+                                        regs::p.increment(1);
+                                        clr_reg(src_reg(), src_subreg_flag());
+                                        instr_complete();
+                                        break;
+                                    }
 
                                 break;
                             }
@@ -854,9 +1717,8 @@ namespace maize {
                             case instr::ld_regVal_reg: {
                                 switch (step) {
                                     case 0: {
-                                        regs::p.increment(2);
-                                        src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
-                                        dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
+                                        regs::p.h0 += 2;
+                                        copy_regval_reg(src_reg(), src_subreg_flag(), dest_reg(), dest_subreg_flag());
                                         instr_complete();
                                         break;
                                     }
@@ -868,17 +1730,10 @@ namespace maize {
                             case instr::ld_immVal_reg: {
                                 switch (step) {
                                     case 0: {
-                                        regs::p.increment(2);
-                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
-                                        mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
-
-                                    case 1: {
-                                        byte src_size = src_imm_size();
-                                        regs::p.increment(src_size);
-                                        mm.enable_memory_to_bus(data_bus_0, src_size);
-                                        dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
+                                        regs::p.h0 += 2;
+                                        hword imm_size = src_imm_size();
+                                        copy_immval_reg(regs::p.h0, imm_size, dest_reg(), dest_subreg_flag());
+                                        regs::p.h0 += imm_size;
                                         instr_complete();
                                         break;
                                     }
@@ -890,15 +1745,8 @@ namespace maize {
                             case instr::ld_regAddr_reg: {
                                 switch (step) {
                                     case 0: {
-                                        regs::p.increment(2);
-                                        src_reg().enable_to_bus(address_bus, src_subreg_flag());
-                                        mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
-
-                                    case 1: {
-                                        mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
-                                        dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
+                                        regs::p.h0 += 2;
+                                        copy_regaddr_reg(src_reg(), src_subreg_flag(), dest_reg(), dest_subreg_flag());
                                         instr_complete();
                                         break;
                                     }
@@ -910,22 +1758,12 @@ namespace maize {
                             case instr::ld_immAddr_reg: {
                                 switch (step) {
                                     case 0: {
-                                        regs::p.increment(2);
-                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
-                                        mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
+                                        regs::p.h0 += 2;
+                                        hword imm_size = src_imm_size();
+                                        hword dest_size = dest_subreg_size();
+                                        copy_immaddr_reg(regs::p.h0, dest_size, dest_reg(), dest_subreg_flag());
+                                        regs::p.h0 += imm_size;
 
-                                    case 1: {
-                                        regs::p.increment(src_imm_size());
-                                        mm.enable_memory_to_bus(address_bus, subreg_enum::w0);
-                                        mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
-                                        dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
                                         instr_complete();
                                         break;
                                     }
@@ -937,11 +1775,23 @@ namespace maize {
                             case instr::st_regVal_regAddr: {
                                 switch (step) {
                                     case 0: {
-                                        regs::p.increment(2);
-                                        src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
-                                        dest_reg().enable_to_bus(address_bus, dest_subreg_flag());
-                                        mm.set_address_from_bus(address_bus);
-                                        mm.set_memory_from_bus(data_bus_0, src_subreg_flag());
+                                        regs::p.h0 += 2;
+                                        copy_regval_regaddr(src_reg(), src_subreg_flag(), dest_reg(), dest_subreg_flag());
+                                        instr_complete();
+                                        break;
+                                    }
+                                }
+
+                                break;
+                            }
+
+                            case instr::st_immVal_regAddr: {
+                                switch (step) {
+                                    case 0: {
+                                        regs::p.h0 += 2;
+                                        hword imm_size = src_imm_size();
+                                        copy_immval_regaddr(regs::p.h0, imm_size, dest_reg(), dest_subreg_flag());
+                                        regs::p.h0 += imm_size;
                                         instr_complete();
                                         break;
                                     }
@@ -955,24 +1805,26 @@ namespace maize {
                             case instr::mul_regVal_reg:
                             case instr::div_regVal_reg:
                             case instr::mod_regVal_reg:
+                            case instr::and_regVal_reg:
+                            case instr::or_regVal_reg:
+                            case instr::nor_regVal_reg:
+                            case instr::nand_regVal_reg:
+                            case instr::xor_regVal_reg:
+                            case instr::shl_regVal_reg:
+                            case instr::shr_regVal_reg:
+                            case instr::cmp_regVal_reg:
+                            case instr::test_regVal_reg:
                             {
                                 switch (step) {
                                     case 0: {
+                                        regs::p.h0 += 2;
                                         al.b0 = regs::in.b0;
-                                        regs::p.increment(2);
-                                        src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
+                                        copy_regval_reg(src_reg(), src_subreg_flag(), al.src_reg, subreg_enum::w0);
+                                        copy_regval_reg(dest_reg(), dest_subreg_flag(), al.dest_reg, subreg_enum::w0);
                                         al.b1 = src_subreg_size();
-                                        dest_reg().enable_to_bus(data_bus_1, dest_subreg_flag());
                                         al.b2 = dest_subreg_size();
-                                        al.set_src_from_bus(data_bus_0);
-                                        al.set_dest_from_bus(data_bus_1);
-                                        instr_jmp_alu();
-                                        break;
-                                    }
-
-                                    case 1: {
-                                        al.enable_dest_to_bus(data_bus_0);
-                                        dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
+                                        run_alu();
+                                        copy_regval_reg(al.dest_reg, subreg_enum::w0, dest_reg(), dest_subreg_flag());
                                         instr_complete();
                                         break;
                                     }
@@ -986,75 +1838,28 @@ namespace maize {
                             case instr::mul_immVal_reg:
                             case instr::div_immVal_reg:
                             case instr::mod_immVal_reg:
+                            case instr::and_immVal_reg:
+                            case instr::or_immVal_reg:
+                            case instr::nor_immVal_reg:
+                            case instr::nand_immVal_reg:
+                            case instr::xor_immVal_reg:
+                            case instr::shl_immVal_reg:
+                            case instr::shr_immVal_reg:
+                            case instr::cmp_immVal_reg:
+                            case instr::test_immVal_reg:
                             {
                                 switch (step) {
                                     case 0: {
+                                        regs::p.h0 += 2;
                                         al.b0 = regs::in.b0;
-                                        regs::p.increment(2);
-                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
-                                        mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
-
-                                    case 1: {
                                         byte src_size = src_imm_size();
+                                        copy_immval_reg(regs::p.h0, src_size, al.src_reg, subreg_enum::w0);
+                                        copy_regval_reg(dest_reg(), dest_subreg_flag(), al.dest_reg, subreg_enum::w0);
                                         al.b1 = src_size;
-                                        regs::p.increment(src_size);
-                                        mm.enable_memory_to_bus(data_bus_0, src_size);
-                                        dest_reg().enable_to_bus(data_bus_1, dest_subreg_flag());
                                         al.b2 = dest_subreg_size();
-                                        al.set_src_from_bus(data_bus_0);
-                                        al.set_dest_from_bus(data_bus_1);
-                                        instr_jmp_alu();
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        al.enable_dest_to_bus(data_bus_0);
-                                        dest_reg().set_from_bus(data_bus_0, dest_subreg_flag());
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
-                                break;
-                            }
-
-                            case instr::cmpind_immVal_regAddr: 
-                            {
-                                switch (step) {
-                                    case 0: {
-                                        al.b0 = regs::in.b0;
-                                        regs::p.increment(2);
-                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
-                                        mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
-
-                                    case 1: {
-                                        byte src_size = src_imm_size();
-                                        al.b1 = src_size;
-                                        al.b2 = src_size;
-                                        regs::p.increment(src_size);
-                                        mm.enable_memory_to_bus(data_bus_0, src_size);
-                                        al.set_src_from_bus(data_bus_0);
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        dest_reg().enable_to_bus(address_bus, dest_subreg_flag());
-                                        mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
-
-                                    case 3: {
-                                        mm.enable_memory_to_bus(data_bus_0, dest_subreg_flag());
-                                        al.set_dest_from_bus(data_bus_0);
-                                        instr_jmp_alu();
-                                        break;
-                                    }
-
-                                    case 4: {
+                                        run_alu();
+                                        regs::p.h0 += src_size;
+                                        copy_regval_reg(al.dest_reg, subreg_enum::w0, dest_reg(), dest_subreg_flag());
                                         instr_complete();
                                         break;
                                     }
@@ -1068,8 +1873,30 @@ namespace maize {
                             case instr::mul_regAddr_reg:
                             case instr::div_regAddr_reg:
                             case instr::mod_regAddr_reg:
+                            case instr::and_regAddr_reg:
+                            case instr::or_regAddr_reg:
+                            case instr::nor_regAddr_reg:
+                            case instr::nand_regAddr_reg:
+                            case instr::xor_regAddr_reg:
+                            case instr::shl_regAddr_reg:
+                            case instr::shr_regAddr_reg:
+                            case instr::cmp_regAddr_reg:
+                            case instr::test_regAddr_reg:
                             {
                                 switch (step) {
+                                    case 0: {
+                                        regs::p.h0 += 2;
+                                        al.b0 = regs::in.b0;
+                                        copy_regaddr_reg(src_reg(), src_subreg_flag(), al.src_reg, subreg_enum::w0);
+                                        copy_regaddr_reg(dest_reg(), dest_subreg_flag(), al.dest_reg, subreg_enum::w0);
+                                        al.b1 = src_subreg_size();
+                                        al.b2 = dest_subreg_size();
+                                        run_alu();
+                                        copy_regval_reg(al.dest_reg, subreg_enum::w0, dest_reg(), dest_subreg_flag());
+                                        instr_complete();
+                                        break;
+                                    }
+#if false
                                     case 0: {
                                         al.b0 = regs::in.b0;
                                         regs::p.increment(2);
@@ -1096,6 +1923,7 @@ namespace maize {
                                         instr_complete();
                                         break;
                                     }
+#endif
                                 }
 
                                 break;
@@ -1106,6 +1934,15 @@ namespace maize {
                             case instr::mul_immAddr_reg:
                             case instr::div_immAddr_reg:
                             case instr::mod_immAddr_reg:
+                            case instr::and_immAddr_reg:
+                            case instr::or_immAddr_reg:
+                            case instr::nor_immAddr_reg:
+                            case instr::nand_immAddr_reg:
+                            case instr::xor_immAddr_reg:
+                            case instr::shl_immAddr_reg:
+                            case instr::shr_immAddr_reg:
+                            case instr::cmp_immAddr_reg:
+                            case instr::test_immAddr_reg:
                             {
                                 switch (step) {
                                     case 0: {
@@ -1164,6 +2001,83 @@ namespace maize {
                                     case 1: {
                                         al.enable_dest_to_bus(data_bus_0);
                                         src_reg().set_from_bus(data_bus_0, src_subreg_flag());
+                                        instr_complete();
+                                        break;
+                                    }
+                                }
+
+                                break;
+                            }
+
+                            case instr::cmpind_immVal_regAddr:
+                            case instr::testind_immVal_regAddr:
+                            {
+                                switch (step) {
+                                    case 0: {
+                                        al.b0 = regs::in.b0;
+                                        regs::p.increment(2);
+                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
+                                        mm.set_address_from_bus(address_bus);
+                                        break;
+                                    }
+
+                                    case 1: {
+                                        byte src_size = src_imm_size();
+                                        al.b1 = src_size;
+                                        al.b2 = src_size;
+                                        regs::p.increment(src_size);
+                                        mm.enable_memory_to_bus(data_bus_0, src_size);
+                                        al.set_src_from_bus(data_bus_0);
+                                        break;
+                                    }
+
+                                    case 2: {
+                                        dest_reg().enable_to_bus(address_bus, dest_subreg_flag());
+                                        mm.set_address_from_bus(address_bus);
+                                        break;
+                                    }
+
+                                    case 3: {
+                                        mm.enable_memory_to_bus(data_bus_0, dest_subreg_flag());
+                                        al.set_dest_from_bus(data_bus_0);
+                                        instr_jmp_alu();
+                                        break;
+                                    }
+
+                                    case 4: {
+                                        instr_complete();
+                                        break;
+                                    }
+                                }
+
+                                break;
+                            }
+
+                            case instr::cmpind_regVal_regAddr:
+                            case instr::testind_regVal_regAddr:
+                            {
+                                switch (step) {
+                                    case 0: {
+                                        al.b0 = regs::in.b0;
+                                        byte src_size = src_subreg_size();
+                                        al.b1 = src_size;
+                                        al.b2 = src_size;
+                                        regs::p.increment(2);
+                                        src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
+                                        dest_reg().enable_to_bus(address_bus, dest_subreg_flag());
+                                        mm.set_address_from_bus(address_bus);
+                                        break;
+                                    }
+
+                                    case 1: {
+                                        al.set_src_from_bus(data_bus_0);
+                                        mm.enable_memory_to_bus(data_bus_1, subreg_enum::w0);
+                                        al.set_dest_from_bus(data_bus_1);
+                                        instr_jmp_alu();
+                                        break;
+                                    }
+
+                                    case 2: {
                                         instr_complete();
                                         break;
                                     }
@@ -1325,20 +2239,14 @@ namespace maize {
                                         regs::p.increment(src_size);
                                         mm.enable_memory_to_bus(data_bus_0, src_size);
                                         operand1.set_from_bus(data_bus_0, subreg_enum::w0);
-                                        break;
-                                    }
-                                    case 2: {
                                         regs::s.decrement(sizeof(hword), subreg_enum::h0);
                                         regs::s.enable_to_bus(address_bus, subreg_enum::h0);
                                         mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
-                                    case 3: {
                                         regs::p.enable_to_bus(data_bus_1, subreg_enum::w0);
                                         mm.set_memory_from_bus(data_bus_1, subreg_enum::w0);
                                         break;
                                     }
-                                    case 4: {
+                                    case 2: {
                                         operand1.enable_to_bus(data_bus_0, subreg_enum::h0);
                                         regs::p.set_from_bus(data_bus_0, subreg_enum::h0);
                                         instr_complete();
@@ -1393,11 +2301,13 @@ namespace maize {
                                         break;
                                     }
                                     case 1: {
-                                        byte src_size = src_imm_size();
-                                        regs::p.increment(src_size);
                                         if (cpu::zero_flag) {
                                             mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
                                             regs::p.set_from_bus(data_bus_0, subreg_enum::h0);
+                                        }
+                                        else {
+                                            byte src_size = src_imm_size();
+                                            regs::p.increment(src_size);
                                         }
                                         instr_complete();
                                         break;
@@ -1419,425 +2329,7 @@ namespace maize {
                     }
 
                     case run_states::alu: {
-                        // byte op_size = subreg_size_map[dest_subreg_index()];
-                        byte op_size = al.b1;
-
-                        switch (al.b0 & alu::opflag_code) {
-                            case alu::op_add: {
-                                switch (op_size) {
-                                    case 1: {
-                                        byte result = al.dest_reg.b0 + al.src_reg.b0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80;
-                                        overflow_flag = result < al.dest_reg.b0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        qword result = al.dest_reg.q0 + al.src_reg.q0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000;
-                                        overflow_flag = result < al.dest_reg.q0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 4: {
-                                        hword result = al.dest_reg.h0 + al.src_reg.h0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80000000;
-                                        overflow_flag = result < al.dest_reg.h0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 8: {
-                                        word result = al.dest_reg.w0 + al.src_reg.w0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000000000000000;
-                                        overflow_flag = result < al.dest_reg.w0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-                                }
-
-                                break;
-                            }
-
-                            case alu::op_sub: {
-                                switch (op_size) {
-                                    case 1: {
-                                        byte result = al.dest_reg.b0 - al.src_reg.b0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80;
-                                        overflow_flag = result > al.dest_reg.b0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        qword result = al.dest_reg.q0 - al.src_reg.q0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000;
-                                        overflow_flag = result > al.dest_reg.q0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 4: {
-                                        hword result = al.dest_reg.h0 - al.src_reg.h0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80000000;
-                                        overflow_flag = result > al.dest_reg.h0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 8: {
-                                        word result = al.dest_reg.w0 - al.src_reg.w0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000000000000000;
-                                        overflow_flag = result > al.dest_reg.w0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-                                }
-
-                                break;
-                            }
-
-                            case alu::op_mul: {
-                                switch (op_size) {
-                                    case 1: {
-                                        byte result = al.dest_reg.b0 - al.src_reg.b0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80;
-                                        overflow_flag = alu::is_mul_overflow(al.src_reg.b0, al.dest_reg.b0) || alu::is_mul_underflow(al.src_reg.b0, al.dest_reg.b0);
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        qword result = al.dest_reg.q0 - al.src_reg.q0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000;
-                                        overflow_flag = alu::is_mul_overflow(al.src_reg.q0, al.dest_reg.q0) || alu::is_mul_underflow(al.src_reg.q0, al.dest_reg.q0);
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 4: {
-                                        hword result = al.dest_reg.h0 - al.src_reg.h0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80000000;
-                                        overflow_flag = alu::is_mul_overflow(al.src_reg.h0, al.dest_reg.h0) || alu::is_mul_underflow(al.src_reg.h0, al.dest_reg.h0);
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 8: {
-                                        word result = al.dest_reg.w0 - al.src_reg.w0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000000000000000;
-                                        overflow_flag = alu::is_mul_overflow(al.src_reg.h0, al.dest_reg.h0) || alu::is_mul_underflow(al.src_reg.h0, al.dest_reg.h0);
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-                                }
-
-                                break;
-                            }
-
-                            case alu::op_div: {
-                                overflow_flag = false;
-
-                                switch (op_size) {
-                                    case 1: {
-                                        byte result = al.dest_reg.b0 / al.src_reg.b0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        qword result = al.dest_reg.q0 / al.src_reg.q0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 4: {
-                                        hword result = al.dest_reg.h0 / al.src_reg.h0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80000000;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 8: {
-                                        word result = al.dest_reg.w0 / al.src_reg.w0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000000000000000;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-                                }
-
-                                break;
-                            }
-
-                            case alu::op_mod: {
-                                overflow_flag = false;
-
-                                switch (op_size) {
-                                    case 1: {
-                                        byte result = al.dest_reg.b0 % al.src_reg.b0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        qword result = al.dest_reg.q0 % al.src_reg.q0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 4: {
-                                        hword result = al.dest_reg.h0 % al.src_reg.h0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80000000;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 8: {
-                                        word result = al.dest_reg.w0 % al.src_reg.w0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000000000000000;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-                                }
-
-                                break;
-                            }
-
-                            case alu::op_and: {
-                                overflow_flag = false;
-
-                                switch (op_size) {
-                                    case 1: {
-                                        byte result = al.dest_reg.b0 % al.src_reg.b0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        qword result = al.dest_reg.q0 % al.src_reg.q0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 4: {
-                                        hword result = al.dest_reg.h0 % al.src_reg.h0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80000000;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 8: {
-                                        word result = al.dest_reg.w0 % al.src_reg.w0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000000000000000;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-                                }
-
-                                break;
-                            }
-
-                            case alu::op_inc: {
-                                switch (op_size) {
-                                    case 1: {
-                                        byte result = al.dest_reg.b0 + byte(1);
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80;
-                                        overflow_flag = result < al.dest_reg.b0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        qword result = al.dest_reg.q0 + qword(1);
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000;
-                                        overflow_flag = result < al.dest_reg.q0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 4: {
-                                        hword result = al.dest_reg.h0 + hword(1);
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80000000;
-                                        overflow_flag = result < al.dest_reg.h0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 8: {
-                                        word result = al.dest_reg.w0 + word(1);
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000000000000000;
-                                        overflow_flag = result < al.dest_reg.w0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-                                }
-
-                                break;
-                            }
-
-                            case alu::op_dec: {
-                                switch (op_size) {
-                                    case 1: {
-                                        byte result = al.dest_reg.b0 - byte(1);
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80;
-                                        overflow_flag = result > al.dest_reg.b0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        qword result = al.dest_reg.q0 - qword(1);
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000;
-                                        overflow_flag = result > al.dest_reg.q0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 4: {
-                                        hword result = al.dest_reg.h0 - hword(1);
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80000000;
-                                        overflow_flag = result > al.dest_reg.h0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 8: {
-                                        word result = al.dest_reg.w0 - word(1);
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000000000000000;
-                                        overflow_flag = result > al.dest_reg.w0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-                                }
-
-                                break;
-                            }
-
-                            case alu::op_not: {
-                                overflow_flag = 0;
-
-                                switch (op_size) {
-                                    case 1: {
-                                        byte result = ~al.dest_reg.b0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        qword result = ~al.dest_reg.q0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 4: {
-                                        hword result = ~al.dest_reg.h0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80000000;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 8: {
-                                        word result = ~al.dest_reg.w0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000000000000000;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-                                }
-
-                                break;
-                            }
-
-                            case alu::op_cmp:
-                            case alu::op_cmpind: {
-                                switch (op_size) {
-                                    case 1: {
-                                        byte result = al.dest_reg.b0 - al.src_reg.b0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80;
-                                        overflow_flag = result > al.dest_reg.b0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        qword result = al.dest_reg.q0 - al.src_reg.q0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000;
-                                        overflow_flag = result > al.dest_reg.q0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 4: {
-                                        hword result = al.dest_reg.h0 - al.src_reg.h0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x80000000;
-                                        overflow_flag = result > al.dest_reg.h0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-
-                                    case 8: {
-                                        word result = al.dest_reg.w0 - al.src_reg.w0;
-                                        zero_flag = result == 0;
-                                        negative_flag = result & 0x8000000000000000;
-                                        overflow_flag = result > al.dest_reg.w0;
-                                        al.dest_reg.w0 = result;
-                                        break;
-                                    }
-                                }
-
-                                break;
-                            }
-
-                        }
-
+                        run_alu();
                         run_state = run_states::execute;
 
                         /* Go back to the top of the loop, skipping the increment/enable/set steps
@@ -1962,6 +2454,7 @@ namespace maize {
                 }
             }
         }
+
     } // namespace cpu; 
 
 } // namespace maize

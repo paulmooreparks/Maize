@@ -204,7 +204,7 @@ namespace {
         { "CLR",    {cpu::instr::clr_opcode    , opcode_1param_tokenizer, reg_compiler}},
         { "CMPIND", {cpu::instr::cmpind_opcode , opcode_2param_tokenizer, regimm_regaddr_compiler}},
         { "INT",    {cpu::instr::int_opcode    , opcode_1param_tokenizer, regimm_compiler}},
-        { "TSTIND", {cpu::instr::tstind_opcode , opcode_2param_tokenizer, regimm_regaddr_compiler}},
+        { "TESTIND",{cpu::instr::testind_opcode, opcode_2param_tokenizer, regimm_regaddr_compiler}},
         { "POP",    {cpu::instr::pop_opcode    , opcode_1param_tokenizer, reg_compiler}},
         { "RET",    {cpu::instr::ret_opcode    , opcode_0param_tokenizer, no_operand_compiler}},
         { "IRET",   {cpu::instr::iret_opcode   , opcode_0param_tokenizer, no_operand_compiler}},
@@ -1000,13 +1000,16 @@ namespace {
             std::string subreg {};
             auto subreg_sep {reg_str.find('.')};
 
-            if (subreg_sep) {
+            if (subreg_sep != std::string::npos) {
                 reg = reg_str.substr(0, subreg_sep);
                 subreg = reg_str.substr(subreg_sep + 1);
 
                 if (subreg_map.contains(subreg)) {
-                    reg_byte |= subreg_map[subreg];
+                    reg_byte = subreg_map[subreg];
                 }
+            }
+            else {
+                reg_byte = cpu::opflag_subreg_w0;
             }
 
             if (reg_map.contains(reg)) {
