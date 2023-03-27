@@ -311,15 +311,9 @@ namespace maize {
 				return w0;
 			}
 
+		protected:
 			void increment(byte value, subreg_enum subreg = subreg_enum::w0);
 			void decrement(byte value, subreg_enum subreg = subreg_enum::w0);
-
-			void enable_to_bus(bus& en_bus, subreg_enum subreg);
-			void set_from_bus(bus& set_bus, subreg_enum subreg);
-			virtual void on_enable();
-			virtual void on_set();
-
-		protected:
 			// word privilege_flags {0};
 			// word privilege_mask {0};
 		};
@@ -327,25 +321,10 @@ namespace maize {
 		class device : public reg {
 		public:
 			device() = default;
-
-		protected:
 			reg address_reg;
-
-		public:
-			void enable_address_to_bus(bus& enable_bus);
-			void set_address_from_bus(bus& set_bus);
-			void enable_io_to_bus(bus& io_bus);
-			void set_io_from_bus(bus& source_bus);
 		};
 
 		struct memory_module : public reg {
-			void set_segment_from_bus(bus& source_bus);
-			void set_address_from_bus(bus& source_bus);
-			void enable_memory_to_bus(bus& load_bus, size_t size);
-			void enable_memory_to_bus(bus& load_bus, subreg_enum subreg);
-			bool enable_memory_scheduled();
-			void on_enable_memory();
-
 			template <typename T> hword write(reg_value address, T value);
 			template <> hword write<byte>(reg_value address, byte value);
 			template <> hword write<qword>(reg_value address, qword value);
@@ -354,15 +333,11 @@ namespace maize {
 
 			size_t read(reg_value const &address, reg_value &reg, subreg_enum subreg);
 			size_t read(word address, reg_value &reg, subreg_enum subreg);
-			size_t read(reg_value const &address, reg_value &reg, size_t count, size_t dest_idx);
-			size_t read(word address, reg_value &reg, size_t count, size_t dest_idx);
+			size_t read(reg_value const &address, reg_value &reg, size_t count, size_t dst_idx);
+			size_t read(word address, reg_value &reg, size_t count, size_t dst_idx);
 			size_t read(reg_value address, hword count, std::vector<byte> &retval);
 			std::vector<byte> read(reg_value address, hword count);
 			byte read_byte(word address);
-			void set_memory_from_bus(bus& store_bus, subreg_enum subreg);
-			bool set_memory_scheduled();
-			void on_set_memory();
-			void set_memory(maize::cpu::reg_value &address);
 			word last_block() const;
 			
 			const hword block_size {0x100};
@@ -412,11 +387,7 @@ namespace maize {
 			static const opcode opflag_size {0x30}; // 1100`0000
 
 			reg src_reg;
-			reg dest_reg;
-
-			void set_src_from_bus(bus& source_bus, subreg_enum subreg = subreg_enum::w0);
-			void set_dest_from_bus(bus& source_bus, subreg_enum subreg = subreg_enum::w0);
-			void enable_dest_to_bus(bus& dest_bus, subreg_enum subreg = subreg_enum::w0);
+			reg dst_reg;
 		};
 
 
