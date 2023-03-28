@@ -8,13 +8,13 @@ above the virtual devices, implement a simple OS and a subset of Unix/Linux syst
 ## How To Use Maize
 
 Maize is implemented in C++ and will run on Windows and Linux. The primary executable is [maize](https://github.com/paulmooreparks/Maize/blob/master/src/maize.cpp), 
-which accepts a path to a binary file to execute. You may generate a binary from Maize assembly with the mazm executable, 
+which accepts a path to a binary file to execute. You may generate a binary from Maize assembly with the [mazm](https://github.com/paulmooreparks/Maize/blob/master/src/mazm.cpp) executable, 
 which accepts a path to an assembly file.
 
 I haven't finished porting all of the instructions from the .NET implementation yet, but now that I've finished restructuring the 
 code it shouldn't take too long to complete them.
 
-The assembler is still VERY bare-bones, but it's enough to play around with.
+The [assembler](https://github.com/paulmooreparks/Maize/blob/master/src/mazm.cpp) is still VERY bare-bones, but it's enough to play around with.
 
 ## Project Status
 
