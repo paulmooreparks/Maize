@@ -7,9 +7,14 @@ above the virtual devices, implement a simple OS and a subset of Unix/Linux syst
 
 ## How To Use Maize
 
-Maize is implemented in C++ and will run on Windows and Linux. I have not ported [the C# version of the assember (mazm)](https://github.com/paulmooreparks/Tortilla/tree/master/mazm) 
-yet, but that will arrive as soon as I implement a few more instructions. For now, the binary just executes a few hand-coded instructions that are loaded into memory from the 
-main function.
+Maize is implemented in C++ and will run on Windows and Linux. The primary executable is [maize](https://github.com/paulmooreparks/Maize/blob/master/src/maize.cpp), 
+which accepts a path to a binary file to execute. You may generate a binary from Maize assembly with the mazm executable, 
+which accepts a path to an assembly file.
+
+I haven't finished porting all of the instructions from the .NET implementation yet, but now that I've finished restructuring the 
+code it shouldn't take too long to complete them.
+
+The assembler is still VERY bare-bones, but it's enough to play around with.
 
 ## Project Status
 
@@ -18,16 +23,24 @@ expect too much in the way of application usability... yet! I'm still porting th
 Next, I'll start creating a file-system device. In the future I plan to port Clang or GCC to work with Maize binaries so that I can 
 eventually port Linux to the virtual CPU.
 
-In the short term, I'm implementing a very basic OS over a simple BIOS ([core.asm](https://github.com/paulmooreparks/Tortilla/blob/master/core.asm)). 
-It will provide a basic character-mode [CLI](https://github.com/paulmooreparks/Tortilla/blob/master/cli.asm) to allow building and running simple Maize
+In the short term, I'm implementing a very basic OS over a simple BIOS ([core.asm](https://github.com/paulmooreparks/Maize/blob/master/asm/core.asm)). 
+It will provide a basic character-mode [CLI](https://github.com/paulmooreparks/Maize/blob/master/asm/cli.asm) to allow building and running simple Maize
 programs from within the virtual CPU environment. 
 
 So far, this implementation in C++ is MUCH faster and MUCH tighter than the .NET version.
 
+The near-term road map is as follows:
+
+* Finish implementing all of the instructions documented below
+* Introduce "devices," which were partially implemented in the .NET version
+* Implement a linker so that binaries can be built independently and linked together
+* Clean up the assembler (mazm) and introduce some proper error checking
+* Port a C compiler to generate Maize byte code
+
 ## Hello, World!
 
-Here is a simple ["Hello, World!" application](https://github.com/paulmooreparks/Maize/blob/master/HelloWorld.asm) 
-written in Maize assembly, targeting the basic OS I've written and the system calls it implements.
+Here is a simple ["Hello, World!" application](https://github.com/paulmooreparks/Maize/blob/master/asm/HelloWorld.asm) 
+written in Maize assembly, targeting the basic OS I've written and the system calls it implements (which are just Linux system calls).
 
     INCLUDE "core.asm"
     INCLUDE "stdlib.asm"
