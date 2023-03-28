@@ -218,13 +218,14 @@ namespace {
     };
 
     void assemble(std::string file_path) {
+        std::filesystem::path asm_path {std::filesystem::canonical(file_path)};
         std::fstream fin(file_path, std::fstream::in);
         token_tree tree {file_path};
         tokenize(fin, tree);
         compile(tree);
 
-        std::filesystem::path bin_path = file_path;
-        std::filesystem::path ext = "bin";
+        std::filesystem::path bin_path {asm_path};
+        std::filesystem::path ext {"bin"};
 
         bin_path.replace_extension(ext);
 
@@ -400,12 +401,18 @@ namespace {
     parser_state parse_keyword(std::fstream &fin, token_tree &tree, char c) {
         std::string keyword = current_token;
         current_token.clear();
-        token_tree &sub_tree = tree.add(keyword);
 
         if (keywords.contains(keyword)) {
+            /* Keywords are fixed-case. */
+            token_tree &sub_tree = tree.add(keyword);
             return keywords[keyword].tokenizer(fin, sub_tree, c);
         }
-        else if (opcodes.contains(keyword)) {
+
+        /* Opcodes may be upper-case, lower-case, or mixed-case. Make everything upper-case for comparison. */
+        std::transform(keyword.begin(), keyword.end(), keyword.begin(), ::toupper);
+        
+        if (opcodes.contains(keyword)) {
+            token_tree &sub_tree = tree.add(keyword);
             return opcodes[keyword].tokenizer(fin, sub_tree, c);
         }
 
@@ -976,7 +983,9 @@ namespace {
         {"W",  cpu::opflag_subreg_w0}
     };
 
-    byte compile_register(std::string &reg_str) {
+    byte compile_register(std::string &reg) {
+        std::string reg_str;
+        std::transform(reg.begin(), reg.end(), std::back_inserter(reg_str), ::toupper);
         byte reg_byte {cpu::opflag_subreg_w0};
 
         /* Get some special cases out of the way */

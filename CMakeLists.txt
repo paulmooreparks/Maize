@@ -3,7 +3,7 @@ project(Maize)
 
 set(CMAKE_CXX_STANDARD 20)
 
-add_executable(maize "src/main.cpp" "src/cpu.cpp" "src/sys.cpp")
+add_executable(maize "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp")
 add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp")
 
 if (CMAKE_VERSION VERSION_GREATER 3.12)

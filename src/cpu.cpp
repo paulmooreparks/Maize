@@ -2,6 +2,10 @@
 #include "maize_sys.h"
 #include <unordered_map>
 
+/* This isn't classic OOP. My primary concern is performance; readability is secondary. Readability
+and maintainability are still important, though, because I want this to become something
+that I can use to write any byte code implementation. */
+
 namespace maize {
     namespace cpu {
 
@@ -1338,459 +1342,451 @@ namespace maize {
             running_flag = true;
 
             while (running_flag) {
-                switch (run_state) {
-                    case run_states::decode: {
-                        mm.read(regs::p.h0, regs::in, subreg_enum::w0);
-                        ++regs::p.h0;
-                        run_state = run_states::execute;
-                        step = 0;
+                /* Decode next instruction */
+                mm.read(regs::p.h0, regs::in, subreg_enum::w0);
+                ++regs::p.h0;
+                run_state = run_states::execute;
+                step = 0;
+
+                /* Execute instruction */
+                switch (regs::in.b0) {
+                    case instr::halt_opcode: {
+                        running_flag = false;
+                        is_power_on = false; // just temporary until I get "device" interaction working
                         break;
                     }
 
-                    case run_states::execute: {
-                        run_state = run_states::decode;
+                    case instr::clr_regVal: {
+                        regs::p.h0 += 1;
+                        clr_reg(src_reg(), src_subreg_flag());
+                        break;
+                    }
 
-                        switch (regs::in.b0) {
-                            case instr::halt_opcode: {
-                                running_flag = false;
-                                is_power_on = false; // just temporary
-                                break;
-                            }
+                    case instr::ld_regVal_reg: {
+                        regs::p.h0 += 2;
+                        copy_regval_reg(src_reg(), src_subreg_flag(), dst_reg(), dst_subreg_flag());
+                        break;
+                    }
 
-                            case instr::clr_regVal: {
-                                regs::p.h0 += 1;
-                                clr_reg(src_reg(), src_subreg_flag());
-                                break;
-                            }
+                    case instr::ld_immVal_reg: {
+                        regs::p.h0 += 2;
+                        hword imm_size = src_imm_size();
+                        copy_memval_reg(regs::p.h0, imm_size, dst_reg(), dst_subreg_flag());
+                        regs::p.h0 += imm_size;
+                        break;
+                    }
 
-                            case instr::ld_regVal_reg: {
-                                regs::p.h0 += 2;
-                                copy_regval_reg(src_reg(), src_subreg_flag(), dst_reg(), dst_subreg_flag());
-                                break;
-                            }
+                    case instr::ld_regAddr_reg: {
+                        regs::p.h0 += 2;
+                        copy_regaddr_reg(src_reg(), src_subreg_flag(), dst_reg(), dst_subreg_flag());
+                        break;
+                    }
 
-                            case instr::ld_immVal_reg: {
-                                regs::p.h0 += 2;
-                                hword imm_size = src_imm_size();
-                                copy_memval_reg(regs::p.h0, imm_size, dst_reg(), dst_subreg_flag());
-                                regs::p.h0 += imm_size;
-                                break;
-                            }
+                    case instr::ld_immAddr_reg: {
+                        regs::p.h0 += 2;
+                        hword imm_size = src_imm_size();
+                        hword dst_size = dst_subreg_size();
+                        copy_memaddr_reg(regs::p.h0, dst_size, dst_reg(), dst_subreg_flag());
+                        regs::p.h0 += imm_size;
+                        break;
+                    }
 
-                            case instr::ld_regAddr_reg: {
-                                regs::p.h0 += 2;
-                                copy_regaddr_reg(src_reg(), src_subreg_flag(), dst_reg(), dst_subreg_flag());
-                                break;
-                            }
+                    case instr::st_regVal_regAddr: {
+                        regs::p.h0 += 2;
+                        copy_regval_regaddr(src_reg(), src_subreg_flag(), dst_reg(), dst_subreg_flag());
+                        break;
+                    }
 
-                            case instr::ld_immAddr_reg: {
-                                regs::p.h0 += 2;
-                                hword imm_size = src_imm_size();
-                                hword dst_size = dst_subreg_size();
-                                copy_memaddr_reg(regs::p.h0, dst_size, dst_reg(), dst_subreg_flag());
-                                regs::p.h0 += imm_size;
-                                break;
-                            }
+                    case instr::st_immVal_regAddr: {
+                        regs::p.h0 += 2;
+                        hword imm_size = src_imm_size();
+                        copy_memval_regaddr(regs::p.h0, imm_size, dst_reg(), dst_subreg_flag());
+                        regs::p.h0 += imm_size;
+                        break;
+                    }
 
-                            case instr::st_regVal_regAddr: {
-                                regs::p.h0 += 2;
-                                copy_regval_regaddr(src_reg(), src_subreg_flag(), dst_reg(), dst_subreg_flag());
-                                break;
-                            }
+                    case instr::add_regVal_reg:
+                    case instr::sub_regVal_reg:
+                    case instr::mul_regVal_reg:
+                    case instr::div_regVal_reg:
+                    case instr::mod_regVal_reg:
+                    case instr::and_regVal_reg:
+                    case instr::or_regVal_reg:
+                    case instr::nor_regVal_reg:
+                    case instr::nand_regVal_reg:
+                    case instr::xor_regVal_reg:
+                    case instr::shl_regVal_reg:
+                    case instr::shr_regVal_reg:
+                    case instr::cmp_regVal_reg:
+                    case instr::test_regVal_reg: {
+                        regs::p.h0 += 2;
+                        copy_regval_reg(src_reg(), src_subreg_flag(), alu.src_reg, subreg_enum::w0);
+                        copy_regval_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, subreg_enum::w0);
+                        alu.b0 = regs::in.b0;
+                        alu.b1 = src_subreg_size();
+                        alu.b2 = dst_subreg_size();
+                        run_alu();
+                        copy_regval_reg(alu.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
+                        break;
+                    }
 
-                            case instr::st_immVal_regAddr: {
-                                regs::p.h0 += 2;
-                                hword imm_size = src_imm_size();
-                                copy_memval_regaddr(regs::p.h0, imm_size, dst_reg(), dst_subreg_flag());
-                                regs::p.h0 += imm_size;
-                                break;
-                            }
+                    case instr::add_immVal_reg:
+                    case instr::sub_immVal_reg:
+                    case instr::mul_immVal_reg:
+                    case instr::div_immVal_reg:
+                    case instr::mod_immVal_reg:
+                    case instr::and_immVal_reg:
+                    case instr::or_immVal_reg:
+                    case instr::nor_immVal_reg:
+                    case instr::nand_immVal_reg:
+                    case instr::xor_immVal_reg:
+                    case instr::shl_immVal_reg:
+                    case instr::shr_immVal_reg:
+                    case instr::cmp_immVal_reg:
+                    case instr::test_immVal_reg: {
+                        regs::p.h0 += 2;
+                        byte src_size = src_imm_size();
+                        copy_memval_reg(regs::p.h0, src_size, alu.src_reg, subreg_enum::w0);
+                        copy_regval_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, subreg_enum::w0);
+                        alu.b0 = regs::in.b0;
+                        alu.b1 = src_size;
+                        alu.b2 = dst_subreg_size();
+                        run_alu();
+                        regs::p.h0 += src_size;
+                        copy_regval_reg(alu.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
+                        break;
+                    }
 
-                            case instr::add_regVal_reg:
-                            case instr::sub_regVal_reg:
-                            case instr::mul_regVal_reg:
-                            case instr::div_regVal_reg:
-                            case instr::mod_regVal_reg:
-                            case instr::and_regVal_reg:
-                            case instr::or_regVal_reg:
-                            case instr::nor_regVal_reg:
-                            case instr::nand_regVal_reg:
-                            case instr::xor_regVal_reg:
-                            case instr::shl_regVal_reg:
-                            case instr::shr_regVal_reg:
-                            case instr::cmp_regVal_reg:
-                            case instr::test_regVal_reg: {
-                                regs::p.h0 += 2;
-                                copy_regval_reg(src_reg(), src_subreg_flag(), alu.src_reg, subreg_enum::w0);
-                                copy_regval_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, subreg_enum::w0);
-                                alu.b0 = regs::in.b0;
-                                alu.b1 = src_subreg_size();
-                                alu.b2 = dst_subreg_size();
-                                run_alu();
-                                copy_regval_reg(alu.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
-                                break;
-                            }
-
-                            case instr::add_immVal_reg:
-                            case instr::sub_immVal_reg:
-                            case instr::mul_immVal_reg:
-                            case instr::div_immVal_reg:
-                            case instr::mod_immVal_reg:
-                            case instr::and_immVal_reg:
-                            case instr::or_immVal_reg:
-                            case instr::nor_immVal_reg:
-                            case instr::nand_immVal_reg:
-                            case instr::xor_immVal_reg:
-                            case instr::shl_immVal_reg:
-                            case instr::shr_immVal_reg:
-                            case instr::cmp_immVal_reg:
-                            case instr::test_immVal_reg: {
-                                regs::p.h0 += 2;
-                                byte src_size = src_imm_size();
-                                copy_memval_reg(regs::p.h0, src_size, alu.src_reg, subreg_enum::w0);
-                                copy_regval_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, subreg_enum::w0);
-                                alu.b0 = regs::in.b0;
-                                alu.b1 = src_size;
-                                alu.b2 = dst_subreg_size();
-                                run_alu();
-                                regs::p.h0 += src_size;
-                                copy_regval_reg(alu.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
-                                break;
-                            }
-
-                            case instr::add_regAddr_reg:
-                            case instr::sub_regAddr_reg:
-                            case instr::mul_regAddr_reg:
-                            case instr::div_regAddr_reg:
-                            case instr::mod_regAddr_reg:
-                            case instr::and_regAddr_reg:
-                            case instr::or_regAddr_reg:
-                            case instr::nor_regAddr_reg:
-                            case instr::nand_regAddr_reg:
-                            case instr::xor_regAddr_reg:
-                            case instr::shl_regAddr_reg:
-                            case instr::shr_regAddr_reg:
-                            case instr::cmp_regAddr_reg:
-                            case instr::test_regAddr_reg: {
-                                regs::p.h0 += 2;
-                                copy_regaddr_reg(src_reg(), src_subreg_flag(), alu.src_reg, subreg_enum::w0);
-                                copy_regval_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, subreg_enum::w0);
-                                alu.b0 = regs::in.b0;
-                                alu.b1 = src_subreg_size();
-                                alu.b2 = dst_subreg_size();
-                                run_alu();
-                                copy_regval_reg(alu.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
-                                break;
+                    case instr::add_regAddr_reg:
+                    case instr::sub_regAddr_reg:
+                    case instr::mul_regAddr_reg:
+                    case instr::div_regAddr_reg:
+                    case instr::mod_regAddr_reg:
+                    case instr::and_regAddr_reg:
+                    case instr::or_regAddr_reg:
+                    case instr::nor_regAddr_reg:
+                    case instr::nand_regAddr_reg:
+                    case instr::xor_regAddr_reg:
+                    case instr::shl_regAddr_reg:
+                    case instr::shr_regAddr_reg:
+                    case instr::cmp_regAddr_reg:
+                    case instr::test_regAddr_reg: {
+                        regs::p.h0 += 2;
+                        copy_regaddr_reg(src_reg(), src_subreg_flag(), alu.src_reg, subreg_enum::w0);
+                        copy_regval_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, subreg_enum::w0);
+                        alu.b0 = regs::in.b0;
+                        alu.b1 = src_subreg_size();
+                        alu.b2 = dst_subreg_size();
+                        run_alu();
+                        copy_regval_reg(alu.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
+                        break;
 
 #if false
-                                    case 0: {
-                                        al.b0 = regs::in.b0;
-                                        regs::p.increment(2);
-                                        src_reg().enable_to_bus(address_bus, src_subreg_flag());
-                                        mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
-
-                                    case 1: {
-                                        mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
-                                        al.set_src_from_bus(data_bus_0);
-                                        al.b1 = src_subreg_size();
-                                        dst_reg().enable_to_bus(data_bus_1, dst_subreg_flag());
-                                        al.set_dst_from_bus(data_bus_1);
-                                        al.b2 = dst_subreg_size();
-                                        // byte op_size = subreg_size_map[dst_subreg_index()];
-                                        instr_jmp_alu();
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        al.enable_dst_to_bus(data_bus_0);
-                                        dst_reg().set_from_bus(data_bus_0, dst_subreg_flag());
-                                        instr_complete();
-                                        break;
-                                    }
-#endif
+                            case 0: {
+                                al.b0 = regs::in.b0;
+                                regs::p.increment(2);
+                                src_reg().enable_to_bus(address_bus, src_subreg_flag());
+                                mm.set_address_from_bus(address_bus);
+                                break;
                             }
 
-                            case instr::add_immAddr_reg:
-                            case instr::sub_immAddr_reg:
-                            case instr::mul_immAddr_reg:
-                            case instr::div_immAddr_reg:
-                            case instr::mod_immAddr_reg:
-                            case instr::and_immAddr_reg:
-                            case instr::or_immAddr_reg:
-                            case instr::nor_immAddr_reg:
-                            case instr::nand_immAddr_reg:
-                            case instr::xor_immAddr_reg:
-                            case instr::shl_immAddr_reg:
-                            case instr::shr_immAddr_reg:
-                            case instr::cmp_immAddr_reg:
-                            case instr::test_immAddr_reg: {
-                                regs::p.h0 += 2;
-                                byte src_size = src_imm_size();
-                                copy_memaddr_reg(regs::p.h0, src_size, alu.src_reg, subreg_enum::w0);
-                                copy_regval_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, subreg_enum::w0);
-                                alu.b0 = regs::in.b0;
-                                alu.b1 = src_size;
-                                alu.b2 = dst_subreg_size();
-                                run_alu();
-                                regs::p.h0 += src_size;
-                                copy_regval_reg(alu.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
+                            case 1: {
+                                mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
+                                al.set_src_from_bus(data_bus_0);
+                                al.b1 = src_subreg_size();
+                                dst_reg().enable_to_bus(data_bus_1, dst_subreg_flag());
+                                al.set_dst_from_bus(data_bus_1);
+                                al.b2 = dst_subreg_size();
+                                // byte op_size = subreg_size_map[dst_subreg_index()];
+                                instr_jmp_alu();
                                 break;
+                            }
+
+                            case 2: {
+                                al.enable_dst_to_bus(data_bus_0);
+                                dst_reg().set_from_bus(data_bus_0, dst_subreg_flag());
+                                instr_complete();
+                                break;
+                            }
+#endif
+                    }
+
+                    case instr::add_immAddr_reg:
+                    case instr::sub_immAddr_reg:
+                    case instr::mul_immAddr_reg:
+                    case instr::div_immAddr_reg:
+                    case instr::mod_immAddr_reg:
+                    case instr::and_immAddr_reg:
+                    case instr::or_immAddr_reg:
+                    case instr::nor_immAddr_reg:
+                    case instr::nand_immAddr_reg:
+                    case instr::xor_immAddr_reg:
+                    case instr::shl_immAddr_reg:
+                    case instr::shr_immAddr_reg:
+                    case instr::cmp_immAddr_reg:
+                    case instr::test_immAddr_reg: {
+                        regs::p.h0 += 2;
+                        byte src_size = src_imm_size();
+                        copy_memaddr_reg(regs::p.h0, src_size, alu.src_reg, subreg_enum::w0);
+                        copy_regval_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, subreg_enum::w0);
+                        alu.b0 = regs::in.b0;
+                        alu.b1 = src_size;
+                        alu.b2 = dst_subreg_size();
+                        run_alu();
+                        regs::p.h0 += src_size;
+                        copy_regval_reg(alu.dst_reg, subreg_enum::w0, dst_reg(), dst_subreg_flag());
+                        break;
 #if false
-                                switch (step) {
-                                    case 0: {
-                                        al.b0 = regs::in.b0;
-                                        regs::p.increment(2);
-                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
-                                        mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
-
-                                    case 1: {
-                                        byte size = src_imm_size();
-                                        regs::p.increment(size);
-                                        al.b1 = size;
-                                        mm.enable_memory_to_bus(address_bus, subreg_enum::w0);
-                                        mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
-                                        dst_reg().enable_to_bus(data_bus_1, dst_subreg_flag());
-                                        al.b2 = dst_subreg_size();
-                                        al.set_src_from_bus(data_bus_0);
-                                        al.set_dst_from_bus(data_bus_1);
-                                        instr_jmp_alu();
-                                        break;
-                                    }
-
-                                    case 3: {
-                                        al.enable_dst_to_bus(data_bus_0);
-                                        dst_reg().set_from_bus(data_bus_0, dst_subreg_flag());
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
-                                break;
-#endif
-                            }
-
-                            case instr::inc_regVal:
-                            case instr::dec_regVal:
-                            case instr::not_regVal: {
-                                regs::p.h0 += 1;
-                                copy_regval_reg(src_reg(), src_subreg_flag(), alu.dst_reg, subreg_enum::w0);
-                                alu.b0 = regs::in.b0;
-                                alu.b1 = src_subreg_size();
-                                alu.b2 = src_subreg_size();
-                                run_alu();
-                                copy_regval_reg(alu.dst_reg, subreg_enum::w0, src_reg(), src_subreg_flag());
+                        switch (step) {
+                            case 0: {
+                                al.b0 = regs::in.b0;
+                                regs::p.increment(2);
+                                regs::p.enable_to_bus(address_bus, subreg_enum::w0);
+                                mm.set_address_from_bus(address_bus);
                                 break;
                             }
 
-                            case instr::cmpind_immVal_regAddr:
-                            case instr::testind_immVal_regAddr:
-                            {
-                                regs::p.h0 += 2;
-                                byte src_size = src_imm_size();
-                                copy_memval_reg(regs::p.h0, src_size, alu.src_reg, subreg_enum::w0);
-                                copy_regaddr_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, dst_subreg_flag());
-                                regs::p.h0 += src_size;
-                                alu.b0 = regs::in.b0;
-                                alu.b1 = src_size;
-                                alu.b2 = src_subreg_size();
-                                run_alu();
-                                break;
-#if false
-                                switch (step) {
-                                    case 0: {
-                                        al.b0 = regs::in.b0;
-                                        regs::p.increment(2);
-                                        regs::p.enable_to_bus(address_bus, subreg_enum::w0);
-                                        mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
-
-                                    case 1: {
-                                        byte src_size = src_imm_size();
-                                        al.b1 = src_size;
-                                        al.b2 = src_size;
-                                        regs::p.increment(src_size);
-                                        mm.enable_memory_to_bus(data_bus_0, src_size);
-                                        al.set_src_from_bus(data_bus_0);
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        dst_reg().enable_to_bus(address_bus, dst_subreg_flag());
-                                        mm.set_address_from_bus(address_bus);
-                                        break;
-                                    }
-
-                                    case 3: {
-                                        mm.enable_memory_to_bus(data_bus_0, dst_subreg_flag());
-                                        al.set_dst_from_bus(data_bus_0);
-                                        instr_jmp_alu();
-                                        break;
-                                    }
-
-                                    case 4: {
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
-                                break;
-#endif
-                            }
-
-                            case instr::cmpind_regVal_regAddr:
-                            case instr::testind_regVal_regAddr:
-                            {
-                                regs::p.h0 += 2;
-                                byte src_size = src_subreg_size();
-                                copy_regval_reg(src_reg(), src_subreg_flag(), alu.src_reg, subreg_enum::w0);
-                                copy_regaddr_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, dst_subreg_flag());
-                                alu.b0 = regs::in.b0;
-                                alu.b1 = src_size;
-                                alu.b2 = src_subreg_size();
-                                run_alu();
+                            case 1: {
+                                byte size = src_imm_size();
+                                regs::p.increment(size);
+                                al.b1 = size;
+                                mm.enable_memory_to_bus(address_bus, subreg_enum::w0);
+                                mm.set_address_from_bus(address_bus);
                                 break;
                             }
 
-                            case instr::out_regVal_imm: {
-                                regs::p.h0 += 2;
-                                byte dst_size = dst_imm_size();
-                                copy_memval_reg(regs::p.h0, dst_size, operand1, subreg_enum::w0);
-                                device &dst_dev = *(devices[operand1.q0]);
-                                copy_regval_reg(src_reg(), src_subreg_flag(), dst_dev, subreg_enum::w0);
-                                regs::p.h0 += dst_size;
-                                break;
-
-#if false
-                                switch (step) {
-                                    case 0: {
-                                        regs::p.increment(2);
-                                        regs::p.enable_to_bus(address_bus, subreg_enum::h0);
-                                        mm.set_address_from_bus(address_bus);
-                                        src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
-                                        break;
-                                    }
-
-                                    case 1: {
-                                        byte dst_size = dst_imm_size();
-                                        regs::p.increment(dst_size);
-                                        mm.enable_memory_to_bus(data_bus_1, dst_size);
-                                        operand1.set_from_bus(data_bus_1, src_subreg_flag());
-                                        break;
-                                    }
-
-                                    case 2: {
-                                        device* pdevice = devices[operand1.q0];
-                                        pdevice->set_address_from_bus(data_bus_1);
-                                        pdevice->set_io_from_bus(data_bus_0);
-                                        instr_complete();
-                                        break;
-                                    }
-                                }
-
-                                break;
-#endif
-                            }
-
-                            case instr::sys_immVal: {
-                                regs::p.h0 += 1;
-                                byte src_size = src_imm_size();
-                                copy_memval_reg(regs::p.h0, src_size, operand1, subreg_enum::w0);
-                                regs::p.h0 += src_size;
-                                regs::a.w0 = sys::call(operand1.b0);
+                            case 2: {
+                                mm.enable_memory_to_bus(data_bus_0, subreg_enum::w0);
+                                dst_reg().enable_to_bus(data_bus_1, dst_subreg_flag());
+                                al.b2 = dst_subreg_size();
+                                al.set_src_from_bus(data_bus_0);
+                                al.set_dst_from_bus(data_bus_1);
+                                instr_jmp_alu();
                                 break;
                             }
 
-                            case instr::sys_regVal: {
-                                regs::p.h0 += 1;
-                                regs::a.w0 = sys::call(src_reg().b0);
-                                break;
-                            }
-
-                            case instr::pop_regVal: {
-                                regs::p.h0 += 1;
-                                auto src_size = src_subreg_size();
-                                copy_memval_reg(regs::s.h0, src_size, src_reg(), src_subreg_flag());
-                                regs::s.h0 += src_size;
-                                break;
-                            }
-
-                            case instr::push_immVal: {
-                                regs::p.h0 += 1;
-                                byte src_size = src_imm_size();
-                                regs::s.h0 -= src_size;
-                                copy_memval_regaddr(regs::p.h0, src_size, regs::s, subreg_enum::h0);
-                                regs::p.h0 += src_size;
-                                break;
-                            }
-
-                            case instr::push_regVal: {
-                                regs::p.h0 += 1;
-                                byte src_size = src_subreg_size();
-                                regs::s.h0 -= src_size;
-                                copy_regval_regaddr(src_reg(), src_subreg_flag(), regs::s, subreg_enum::h0);
-                                break;
-                            }
-
-                            case instr::call_immVal: {
-                                regs::p.h0 += 1;
-                                byte src_size = src_imm_size();
-                                copy_memval_reg(regs::p.h0, src_size, operand1, subreg_enum::h0);
-                                regs::s.h0 -= subreg_size_map[subreg_enum::h0];
-                                regs::p.h0 += src_size;
-                                copy_regval_regaddr(regs::p, subreg_enum::h0, regs::s, subreg_enum::h0);
-                                regs::p.h0 = operand1.h0;
-                                break;
-                            }
-
-                            case instr::ret_opcode: {
-                                byte src_size = subreg_size_map[subreg_enum::h0];
-                                copy_memval_reg(regs::s.h0, src_size, regs::p, subreg_enum::h0);
-                                regs::s.h0 += src_size;
-                                break;
-                            }
-
-                            case instr::jmp_immVal: {
-                                regs::p.h0 += 1;
-                                copy_memval_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
-                                break;
-                            }
-
-                            case instr::jz_immVal: {
-                                regs::p.h0 += 1;
-
-                                if (cpu::zero_flag) {
-                                    copy_memval_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
-                                }
-                                else {
-                                    byte src_size = src_imm_size();
-                                    regs::p.h0 += src_size;
-                                }
-
-                                break;
-                            }
-
-                            default: {
-                                std::stringstream err;
-                                err << "unknown opcode: " << std::hex << regs::in.b0;
-                                throw std::exception(err.str().c_str());
+                            case 3: {
+                                al.enable_dst_to_bus(data_bus_0);
+                                dst_reg().set_from_bus(data_bus_0, dst_subreg_flag());
+                                instr_complete();
                                 break;
                             }
                         }
 
-                        ++step;
+                        break;
+#endif
+                    }
+
+                    case instr::inc_regVal:
+                    case instr::dec_regVal:
+                    case instr::not_regVal: {
+                        regs::p.h0 += 1;
+                        copy_regval_reg(src_reg(), src_subreg_flag(), alu.dst_reg, subreg_enum::w0);
+                        alu.b0 = regs::in.b0;
+                        alu.b1 = src_subreg_size();
+                        alu.b2 = src_subreg_size();
+                        run_alu();
+                        copy_regval_reg(alu.dst_reg, subreg_enum::w0, src_reg(), src_subreg_flag());
+                        break;
+                    }
+
+                    case instr::cmpind_immVal_regAddr:
+                    case instr::testind_immVal_regAddr:
+                    {
+                        regs::p.h0 += 2;
+                        byte src_size = src_imm_size();
+                        copy_memval_reg(regs::p.h0, src_size, alu.src_reg, subreg_enum::w0);
+                        copy_regaddr_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, dst_subreg_flag());
+                        regs::p.h0 += src_size;
+                        alu.b0 = regs::in.b0;
+                        alu.b1 = src_size;
+                        alu.b2 = src_subreg_size();
+                        run_alu();
+                        break;
+#if false
+                        switch (step) {
+                            case 0: {
+                                al.b0 = regs::in.b0;
+                                regs::p.increment(2);
+                                regs::p.enable_to_bus(address_bus, subreg_enum::w0);
+                                mm.set_address_from_bus(address_bus);
+                                break;
+                            }
+
+                            case 1: {
+                                byte src_size = src_imm_size();
+                                al.b1 = src_size;
+                                al.b2 = src_size;
+                                regs::p.increment(src_size);
+                                mm.enable_memory_to_bus(data_bus_0, src_size);
+                                al.set_src_from_bus(data_bus_0);
+                                break;
+                            }
+
+                            case 2: {
+                                dst_reg().enable_to_bus(address_bus, dst_subreg_flag());
+                                mm.set_address_from_bus(address_bus);
+                                break;
+                            }
+
+                            case 3: {
+                                mm.enable_memory_to_bus(data_bus_0, dst_subreg_flag());
+                                al.set_dst_from_bus(data_bus_0);
+                                instr_jmp_alu();
+                                break;
+                            }
+
+                            case 4: {
+                                instr_complete();
+                                break;
+                            }
+                        }
+
+                        break;
+#endif
+                    }
+
+                    case instr::cmpind_regVal_regAddr:
+                    case instr::testind_regVal_regAddr:
+                    {
+                        regs::p.h0 += 2;
+                        byte src_size = src_subreg_size();
+                        copy_regval_reg(src_reg(), src_subreg_flag(), alu.src_reg, subreg_enum::w0);
+                        copy_regaddr_reg(dst_reg(), dst_subreg_flag(), alu.dst_reg, dst_subreg_flag());
+                        alu.b0 = regs::in.b0;
+                        alu.b1 = src_size;
+                        alu.b2 = src_subreg_size();
+                        run_alu();
+                        break;
+                    }
+
+                    case instr::out_regVal_imm: {
+                        regs::p.h0 += 2;
+                        byte dst_size = dst_imm_size();
+                        copy_memval_reg(regs::p.h0, dst_size, operand1, subreg_enum::w0);
+                        device *pdst_dev = devices[operand1.q0];
+                        device &dst_dev = *(pdst_dev);
+                        copy_regval_reg(src_reg(), src_subreg_flag(), dst_dev, subreg_enum::w0);
+                        regs::p.h0 += dst_size;
+                        break;
+
+#if false
+                        switch (step) {
+                            case 0: {
+                                regs::p.increment(2);
+                                regs::p.enable_to_bus(address_bus, subreg_enum::h0);
+                                mm.set_address_from_bus(address_bus);
+                                src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
+                                break;
+                            }
+
+                            case 1: {
+                                byte dst_size = dst_imm_size();
+                                regs::p.increment(dst_size);
+                                mm.enable_memory_to_bus(data_bus_1, dst_size);
+                                operand1.set_from_bus(data_bus_1, src_subreg_flag());
+                                break;
+                            }
+
+                            case 2: {
+                                device* pdevice = devices[operand1.q0];
+                                pdevice->set_address_from_bus(data_bus_1);
+                                pdevice->set_io_from_bus(data_bus_0);
+                                instr_complete();
+                                break;
+                            }
+                        }
+
+                        break;
+#endif
+                    }
+
+                    case instr::sys_immVal: {
+                        regs::p.h0 += 1;
+                        byte src_size = src_imm_size();
+                        copy_memval_reg(regs::p.h0, src_size, operand1, subreg_enum::w0);
+                        regs::p.h0 += src_size;
+                        regs::a.w0 = sys::call(operand1.b0);
+                        break;
+                    }
+
+                    case instr::sys_regVal: {
+                        regs::p.h0 += 1;
+                        regs::a.w0 = sys::call(src_reg().b0);
+                        break;
+                    }
+
+                    case instr::pop_regVal: {
+                        regs::p.h0 += 1;
+                        auto src_size = src_subreg_size();
+                        copy_memval_reg(regs::s.h0, src_size, src_reg(), src_subreg_flag());
+                        regs::s.h0 += src_size;
+                        break;
+                    }
+
+                    case instr::push_immVal: {
+                        regs::p.h0 += 1;
+                        byte src_size = src_imm_size();
+                        regs::s.h0 -= src_size;
+                        copy_memval_regaddr(regs::p.h0, src_size, regs::s, subreg_enum::h0);
+                        regs::p.h0 += src_size;
+                        break;
+                    }
+
+                    case instr::push_regVal: {
+                        regs::p.h0 += 1;
+                        byte src_size = src_subreg_size();
+                        regs::s.h0 -= src_size;
+                        copy_regval_regaddr(src_reg(), src_subreg_flag(), regs::s, subreg_enum::h0);
+                        break;
+                    }
+
+                    case instr::call_immVal: {
+                        regs::p.h0 += 1;
+                        byte src_size = src_imm_size();
+                        copy_memval_reg(regs::p.h0, src_size, operand1, subreg_enum::h0);
+                        regs::s.h0 -= subreg_size_map[subreg_enum::h0];
+                        regs::p.h0 += src_size;
+                        copy_regval_regaddr(regs::p, subreg_enum::h0, regs::s, subreg_enum::h0);
+                        regs::p.h0 = operand1.h0;
+                        break;
+                    }
+
+                    case instr::ret_opcode: {
+                        byte src_size = subreg_size_map[subreg_enum::h0];
+                        copy_memval_reg(regs::s.h0, src_size, regs::p, subreg_enum::h0);
+                        regs::s.h0 += src_size;
+                        break;
+                    }
+
+                    case instr::jmp_immVal: {
+                        regs::p.h0 += 1;
+                        copy_memval_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
+                        break;
+                    }
+
+                    case instr::jz_immVal: {
+                        regs::p.h0 += 1;
+
+                        if (cpu::zero_flag) {
+                            copy_memval_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
+                        }
+                        else {
+                            byte src_size = src_imm_size();
+                            regs::p.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    default: {
+                        std::stringstream err;
+                        err << "unknown opcode: " << std::hex << regs::in.b0;
+                        throw std::exception(err.str().c_str());
                         break;
                     }
                 }
+
             }
         }
 
