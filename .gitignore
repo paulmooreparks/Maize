@@ -35,3 +35,10 @@
 /.vs/Maize/config/applicationhost.config
 /.vs/Maize/FileContentIndex
 /.vs/Maize/v17
+/CMakeFiles
+/.vs/launch.vs.json
+/cmake_install.cmake
+/mazm
+/Makefile
+/maize
+/CMakeCache.txt
