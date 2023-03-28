@@ -325,11 +325,10 @@ namespace maize {
 		};
 
 		struct memory_module : public reg {
-			template <typename T> hword write(reg_value address, T value);
-			template <> hword write<byte>(reg_value address, byte value);
-			template <> hword write<qword>(reg_value address, qword value);
-			template <> hword write<hword>(reg_value address, hword value);
-			template <> hword write<word>(reg_value address, word value);
+			hword write_byte(reg_value address, byte value);
+			hword write_qword(reg_value address, qword value);
+			hword write_hword(reg_value address, hword value);
+			hword write_word(reg_value address, word value);
 
 			size_t read(reg_value const &address, reg_value &reg, subreg_enum subreg);
 			size_t read(word address, reg_value &reg, subreg_enum subreg);

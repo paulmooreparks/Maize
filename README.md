@@ -35,6 +35,7 @@ The near-term road map is as follows:
 * Introduce "devices," which were partially implemented in the .NET version
 * Implement a linker so that binaries can be built independently and linked together
 * Clean up the assembler (mazm) and introduce some proper error checking
+* Make the assembler read Unicode source files
 * Port a C compiler to generate Maize byte code
 
 ## Hello, World!
@@ -45,9 +46,9 @@ written in Maize assembly, targeting the basic OS I've written and the system ca
     INCLUDE "core.asm"
     INCLUDE "stdlib.asm"
  
-    ; The CPU starts execution at segment $00000000, address $00001000, 
+    ; The CPU starts execution at segment $00000000, address $00000000, 
     ; so we'll put our code there.
-    LABEL hw_start          $00001000
+    LABEL hw_start          $00000000
  
     ;******************************************************************************
     ; Entry point
@@ -255,7 +256,7 @@ There are four special-purpose registers.
 ## Execution
 
 The CPU starts in privileged mode, and the program counter is initially set to segment $00000000,
-address $00001000. When in privileged mode, the privilege flag is set, and instructions marked
+address $00000000. When in privileged mode, the privilege flag is set, and instructions marked
 as privileged may be executed. When the privilege flag is cleared, instruction execution and
 memory access are limited to the current segment, and certain flags, registers, and instructions
 are inaccessible. Program execution may return to privileged mode via hardware interrupts or via

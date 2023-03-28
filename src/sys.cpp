@@ -266,7 +266,7 @@ namespace maize {
                     word retval = syscall::read(fd, reinterpret_cast<void*>(bufvec), count);
 
                     for (word i = 0; i < count; ++i, ++address) {
-                        cpu::mm.write(address, bufvec[i]);
+                        cpu::mm.write_byte(address, bufvec[i]);
                     }
 
                     break;

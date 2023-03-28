@@ -21,7 +21,7 @@ int main(int argc, char *argv[]) {
 	char c {0};
 
 	while (fin.read(&c, 1)) {
-		cpu::mm.write(address, static_cast<byte>(c));
+		cpu::mm.write_byte(address, static_cast<byte>(c));
 		++address;
 	}
 

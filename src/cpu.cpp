@@ -1,6 +1,8 @@
 #include "maize_cpu.h"
 #include "maize_sys.h"
 #include <unordered_map>
+#include <sstream>
+#include <exception>
 
 /* This isn't classic OOP. My primary concern is performance; readability is secondary. Readability
 and maintainability are still important, though, because I want this to become something
@@ -148,13 +150,13 @@ namespace maize {
 
         }
 
-        template <> hword memory_module::write<byte>(reg_value address, byte value) {
+        hword memory_module::write_byte(reg_value address, byte value) {
             set_cache_address(address);
             cache[cache_address.b0] = value;
             return sizeof(byte);
         }
 
-        template<> hword memory_module::write<qword>(reg_value address, qword value) {
+        hword memory_module::write_qword(reg_value address, qword value) {
             byte b {0};
             set_cache_address(address);
 
@@ -170,7 +172,7 @@ namespace maize {
             return sizeof(qword);
         }
 
-        template<> hword memory_module::write<hword>(reg_value address, hword value) {
+        hword memory_module::write_hword(reg_value address, hword value) {
             byte b {0};
             set_cache_address(address);
 
@@ -196,7 +198,7 @@ namespace maize {
             return sizeof(hword);
         }
 
-        template<> hword memory_module::write<word>(reg_value address, word value) {
+        hword memory_module::write_word(reg_value address, word value) {
             byte b {0};
             set_cache_address(address);
 
@@ -584,22 +586,22 @@ namespace maize {
 
                 switch (size) {
                     case 1: {
-                        mm.write(dst_address, src_value.b0);
+                        mm.write_byte(dst_address, src_value.b0);
                         break;
                     }
 
                     case 2: {
-                        mm.write(dst_address, src_value.q0);
+                        mm.write_qword(dst_address, src_value.q0);
                         break;
                     }
 
                     case 4: {
-                        mm.write(dst_address, src_value.h0);
+                        mm.write_hword(dst_address, src_value.h0);
                         break;
                     }
 
                     case 8: {
-                        mm.write(dst_address, src_value.w0);
+                        mm.write_word(dst_address, src_value.w0);
                         break;
                     }
 
@@ -618,22 +620,22 @@ namespace maize {
 
                 switch (size) {
                     case 1: {
-                        mm.write(dst_address, src_value.b0);
+                        mm.write_byte(dst_address, src_value.b0);
                         break;
                     }
 
                     case 2: {
-                        mm.write(dst_address, src_value.q0);
+                        mm.write_qword(dst_address, src_value.q0);
                         break;
                     }
 
                     case 4: {
-                        mm.write(dst_address, src_value.h0);
+                        mm.write_hword(dst_address, src_value.h0);
                         break;
                     }
 
                     case 8: {
-                        mm.write(dst_address, src_value.w0);
+                        mm.write_word(dst_address, src_value.w0);
                         break;
                     }
 
@@ -1780,9 +1782,10 @@ namespace maize {
                     }
 
                     default: {
-                        std::stringstream err;
+                        std::stringstream err {};
                         err << "unknown opcode: " << std::hex << regs::in.b0;
-                        throw std::exception(err.str().c_str());
+                        throw std::logic_error(err.str());
+                        // throw std::exception(err.str().c_str());
                         break;
                     }
                 }

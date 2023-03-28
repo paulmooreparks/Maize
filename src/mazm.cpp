@@ -230,6 +230,7 @@ namespace {
         bin_path.replace_extension(ext);
 
         /* write here */
+        std::cout << "Output to " << bin_path << std::endl;
         std::ofstream bin(bin_path, std::fstream::binary);
 
         maize::word last_block {cpu::mm.last_block()};
@@ -289,14 +290,14 @@ namespace {
                 compiler = opcodes[key].compiler;
             }
             else {
-                throw std::exception("keyword not found");
+                throw std::logic_error("keyword not found");
             }
 
             compiler(sub_tree, key);
         }
 
         for (auto &pair : fixups) {
-            cpu::mm.write(pair.first, labels[pair.second]);
+            cpu::mm.write_hword(pair.first, labels[pair.second]);
         }
     }
 
@@ -732,7 +733,7 @@ namespace {
         }
         else if (type == special_chars::bin) {
             // cvt << std::hex << value.substr(1);
-            throw std::exception("binary conversion not implemented yet");
+            throw std::logic_error("binary conversion not implemented yet");
         }
         else {
             hvalue = std::numeric_limits<hword>::max();
@@ -767,7 +768,7 @@ namespace {
             type_byte = cpu::opflag_imm_size_64b;
         }
         else {
-            throw std::exception("Invalid literal format");
+            throw std::logic_error("Invalid literal format");
         }
 
         return type_byte;
@@ -783,10 +784,10 @@ namespace {
             type_byte = compile_hex_literal(sub, value);
         }
         else if (type_char == special_chars::dec) {
-            throw std::exception("Decimal literals not implemented yet");
+            throw std::logic_error("Decimal literals not implemented yet");
         }
         else if (type_char == special_chars::bin) {
-            throw std::exception("Binary literals not implemented yet");
+            throw std::logic_error("Binary literals not implemented yet");
         }
 
         return type_byte;
@@ -819,7 +820,7 @@ namespace {
         }
         else {
             data = convert_label_string(data_string);
-            current_address += cpu::mm.write(current_address, data);
+            current_address += cpu::mm.write_hword(current_address, data);
         }
     }
 
@@ -841,49 +842,49 @@ namespace {
                     case '\\':
                     case '\'':
                     case '\"':
-                        current_address += cpu::mm.write(current_address, static_cast<byte>(c));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>(c));
                         break;
 
                     case '0':
-                        current_address += cpu::mm.write(current_address, static_cast<byte>(0));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>(0));
                         break;
 
                     case 't':
-                        current_address += cpu::mm.write(current_address, static_cast<byte>('\t'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\t'));
                         break;
 
                     case 'r':
-                        current_address += cpu::mm.write(current_address, static_cast<byte>('\r'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\r'));
                         break;
 
                     case 'n':
-                        current_address += cpu::mm.write(current_address, static_cast<byte>('\n'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\n'));
                         break;
 
                     case 'a':
-                        current_address += cpu::mm.write(current_address, static_cast<byte>('\a'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\a'));
                         break;
 
                     case 'b':
-                        current_address += cpu::mm.write(current_address, static_cast<byte>('\b'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\b'));
                         break;
 
                     case 'f':
-                        current_address += cpu::mm.write(current_address, static_cast<byte>('\f'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\f'));
                         break;
 
                     case 'e':
-                        current_address += cpu::mm.write(current_address, static_cast<byte>(0x1B));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>(0x1B));
                         break;
 
                     case 'v':
-                        current_address += cpu::mm.write(current_address, static_cast<byte>('\v'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\v'));
                         break;
 
                     }
                 }
                 else {
-                    current_address += cpu::mm.write(current_address, static_cast<byte>(c));
+                    current_address += cpu::mm.write_byte(current_address, static_cast<byte>(c));
                 }
 
                 ++it;
@@ -898,16 +899,16 @@ namespace {
             auto type_byte = compile_literal(literal, value);
 
             if ((type_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                current_address += cpu::mm.write(current_address, value.q0);
+                current_address += cpu::mm.write_qword(current_address, value.q0);
             }
             else if ((type_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                current_address += cpu::mm.write(current_address, value.h0);
+                current_address += cpu::mm.write_hword(current_address, value.h0);
             }
             else if ((type_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
-                current_address += cpu::mm.write(current_address, value.w0);
+                current_address += cpu::mm.write_word(current_address, value.w0);
             }
             else {
-                current_address += cpu::mm.write(current_address, value.b0);
+                current_address += cpu::mm.write_byte(current_address, value.b0);
             }
         }
 
@@ -1034,12 +1035,12 @@ namespace {
             fixups[current_address] = label;
         }
 
-        return cpu::mm.write(address, value.h0);
+        return cpu::mm.write_hword(address, value.h0);
     }
 
     void no_operand_compiler(token_tree &tree, std::string &opcode_str) {
         byte opcode {opcodes[opcode_str].opcode};
-        current_address += cpu::mm.write(current_address, opcode);
+        current_address += cpu::mm.write_byte(current_address, opcode);
     }
 
     void regimm_reg_compiler(token_tree &tree, std::string &opcode_str) {
@@ -1075,9 +1076,9 @@ namespace {
 
         byte operand2_byte {compile_register(operand2)};
 
-        current_address += cpu::mm.write(current_address, opcode);
-        current_address += cpu::mm.write(current_address, operand1_byte);
-        current_address += cpu::mm.write(current_address, operand2_byte);
+        current_address += cpu::mm.write_byte(current_address, opcode);
+        current_address += cpu::mm.write_byte(current_address, operand1_byte);
+        current_address += cpu::mm.write_byte(current_address, operand2_byte);
 
         if (operand_is_immediate) {
             if (operand_is_label && operand1_literal.h0 == std::numeric_limits<hword>::max()) {
@@ -1085,16 +1086,16 @@ namespace {
             }
             else {
                 if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                    current_address += cpu::mm.write(current_address, operand1_literal.q0);
+                    current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
                 }
                 else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                    current_address += cpu::mm.write(current_address, operand1_literal.h0);
+                    current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
                 }
                 else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
-                    current_address += cpu::mm.write(current_address, operand1_literal.w0);
+                    current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
                 }
                 else {
-                    current_address += cpu::mm.write(current_address, operand1_literal.b0);
+                    current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
                 }
             }
         }
@@ -1132,8 +1133,8 @@ namespace {
             operand1_byte = compile_register(operand1);
         }
 
-        current_address += cpu::mm.write(current_address, opcode);
-        current_address += cpu::mm.write(current_address, operand1_byte);
+        current_address += cpu::mm.write_byte(current_address, opcode);
+        current_address += cpu::mm.write_byte(current_address, operand1_byte);
 
         if (operand_is_immediate) {
             if (operand_is_label && operand1_literal.h0 == std::numeric_limits<hword>::max()) {
@@ -1141,16 +1142,16 @@ namespace {
             }
             else {
                 if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                    current_address += cpu::mm.write(current_address, operand1_literal.q0);
+                    current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
                 }
                 else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                    current_address += cpu::mm.write(current_address, operand1_literal.h0);
+                    current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
                 }
                 else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
-                    current_address += cpu::mm.write(current_address, operand1_literal.w0);
+                    current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
                 }
                 else {
-                    current_address += cpu::mm.write(current_address, operand1_literal.b0);
+                    current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
                 }
             }
         }
@@ -1164,8 +1165,8 @@ namespace {
         auto it {tree.value.begin()};
         auto operand1 {it->key};
         byte operand1_byte {compile_register(operand1)};
-        current_address += cpu::mm.write(current_address, opcode);
-        current_address += cpu::mm.write(current_address, operand1_byte);
+        current_address += cpu::mm.write_byte(current_address, opcode);
+        current_address += cpu::mm.write_byte(current_address, operand1_byte);
     }
 
     void regimm_imm_compiler(token_tree &tree, std::string &opcode_str) {
@@ -1209,22 +1210,22 @@ namespace {
             operand2_byte = compile_literal(operand2, operand2_literal);
         }
 
-        current_address += cpu::mm.write(current_address, opcode);
-        current_address += cpu::mm.write(current_address, operand1_byte);
-        current_address += cpu::mm.write(current_address, operand2_byte);
+        current_address += cpu::mm.write_byte(current_address, opcode);
+        current_address += cpu::mm.write_byte(current_address, operand1_byte);
+        current_address += cpu::mm.write_byte(current_address, operand2_byte);
 
         if (operand_is_immediate) {
             if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                current_address += cpu::mm.write(current_address, operand1_literal.q0);
+                current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
             }
             else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                current_address += cpu::mm.write(current_address, operand1_literal.h0);
+                current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
             }
             else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
-                current_address += cpu::mm.write(current_address, operand1_literal.w0);
+                current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
             }
             else {
-                current_address += cpu::mm.write(current_address, operand1_literal.b0);
+                current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
             }
         }
         else if (operand1_is_label) {
@@ -1236,16 +1237,16 @@ namespace {
         }
         else {
             if ((operand2_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                current_address += cpu::mm.write(current_address, operand2_literal.q0);
+                current_address += cpu::mm.write_qword(current_address, operand2_literal.q0);
             }
             else if ((operand2_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                current_address += cpu::mm.write(current_address, operand2_literal.h0);
+                current_address += cpu::mm.write_hword(current_address, operand2_literal.h0);
             }
             else if ((operand2_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
-                current_address += cpu::mm.write(current_address, operand2_literal.w0);
+                current_address += cpu::mm.write_word(current_address, operand2_literal.w0);
             }
             else {
-                current_address += cpu::mm.write(current_address, operand2_literal.b0);
+                current_address += cpu::mm.write_byte(current_address, operand2_literal.b0);
             }
         }
     }
@@ -1284,22 +1285,22 @@ namespace {
 
         operand2_byte = compile_register(operand2);
 
-        current_address += cpu::mm.write(current_address, opcode);
-        current_address += cpu::mm.write(current_address, operand1_byte);
-        current_address += cpu::mm.write(current_address, operand2_byte);
+        current_address += cpu::mm.write_byte(current_address, opcode);
+        current_address += cpu::mm.write_byte(current_address, operand1_byte);
+        current_address += cpu::mm.write_byte(current_address, operand2_byte);
 
         if (operand_is_immediate) {
             if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                current_address += cpu::mm.write(current_address, operand1_literal.q0);
+                current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
             }
             else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                current_address += cpu::mm.write(current_address, operand1_literal.h0);
+                current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
             }
             else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
-                current_address += cpu::mm.write(current_address, operand1_literal.w0);
+                current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
             }
             else {
-                current_address += cpu::mm.write(current_address, operand1_literal.b0);
+                current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
             }
         }
         else if (operand_is_label) {
@@ -1313,11 +1314,16 @@ int main(int argc, char* argv[]) {
 
     if (argc > 1) {
         std::string input_file {argv[1]};
-        auto input_path = std::filesystem::path::path(input_file);
+        auto input_path = std::filesystem::path(input_file);
         auto canonical_path = std::filesystem::canonical(input_path);
         auto parent_path = canonical_path.parent_path();
         base_path = parent_path.string();
+        canonical_path = canonical_path.native();
 
-        assemble(argv[1]);
+        // canonical_path.native()
+
+        std::cout << "Assembling from " << canonical_path << std::endl;
+
+        assemble(canonical_path.string());
     }
 }
