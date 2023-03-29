@@ -5,6 +5,14 @@ This project implements a 64-bit virtual CPU called "Maize" on a library that en
 The near-term goal is to implement a set of devices to bridge from the virtual CPU environment to the host machine, create a "BIOS" layer 
 above the virtual devices, implement a simple OS and a subset of Unix/Linux system calls (interrupt $80), 
 
+## What It Is, Basically
+
+* A 64-bit virtual machine that executes a custom byte code.
+* An assembly language that represents the byte code
+* An assembler implemented in C++ that generates byte code from the assembly language
+* A very simple "BIOS" and OS that bridges the VM and the underlying machine
+* An execution environment implemented in C++ that so far runs on Windows and Linux and could easily be ported to other platforms
+
 ## How To Use Maize
 
 Maize is implemented in C++ and will run on Windows and Linux. The primary executable is [maize](https://github.com/paulmooreparks/Maize/blob/master/src/maize.cpp), 
