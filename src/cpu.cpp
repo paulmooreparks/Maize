@@ -1665,42 +1665,52 @@ namespace maize {
                     case instr::out_regVal_imm: {
                         regs::p.h0 += 2;
                         byte dst_size = dst_imm_size();
-                        copy_memval_reg(regs::p.h0, dst_size, operand1, subreg_enum::w0);
-                        device *pdst_dev = devices[operand1.q0];
+                        copy_memval_reg(regs::p.h0, dst_size, operand2, subreg_enum::w0);
+                        device *pdst_dev = devices[operand2.q0];
                         device &dst_dev = *(pdst_dev);
                         copy_regval_reg(src_reg(), src_subreg_flag(), dst_dev, subreg_enum::w0);
                         regs::p.h0 += dst_size;
                         break;
+                    }
 
-#if false
-                        switch (step) {
-                            case 0: {
-                                regs::p.increment(2);
-                                regs::p.enable_to_bus(address_bus, subreg_enum::h0);
-                                mm.set_address_from_bus(address_bus);
-                                src_reg().enable_to_bus(data_bus_0, src_subreg_flag());
-                                break;
-                            }
-
-                            case 1: {
-                                byte dst_size = dst_imm_size();
-                                regs::p.increment(dst_size);
-                                mm.enable_memory_to_bus(data_bus_1, dst_size);
-                                operand1.set_from_bus(data_bus_1, src_subreg_flag());
-                                break;
-                            }
-
-                            case 2: {
-                                device* pdevice = devices[operand1.q0];
-                                pdevice->set_address_from_bus(data_bus_1);
-                                pdevice->set_io_from_bus(data_bus_0);
-                                instr_complete();
-                                break;
-                            }
-                        }
-
+                    case instr::out_immVal_imm: {
+                        regs::p.h0 += 2;
+                        byte src_size = src_imm_size();
+                        copy_memval_reg(regs::p.h0, src_size, operand1, subreg_enum::w0);
+                        regs::p.h0 += src_size;
+                        byte dst_size = dst_imm_size();
+                        copy_memval_reg(regs::p.h0, dst_size, operand2, subreg_enum::w0);
+                        device *pdst_dev = devices[operand2.q0];
+                        device &dst_dev = *(pdst_dev);
+                        copy_regval_reg(operand1, subreg_enum::w0, dst_dev, subreg_enum::w0);
+                        regs::p.h0 += dst_size;
                         break;
-#endif
+                    }
+
+                    case instr::out_regAddr_imm: {
+                        regs::p.h0 += 2;
+                        copy_regaddr_reg(src_reg(), src_subreg_flag(), operand1, subreg_enum::w0);
+                        byte dst_size = dst_imm_size();
+                        copy_memval_reg(regs::p.h0, dst_size, operand2, subreg_enum::w0);
+                        device *pdst_dev = devices[operand2.q0];
+                        device &dst_dev = *(pdst_dev);
+                        copy_regval_reg(src_reg(), src_subreg_flag(), dst_dev, subreg_enum::w0);
+                        regs::p.h0 += dst_size;
+                        break;
+                    }
+
+                    case instr::out_immAddr_imm: {
+                        regs::p.h0 += 2;
+                        byte src_size = src_imm_size();
+                        copy_memaddr_reg(regs::p.h0, src_size, operand1, subreg_enum::w0);
+                        regs::p.h0 += src_size;
+                        byte dst_size = dst_imm_size();
+                        copy_memval_reg(regs::p.h0, dst_size, operand2, subreg_enum::w0);
+                        device *pdst_dev = devices[operand2.q0];
+                        device &dst_dev = *(pdst_dev);
+                        copy_regval_reg(operand1, subreg_enum::w0, dst_dev, subreg_enum::w0);
+                        regs::p.h0 += dst_size;
+                        break;
                     }
 
                     case instr::sys_immVal: {

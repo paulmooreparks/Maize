@@ -39,12 +39,13 @@ So far, this implementation in C++ is MUCH faster and MUCH tighter than the .NET
 
 The near-term road map is as follows:
 
-* Finish implementing all of the instructions documented below
+* Finish implementing all of the instructions documented below (in progress)
+* Port [vbcc](http://www.compilers.de/vbcc.html) to generate Maize byte code (in progress)
 * Introduce "devices," which were partially implemented in the .NET version
 * Implement a linker so that binaries can be built independently and linked together
 * Clean up the assembler (mazm) and introduce some proper error checking
 * Make the assembler read Unicode source files
-* Port a C compiler to generate Maize byte code
+* Implement floating-point arithmetic
 
 ## Hello, World!
 
@@ -477,6 +478,10 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     
     %1010`1010  $AA   NOP                      No operation. Used as an instruction placeholder.
     
+    %1110`0000  $E0   DUP                      Duplicate the top value on the stack
+
+    %1110`0001  $E1   SWAP                     Swap the top two values on the stack
+
     %1111`1111  $FF   BRK                      Trigger a debug break
 
 
@@ -864,8 +869,8 @@ Other syntax, to be described more fully later:
     %1101`1101  $DD   CALL      immAddr        Push PC.H0 to stack, jump to address pointed to by immediate value and continue execution until RET is executed
     %1101`1110  $DE   OUTR      immAddr reg    Output value at immediate address to port in destination register
     %1101`1111  $DF   IN        immAddr reg    Read value from port at immediate address into destination register
-    %1110`0000  $E0             reserved       
-    %1110`0001  $E1             reserved       
+    %1110`0000  $E0   DUP                      Duplicate the top value on the stack
+    %1110`0001  $E1   SWAP                     Swap the top two values on the stack
     %1110`0010  $E2             reserved       
     %1110`0011  $E3             reserved       
     %1110`0100  $E4             reserved       
