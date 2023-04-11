@@ -18,13 +18,13 @@
 namespace maize {
 	namespace sys {
 		void init();
-		word call(qword syscall_id);
+		u_word call(u_qword syscall_id);
 		void exit();
 	} // namespace sys
 
 	namespace syscall {
-		word read(word fd, void* buf, hword count);
-		word write(word fd, const void *buf, hword count);
+		u_word read(u_word fd, void* buf, u_hword count);
+		u_word write(u_word fd, const void *buf, u_hword count);
 	}
 
 } // namespace maize
@@ -38,7 +38,7 @@ void console::on_set() {
     set(w0);
 }
 
-void console::set(word new_bus_value) {
+void console::set(u_word new_bus_value) {
     {
         std::lock_guard<std::mutex> lk(io_mutex);
         w0 = new_bus_value;
@@ -47,7 +47,7 @@ void console::set(word new_bus_value) {
     io_set.release();
 }
 
-word console::enable() {
+u_word console::enable() {
     return 0;
 }
 
@@ -104,7 +104,7 @@ namespace win {
 
         while (running) {
             io_set.acquire();
-            word local_bus_value {0};
+            u_word local_bus_value {0};
 
             {
                 std::unique_lock<std::mutex> lk(io_mutex);

@@ -10,72 +10,77 @@
 #include <condition_variable>
 
 namespace maize {
-	typedef uint64_t word;
-	typedef uint32_t hword;
-	typedef uint16_t qword;
-	typedef uint8_t byte;
+	typedef int64_t s_word;
+	typedef int32_t s_hword;
+	typedef int16_t s_qword;
+	typedef int8_t	s_byte;
 
-	typedef byte opcode;
+	typedef uint64_t u_word;
+	typedef uint32_t u_hword;
+	typedef uint16_t u_qword;
+	typedef uint8_t  u_byte;
+
+	typedef u_byte opcode;
 
 	namespace cpu {
-		const byte opcode_flag = 0b11000000;
-		const byte opcode_flag_srcReg =  0b00000000;
-		const byte opcode_flag_srcImm =  0b01000000;
-		const byte opcode_flag_srcAddr = 0b10000000;
+		const u_byte opcode_flag = 0b11000000;
+		const u_byte opcode_flag_srcReg =  0b00000000;
+		const u_byte opcode_flag_srcImm =  0b01000000;
+		const u_byte opcode_flag_srcAddr = 0b10000000;
 
-		const byte opflag_reg = 0b11110000;
-		const byte opflag_reg_a = 0b00000000;
-		const byte opflag_reg_b = 0b00010000;
-		const byte opflag_reg_c = 0b00100000;
-		const byte opflag_reg_d = 0b00110000;
-		const byte opflag_reg_e = 0b01000000;
-		const byte opflag_reg_g = 0b01010000;
-		const byte opflag_reg_h = 0b01100000;
-		const byte opflag_reg_j = 0b01110000;
-		const byte opflag_reg_k = 0b10000000;
-		const byte opflag_reg_l = 0b10010000;
-		const byte opflag_reg_m = 0b10100000;
-		const byte opflag_reg_z = 0b10110000;
-		const byte opflag_reg_f = 0b11000000;
-		const byte opflag_reg_in = 0b11010000;
-		const byte opflag_reg_p = 0b11100000;
-		const byte opflag_reg_s = 0b11110000;
+		const u_byte opflag_reg = 0b11110000;
+		const u_byte opflag_reg_a = 0b00000000;
+		const u_byte opflag_reg_b = 0b00010000;
+		const u_byte opflag_reg_c = 0b00100000;
+		const u_byte opflag_reg_d = 0b00110000;
+		const u_byte opflag_reg_e = 0b01000000;
+		const u_byte opflag_reg_g = 0b01010000;
+		const u_byte opflag_reg_h = 0b01100000;
+		const u_byte opflag_reg_j = 0b01110000;
+		const u_byte opflag_reg_k = 0b10000000;
+		const u_byte opflag_reg_l = 0b10010000;
+		const u_byte opflag_reg_m = 0b10100000;
+		const u_byte opflag_reg_z = 0b10110000;
+		const u_byte opflag_reg_f = 0b11000000;
+		const u_byte opflag_reg_in = 0b11010000;
+		const u_byte opflag_reg_p = 0b11100000;
+		const u_byte opflag_reg_s = 0b11110000;
 
 #if false
-		const byte opflag_reg_sp = 0b11111100; // S.H0 = stack pointer
-		const byte opflag_reg_bp = 0b11111101; // S.H1 = base pointer
-		const byte opflag_reg_pc = 0b11101100; // P.H0 = program counter
-		const byte opflag_reg_cs = 0b11101101; // P.H1 = program segment
-		const byte opflag_reg_fl = 0b11001100; // F.H0 = flags
+		const u_byte opflag_reg_sp = 0b11111100; // S.H0 = stack pointer
+		const u_byte opflag_reg_bp = 0b11111101; // S.H1 = base pointer
+		const u_byte opflag_reg_pc = 0b11101100; // P.H0 = program counter
+		const u_byte opflag_reg_cs = 0b11101101; // P.H1 = program segment
+		const u_byte opflag_reg_fl = 0b11001100; // F.H0 = flags
 #endif
 
-		const byte opflag_subreg = 0b00001111;
-		const byte opflag_subreg_b0 = 0b00000000;
-		const byte opflag_subreg_b1 = 0b00000001;
-		const byte opflag_subreg_b2 = 0b00000010;
-		const byte opflag_subreg_b3 = 0b00000011;
-		const byte opflag_subreg_b4 = 0b00000100;
-		const byte opflag_subreg_b5 = 0b00000101;
-		const byte opflag_subreg_b6 = 0b00000110;
-		const byte opflag_subreg_b7 = 0b00000111;
-		const byte opflag_subreg_q0 = 0b00001000;
-		const byte opflag_subreg_q1 = 0b00001001;
-		const byte opflag_subreg_q2 = 0b00001010;
-		const byte opflag_subreg_q3 = 0b00001011;
-		const byte opflag_subreg_h0 = 0b00001100;
-		const byte opflag_subreg_h1 = 0b00001101;
-		const byte opflag_subreg_w0 = 0b00001110;
+		const u_byte opflag_subreg = 0b00001111;
+		const u_byte opflag_subreg_b0 = 0b00000000;
+		const u_byte opflag_subreg_b1 = 0b00000001;
+		const u_byte opflag_subreg_b2 = 0b00000010;
+		const u_byte opflag_subreg_b3 = 0b00000011;
+		const u_byte opflag_subreg_b4 = 0b00000100;
+		const u_byte opflag_subreg_b5 = 0b00000101;
+		const u_byte opflag_subreg_b6 = 0b00000110;
+		const u_byte opflag_subreg_b7 = 0b00000111;
+		const u_byte opflag_subreg_q0 = 0b00001000;
+		const u_byte opflag_subreg_q1 = 0b00001001;
+		const u_byte opflag_subreg_q2 = 0b00001010;
+		const u_byte opflag_subreg_q3 = 0b00001011;
+		const u_byte opflag_subreg_h0 = 0b00001100;
+		const u_byte opflag_subreg_h1 = 0b00001101;
+		const u_byte opflag_subreg_w0 = 0b00001110;
 
-		const byte opflag_imm_size = 0b00000111;
-		const byte opflag_imm_size_08b = 0b00000000;
-		const byte opflag_imm_size_16b = 0b00000001;
-		const byte opflag_imm_size_32b = 0b00000010;
-		const byte opflag_imm_size_64b = 0b00000011;
+		const u_byte opflag_imm_size = 0b00000111;
+		const u_byte opflag_imm_size_08b = 0b00000000;
+		const u_byte opflag_imm_size_16b = 0b00000001;
+		const u_byte opflag_imm_size_32b = 0b00000010;
+		const u_byte opflag_imm_size_64b = 0b00000011;
 
-		const byte opflag_imm_reserved_01 = 0b01000000;
-		const byte opflag_imm_reserved_02 = 0b01010000;
-		const byte opflag_imm_reserved_03 = 0b01100000;
-		const byte opflag_imm_reserved_04 = 0b01110000;
+		const u_byte opflag_imm_reserved_01 = 0b01000000;
+		const u_byte opflag_imm_reserved_02 = 0b01010000;
+		const u_byte opflag_imm_reserved_03 = 0b01100000;
+		const u_byte opflag_imm_reserved_04 = 0b01110000;
 
 		class reg;
 		class bus;
@@ -83,33 +88,33 @@ namespace maize {
 
 		namespace {
 			struct reg_byte {
-				byte b0;
-				byte b1;
-				byte b2;
-				byte b3;
-				byte b4;
-				byte b5;
-				byte b6;
-				byte b7;
+				u_byte b0;
+				u_byte b1;
+				u_byte b2;
+				u_byte b3;
+				u_byte b4;
+				u_byte b5;
+				u_byte b6;
+				u_byte b7;
 			};
 
 			struct reg_qword {
-				qword q0;
-				qword q1;
-				qword q2;
-				qword q3;
+				u_qword q0;
+				u_qword q1;
+				u_qword q2;
+				u_qword q3;
 			};
 
 			struct reg_hword {
-				hword h0;
-				hword h1;
+				u_hword h0;
+				u_hword h1;
 			};
 
 			struct reg_word {
-				word w0;
+				u_word w0;
 			};
 
-			template <word flag_bit> class flag {
+			template <u_word flag_bit> class flag {
 			public:
 				flag(reg& reg_init, bool value = false) : flag_reg {reg_init} {
 					set(value);
@@ -189,7 +194,7 @@ namespace maize {
 		};
 
 		/* Defines a bit mask for each subregister in a register. */
-		enum class subreg_mask_enum : word {
+		enum class subreg_mask_enum : u_word {
 			b0 = 0b0000000000000000000000000000000000000000000000000000000011111111,
 			b1 = 0b0000000000000000000000000000000000000000000000001111111100000000,
 			b2 = 0b0000000000000000000000000000000000000000111111110000000000000000,
@@ -209,64 +214,64 @@ namespace maize {
 
 		struct reg_value {
 			reg_value() {};
-			reg_value(word init) : w {init} {}
+			reg_value(u_word init) : w {init} {}
 
-			operator word() { return w0; }
+			operator u_word() { return w0; }
 
-			explicit operator hword() {
+			explicit operator u_hword() {
 				return h0;
 			}
 
-			explicit operator qword() {
+			explicit operator u_qword() {
 				return q0;
 			}
 
-			explicit operator byte() {
+			explicit operator u_byte() {
 				return b0;
 			}
 
-			word operator=(word value) {
+			u_word operator=(u_word value) {
 				return w0 = value;
 			}
 
-			byte& operator[](size_t index) {
+			u_byte& operator[](size_t index) {
 				return byte_array[index];
 			}
 
-			byte const& operator[](size_t index) const {
+			u_byte const& operator[](size_t index) const {
 				return byte_array[index];
 			}
 
-			byte byte_index(size_t index) const {
+			u_byte byte_index(size_t index) const {
 				// TODO: range error handling
 				return byte_array[index];
 			}
 
-			qword qword_index(size_t index) const {
+			u_qword qword_index(size_t index) const {
 				// TODO: range error handling
 				return qword_array[index];
 			}
 
-			hword hword_index(size_t index) const {
+			u_hword hword_index(size_t index) const {
 				// TODO: range error handling
 				return hword_array[index];
 			}
 
-			word& w0 {w.w0};
-			hword& h0 {h.h0};
-			hword& h1 {h.h1};
-			qword& q0 {q.q0};
-			qword& q1 {q.q1};
-			qword& q2 {q.q2};
-			qword& q3 {q.q3};
-			byte& b0 {b.b0};
-			byte& b1 {b.b1};
-			byte& b2 {b.b2};
-			byte& b3 {b.b3};
-			byte& b4 {b.b4};
-			byte& b5 {b.b5};
-			byte& b6 {b.b6};
-			byte& b7 {b.b7};
+			u_word& w0 {w.w0};
+			u_hword& h0 {h.h0};
+			u_hword& h1 {h.h1};
+			u_qword& q0 {q.q0};
+			u_qword& q1 {q.q1};
+			u_qword& q2 {q.q2};
+			u_qword& q3 {q.q3};
+			u_byte& b0 {b.b0};
+			u_byte& b1 {b.b1};
+			u_byte& b2 {b.b2};
+			u_byte& b3 {b.b3};
+			u_byte& b4 {b.b4};
+			u_byte& b5 {b.b5};
+			u_byte& b6 {b.b6};
+			u_byte& b7 {b.b7};
 
 		private:
 			union {
@@ -274,9 +279,9 @@ namespace maize {
 				reg_hword h;
 				reg_qword q;
 				reg_byte b;
-				hword hword_array[2];
-				qword qword_array[4];
-				byte byte_array[8];
+				u_hword hword_array[2];
+				u_qword qword_array[4];
+				u_byte byte_array[8];
 			};
 
 		};
@@ -289,33 +294,33 @@ namespace maize {
 		class reg : public reg_value {
 		public:
 			reg() : reg_value() {}
-			reg(word init) : reg_value(init) {}
+			reg(u_word init) : reg_value(init) {}
 
-			word& operator++() {
+			u_word& operator++() {
 				increment(1);
 				return w0;
 			}
 
-			word operator++(int) {
+			u_word operator++(int) {
 				increment(1);
 				return w0;
 			}
 
-			word operator--() {
+			u_word operator--() {
 				decrement(1);
 				return w0;
 			}
 
-			word operator--(int) {
+			u_word operator--(int) {
 				decrement(1);
 				return w0;
 			}
 
 		protected:
-			void increment(byte value, subreg_enum subreg = subreg_enum::w0);
-			void decrement(byte value, subreg_enum subreg = subreg_enum::w0);
-			// word privilege_flags {0};
-			// word privilege_mask {0};
+			void increment(u_byte value, subreg_enum subreg = subreg_enum::w0);
+			void decrement(u_byte value, subreg_enum subreg = subreg_enum::w0);
+			// u_word privilege_flags {0};
+			// u_word privilege_mask {0};
 		};
 
 		class device : public reg {
@@ -325,26 +330,26 @@ namespace maize {
 		};
 
 		struct memory_module : public reg {
-			hword write_byte(reg_value address, byte value);
-			hword write_qword(reg_value address, qword value);
-			hword write_hword(reg_value address, hword value);
-			hword write_word(reg_value address, word value);
+			u_hword write_byte(reg_value address, u_byte value);
+			u_hword write_qword(reg_value address, u_qword value);
+			u_hword write_hword(reg_value address, u_hword value);
+			u_hword write_word(reg_value address, u_word value);
 
 			size_t read(reg_value const &address, reg_value &reg, subreg_enum subreg);
-			size_t read(word address, reg_value &reg, subreg_enum subreg);
+			size_t read(u_word address, reg_value &reg, subreg_enum subreg);
 			size_t read(reg_value const &address, reg_value &reg, size_t count, size_t dst_idx);
-			size_t read(word address, reg_value &reg, size_t count, size_t dst_idx);
-			size_t read(reg_value address, hword count, std::vector<byte> &retval);
-			std::vector<byte> read(reg_value address, hword count);
-			byte read_byte(word address);
-			word last_block() const;
+			size_t read(u_word address, reg_value &reg, size_t count, size_t dst_idx);
+			size_t read(reg_value address, u_hword count, std::vector<u_byte> &retval);
+			std::vector<u_byte> read(reg_value address, u_hword count);
+			u_byte read_byte(u_word address);
+			u_word last_block() const;
 			
-			const hword block_size {0x100};
+			const u_hword block_size {0x100};
 
 		protected:
 			reg address_reg {0};
-			word address_mask {0xFFFFFFFFFFFFFF00};
-			word cache_base {0xFFFFFFFFFFFFFFFF};
+			u_word address_mask {0xFFFFFFFFFFFFFF00};
+			u_word cache_base {0xFFFFFFFFFFFFFFFF};
 			reg_value cache_address;
 
 			size_t load_size {3};
@@ -352,41 +357,19 @@ namespace maize {
 			bus* pload_bus {nullptr};
 			bus* pstore_bus {nullptr};
 
-			std::map<word, byte*> memory_map;
-			byte* cache {nullptr};
+			std::map<u_word, u_byte*> memory_map;
+			u_byte* cache {nullptr};
 
-			size_t set_cache_address(word address);
+			size_t set_cache_address(u_word address);
 		};
 
 		class arithmetic_logic_unit : public reg {
 		public:
-			static const opcode op_add {0x03};
-			static const opcode op_sub {0x04};
-			static const opcode op_mul {0x05};
-			static const opcode op_div {0x06};
-			static const opcode op_mod {0x07};
-			static const opcode op_and {0x08};
-			static const opcode op_or {0x09};
-			static const opcode op_nor {0x0A};
-			static const opcode op_nand {0x0B};
-			static const opcode op_xor {0x0C};
-			static const opcode op_shl {0x0D};
-			static const opcode op_shr {0x0E};
-			static const opcode op_cmp {0x0F};
-			static const opcode op_test {0x10};
-			static const opcode op_inc {0x11};
-			static const opcode op_dec {0x12};
-			static const opcode op_not {0x13};
-			static const opcode op_cmpind {0x2F};
-			static const opcode op_testind {0x30};
+			static const opcode opctrl_carryin	{0x80};
+			static const opcode opflag_code		{0x3F}; // 0011`1111
 
-			static const opcode opctrl_carryin {0x80};
-
-			static const opcode opflag_code {0x3F}; // 0001`1111
-			static const opcode opflag_size {0x30}; // 1100`0000
-
-			reg src_reg;
-			reg dst_reg;
+			reg op1_reg;
+			reg op2_reg;
 		};
 
 
@@ -487,14 +470,23 @@ namespace maize {
 			const opcode test_regAddr_reg		{test_opcode | opcode_flag_srcAddr};
 			const opcode test_immAddr_reg		{test_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
-			const opcode inc_opcode				{0x11};
-			const opcode inc_regVal				{inc_opcode | opcode_flag_srcReg};
-			
-			const opcode dec_opcode				{0x12};
-			const opcode dec_regVal				{dec_opcode | opcode_flag_srcReg};
-			
-			const opcode not_opcode				{0x13};
-			const opcode not_regVal				{not_opcode | opcode_flag_srcReg};
+			const opcode cmpxchg_opcode			{0x11};
+			const opcode cmpxchg_regVal_regreg	{cmpxchg_opcode | opcode_flag_srcReg};
+			const opcode cmpxchg_immVal_regreg	{cmpxchg_opcode | opcode_flag_srcImm};
+			const opcode cmpxchg_regAddr_regreg	{cmpxchg_opcode | opcode_flag_srcAddr};
+			const opcode cmpxchg_immAddr_regreg	{cmpxchg_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			const opcode lea_opcode				{0x12};
+			const opcode lea_regVal_regreg		{lea_opcode | opcode_flag_srcReg};
+			const opcode lea_immVal_regreg		{lea_opcode | opcode_flag_srcImm};
+			const opcode lea_regAddr_regreg		{lea_opcode | opcode_flag_srcAddr};
+			const opcode lea_immAddr_regreg		{lea_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			const opcode ldz_opcode				{0x13};
+			const opcode ldz_regVal_reg			{ldz_opcode | opcode_flag_srcReg};
+			const opcode ldz_immVal_reg			{ldz_opcode | opcode_flag_srcImm};
+			const opcode ldz_regAddr_reg		{ldz_opcode | opcode_flag_srcAddr};
+			const opcode ldz_immAddr_reg		{ldz_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
 			const opcode out_opcode				{0x14};
 			const opcode out_regVal_imm			{out_opcode | opcode_flag_srcReg};
@@ -596,17 +588,32 @@ namespace maize {
 			const opcode testind_regVal_regAddr	{testind_opcode | opcode_flag_srcReg};
 			const opcode testind_immVal_regAddr	{testind_opcode | opcode_flag_srcImm};
 
-			const opcode setcry_opcode			{0x31};
-
-			const opcode clrcry_opcode			{0x32};
-
-			const opcode clrint_opcode			{0x33};
+			const opcode inc_opcode				{0x31};
+			const opcode inc_regVal				{inc_opcode | opcode_flag_srcReg};
+			
+			const opcode dec_opcode				{0x32};
+			const opcode dec_regVal				{dec_opcode | opcode_flag_srcReg};
+			
+			const opcode not_opcode				{0x33};
+			const opcode not_regVal				{not_opcode | opcode_flag_srcReg};
 
 			const opcode sys_opcode				{0x34};
 			const opcode sys_regVal				{sys_opcode | opcode_flag_srcReg};
 			const opcode sys_immVal				{sys_opcode | opcode_flag_srcImm};
 
 			const opcode nop_opcode				{0xAA};
+
+			const opcode xchg_opcode			{0xE0};
+
+			const opcode setcry_opcode			{0xE1};
+
+			const opcode clrcry_opcode			{0xE2};
+
+			const opcode clrint_opcode			{0xE3};
+
+			const opcode dup_opcode				{0xE4};
+
+			const opcode swap_opcode			{0xE5};
 
 			const opcode brk_opcode				{0xFF};
 
@@ -640,7 +647,7 @@ namespace maize {
 		extern memory_module mm;
 		extern arithmetic_logic_unit alu;
 
-		void add_device(qword id, device& new_device);
+		void add_device(u_qword id, device& new_device);
 		void run();
 
 

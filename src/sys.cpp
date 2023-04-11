@@ -14,11 +14,11 @@ namespace maize {
             }
         }
 
-        word read(word fd, void* buf, hword count) {
+        u_word read(u_word fd, void* buf, u_hword count) {
             return ::read(fd, buf, count);
         }
 
-        word write(word fd, const void* buf, hword count) {
+        u_word write(u_word fd, const void* buf, u_hword count) {
             return ::write(fd, buf, count);
         }
 #elif _WIN32
@@ -202,7 +202,7 @@ namespace maize {
             }
         }
 
-        word read(word fd, void* buf, hword count) {
+        u_word read(u_word fd, void* buf, u_hword count) {
             if (fd == 0) {
                 DWORD chars_read {0};
                 ReadConsole(hStdin, buf, count, &chars_read, nullptr);
@@ -210,15 +210,15 @@ namespace maize {
             }
 
             if (fd == 1 || fd == 2) {
-                return (word)-1;
+                return (u_word)-1;
             }
 
             return -1;
         }
 
-        word write(word fd, const void* buf, hword count) {
+        u_word write(u_word fd, const void* buf, u_hword count) {
             if (fd == 0) {
-                return (word)-1;
+                return (u_word)-1;
             }
 
             if (fd < 3) {
@@ -233,7 +233,7 @@ namespace maize {
                 return charsWritten;
             }
 
-            return static_cast<word>(-1);
+            return static_cast<u_word>(-1);
         }
 
 #else 
@@ -249,23 +249,23 @@ namespace maize {
             syscall::_init();
         }
 
-        word call(qword syscall_id) {
+        u_word call(u_qword syscall_id) {
             using namespace cpu;
 
             switch (syscall_id) {
                 /* sys_read */
                 case 0x0000U: {
-                    word fd {regs::g.w0};
-                    word address {regs::h.w0};
-                    hword count {regs::j.h0};
+                    u_word fd {regs::g.w0};
+                    u_word address {regs::h.w0};
+                    u_hword count {regs::j.h0};
                     size_t s = count;
 
-                    std::vector<byte> buf;
+                    std::vector<u_byte> buf;
                     buf.resize(count);
-                    byte* bufvec = &buf[0];
-                    word retval = syscall::read(fd, reinterpret_cast<void*>(bufvec), count);
+                    u_byte* bufvec = &buf[0];
+                    u_word retval = syscall::read(fd, reinterpret_cast<void*>(bufvec), count);
 
-                    for (word i = 0; i < count; ++i, ++address) {
+                    for (u_word i = 0; i < count; ++i, ++address) {
                         cpu::mm.write_byte(address, bufvec[i]);
                     }
 
@@ -274,12 +274,12 @@ namespace maize {
 
                 /* sys_write */
                 case 0x0001U: {
-                    word fd {regs::g.w0};
-                    word address {regs::h.w0};
-                    hword count {regs::j.h0};
+                    u_word fd {regs::g.w0};
+                    u_word address {regs::h.w0};
+                    u_hword count {regs::j.h0};
 
-                    std::vector<byte> str = mm.read(address, count);
-                    byte const* buf {&str[0]};
+                    std::vector<u_byte> str = mm.read(address, count);
+                    u_byte const* buf {&str[0]};
                     return syscall::write(fd, buf, count);
                 }
 

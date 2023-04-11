@@ -41,6 +41,7 @@ namespace {
         start,
         operand1,
         operand2,
+        operand3,
         end
     };
 
@@ -67,15 +68,17 @@ namespace {
         address = '@',
         reg_sep = '.',
         quote = '"',
-        escape = '\\'
+        escape = '\\',
+        neg = '-',
+        pos = '+'
     };
 
     std::string base_path {};
     std::string current_token {};
-    maize::hword current_address {};
-    std::unordered_map<std::string, maize::hword> labels {};
-    std::unordered_map<maize::hword, std::string> fixups {};
-    std::map<maize::word, std::vector<byte>> memory_map {};
+    maize::u_hword current_address {};
+    std::unordered_map<std::string, maize::u_hword> labels {};
+    std::unordered_map<maize::u_hword, std::string> fixups {};
+    std::map<maize::u_word, std::vector<u_byte>> memory_map {};
 
     template <typename T> struct expression;
 
@@ -116,12 +119,12 @@ namespace {
 
     struct opcode_data : public keyword_data {
         opcode_data() : opcode(0), keyword_data() { }
-        opcode_data(byte opcode_init, tokenizer_fn tokenizer_init, compiler_fn compiler_init) : 
+        opcode_data(u_byte opcode_init, tokenizer_fn tokenizer_init, compiler_fn compiler_init) : 
             opcode(opcode_init),
             keyword_data(tokenizer_init, compiler_init)
         { }
 
-        byte opcode;
+        u_byte opcode;
     };
 
     void assemble(std::string file_path);
@@ -145,6 +148,7 @@ namespace {
     parser_state opcode_0param_tokenizer(std::fstream &fin, token_tree &tree, char c);
     parser_state opcode_1param_tokenizer(std::fstream &fin, token_tree &tree, char c);
     parser_state opcode_2param_tokenizer(std::fstream &fin, token_tree &tree, char c);
+    parser_state opcode_3param_tokenizer(std::fstream &fin, token_tree &tree, char c);
 
     void address_compiler(token_tree &tree, std::string &opcode_str);
     void string_compiler(token_tree &tree, std::string &opcode_str);
@@ -158,6 +162,7 @@ namespace {
     void reg_compiler(token_tree &tree, std::string &opcode_str);
     void regimm_imm_compiler(token_tree &tree, std::string &opcode_str);
     void regimm_compiler(token_tree &tree, std::string &opcode_str);
+    void regimm_regreg_compiler(token_tree &tree, std::string &opcode_str);
 
     std::unordered_map<std::string, keyword_data> keywords {
         { "ADDRESS", {address_tokenizer, address_compiler}},
@@ -186,6 +191,9 @@ namespace {
         { "SHR",    {cpu::instr::shr_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "CMP",    {cpu::instr::cmp_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "TEST",   {cpu::instr::test_opcode   , opcode_2param_tokenizer, regimm_reg_compiler}},
+        { "CMPXCHG",{cpu::instr::cmpxchg_opcode, opcode_3param_tokenizer, regimm_regreg_compiler}},
+        { "LEA",    {cpu::instr::lea_opcode,     opcode_3param_tokenizer, regimm_regreg_compiler}},
+        { "LDZ",    {cpu::instr::ldz_opcode,     opcode_2param_tokenizer, regimm_reg_compiler}},
         { "INC",    {cpu::instr::inc_opcode    , opcode_1param_tokenizer, reg_compiler}},
         { "DEC",    {cpu::instr::dec_opcode    , opcode_1param_tokenizer, reg_compiler}},
         { "NOT",    {cpu::instr::not_opcode    , opcode_1param_tokenizer, reg_compiler}},
@@ -214,6 +222,7 @@ namespace {
         { "CLRCRY", {cpu::instr::clrcry_opcode , opcode_0param_tokenizer, no_operand_compiler}},
         { "SYS",    {cpu::instr::sys_opcode    , opcode_1param_tokenizer, regimm_compiler}},
         { "NOP",    {cpu::instr::nop_opcode    , opcode_0param_tokenizer, no_operand_compiler}},
+        { "XCHG",   {cpu::instr::xchg_opcode   , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "BRK",    {cpu::instr::brk_opcode    , opcode_0param_tokenizer, no_operand_compiler}}
     };
 
@@ -233,9 +242,9 @@ namespace {
         std::cout << "Output to " << bin_path << std::endl;
         std::ofstream bin(bin_path, std::fstream::binary);
 
-        maize::word last_block {cpu::mm.last_block()};
-        maize::word end {last_block + cpu::mm.block_size};
-        maize::word current_address {0};
+        maize::u_word last_block {cpu::mm.last_block()};
+        maize::u_word end {last_block + cpu::mm.block_size};
+        maize::u_word current_address {0};
 
         while (current_address < end) {
             char c = cpu::mm.read_byte(current_address);
@@ -487,7 +496,7 @@ namespace {
 
             switch (state) {
             case label_state::start:
-                if (isalpha(c) || c == '_') {
+                if (isalpha(c) || c == '_' || c == '.') {
                     state = label_state::name;
                     current_token.push_back(c);
                 }
@@ -495,7 +504,7 @@ namespace {
                 break;
 
             case label_state::name:
-                if (isalnum(c) || c == '_') {
+                if (isalnum(c) || c == '_' || c == '.') {
                     state = label_state::name;
                     current_token.push_back(c);
                 }
@@ -583,7 +592,8 @@ namespace {
                 continue;
             }
 
-            if (isalnum(c) || c == special_chars::bin || c == special_chars::dec || c == special_chars::hex) {
+            if (isalnum(c) || c == special_chars::bin || c == special_chars::dec || c == special_chars::hex 
+                || special_chars::neg || special_chars::pos) {
                 current_token.push_back(c);
             }
             else if ((isspace(c) || c == '\r' || c == '\n' || c == special_chars::comment_start) && !current_token.empty()) {
@@ -718,42 +728,140 @@ namespace {
         return parser_state::whitespace;
     }
 
+    parser_state opcode_3param_tokenizer(std::fstream &fin, token_tree &tree, char c) {
+        opcode_state state {opcode_state::start};
 
-    maize::hword convert_label_string(std::string &value) {
-        maize::hword hvalue {0};
+        while (fin.peek() >= 0) {
+            fin >> std::noskipws >> c;
+
+            switch (state) {
+                case opcode_state::start:
+                    if (isspace(c)) {
+                        continue;
+                    }
+                    else if (c == ',' || c == '`') {
+                        state = opcode_state::operand1;
+                    }
+                    else {
+                        state = opcode_state::operand1;
+                        current_token.push_back(c);
+                    }
+
+                    break;
+
+                case opcode_state::operand1:
+                    if (isspace(c)) {
+                        tree.add(current_token);
+                        current_token.clear();
+                        state = opcode_state::operand2;
+                    }
+                    else if (c == ',' || c == '`') {
+                        break;
+                    }
+                    else {
+                        current_token.push_back(c);
+                    }
+
+                    break;
+
+                case opcode_state::operand2:
+                    if (isspace(c)) {
+                        tree.add(current_token);
+                        current_token.clear();
+                        state = opcode_state::operand3;
+                    }
+                    else if (c == ',' || c == '`') {
+                        break;
+                    }
+                    else {
+                        current_token.push_back(c);
+                    }
+
+                    break;
+
+                case opcode_state::operand3:
+                    if (isspace(c)) {
+                        tree.add(current_token);
+                        current_token.clear();
+                        return parser_state::whitespace;
+                    }
+                    else if (c == ',' || c == '`') {
+                        break;
+                    }
+                    else {
+                        current_token.push_back(c);
+                    }
+
+                    break;
+            }
+        }
+
+        return parser_state::whitespace;
+    }
+
+    uint64_t bin_cvt(std::string &str) {
+        uint64_t tmp {0};
+
+        for (auto c : str) {
+            tmp = tmp << 1;
+
+            if (c == '1') {
+                tmp |= 1;
+            }
+            else if (c == '0') {
+                // nothing
+            }
+            else {
+                std::cerr << "Error" << std::endl;
+                return -1;
+            }
+        }
+
+        return tmp;
+    }
+
+
+    maize::u_hword convert_label_string(std::string &value) {
+        maize::u_hword hvalue {0};
         char type = value[0];
 
         std::stringstream cvt;
 
         if (type == special_chars::hex) {
             cvt << std::hex << value.substr(1);
+            cvt >> hvalue;
         }
         else if (type == special_chars::dec) {
             cvt << std::dec << value.substr(1);
+            cvt >> hvalue;
         }
         else if (type == special_chars::bin) {
-            // cvt << std::hex << value.substr(1);
-            throw std::logic_error("binary conversion not implemented yet");
+            std::string tmp = value.substr(1);
+            hvalue = static_cast<u_hword>(bin_cvt(tmp));
         }
         else {
-            hvalue = std::numeric_limits<hword>::max();
+            hvalue = std::numeric_limits<u_hword>::max();
         }
 
-        cvt >> hvalue;
         return hvalue;
     }
 
-    byte compile_label(std::string &label, cpu::reg_value &value) {
+    u_byte compile_label(std::string &label, cpu::reg_value &value) {
         value = labels[label];
         return cpu::opflag_imm_size_32b;
     }
 
-    byte compile_hex_literal(std::string &literal, cpu::reg_value &value) {
+    u_byte compile_hex_literal(std::string &literal, cpu::reg_value &value) {
         auto len = literal.length();
+
+        if (len && (literal[0] == special_chars::neg || literal[0] == special_chars::pos)) {
+            --len;
+        }
+
         std::stringstream cvt;
         cvt << std::hex << literal;
         cvt >> value.w0;
-        byte type_byte = cpu::opflag_imm_size_32b;
+        u_byte type_byte = cpu::opflag_imm_size_32b;
 
         if (len <= 2) {
             type_byte = cpu::opflag_imm_size_08b;
@@ -774,9 +882,71 @@ namespace {
         return type_byte;
     }
 
-    byte compile_literal(std::string &literal, cpu::reg_value &value) {
+    u_byte compile_dec_literal(std::string &literal, cpu::reg_value &value) {
+        auto len = literal.length();
+
+        if (len && (literal[0] == special_chars::neg || literal[0] == special_chars::pos)) {
+            --len;
+        }
+
+        std::stringstream cvt;
+        cvt << std::dec << literal;
+        cvt >> value.w0;
+        u_byte type_byte = cpu::opflag_imm_size_32b;
+
+        if (len <= 2) {
+            type_byte = cpu::opflag_imm_size_08b;
+        }
+        else if (len <= 4) {
+            type_byte = cpu::opflag_imm_size_16b;
+        }
+        else if (len <= 8) {
+            type_byte = cpu::opflag_imm_size_32b;
+        }
+        else if (len <= 16) {
+            type_byte = cpu::opflag_imm_size_64b;
+        }
+        else {
+            throw std::logic_error("Invalid literal format");
+        }
+
+        return type_byte;
+    }
+
+    u_byte compile_bin_literal(std::string &literal, cpu::reg_value &value) {
+        auto len = literal.length();
+        std::string tmp = literal;
+
+        if (len && (literal[0] == special_chars::neg || literal[0] == special_chars::pos)) {
+            --len;
+            tmp = tmp.substr(1);
+        }
+
+        value.w0 = bin_cvt(tmp);
+        u_byte type_byte = cpu::opflag_imm_size_32b;
+
+        if (len <= 8) {
+            type_byte = cpu::opflag_imm_size_08b;
+        }
+        else if (len <= 16) {
+            type_byte = cpu::opflag_imm_size_16b;
+        }
+        else if (len <= 32) {
+            type_byte = cpu::opflag_imm_size_32b;
+        }
+        else if (len <= 64) {
+            type_byte = cpu::opflag_imm_size_64b;
+        }
+        else {
+            throw std::logic_error("Invalid literal format");
+        }
+
+        return type_byte;
+    }
+
+    u_byte compile_literal(std::string &literal, cpu::reg_value &value) {
         char type_char = literal[0];
-        byte type_byte = 0;
+        u_byte type_byte = 0;
         value = 0;
 
         if (type_char == special_chars::hex) {
@@ -784,10 +954,12 @@ namespace {
             type_byte = compile_hex_literal(sub, value);
         }
         else if (type_char == special_chars::dec) {
-            throw std::logic_error("Decimal literals not implemented yet");
+            std::string sub = literal.substr(1);
+            type_byte = compile_dec_literal(sub, value);
         }
         else if (type_char == special_chars::bin) {
-            throw std::logic_error("Binary literals not implemented yet");
+            std::string sub = literal.substr(1);
+            type_byte = compile_bin_literal(sub, value);
         }
 
         return type_byte;
@@ -813,7 +985,7 @@ namespace {
 
     void address_compiler(token_tree &tree, std::string &opcode_str) {
         auto data_string {tree.value.begin()->key};
-        hword data = 0;
+        u_hword data = 0;
 
         if (is_label(data_string)) {
             cpu::reg_value value = labels[data_string];
@@ -842,49 +1014,49 @@ namespace {
                     case '\\':
                     case '\'':
                     case '\"':
-                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>(c));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<u_byte>(c));
                         break;
 
                     case '0':
-                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>(0));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<u_byte>(0));
                         break;
 
                     case 't':
-                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\t'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<u_byte>('\t'));
                         break;
 
                     case 'r':
-                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\r'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<u_byte>('\r'));
                         break;
 
                     case 'n':
-                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\n'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<u_byte>('\n'));
                         break;
 
                     case 'a':
-                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\a'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<u_byte>('\a'));
                         break;
 
                     case 'b':
-                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\b'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<u_byte>('\b'));
                         break;
 
                     case 'f':
-                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\f'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<u_byte>('\f'));
                         break;
 
                     case 'e':
-                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>(0x1B));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<u_byte>(0x1B));
                         break;
 
                     case 'v':
-                        current_address += cpu::mm.write_byte(current_address, static_cast<byte>('\v'));
+                        current_address += cpu::mm.write_byte(current_address, static_cast<u_byte>('\v'));
                         break;
 
                     }
                 }
                 else {
-                    current_address += cpu::mm.write_byte(current_address, static_cast<byte>(c));
+                    current_address += cpu::mm.write_byte(current_address, static_cast<u_byte>(c));
                 }
 
                 ++it;
@@ -918,15 +1090,15 @@ namespace {
         auto label {tree.value.begin()->key};
         auto address = convert_label_string(label);
 
-        if (address == std::numeric_limits<hword>::max()) {
+        if (address == std::numeric_limits<u_hword>::max()) {
             if (labels.contains(label)) {
                 address = labels[label];
             }
             else {
-                address = std::numeric_limits<hword>::max();
+                address = std::numeric_limits<u_hword>::max();
             }
 
-            if (address == std::numeric_limits<hword>::max()) {
+            if (address == std::numeric_limits<u_hword>::max()) {
                 address = current_address;
                 labels[label] = address;
             }
@@ -946,7 +1118,7 @@ namespace {
         }
     }
 
-    std::unordered_map<std::string, byte> reg_map {
+    std::unordered_map<std::string, u_byte> reg_map {
         {"A", cpu::opflag_reg_a},
         {"B", cpu::opflag_reg_b},
         {"C", cpu::opflag_reg_c},
@@ -965,7 +1137,7 @@ namespace {
         {"S", cpu::opflag_reg_s}
     };
 
-    std::unordered_map<std::string, byte> subreg_map {
+    std::unordered_map<std::string, u_byte> subreg_map {
         {"B0", cpu::opflag_subreg_b0},
         {"B1", cpu::opflag_subreg_b1},
         {"B2", cpu::opflag_subreg_b2},
@@ -984,10 +1156,10 @@ namespace {
         {"W",  cpu::opflag_subreg_w0}
     };
 
-    byte compile_register(std::string &reg) {
+    u_byte compile_register(std::string &reg) {
         std::string reg_str;
         std::transform(reg.begin(), reg.end(), std::back_inserter(reg_str), ::toupper);
-        byte reg_byte {cpu::opflag_subreg_w0};
+        u_byte reg_byte {cpu::opflag_subreg_w0};
 
         /* Get some special cases out of the way */
         if (reg_str == "SP") {
@@ -1030,8 +1202,45 @@ namespace {
         return reg_byte;
     }
 
-    hword write_label(hword address, std::string &label, cpu::reg_value value) {
-        if (value.h0 == std::numeric_limits<hword>::max()) {
+    bool is_register(std::string &str) {
+        std::string reg_str;
+        std::transform(str.begin(), str.end(), std::back_inserter(reg_str), ::toupper);
+        u_byte reg_byte {cpu::opflag_subreg_w0};
+
+        /* Get some special cases out of the way */
+        if (reg_str == "SP") {
+            return true;
+        }
+        else if (reg_str == "BP") {
+            return true;
+        }
+        else if (reg_str == "PC") {
+            return true;
+        }
+        else if (reg_str == "CS") {
+            return true;
+        }
+        else if (reg_str == "FL") {
+            return true;
+        }
+        else {
+            std::string reg {reg_str};
+            auto subreg_sep {reg_str.find('.')};
+
+            if (subreg_sep != std::string::npos) {
+                reg = reg_str.substr(0, subreg_sep);
+            }
+
+            if (reg_map.contains(reg)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    u_hword write_label(u_hword address, std::string &label, cpu::reg_value value) {
+        if (value.h0 == std::numeric_limits<u_hword>::max()) {
             fixups[current_address] = label;
         }
 
@@ -1039,17 +1248,23 @@ namespace {
     }
 
     void no_operand_compiler(token_tree &tree, std::string &opcode_str) {
-        byte opcode {opcodes[opcode_str].opcode};
+        u_byte opcode {opcodes[opcode_str].opcode};
         current_address += cpu::mm.write_byte(current_address, opcode);
     }
 
+    u_byte add_label(std::string &label, cpu::reg_value &value) {
+        value.h0 = std::numeric_limits<u_hword>::max();
+        labels[label] = value.h0;
+        return cpu::opflag_imm_size_32b;
+    }
+
     void regimm_reg_compiler(token_tree &tree, std::string &opcode_str) {
-        byte opcode {opcodes[opcode_str].opcode};
+        u_byte opcode {opcodes[opcode_str].opcode};
         auto it {tree.value.begin()};
         auto operand1 {it->key};
         ++it;
         auto operand2 {it->key};
-        byte operand1_byte {0};
+        u_byte operand1_byte {0};
         bool operand_is_immediate {false};
         bool operand_is_label {false};
         cpu::reg_value operand1_literal {0};
@@ -1064,6 +1279,9 @@ namespace {
             opcode |= cpu::opcode_flag_srcImm;
             operand1_byte |= compile_literal(operand1, operand1_literal);
         }
+        else if (is_register(operand1)) {
+            operand1_byte = compile_register(operand1);
+        }
         else if (is_label(operand1)) {
             operand_is_label = true;
             operand_is_immediate = true;
@@ -1071,17 +1289,20 @@ namespace {
             operand1_byte |= compile_label(operand1, operand1_literal);
         }
         else {
-            operand1_byte = compile_register(operand1);
+            operand_is_label = true;
+            operand_is_immediate = true;
+            opcode |= cpu::opcode_flag_srcImm;
+            operand1_byte |= add_label(operand1, operand1_literal);
         }
 
-        byte operand2_byte {compile_register(operand2)};
+        u_byte operand2_byte {compile_register(operand2)};
 
         current_address += cpu::mm.write_byte(current_address, opcode);
         current_address += cpu::mm.write_byte(current_address, operand1_byte);
         current_address += cpu::mm.write_byte(current_address, operand2_byte);
 
         if (operand_is_immediate) {
-            if (operand_is_label && operand1_literal.h0 == std::numeric_limits<hword>::max()) {
+            if (operand_is_label && operand1_literal.h0 == std::numeric_limits<u_hword>::max()) {
                 current_address += write_label(current_address, operand1, operand1_literal);
             }
             else {
@@ -1105,10 +1326,10 @@ namespace {
     }
 
     void regimm_compiler(token_tree &tree, std::string &opcode_str) {
-        byte opcode {opcodes[opcode_str].opcode};
+        u_byte opcode {opcodes[opcode_str].opcode};
         auto it {tree.value.begin()};
         auto operand1 {it->key};
-        byte operand1_byte {0};
+        u_byte operand1_byte {0};
         bool operand_is_immediate {false};
         bool operand_is_label {false};
         cpu::reg_value operand1_literal {0};
@@ -1123,6 +1344,9 @@ namespace {
             opcode |= cpu::opcode_flag_srcImm;
             operand1_byte |= compile_literal(operand1, operand1_literal);
         }
+        else if (is_register(operand1)) {
+            operand1_byte = compile_register(operand1);
+        }
         else if (is_label(operand1)) {
             operand_is_label = true;
             operand_is_immediate = true;
@@ -1130,14 +1354,17 @@ namespace {
             operand1_byte |= compile_label(operand1, operand1_literal);
         }
         else {
-            operand1_byte = compile_register(operand1);
+            operand_is_label = true;
+            operand_is_immediate = true;
+            opcode |= cpu::opcode_flag_srcImm;
+            operand1_byte |= add_label(operand1, operand1_literal);
         }
 
         current_address += cpu::mm.write_byte(current_address, opcode);
         current_address += cpu::mm.write_byte(current_address, operand1_byte);
 
         if (operand_is_immediate) {
-            if (operand_is_label && operand1_literal.h0 == std::numeric_limits<hword>::max()) {
+            if (operand_is_label && operand1_literal.h0 == std::numeric_limits<u_hword>::max()) {
                 current_address += write_label(current_address, operand1, operand1_literal);
             }
             else {
@@ -1161,22 +1388,22 @@ namespace {
     }
 
     void reg_compiler(token_tree &tree, std::string &opcode_str) {
-        byte opcode {opcodes[opcode_str].opcode};
+        u_byte opcode {opcodes[opcode_str].opcode};
         auto it {tree.value.begin()};
         auto operand1 {it->key};
-        byte operand1_byte {compile_register(operand1)};
+        u_byte operand1_byte {compile_register(operand1)};
         current_address += cpu::mm.write_byte(current_address, opcode);
         current_address += cpu::mm.write_byte(current_address, operand1_byte);
     }
 
     void regimm_imm_compiler(token_tree &tree, std::string &opcode_str) {
-        byte opcode {opcodes[opcode_str].opcode};
+        u_byte opcode {opcodes[opcode_str].opcode};
         auto it {tree.value.begin()};
         auto operand1 {it->key};
         ++it;
         auto operand2 {it->key};
-        byte operand1_byte {0};
-        byte operand2_byte {0};
+        u_byte operand1_byte {0};
+        u_byte operand2_byte {0};
         bool operand_is_immediate {false};
         bool operand1_is_label {false};
         bool operand2_is_label {false};
@@ -1192,6 +1419,9 @@ namespace {
             opcode |= cpu::opcode_flag_srcImm;
             operand1_byte |= compile_literal(operand1, operand1_literal);
         }
+        else if (is_register(operand1)) {
+            operand1_byte = compile_register(operand1);
+        }
         else if (is_label(operand1)) {
             operand1_is_label = true;
             operand_is_immediate = true;
@@ -1199,7 +1429,10 @@ namespace {
             operand1_byte |= compile_label(operand1, operand1_literal);
         }
         else {
-            operand1_byte = compile_register(operand1);
+            operand1_is_label = true;
+            operand_is_immediate = true;
+            opcode |= cpu::opcode_flag_srcImm;
+            operand1_byte |= add_label(operand1, operand1_literal);
         }
 
         if (is_label(operand2)) {
@@ -1252,12 +1485,12 @@ namespace {
     }
 
     void regimm_regaddr_compiler(token_tree &tree, std::string &opcode_str) {
-        byte opcode {opcodes[opcode_str].opcode};
+        u_byte opcode {opcodes[opcode_str].opcode};
         auto it {tree.value.begin()};
         auto operand1 {it->key};
         ++it;
         auto operand2 {it->key};
-        byte operand1_byte {0};
+        u_byte operand1_byte {0};
         bool operand_is_immediate {false};
         bool operand_is_label {false};
         cpu::reg_value operand1_literal {0};
@@ -1267,6 +1500,9 @@ namespace {
             opcode |= cpu::opcode_flag_srcImm;
             operand1_byte |= compile_literal(operand1, operand1_literal);
         }
+        else if (is_register(operand1)) {
+            operand1_byte = compile_register(operand1);
+        }
         else if (is_label(operand1)) {
             operand_is_label = true;
             operand_is_immediate = true;
@@ -1274,10 +1510,13 @@ namespace {
             operand1_byte |= compile_label(operand1, operand1_literal);
         }
         else {
-            operand1_byte = compile_register(operand1);
+            operand_is_label = true;
+            operand_is_immediate = true;
+            opcode |= cpu::opcode_flag_srcImm;
+            operand1_byte |= add_label(operand1, operand1_literal);
         }
 
-        byte operand2_byte {0};
+        u_byte operand2_byte {0};
 
         if (operand2[0] == special_chars::address) {
             operand2 = operand2.substr(1);
@@ -1308,6 +1547,77 @@ namespace {
         }
     }
 
+    void regimm_regreg_compiler(token_tree &tree, std::string &opcode_str) {
+        u_byte opcode {opcodes[opcode_str].opcode};
+        auto it {tree.value.begin()};
+        auto operand1 {it->key};
+        ++it;
+        auto operand2 {it->key};
+        ++it;
+        auto operand3 {it->key};
+
+        u_byte operand1_byte {0};
+        bool operand_is_immediate {false};
+        bool operand_is_label {false};
+        cpu::reg_value operand1_literal {0};
+
+        if (operand1[0] == special_chars::address) {
+            opcode |= cpu::opcode_flag_srcAddr;
+            operand1 = operand1.substr(1);
+        }
+
+        if (is_literal(operand1)) {
+            operand_is_immediate = true;
+            opcode |= cpu::opcode_flag_srcImm;
+            operand1_byte |= compile_literal(operand1, operand1_literal);
+        }
+        else if (is_register(operand1)) {
+            operand1_byte = compile_register(operand1);
+        }
+        else if (is_label(operand1)) {
+            operand_is_label = true;
+            operand_is_immediate = true;
+            opcode |= cpu::opcode_flag_srcImm;
+            operand1_byte |= compile_label(operand1, operand1_literal);
+        }
+        else {
+            operand_is_label = true;
+            operand_is_immediate = true;
+            opcode |= cpu::opcode_flag_srcImm;
+            operand1_byte |= add_label(operand1, operand1_literal);
+        }
+
+        u_byte operand2_byte {compile_register(operand2)};
+        u_byte operand3_byte {compile_register(operand3)};
+
+        current_address += cpu::mm.write_byte(current_address, opcode);
+        current_address += cpu::mm.write_byte(current_address, operand1_byte);
+        current_address += cpu::mm.write_byte(current_address, operand2_byte);
+        current_address += cpu::mm.write_byte(current_address, operand3_byte);
+
+        if (operand_is_immediate) {
+            if (operand_is_label && operand1_literal.h0 == std::numeric_limits<u_hword>::max()) {
+                current_address += write_label(current_address, operand1, operand1_literal);
+            }
+            else {
+                if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
+                    current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
+                }
+                else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
+                    current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
+                }
+                else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
+                    current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
+                }
+                else {
+                    current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
+                }
+            }
+        }
+        else if (operand_is_label) {
+            current_address += write_label(current_address, operand1, operand1_literal);
+        }
+    }
 }
 
 int main(int argc, char* argv[]) {

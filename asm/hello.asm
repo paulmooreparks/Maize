@@ -1,39 +1,31 @@
-LABEL stdlib_strlen AUTO
-LABEL hw_string AUTO
+; Execution begins at segment $00000000, address $00000000
+$0000`0000:             ; The back-tick (`)  is used as a number separator. 
+                        ; Underscore (_) and comma (,) may also be used as separators.
+    CALL main
+    HALT                ; For now, HALT exits the Maize interpreter, but in future it will
+                        ; pause the CPU and wait for an interrupt.
 
-; Execution begins at address $00000000:00000000
+hw_string:
+    STRING "Hello, world!\0"
 
-; Set stack pointer. The back-tick (`)  is used as a number separator. 
-; Underscore (_) and comma (,) may also be used as separators.
-ld $0000`1100 sp
+strlen:
+    LD $0 G.H0          ; Set counter to zero.
+loop:
+	LEA G.H0 A.H0 H.H0  ; String address is in A.H0. Add the counter to the address and put the result into H.H0.
+    LD @H.H0 H.B4       ; Dereference H.H0 and copy the character at that address into H.B4.
+	JZ loop_exit        ; LD sets the zero flag if the value copied to H.B4 is zero.
+	INC G.H0            ; Add 1 to the counter...
+	JMP loop            ; ...and continue the loop.
+loop_exit:
+	LD G.H0 A           ; Put the counter value into A, which is the return register
+	RET                 ; Pop return address from stack and place into PC
 
-; Set base pointer
-ld sp bp
-
-ld hw_string g
-call stdlib_strlen
-ld $01 g
-ld hw_string h.h0
-ld a.h0 j
-sys $01
-halt
-
-hw_string: 
-STRING "Hello, world!\0"  
-
-LABEL stdlib_strlen_loop AUTO
-LABEL stdlib_strlen_done AUTO
-
-stdlib_strlen:
-push g.h0
-clr a
-stdlib_strlen_loop:
-clr b.b0
-cmpind b.b0 @g.h0
-jz stdlib_strlen_done
-inc a.h0
-inc g.h0
-jmp stdlib_strlen_loop
-stdlib_strlen_done:
-pop g.h0
-ret
+main:
+    LD hw_string A.H0   ; Put address of message string into A.H0
+    CALL strlen         ; Call strlen function to get the string length
+    LD $01 G            ; $01 in G indicates output to stdout
+    LD hw_string H.H0   ; H.H0 holds address of message to output
+    LD A.H0 J           ; Put the string length into J
+    SYS $01             ; Call output function
+    LD $0 A             ; Set return value for main
+    RET                 ; Leave main

@@ -17,11 +17,11 @@ int main(int argc, char *argv[]) {
 	std::string file_path {argv[1]};
 	std::ifstream fin(file_path, std::fstream::binary);
 
-	maize::word address {0x0000000000000000};
+	maize::u_word address {0x0000000000000000};
 	char c {0};
 
 	while (fin.read(&c, 1)) {
-		cpu::mm.write_byte(address, static_cast<byte>(c));
+		cpu::mm.write_byte(address, static_cast<u_byte>(c));
 		++address;
 	}
 
