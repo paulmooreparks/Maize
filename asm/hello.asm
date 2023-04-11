@@ -15,7 +15,10 @@ hw_string:
 
 ; *****************************************************************************
 ; Return the length of a zero-terminated string. 
-; A.H0: Address of string
+; Parameters:
+;   A.H0: Address of string
+; Return: 
+;   A: Length of string
 
 strlen:
     LD $0 G.H0          ; Set counter to zero.
