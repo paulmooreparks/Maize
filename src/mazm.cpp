@@ -239,7 +239,7 @@ namespace {
         bin_path.replace_extension(ext);
 
         /* write here */
-        std::cout << "Output to " << bin_path << std::endl;
+        std::wcout << "Output to " << bin_path.native() << std::endl;
         std::ofstream bin(bin_path, std::fstream::binary);
 
         maize::u_word last_block {cpu::mm.last_block()};
@@ -1625,14 +1625,11 @@ int main(int argc, char* argv[]) {
     if (argc > 1) {
         std::string input_file {argv[1]};
         auto input_path = std::filesystem::path(input_file);
-        auto canonical_path = std::filesystem::canonical(input_path);
-        auto parent_path = canonical_path.parent_path();
+        auto canonical_path = std::filesystem::canonical(input_path).make_preferred();
+        auto parent_path = canonical_path.parent_path().make_preferred();
         base_path = parent_path.string();
-        canonical_path = canonical_path.native();
 
-        // canonical_path.native()
-
-        std::cout << "Assembling from " << canonical_path << std::endl;
+        std::wcout << "Assembling from " << canonical_path.native() << std::endl;
 
         assemble(canonical_path.string());
     }
