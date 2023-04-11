@@ -1,97 +1,104 @@
-# The Maize Virtual CPU 
+# The Maize Virtual Machine
 
-This project implements a 64-bit virtual CPU called "Maize" on a library that enables the creation of virtual CPUs (called "Tortilla"). 
+This project implements a 64-bit virtual machine called "Maize." This is an outgrowth of my [Tortilla](https://github.com/paulmooreparks/Tortilla) 
+project, which began life as an x86 emulator implemented in C# on .NET and then later became a virtual CPU of my own making.
 
-The near-term goal is to implement a set of devices to bridge from the virtual CPU environment to the host machine, create a "BIOS" layer 
-above the virtual devices, implement a simple OS and a subset of Unix/Linux system calls (interrupt $80), 
+The near-term goal for the Maize project is to implement a set of devices to bridge from the virtual environment to the host machine, 
+create a "BIOS" layer above the virtual devices, and implement a simple OS and a subset of Unix/Linux system calls (interrupt $80), 
 
 ## What It Is, Basically
 
-* A 64-bit virtual machine that executes a custom byte code.
+* A 64-bit virtual machine implemented in C++ that executes a custom byte code
 * An assembly language that represents the byte code
 * An assembler implemented in C++ that generates byte code from the assembly language
-* A very simple "BIOS" and OS that bridges the VM and the underlying machine
+* A very simple BIOS and OS that bridges the VM and the underlying machine
 * An execution environment implemented in C++ that so far runs on Windows and Linux and could easily be ported to other platforms
 
 ## How To Use Maize
 
-Maize is implemented in C++ and will run on Windows and Linux. The primary executable is [maize](https://github.com/paulmooreparks/Maize/blob/master/src/maize.cpp), 
+Maize is implemented in standard C++ and will run on Windows and Linux. The primary executable is [maize](https://github.com/paulmooreparks/Maize/blob/master/src/maize.cpp), 
 which accepts a path to a binary file to execute. You may generate a binary from Maize assembly with the [mazm](https://github.com/paulmooreparks/Maize/blob/master/src/mazm.cpp) executable, 
 which accepts a path to an assembly file.
 
 I haven't finished porting all of the instructions from the .NET implementation yet, but now that I've finished restructuring the 
 code it shouldn't take too long to complete them.
 
-The [assembler](https://github.com/paulmooreparks/Maize/blob/master/src/mazm.cpp) is still VERY bare-bones, but it's enough to play around with.
+The [assembler](https://github.com/paulmooreparks/Maize/blob/master/src/mazm.cpp) is still VERY bare-bones, but it's enough to generate 
+usable executables.
 
 ## Project Status
 
 As I said in the original [.NET implementation](https://github.com/paulmooreparks/Tortilla/), it's very early days for Maize, so don't 
 expect too much in the way of application usability... yet! I'm still porting the basic text-mode console for input and output. 
-Next, I'll start creating a file-system device. In the future I plan to port Clang or GCC to work with Maize binaries so that I can 
-eventually port Linux to the virtual CPU.
+Next, I'll start creating a file-system device. I am currently porting [QBE](https://c9x.me/compile/) to output Maize assembly so that I can 
+write Maize binaries with standard C and eventually port Linux to the virtual CPU.
 
 In the short term, I'm implementing a very basic OS over a simple BIOS ([core.asm](https://github.com/paulmooreparks/Maize/blob/master/asm/core.asm)). 
-It will provide a basic character-mode [CLI](https://github.com/paulmooreparks/Maize/blob/master/asm/cli.asm) to allow building and running simple Maize
-programs from within the virtual CPU environment. 
+It will provide a basic character-mode [CLI](https://github.com/paulmooreparks/Maize/blob/master/asm/cli.asm) to allow building and running simple 
+Maize programs from within the virtual CPU environment. 
 
 So far, this implementation in C++ is MUCH faster and MUCH tighter than the .NET version.
 
 The near-term road map is as follows:
 
 * Finish implementing all of the instructions documented below (in progress)
-* Port [vbcc](http://www.compilers.de/vbcc.html) to generate Maize byte code (in progress)
+* Port [QBE](https://c9x.me/compile/) compiler backend to generate Maize byte code (in progress)
+* Add ported QBE backend to [CProc](https://sr.ht/~mcf/cproc/) and build Maize BIOS & OS in standard C.
 * Introduce "devices," which were partially implemented in the .NET version
 * Implement a linker so that binaries can be built independently and linked together
 * Clean up the assembler (mazm) and introduce some proper error checking
 * Make the assembler read Unicode source files
 * Implement floating-point arithmetic
+* Add Maize backend to GCC and port GNU tools to Maize.
 
 ## Hello, World!
 
 Here is a simple ["Hello, World!" application](https://github.com/paulmooreparks/Maize/blob/master/asm/hello.asm) 
 written in Maize assembly.
 
-    ; Execution begins at segment $00000000, address $00000000
-    $0000`0000:
-        ; Set stack pointer. The back-tick (`)  is used as a number separator. 
-        ; Underscore (_) and comma (,) may also be used as separators.
-        LD $0000`1100 SP
+    ; *****************************************************************************
+    ; The entry point. Execution begins at segment $00000000, address $00000000
+
+    $0000`0000:             ; The back-tick (`)  is used as a number separator. 
+                            ; Underscore (_) and comma (,) may also be used as separators.
         CALL main
-        HALT
+        HALT                ; For now, HALT exits the Maize interpreter, but in the
+                            ; future it will pause the CPU and wait for an interrupt.
+
+    ; *****************************************************************************
+    ; The output message
 
     hw_string:
         STRING "Hello, world!\0"
 
+    ; *****************************************************************************
+    ; Return the length of a zero-terminated string. 
+    ; A.H0: Address of string
+
     strlen:
-        PUSH BP             ; The function prologue isn't strictly necessary here 
-        LD SP BP            ; since I'm not using stack-allocated memory.
         LD $0 G.H0          ; Set counter to zero.
     loop:
-	    LEA G.H0 A.H0 H.H0  ; String address is in A.H0. Add the counter to the address and put the result into H.H0.
-        LD @H.H0 H.B4       ; Dereference H.H0 and copy the character at that address into H.B4.
+	    LEA G.H0 A.H0 H.H0  ; Add the counter to the address and put the result into H.H0.
+        LD @H.H0 H.B4       ; Dereference H.H0 and copy character at that address into H.B4.
 	    JZ loop_exit        ; LD sets the zero flag if the value copied to H.B4 is zero.
 	    INC G.H0            ; Add 1 to the counter...
 	    JMP loop            ; ...and continue the loop.
     loop_exit:
-	    LD G.H0 A           ; Put the counter value into A, which is the return register
-	    POP BP              ; Restore the base pointer (again, not strictly necessary here)
-	    RET                 ; Pop return address from stack and place into PC
+	    LD G.H0 A           ; Put the counter value into A, which is the return register.
+	    RET                 ; Pop return address from stack and place into PC.
+
+    ; *****************************************************************************
+    ; The main function
 
     main:
-        PUSH BP             ; Same as above, dummy function prologue
-        LD SP BP
         LD hw_string A.H0   ; Put address of message string into A.H0
         CALL strlen         ; Call strlen function to get the string length
         LD $01 G            ; $01 in G indicates output to stdout
         LD hw_string H.H0   ; H.H0 holds address of message to output
         LD A.H0 J           ; Put the string length into J
-        SYS $01             ; Call output function
+        SYS $01             ; Call output function implemented in Maize VM
         LD $0 A             ; Set return value for main
-	    POP BP              ; Restore base pointer
         RET                 ; Leave main
-
-
 
 ## Instruction Description 
 
