@@ -377,10 +377,10 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     %1001`0010  $92   LEA       regAddr reg reg Add value at address in operand 1 register to value in operand 2 register and store result in operand 3 register
     %1101`0010  $D2   LEA       immAddr reg reg Add value at immediate address in operand 1 to value in operand 2 register and store result in operand 3 register
     
-    %0001`0011  $13   LDZ       regVal  reg     Load source register value into destination register with zero extension
-    %0101`0011  $53   LDZ       immVal  reg     Load immediate value into destination register with zero extension
-    %1001`0011  $93   LDZ       regAddr reg     Load value at address in source register into destination register with zero extension
-    %1101`0011  $D3   LDZ       immAddr reg     Load value at immediate address into destination register with zero extension
+    %0001`0011  $13   LDX       regVal  reg     Load source register value into destination register with zero extension
+    %0101`0011  $53   LDX       immVal  reg     Load immediate value into destination register with zero extension
+    %1001`0011  $93   LDX       regAddr reg     Load value at address in source register into destination register with zero extension
+    %1101`0011  $D3   LDX       immAddr reg     Load value at immediate address into destination register with zero extension
     
     %0001`0100  $14   OUT       regVal  imm     Output value in source register to destination port
     %0101`0100  $54   OUT       immVal  imm     Output immediate value to destination port
@@ -670,7 +670,7 @@ Other syntax, to be described more fully later:
     %0001`0000  $10   TEST      regVal  reg     Set flags by ANDing source register value with destination register
     %0001`0001  $11   CMPXCHG   regVal  reg     reserved
     %0001`0010  $12   LEA       regVal  reg reg 
-    %0001`0011  $13   LX        regVal  reg     Load source register value into destination register with sign extension
+    %0001`0011  $13   LDX       regVal  reg     Load source register value into destination register with sign extension
     %0001`0100  $14   OUT       regVal  imm     Output value in source register to destination port
     %0001`0101  $15   LNGJMP    regVal          Jump to segment and address in source register and continue execution (privileged)
     %0001`0110  $16   JMP       regVal          Jump to address in source register and continue execution
@@ -714,7 +714,7 @@ Other syntax, to be described more fully later:
     %0101`0000  $50   TEST      immVal  reg     Set flags by ANDing immediate value with destination register
     %0101`0001  $51   CMPXCHG   immVal  reg     TODO
     %0101`0010  $52   LEA       immVal  reg reg TODO
-    %0101`0011  $53   LX        immVal  reg     Load immediate value into destination register with sign extension
+    %0101`0011  $53   LDX       immVal  reg     Load immediate value into destination register with sign extension
     %0101`0100  $54   OUT       immVal  imm     Output immediate value to destination port
     %0101`0101  $55   LNGJMP    immVal          Jump to immediate segment and address and continue execution (privileged)
     %0101`0110  $56   JMP       immVal          Jump to immediate address and continue execution
@@ -749,7 +749,7 @@ Other syntax, to be described more fully later:
     %1001`0000  $90   TEST      regAddr reg     Set flags by ANDing value at address in source register with destination register
     %1001`0001  $91   CMPXCHG   regAddr reg     reserved
     %1001`0010  $92   LEA       regAddr reg reg reserved
-    %1001`0011  $93   LX        regAddr reg     Load value at address in source register into destination register with sign extension
+    %1001`0011  $93   LDX       regAddr reg     Load value at address in source register into destination register with sign extension
     %1001`0100  $94   OUT       regAddr imm     Output value at address in source register to destination port
     %1001`0101  $95   LNGJMP    regAddr         Jump to segment and address pointed to by source register and continue execution (privileged)
     %1001`0110  $96   JMP       regAddr         Jump to address pointed to by source register and continue execution
@@ -781,7 +781,7 @@ Other syntax, to be described more fully later:
     %1101`0000  $D0   TEST      immAddr reg     Set flags by ANDing value at immediate address with destination register
     %1101`0001  $D1   CMPXCHG   immAddr reg     reserved
     %1101`0010  $D2   LEA       immAddr reg reg reserved
-    %1101`0011  $D3   LX        immAddr reg     Load value at immediate address into destination register with sign extension
+    %1101`0011  $D3   LDX       immAddr reg     Load value at immediate address into destination register with sign extension
     %1101`0100  $D4   OUT       immAddr imm     Output value at immediate address to destination port
     %1101`0101  $D5   LNGJMP    immAddr         Jump to segment and address pointed to by immediate value and continue execution (privileged)
     %1101`0110  $D6   JMP       immAddr         Jump to address pointed to by immediate value and continue execution
