@@ -43,3 +43,8 @@
 /maize
 /CMakeCache.txt
 /.vs/VSWorkspaceState.json
+/maize.dir
+/mazm.dir
+/Debug
+/Release
+/x64
