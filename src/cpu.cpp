@@ -1905,6 +1905,14 @@ namespace maize {
                         break;
                     }
 
+                    case instr::push_regVal: {
+                        regs::p.h0 += 1;
+                        u_byte src_size = op1_subreg_size();
+                        regs::s.h0 -= src_size;
+                        copy_regval_regaddr(op1_reg(), op1_subreg_flag(), regs::s, subreg_enum::h0);
+                        break;
+                    }
+
                     case instr::push_immVal: {
                         regs::p.h0 += 1;
                         u_byte src_size = op1_imm_size();
@@ -1914,11 +1922,11 @@ namespace maize {
                         break;
                     }
 
-                    case instr::push_regVal: {
+                    case instr::call_regVal: {
                         regs::p.h0 += 1;
-                        u_byte src_size = op1_subreg_size();
-                        regs::s.h0 -= src_size;
-                        copy_regval_regaddr(op1_reg(), op1_subreg_flag(), regs::s, subreg_enum::h0);
+                        regs::s.h0 -= subreg_size_map[subreg_enum::h0];
+                        copy_regval_regaddr(regs::p, subreg_enum::h0, regs::s, subreg_enum::h0);
+                        regs::p.h0 = op1_reg().h0;
                         break;
                     }
 
@@ -1940,9 +1948,27 @@ namespace maize {
                         break;
                     }
 
+                    case instr::jmp_regVal: {
+                        regs::p.h0 += 1;
+                        copy_regval_reg(op1_reg(), op1_subreg_flag(), regs::p, subreg_enum::h0);
+                        break;
+                    }
+
                     case instr::jmp_immVal: {
                         regs::p.h0 += 1;
                         copy_memval_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
+                        break;
+                    }
+
+                    case instr::jmp_regAddr: {
+                        regs::p.h0 += 1;
+                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::p, subreg_enum::h0);
+                        break;
+                    }
+
+                    case instr::jmp_immAddr: {
+                        regs::p.h0 += 1;
+                        copy_memaddr_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
                         break;
                     }
 
@@ -1967,6 +1993,87 @@ namespace maize {
                             regs::p.h0 += src_size;
                         }
 
+                        break;
+                    }
+
+                    case instr::jz_regAddr: {
+                        regs::p.h0 += 1;
+
+                        if (cpu::zero_flag) {
+                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::p, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::p.h0 += src_size;
+                        }
+                        break;
+                    }
+
+                    case instr::jz_immAddr: {
+                        regs::p.h0 += 1;
+
+                        if (cpu::zero_flag) {
+                            copy_memaddr_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::p.h0 += src_size;
+                        }
+                        break;
+                    }
+
+                    case instr::jnz_regVal: {
+                        regs::p.h0 += 1;
+
+                        if (!cpu::zero_flag) {
+                            copy_regval_reg(op1_reg(), op1_subreg_flag(), regs::p, subreg_enum::h0);
+                        }
+
+                        break;
+                    }
+
+                    case instr::jnz_immVal: {
+                        regs::p.h0 += 1;
+
+                        if (!cpu::zero_flag) {
+                            copy_memval_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::p.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jnz_regAddr: {
+                        regs::p.h0 += 1;
+
+                        if (!cpu::zero_flag) {
+                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::p, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::p.h0 += src_size;
+                        }
+                        break;
+                    }
+
+                    case instr::jnz_immAddr: {
+                        regs::p.h0 += 1;
+
+                        if (!cpu::zero_flag) {
+                            copy_memaddr_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::p.h0 += src_size;
+                        }
+                        break;
+                    }
+
+                    case instr::nop_opcode: {
+                        /* Do nothing. */
                         break;
                     }
 

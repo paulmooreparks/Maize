@@ -313,14 +313,6 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="C:\Users\paul\source\repos\Maize\src\cpu.cpp" />
     <ClCompile Include="C:\Users\paul\source\repos\Maize\src\sys.cpp" />
   </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="C:\Users\paul\source\repos\Maize\ZERO_CHECK.vcxproj">
-      <Project>{9340A2F7-30DC-315C-98B2-5D699B0B9FEE}</Project>
-      <Name>ZERO_CHECK</Name>
-      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
-    </ProjectReference>
-  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

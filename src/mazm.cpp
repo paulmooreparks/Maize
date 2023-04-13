@@ -592,8 +592,7 @@ namespace {
                 continue;
             }
 
-            if (isalnum(c) || c == special_chars::bin || c == special_chars::dec || c == special_chars::hex 
-                || special_chars::neg || special_chars::pos) {
+            if (isalnum(c) || c == special_chars::bin || c == special_chars::dec || c == special_chars::hex) {
                 current_token.push_back(c);
             }
             else if ((isspace(c) || c == '\r' || c == '\n' || c == special_chars::comment_start) && !current_token.empty()) {
@@ -799,7 +798,7 @@ namespace {
         return parser_state::whitespace;
     }
 
-    uint64_t bin_cvt(std::string &str) {
+    uint64_t bin_cvt(std::string const &str) {
         uint64_t tmp {0};
 
         for (auto c : str) {
@@ -821,7 +820,7 @@ namespace {
     }
 
 
-    maize::u_hword convert_label_string(std::string &value) {
+    maize::u_hword convert_label_string(std::string const &value) {
         maize::u_hword hvalue {0};
         char type = value[0];
 
@@ -861,7 +860,7 @@ namespace {
         std::stringstream cvt;
         cvt << std::hex << literal;
         cvt >> value.w0;
-        u_byte type_byte = cpu::opflag_imm_size_32b;
+        u_byte type_byte = cpu::opflag_imm_size_64b;
 
         if (len <= 2) {
             type_byte = cpu::opflag_imm_size_08b;
@@ -883,27 +882,21 @@ namespace {
     }
 
     u_byte compile_dec_literal(std::string &literal, cpu::reg_value &value) {
-        auto len = literal.length();
-
-        if (len && (literal[0] == special_chars::neg || literal[0] == special_chars::pos)) {
-            --len;
-        }
-
         std::stringstream cvt;
         cvt << std::dec << literal;
         cvt >> value.w0;
-        u_byte type_byte = cpu::opflag_imm_size_32b;
+        u_byte type_byte = cpu::opflag_imm_size_64b;
 
-        if (len <= 2) {
+        if (value.w0 <= std::numeric_limits<u_byte>::max()) {
             type_byte = cpu::opflag_imm_size_08b;
         }
-        else if (len <= 4) {
+        else if (value.w0 <= std::numeric_limits<u_qword>::max()) {
             type_byte = cpu::opflag_imm_size_16b;
         }
-        else if (len <= 8) {
+        else if (value.w0 <= std::numeric_limits<u_hword>::max()) {
             type_byte = cpu::opflag_imm_size_32b;
         }
-        else if (len <= 16) {
+        else if (value.w0 <= std::numeric_limits<u_word>::max()) {
             type_byte = cpu::opflag_imm_size_64b;
         }
         else {
@@ -1274,25 +1267,24 @@ namespace {
             operand1 = operand1.substr(1);
         }
 
-        if (is_literal(operand1)) {
-            operand_is_immediate = true;
-            opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= compile_literal(operand1, operand1_literal);
-        }
-        else if (is_register(operand1)) {
+        if (is_register(operand1)) {
             operand1_byte = compile_register(operand1);
         }
-        else if (is_label(operand1)) {
-            operand_is_label = true;
-            operand_is_immediate = true;
-            opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= compile_label(operand1, operand1_literal);
-        }
         else {
-            operand_is_label = true;
             operand_is_immediate = true;
             opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= add_label(operand1, operand1_literal);
+
+            if (is_literal(operand1)) {
+                operand1_byte |= compile_literal(operand1, operand1_literal);
+            }
+            else if (is_label(operand1)) {
+                operand_is_label = true;
+                operand1_byte |= compile_label(operand1, operand1_literal);
+            }
+            else {
+                operand_is_label = true;
+                operand1_byte |= add_label(operand1, operand1_literal);
+            }
         }
 
         u_byte operand2_byte {compile_register(operand2)};
@@ -1339,25 +1331,24 @@ namespace {
             operand1 = operand1.substr(1);
         }
 
-        if (is_literal(operand1)) {
-            operand_is_immediate = true;
-            opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= compile_literal(operand1, operand1_literal);
-        }
-        else if (is_register(operand1)) {
+        if (is_register(operand1)) {
             operand1_byte = compile_register(operand1);
         }
-        else if (is_label(operand1)) {
-            operand_is_label = true;
-            operand_is_immediate = true;
-            opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= compile_label(operand1, operand1_literal);
-        }
         else {
-            operand_is_label = true;
             operand_is_immediate = true;
             opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= add_label(operand1, operand1_literal);
+
+            if (is_literal(operand1)) {
+                operand1_byte |= compile_literal(operand1, operand1_literal);
+            }
+            else if (is_label(operand1)) {
+                operand_is_label = true;
+                operand1_byte |= compile_label(operand1, operand1_literal);
+            }
+            else {
+                operand_is_label = true;
+                operand1_byte |= add_label(operand1, operand1_literal);
+            }
         }
 
         current_address += cpu::mm.write_byte(current_address, opcode);
@@ -1414,25 +1405,24 @@ namespace {
             operand2 = operand2.substr(1);
         }
 
-        if (is_literal(operand1)) {
-            operand_is_immediate = true;
-            opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= compile_literal(operand1, operand1_literal);
-        }
-        else if (is_register(operand1)) {
+        if (is_register(operand1)) {
             operand1_byte = compile_register(operand1);
         }
-        else if (is_label(operand1)) {
-            operand1_is_label = true;
-            operand_is_immediate = true;
-            opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= compile_label(operand1, operand1_literal);
-        }
         else {
-            operand1_is_label = true;
             operand_is_immediate = true;
             opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= add_label(operand1, operand1_literal);
+
+            if (is_literal(operand1)) {
+                operand1_byte |= compile_literal(operand1, operand1_literal);
+            }
+            else if (is_label(operand1)) {
+                operand1_is_label = true;
+                operand1_byte |= compile_label(operand1, operand1_literal);
+            }
+            else {
+                operand1_is_label = true;
+                operand1_byte |= add_label(operand1, operand1_literal);
+            }
         }
 
         if (is_label(operand2)) {
@@ -1495,25 +1485,24 @@ namespace {
         bool operand_is_label {false};
         cpu::reg_value operand1_literal {0};
 
-        if (is_literal(operand1)) {
-            operand_is_immediate = true;
-            opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= compile_literal(operand1, operand1_literal);
-        }
-        else if (is_register(operand1)) {
+        if (is_register(operand1)) {
             operand1_byte = compile_register(operand1);
         }
-        else if (is_label(operand1)) {
-            operand_is_label = true;
-            operand_is_immediate = true;
-            opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= compile_label(operand1, operand1_literal);
-        }
         else {
-            operand_is_label = true;
             operand_is_immediate = true;
             opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= add_label(operand1, operand1_literal);
+
+            if (is_literal(operand1)) {
+                operand1_byte |= compile_literal(operand1, operand1_literal);
+            }
+            else if (is_label(operand1)) {
+                operand_is_label = true;
+                operand1_byte |= compile_label(operand1, operand1_literal);
+            }
+            else {
+                operand_is_label = true;
+                operand1_byte |= add_label(operand1, operand1_literal);
+            }
         }
 
         u_byte operand2_byte {0};
@@ -1566,25 +1555,24 @@ namespace {
             operand1 = operand1.substr(1);
         }
 
-        if (is_literal(operand1)) {
-            operand_is_immediate = true;
-            opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= compile_literal(operand1, operand1_literal);
-        }
-        else if (is_register(operand1)) {
+        if (is_register(operand1)) {
             operand1_byte = compile_register(operand1);
         }
-        else if (is_label(operand1)) {
-            operand_is_label = true;
-            operand_is_immediate = true;
-            opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= compile_label(operand1, operand1_literal);
-        }
         else {
-            operand_is_label = true;
             operand_is_immediate = true;
             opcode |= cpu::opcode_flag_srcImm;
-            operand1_byte |= add_label(operand1, operand1_literal);
+
+            if (is_literal(operand1)) {
+                operand1_byte |= compile_literal(operand1, operand1_literal);
+            }
+            else if (is_label(operand1)) {
+                operand_is_label = true;
+                operand1_byte |= compile_label(operand1, operand1_literal);
+            }
+            else {
+                operand_is_label = true;
+                operand1_byte |= add_label(operand1, operand1_literal);
+            }
         }
 
         u_byte operand2_byte {compile_register(operand2)};
