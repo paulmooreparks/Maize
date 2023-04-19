@@ -822,6 +822,7 @@ namespace maize {
                 is_power_on = true;
             }
 
+            privilege_flag = true;
             int_event.notify_all();
 
             while (is_power_on) {

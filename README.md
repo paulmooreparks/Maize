@@ -20,7 +20,7 @@ It's a long story.
 
 In 2016 I had a contract working on an ARM system, and I wasn't too familiar with ARM assembly. I had an idea to write an ARM 
 emulator, since I've always believed that the best way to understand a system is to try to build one. After getting stuck with the 
-ARM emulator, I decided to first build an x86 emulator and then go back to ARM.While I knew x86 assembly well enough to debug it, 
+ARM emulator, I decided to first build an x86 emulator and then go back to ARM. While I knew x86 assembly well enough to debug it, 
 I wasn't really an expert at it, and I didn't know the lowest levels of machine language. I thought that tackling an ISA I knew 
 would help me get the basics sorted out, and I'd come back to ARM later.
 
