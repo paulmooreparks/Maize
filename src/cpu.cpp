@@ -453,18 +453,18 @@ namespace maize {
 
         namespace regs {
             // The CPU's general registers are defined here
-            reg a;
-            reg b;
-            reg c;
-            reg d;
-            reg e;
-            reg g;
-            reg h;
-            reg j;
-            reg k;
-            reg l;
-            reg m;
-            reg z;
+            reg r0;
+            reg r1;
+            reg r2;
+            reg r3;
+            reg r4;
+            reg r5;
+            reg r6;
+            reg r7;
+            reg r8;
+            reg r9;
+            reg rt;
+            reg rv;
             reg f; // flags register
             reg in; // instruction register
             reg p {0x0000000000000000}; // program execution register
@@ -485,18 +485,18 @@ namespace maize {
 
             /* Map an instruction's register-flag nybble value to an actual register reference. */
             std::array<reg*, 16> reg_map {
-                &regs::a,
-                &regs::b,
-                &regs::c,
-                &regs::d,
-                &regs::e,
-                &regs::g,
-                &regs::h,
-                &regs::j,
-                &regs::k,
-                &regs::l,
-                &regs::m,
-                &regs::z,
+                &regs::r0,
+                &regs::r1,
+                &regs::r2,
+                &regs::r3,
+                &regs::r4,
+                &regs::r5,
+                &regs::r6,
+                &regs::r7,
+                &regs::r8,
+                &regs::r9,
+                &regs::rt,
+                &regs::rv,
                 &regs::f,
                 &regs::in,
                 &regs::p,
@@ -1861,13 +1861,13 @@ namespace maize {
                         u_byte src_size = op1_imm_size();
                         copy_memval_reg(regs::p.h0, src_size, operand1, subreg_enum::w0);
                         regs::p.h0 += src_size;
-                        regs::a.w0 = sys::call(operand1.b0);
+                        regs::rv.w0 = sys::call(operand1.b0);
                         break;
                     }
 
                     case instr::sys_regVal: {
                         regs::p.h0 += 1;
-                        regs::a.w0 = sys::call(op1_reg().b0);
+                        regs::rv.w0 = sys::call(op1_reg().b0);
                         break;
                     }
 

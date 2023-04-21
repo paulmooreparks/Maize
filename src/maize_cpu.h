@@ -28,23 +28,23 @@ namespace maize {
 		const u_byte opcode_flag_srcImm =  0b01000000;
 		const u_byte opcode_flag_srcAddr = 0b10000000;
 
-		const u_byte opflag_reg = 0b11110000;
-		const u_byte opflag_reg_a = 0b00000000;
-		const u_byte opflag_reg_b = 0b00010000;
-		const u_byte opflag_reg_c = 0b00100000;
-		const u_byte opflag_reg_d = 0b00110000;
-		const u_byte opflag_reg_e = 0b01000000;
-		const u_byte opflag_reg_g = 0b01010000;
-		const u_byte opflag_reg_h = 0b01100000;
-		const u_byte opflag_reg_j = 0b01110000;
-		const u_byte opflag_reg_k = 0b10000000;
-		const u_byte opflag_reg_l = 0b10010000;
-		const u_byte opflag_reg_m = 0b10100000;
-		const u_byte opflag_reg_z = 0b10110000;
-		const u_byte opflag_reg_f = 0b11000000;
-		const u_byte opflag_reg_in = 0b11010000;
-		const u_byte opflag_reg_p = 0b11100000;
-		const u_byte opflag_reg_s = 0b11110000;
+		const u_byte opflag_reg		= 0b11110000;
+		const u_byte opflag_reg_r0	= 0b00000000;
+		const u_byte opflag_reg_r1	= 0b00010000;
+		const u_byte opflag_reg_r2	= 0b00100000;
+		const u_byte opflag_reg_r3	= 0b00110000;
+		const u_byte opflag_reg_r4	= 0b01000000;
+		const u_byte opflag_reg_r5	= 0b01010000;
+		const u_byte opflag_reg_r6	= 0b01100000;
+		const u_byte opflag_reg_r7	= 0b01110000;
+		const u_byte opflag_reg_r8	= 0b10000000;
+		const u_byte opflag_reg_r9	= 0b10010000;
+		const u_byte opflag_reg_rt	= 0b10100000;
+		const u_byte opflag_reg_rv	= 0b10110000;
+		const u_byte opflag_reg_f	= 0b11000000;
+		const u_byte opflag_reg_in	= 0b11010000;
+		const u_byte opflag_reg_p	= 0b11100000;
+		const u_byte opflag_reg_s	= 0b11110000;
 
 #if false
 		const u_byte opflag_reg_sp = 0b11111100; // S.H0 = stack pointer
@@ -157,18 +157,18 @@ namespace maize {
 		}
 
 		enum class reg_enum {
-			a = 0x00,
-			b = 0x01,
-			c = 0x02,
-			d = 0x03,
-			e = 0x04,
-			g = 0x05,
-			h = 0x06,
-			j = 0x07,
-			k = 0x08,
-			l = 0x09,
-			m = 0x0A,
-			z = 0x0B,
+			r0 = 0x00,
+			r1 = 0x01,
+			r2 = 0x02,
+			r3 = 0x03,
+			r4 = 0x04,
+			r5 = 0x05,
+			r6 = 0x06,
+			r7 = 0x07,
+			r8 = 0x08,
+			r9 = 0x09,
+			rt = 0x0A,
+			rv = 0x0B,
 			fl = 0x0C,
 			in = 0x0D,
 			pc = 0x0E,
@@ -621,18 +621,18 @@ namespace maize {
 
 		namespace regs {
 			// The CPU's general registers are defined here
-			extern reg a;
-			extern reg b;
-			extern reg c;
-			extern reg d;
-			extern reg e;
-			extern reg g;
-			extern reg h;
-			extern reg j;
-			extern reg k;
-			extern reg l;
-			extern reg m;
-			extern reg z;
+			extern reg r0;
+			extern reg r1;
+			extern reg r2;
+			extern reg r3;
+			extern reg r4;
+			extern reg r5;
+			extern reg r6;
+			extern reg r7;
+			extern reg r8;
+			extern reg r9;
+			extern reg rt;
+			extern reg rv;
 			extern reg f; // flags register
 			extern reg in; // instruction register
 			extern reg p; // program execution register

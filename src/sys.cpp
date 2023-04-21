@@ -255,9 +255,9 @@ namespace maize {
             switch (syscall_id) {
                 /* sys_read */
                 case 0x0000U: {
-                    u_word fd {regs::g.w0};
-                    u_word address {regs::h.w0};
-                    u_hword count {regs::j.h0};
+                    u_word fd {regs::r0.w0};
+                    u_word address {regs::r1.w0};
+                    u_hword count {regs::r2.h0};
                     size_t s = count;
 
                     std::vector<u_byte> buf;
@@ -274,9 +274,9 @@ namespace maize {
 
                 /* sys_write */
                 case 0x0001U: {
-                    u_word fd {regs::g.w0};
-                    u_word address {regs::h.w0};
-                    u_hword count {regs::j.h0};
+                    u_word fd {regs::r0.w0};
+                    u_word address {regs::r1.w0};
+                    u_hword count {regs::r2.h0};
 
                     std::vector<u_byte> str = mm.read(address, count);
                     u_byte const* buf {&str[0]};

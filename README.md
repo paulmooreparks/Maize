@@ -119,43 +119,43 @@ written in Maize assembly.
     ;   }
     ;
     ; Parameters:
-    ;   A.H0: Address of string
+    ;   R0.H0: Address of string
     ; Return: 
-    ;   A: Length of string
+    ;   RV: Length of string
 
     strlen:
-        PUSH BP             ; Save the base pointer
-        LD SP BP            ; Copy the stack pointer to the base pointer
-        SUB $04 SP          ; Make room for a 32-bit (4-byte) counter on the stack
-        LEA $-04 BP Z.H0    ; Load the address of the counter's stack location into Z.H0
-        ST $00 @Z.H0        ; Set the counter to zero.
+        PUSH BP                 ; Save the base pointer
+        LD SP BP                ; Copy the stack pointer to the base pointer
+        SUB $04 SP              ; Make room for a 32-bit (4-byte) counter on the stack
+        LEA $-04 BP RT.H0       ; Load the address of the counter's stack location into RT.H0
+        ST $00 @RT.H0           ; Set the counter to zero.
     loop_condition:
-	    LEA @Z.H0 A.H0 H.H0 ; Add the counter value to the address and put the result into H.H0.
-        LD @H.H0 H.B4       ; Copy the character at the address in H.H0 into H.B4.
-	    JZ loop_exit        ; LD sets the zero flag if the value copied to H.B4 is zero.
+	    LEA @RT.H0 R0.H0 R1.H0  ; Add the counter value to the address and put the result into H.H0.
+        LD @R1.H0 R1.B4         ; Copy the character at the address in R1.H0 into R1.B4.
+	    JZ loop_exit            ; LD sets the zero flag if the value copied to R1.B4 is zero.
     loop_body:
-        LD @Z.H0 Z.H1       ; Put the counter value at Z.H0 into a temporary register, Z.H1
-	    INC Z.H1            ; Add 1 to the temporary
-        ST Z.H1 @Z.H0       ; Store the new value back into the counter's address
-	    JMP loop_condition  ; ...and continue the loop.
+        LD @RT.H0 RT.H1         ; Put the counter value at RT.H0 into RT.H1
+	    INC RT.H1               ; Add 1 to the temporary
+        ST RT.H1 @RT.H0         ; Store the new value back into the counter's address
+	    JMP loop_condition      ; ...and continue the loop.
     loop_exit:
-	    LD @Z.H0 A          ; Put the (sign-extended) counter value into A, the return register.
-        LD BP SP            ; Restore the stack
-        POP BP              ; Restore the base pointer
-	    RET                 ; Pop return address from stack and place into PC.
+	    LD @RT.H0 RV            ; Put the (sign-extended) counter value into RV, the return register.
+        LD BP SP                ; Restore the stack
+        POP BP                  ; Restore the base pointer
+	    RET                     ; Pop return address from stack and place into PC.
 
     ; **********************************************************************************
     ; The main function
 
     main:
-        LD hw_string A.H0   ; Put address of message string into A.H0
-        CALL strlen         ; Call strlen function to get the string length
-        LD $01 G            ; $01 in G indicates output to stdout
-        LD hw_string H.H0   ; H.H0 holds address of message to output
-        LD A J              ; Put the string length into J
-        SYS $01             ; Call output function implemented in Maize VM
-        LD $0 A             ; Set return value for main
-        RET                 ; Leave main
+        LD hw_string R0.H0      ; Put address of message string into R0.H0
+        CALL strlen             ; Call strlen function to get the string length
+        LD $01 R0               ; $01 in R0 indicates output to stdout
+        LD hw_string R1.H0      ; R1.H0 holds address of message to output
+        LD RV R2                ; Put the string length into R2
+        SYS $01                 ; Call output function implemented in Maize VM
+        LD $0 RV                ; Set return value for main
+        RET                     ; Leave main
 
 ## Instruction Description 
 
@@ -189,14 +189,14 @@ stored lower in memory).
 When an instruction has two parameters, the first parameter is the source parameter, and the second
 parameter is the destination parameter.
 
-Example: Load the value $01 into register A.
+Example: Load the value $01 into register R0.
 
-    LD $01 A
+    LD $01 R0
 
-Example: Encoding of "LD $FFCC4411 D", which loads the immediate value $FFCC4411 into register D.
+Example: Encoding of "LD $FFCC4411 R3", which loads the immediate value $FFCC4411 into register R3.
 $41 is the opcode and flags for the instruction which loads an immediate value into a register.
 $02 is the parameter byte specifying a four-byte immediate value as the source parameter. $3E is
-the parameter byte specifying the 64-bit register D as the destination parameter. The bytes
+the parameter byte specifying the 64-bit register R3 as the destination parameter. The bytes
 following the parameters bytes are the immediate value in little-endian format.
 
     $41 $02 $3E $11 $44 $CC $FF
@@ -204,38 +204,39 @@ following the parameters bytes are the immediate value in little-endian format.
 Immediate values may used as pointers into memory. This is represented in assembly by the '@'
 prefix in front of the immediate value.
 
-Example: Load the 64-bit value at address $0000`1000 into register B.
+Example: Load the 64-bit value at address $0000`1000 into register R1.
 
-    LD @$0000`1000 B
+    LD @$0000`1000 R1
 
 Register values may be used as pointers into memory by adding a '@' prefix in front of the
 register name.
 
-Example: Store the value $FF into the byte pointed at by the A.H0 register:
+Example: Store the value $FF into the byte pointed at by the R0.H0 register:
 
-    ST $FF @A.H0
+    ST $FF @R0.H0
 
-Example: Load the quarter-word located at the address stored in D.H0 into sub-register Z.Q3:
+Example: Load the quarter-word located at the address stored in R3.H0 into sub-register RT.Q3:
 
-    LD @D.H0 Z.Q3
+    LD @R3.H0 RT.Q3
 
 
 ## Registers
 
 Registers are 64-bits wide (a "word") and are each divided into smaller sub-registers.
 
-    A  General purpose
-    B  General purpose
-    C  General purpose
-    D  General purpose
-    E  General purpose
-    G  General purpose
-    H  General purpose
-    J  General purpose
-    K  General purpose
-    L  General purpose
-    M  General purpose
-    Z  General purpose
+    R0  General purpose
+    R1  General purpose
+    R2  General purpose
+    R3  General purpose
+    R4  General purpose
+    R5  General purpose
+    R6  General purpose
+    R7  General purpose
+    R8  General purpose
+    R9  General purpose
+
+    RT  Temporary register
+    RV  Return-value register
     
     F  Flag register
     IN Instruction register
@@ -246,11 +247,11 @@ Registers are 64-bits wide (a "word") and are each divided into smaller sub-regi
 ### Sub-registers
 
 Sub-registers are defined as half-word (H), quarter-word (Q), and byte (B) widths. The full
-64-bit value of a register (for example, register A) may be coded as "A" or "A.W0". The register
-value may also be accessed as separate half-word (32-bit) values, coded as A.H1 (upper 32 bits)
-and A.H0 (lower 32-bits). The 16-bit quarter-words are similarly coded as A.Q3, A.Q2, A.Q1, and
-A.Q0. Finally, the individual byte values are coded as A.B7, A.B6, A.B5, A.B4, A.B3, A.B2, A.B1,
-and A.B0.
+64-bit value of a register (for example, register R0) may be coded as "R0" or "R0.W0". The register
+value may also be accessed as separate half-word (32-bit) values, coded as R0.H1 (upper 32 bits)
+and R0.H0 (lower 32-bits). The 16-bit quarter-words are similarly coded as R0.Q3, R0.Q2, R0.Q1, and
+R0.Q0. Finally, the individual byte values are coded as R0.B7, R0.B6, R0.B5, R0.B4, R0.B3, R0.B2, 
+R0.B1, and R0.B0.
 
 Shown graphically, the 64-bit value $FEDCBA9876543210 would be stored as follows:
 
@@ -262,32 +263,36 @@ Shown graphically, the 64-bit value $FEDCBA9876543210 would be stored as follows
 
 In other words, if the following instruction were executed:
 
-    LD $FEDCBA9876543210 A
+    LD $FEDCBA9876543210 R0
 
-The value stored in register A could then be represented as follows:
+The value stored in register R0 could then be represented as follows:
 
-    A    = $FEDCBA9876543210
-    A.W0 = $FEDCBA9876543210
-    A.H1 = $FEDCBA98
-    A.H0 = $76543210
-    A.Q3 = $FEDC
-    A.Q2 = $BA98
-    A.Q1 = $7654
-    A.Q0 = $3210
-    A.B7 = $FE
-    A.B6 = $DC
-    A.B5 = $BA
-    A.B4 = $98
-    A.B3 = $76
-    A.B2 = $54
-    A.B1 = $32
-    A.B0 = $10
+    R0    = $FEDCBA9876543210
+    R0.W0 = $FEDCBA9876543210
+    R0.H1 = $FEDCBA98
+    R0.H0 = $76543210
+    R0.Q3 = $FEDC
+    R0.Q2 = $BA98
+    R0.Q1 = $7654
+    R0.Q0 = $3210
+    R0.B7 = $FE
+    R0.B6 = $DC
+    R0.B5 = $BA
+    R0.B4 = $98
+    R0.B3 = $76
+    R0.B2 = $54
+    R0.B1 = $32
+    R0.B0 = $10
 
 
 ### Special-purpose Registers
 
-There are four special-purpose registers.
+There are six special-purpose registers.
 
+    RT Temporary register. This is used as temporary storage in a function.
+
+    RV Return-value register. Return values from functions are placed into this register.
+ 
     F  Flags register. FL is an alias for F.H0, which contains a bit field of individual flags. 
        Flags in F.H1 may only be set in privileged mode.
  
@@ -551,18 +556,18 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
 
 ### Register bit field
 
-    %0000xxxx   $0    A register
-    %0001xxxx   $1    B register
-    %0010xxxx   $2    C register
-    %0011xxxx   $3    D register
-    %0100xxxx   $4    E register
-    %0101xxxx   $5    G register
-    %0110xxxx   $6    H register
-    %0111xxxx   $7    J register
-    %1000xxxx   $8    K register
-    %1001xxxx   $9    L register
-    %1010xxxx   $A    M register
-    %1011xxxx   $B    Z register
+    %0000xxxx   $0    R0 register
+    %0001xxxx   $1    R1 register
+    %0010xxxx   $2    R2 register
+    %0011xxxx   $3    R3 register
+    %0100xxxx   $4    R4 register
+    %0101xxxx   $5    R5 register
+    %0110xxxx   $6    R6 register
+    %0111xxxx   $7    R7 register
+    %1000xxxx   $8    R8 register
+    %1001xxxx   $9    R9 register
+    %1010xxxx   $A    RT register
+    %1011xxxx   $B    RV register
     %1100xxxx   $C    F register (flags)
     %1101xxxx   $D    IN register (instruction)
     %1110xxxx   $E    P register (program segment / counter)
@@ -626,18 +631,18 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
 BIOS calls will track as closely as possible to the "standard" BIOS routines found on typical
 x86 PCs. The x86 registers used in BIOS calls will map to Maize registers as follows:
 
-    AX -> A.Q0
-       AL -> A.B0
-       AH -> A.B1
-    BX -> A.Q1
-       BL -> A.B2
-       BH -> A.B3
-    CX -> A.Q2
-       CL -> A.B4
-       CH -> A.B5
-    DX -> A.Q3
-       DL -> A.B6
-       DH -> A.B7
+    AX -> R0.Q0
+       AL -> R0.B0
+       AH -> R0.B1
+    BX -> R0.Q1
+       BL -> R0.B2
+       BH -> R0.B3
+    CX -> R0.Q2
+       CL -> R0.B4
+       CH -> R0.B5
+    DX -> R0.Q3
+       DL -> R0.B6
+       DH -> R0.B7
 
 
 ## OS ABI
@@ -647,39 +652,39 @@ G, H, J, K, L, and M registers. Any remaining arguments will be pushed onto the 
 For example:
 
     ; Call C function "void random_os_function(int32_t a, const char *b, size_t c, int32_t* d)"
-    LD $0000`1234 G         ; int32_t a
-    LD A.H0 H               ; const char* b, assuming the pointer is in A.H0
-    LD $0000`00FF J         ; size_t c
-    LD B.H1 K               ; int32_t* d, assuming the pointer is in B.H1
+    LD $0000`1234 R0            ; int32_t a
+    LD R9.H0 R1                 ; const char* b, assuming the pointer is in R9.H0
+    LD $0000`00FF R2            ; size_t c
+    LD R8.H1 R3                 ; int32_t* d, assuming the pointer is in R8.H1
     CALL random_os_function
 
-The called routine will preserve B, C, D, E, Z, and SP. Any other registers may not be
-preserved. Return values will placed into the A register. For example:
+The called routine will preserve R0-R9 and SP. Any other registers may not be
+preserved. Return values will placed into the RV register. For example:
 
     ; Implement C function "int add(int a, int b)"
-    LD G A
-    ADD H A
+    LD R0 RV
+    ADD R1 RV
     RET
 
 For syscalls, the same standard will be followed for syscall parameters. The syscall number
-will be placed into the A register prior to calling the interrupt.
+will be placed into the R9 register prior to calling the interrupt.
 
     ; Output a string using sys_write
-    LD $01 A             ; syscall 1 = sys_write
-    LD $01 G             ; file descriptor 1 (STDOUT) in register G
-    LD hello_world H.H0  ; string address in register H
-    LD hello_world_end J
-    SUB hello_world J    ; string length in register J
-    INT $80              ; call sys_write
+    LD $01 R9               ; syscall 1 = sys_write
+    LD $01 R0               ; file descriptor 1 (STDOUT) in register R0
+    LD hello_world R1.H0    ; string address in register R1
+    LD hello_world_end R2
+    SUB hello_world R2      ; string length in register R2
+    INT $80                 ; call sys_write
 
 The same syscall may be made with the SYS instruction, which will execute the syscall directly.
 
     ; Output a string using sys_write, calling directly via SYS instruction
-    LD $01 G             ; file descriptor 1 (STDOUT) in register G
-    LD hello_world H.H0  ; string address in register H
-    LD hello_world_end J
-    SUB hello_world J    ; string length in register J
-    SYS $01              ; call sys_write
+    LD $01 R0               ; file descriptor 1 (STDOUT) in register G
+    LD hello_world R1.H0    ; string address in register H
+    LD hello_world_end R2
+    SUB hello_world R2      ; string length in register J
+    SYS $01                 ; call sys_write
 
 
 ## Assembler Syntax

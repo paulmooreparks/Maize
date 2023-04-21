@@ -25,40 +25,40 @@ hw_string:
 ;   }
 ;
 ; Parameters:
-;   A.H0: Address of string
+;   R0.H0: Address of string
 ; Return: 
-;   A: Length of string
+;   RV: Length of string
 
 strlen:
-    PUSH BP             ; Save the base pointer
-    LD SP BP            ; Copy the stack pointer to the base pointer
-    SUB $04 SP          ; Make room for a 32-bit (4-byte) counter on the stack
-    LEA $-04 BP Z.H0    ; Load the address of the counter's stack location into Z.H0
-    ST $00 @Z.H0        ; Set the counter to zero.
+    PUSH BP                 ; Save the base pointer
+    LD SP BP                ; Copy the stack pointer to the base pointer
+    SUB $04 SP              ; Make room for a 32-bit (4-byte) counter on the stack
+    LEA $-04 BP RT.H0       ; Load the address of the counter's stack location into RT.H0
+    ST $00 @RT.H0           ; Set the counter to zero.
 loop_condition:
-	LEA @Z.H0 A.H0 H.H0 ; Add the counter value to the address and put the result into H.H0.
-    LD @H.H0 H.B4       ; Copy the character at the address in H.H0 into H.B4.
-	JZ loop_exit        ; LD sets the zero flag if the value copied to H.B4 is zero.
+	LEA @RT.H0 R0.H0 R1.H0  ; Add the counter value to the address and put the result into H.H0.
+    LD @R1.H0 R1.B4         ; Copy the character at the address in R1.H0 into R1.B4.
+	JZ loop_exit            ; LD sets the zero flag if the value copied to R1.B4 is zero.
 loop_body:
-    LD @Z.H0 Z.H1       ; Put the counter value at Z.H0 into a temporary register, Z.H1
-	INC Z.H1            ; Add 1 to the temporary
-    ST Z.H1 @Z.H0       ; Store the new value back into the counter's address
-	JMP loop_condition  ; ...and continue the loop.
+    LD @RT.H0 RT.H1         ; Put the counter value at RT.H0 into RT.H1
+	INC RT.H1               ; Add 1 to the temporary
+    ST RT.H1 @RT.H0         ; Store the new value back into the counter's address
+	JMP loop_condition      ; ...and continue the loop.
 loop_exit:
-	LD @Z.H0 A          ; Put the (sign-extended) counter value into A, the return register.
-    LD BP SP            ; Restore the stack
-    POP BP              ; Restore the base pointer
-	RET                 ; Pop return address from stack and place into PC.
+	LD @RT.H0 RV            ; Put the (sign-extended) counter value into RV, the return register.
+    LD BP SP                ; Restore the stack
+    POP BP                  ; Restore the base pointer
+	RET                     ; Pop return address from stack and place into PC.
 
 ; **********************************************************************************
 ; The main function
 
 main:
-    LD hw_string A.H0   ; Put address of message string into A.H0
-    CALL strlen         ; Call strlen function to get the string length
-    LD $01 G            ; $01 in G indicates output to stdout
-    LD hw_string H.H0   ; H.H0 holds address of message to output
-    LD A J              ; Put the string length into J
-    SYS $01             ; Call output function implemented in Maize VM
-    LD $0 A             ; Set return value for main
-    RET                 ; Leave main
+    LD hw_string R0.H0      ; Put address of message string into R0.H0
+    CALL strlen             ; Call strlen function to get the string length
+    LD $01 R0               ; $01 in R0 indicates output to stdout
+    LD hw_string R1.H0      ; R1.H0 holds address of message to output
+    LD RV R2                ; Put the string length into R2
+    SYS $01                 ; Call output function implemented in Maize VM
+    LD $0 RV                ; Set return value for main
+    RET                     ; Leave main
