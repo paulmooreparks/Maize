@@ -238,10 +238,10 @@ Registers are 64-bits wide (a "word") and are each divided into smaller sub-regi
     RT  Temporary register
     RV  Return-value register
     
-    F  Flag register
-    IN Instruction register
-    P  Program execution register
-    S  Stack register
+    RF  Flag register
+    RI  Instruction register
+    RP  Program execution register
+    RS  Stack register
 
 
 ### Sub-registers
@@ -293,21 +293,21 @@ There are six special-purpose registers.
 
     RV Return-value register. Return values from functions are placed into this register.
  
-    F  Flags register. FL is an alias for F.H0, which contains a bit field of individual flags. 
-       Flags in F.H1 may only be set in privileged mode.
+    RF Flags register. FL is an alias for RF.H0, which contains a bit field of individual flags. 
+       Flags in RF.H1 may only be set in privileged mode.
  
-    IN Instruction register, set by the instruction decoder as instructions and parameters are
+    RI Instruction register, set by the instruction decoder as instructions and parameters are
        read from memory. This register can only be set by the decoder.
  
-    P  Program execution register, which is the pointer to the next instruction to be decoded
-       and executed. This is further sub-divided into P.H1, which is the current code segment,
-       and P.H0, which is the effective program counter within the current segment. P.H1 may
-       only be written to in privileged mode. PC is an alias for P.H0.
+    RP Program execution register, which is the pointer to the next instruction to be decoded
+       and executed. This is further sub-divided into RP.H1, which is the current code segment,
+       and RP.H0, which is the effective program counter within the current segment. RP.H1 may
+       only be written to in privileged mode. PC is an alias for RP.H0.
  
-    S  Stack register, which is the location within the current segment at which the stack
-       starts (growing downward in memory). This is further sub-divided into S.H1, which is
-       the base pointer, and S.H0, which is the current stack pointer. SP is an alias for S.H0, 
-       and BP is an alias for S.H1.
+    RS Stack register, which is the location within the current segment at which the stack
+       starts (growing downward in memory). This is further sub-divided into RS.H1, which is
+       the base pointer, and RS.H0, which is the current stack pointer. SP is an alias for RS.H0, 
+       and BP is an alias for RS.H1.
 
 ### Flags
 
@@ -504,8 +504,8 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     %1001`1111  $9F   IN        regAddr reg     Read value from port at address in source register into destination register
     %1101`1111  $DF   IN        immAddr reg     Read value from port at immediate address into destination register
     
-    %0010`0000  $20   PUSH      regVal          Copy register value into memory at location in S.H0, decrement S.H0 by size of register
-    %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at location in S.H0, decrement S.H0 by size of immediate value
+    %0010`0000  $20   PUSH      regVal          Copy register value into memory at location in RS.H0, decrement RS.H0 by size of register
+    %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at location in RS.H0, decrement RS.H0 by size of immediate value
     
     %0010`0010  $22   CLR       regVal          Set register to zero (0).
     
@@ -568,10 +568,10 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     %1001xxxx   $9    R9 register
     %1010xxxx   $A    RT register
     %1011xxxx   $B    RV register
-    %1100xxxx   $C    F register (flags)
-    %1101xxxx   $D    IN register (instruction)
-    %1110xxxx   $E    P register (program segment / counter)
-    %1111xxxx   $F    S register (stack pointers)
+    %1100xxxx   $C    RF register (flags)
+    %1101xxxx   $D    RI register (instruction)
+    %1110xxxx   $E    RP register (program segment / counter)
+    %1111xxxx   $F    RS register (stack pointers)
 
 ### Sub-register bit field
 
@@ -745,7 +745,7 @@ Other syntax, to be described more fully later:
     %0001`1101  $1D   CALL      regVal          Push PC.H0 to stack, jump to address in source register and continue execution until RET is executed
     %0001`1110  $1E   OUTR      regVal  reg     Output value in source register to port in destination register
     %0001`1111  $1F   IN        regVal  reg     Read value from port in source register into destination register
-    %0010`0000  $20   PUSH      regVal          Copy register value into memory at location in S.H0, decrement S.H0 by size of register
+    %0010`0000  $20   PUSH      regVal          Copy register value into memory at location in RS.H0, decrement RS.H0 by size of register
     %0010`0010  $22   CLR       regVal          Set register to zero (0).
     %0010`0100  $24   INT       regVal          Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
     %0010`0110  $26   POP       regVal          Increment SP.H0 by size of register, copy value at SP.H0 into register
@@ -789,7 +789,7 @@ Other syntax, to be described more fully later:
     %0101`1101  $5D   CALL      immVal          Push PC.H0 to stack, jump to immediate address and continue execution until RET is executed
     %0101`1110  $5E   OUTR      immVal  reg     Output immediate value to port in destination register
     %0101`1111  $5F   IN        immVal  reg     Read value from port in immediate value into destination register
-    %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at location in S.H0, decrement S.H0 by size of immediate value
+    %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at location in RS.H0, decrement RS.H0 by size of immediate value
     %0110`0100  $64   INT       immVal          Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
     %0110`1111  $6F   CMPIND    immVal regAddr  Set flags by subtracting immediate value from value at address in destination register
     %0111`0000  $70   TSTIND    immVal regAddr  Set flags by ANDing immediate value with value at address in destination register

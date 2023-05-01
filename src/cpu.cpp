@@ -465,23 +465,23 @@ namespace maize {
             reg r9;
             reg rt;
             reg rv;
-            reg f; // flags register
-            reg in; // instruction register
-            reg p {0x0000000000000000}; // program execution register
-            reg s; // stack register
+            reg rf; // flags register
+            reg ri; // instruction register
+            reg rp {0x0000000000000000}; // program execution register
+            reg rs; // stack register
         }
 
         namespace {
-            flag<bit_carryout> carryout_flag {regs::f};
-            flag<bit_negative> negative_flag {regs::f};
-            flag<bit_overflow> overflow_flag {regs::f};
-            flag<bit_parity> parity_flag {regs::f};
-            flag<bit_zero> zero_flag {regs::f};
-            flag<bit_sign> sign_flag {regs::f};
-            flag<bit_privilege> privilege_flag {regs::f};
-            flag<bit_interrupt_enabled> interrupt_enabled_flag {regs::f};
-            flag<bit_interrupt_set> interrupt_set_flag {regs::f};
-            flag<bit_running> running_flag {regs::f};
+            flag<bit_carryout> carryout_flag {regs::rf};
+            flag<bit_negative> negative_flag {regs::rf};
+            flag<bit_overflow> overflow_flag {regs::rf};
+            flag<bit_parity> parity_flag {regs::rf};
+            flag<bit_zero> zero_flag {regs::rf};
+            flag<bit_sign> sign_flag {regs::rf};
+            flag<bit_privilege> privilege_flag {regs::rf};
+            flag<bit_interrupt_enabled> interrupt_enabled_flag {regs::rf};
+            flag<bit_interrupt_set> interrupt_set_flag {regs::rf};
+            flag<bit_running> running_flag {regs::rf};
 
             /* Map an instruction's register-flag nybble value to an actual register reference. */
             std::array<reg*, 16> reg_map {
@@ -497,98 +497,98 @@ namespace maize {
                 &regs::r9,
                 &regs::rt,
                 &regs::rv,
-                &regs::f,
-                &regs::in,
-                &regs::p,
-                &regs::s
+                &regs::rf,
+                &regs::ri,
+                &regs::rp,
+                &regs::rs
             };
 
             size_t op1_imm_size_flag() {
-                return regs::in.b1 & opflag_imm_size;
+                return regs::ri.b1 & opflag_imm_size;
             }
 
             u_byte op1_imm_size() {
-                return u_byte(1) << (regs::in.b1 & opflag_imm_size);
+                return u_byte(1) << (regs::ri.b1 & opflag_imm_size);
             }
 
             u_byte op1_reg_flag() {
-                return regs::in.b1 & opflag_reg;
+                return regs::ri.b1 & opflag_reg;
             }
 
             u_byte op1_reg_index() {
-                return (regs::in.b1 & opflag_reg) >> 4;
+                return (regs::ri.b1 & opflag_reg) >> 4;
             }
 
             u_byte op1_subreg_index() {
-                return regs::in.b1 & opflag_subreg;
+                return regs::ri.b1 & opflag_subreg;
             }
 
             subreg_enum op1_subreg_flag() {
-                return static_cast<subreg_enum>(regs::in.b1 & opflag_subreg);
+                return static_cast<subreg_enum>(regs::ri.b1 & opflag_subreg);
             }
 
             u_byte op1_subreg_size() {
-                return subreg_size_map[static_cast<subreg_enum>(regs::in.b1 & opflag_subreg)];
+                return subreg_size_map[static_cast<subreg_enum>(regs::ri.b1 & opflag_subreg)];
             }
 
             reg& op1_reg() {
-                return *reg_map[(regs::in.b1 & opflag_reg) >> 4];
+                return *reg_map[(regs::ri.b1 & opflag_reg) >> 4];
             }
 
             u_byte op2_imm_size_flag() {
-                return regs::in.b2 & opflag_imm_size;
+                return regs::ri.b2 & opflag_imm_size;
             }
 
             u_byte op2_imm_size() {
-                return 1 << (regs::in.b2 & opflag_imm_size);
+                return 1 << (regs::ri.b2 & opflag_imm_size);
             }
 
             u_byte op2_reg_flag() {
-                return regs::in.b2 & opflag_reg;
+                return regs::ri.b2 & opflag_reg;
             }
 
             u_byte op2_reg_index() {
-                return (regs::in.b2 & opflag_reg) >> 4;
+                return (regs::ri.b2 & opflag_reg) >> 4;
             }
 
             u_byte op2_subreg_index() {
-                return regs::in.b2 & opflag_subreg;
+                return regs::ri.b2 & opflag_subreg;
             }
 
             subreg_enum op2_subreg_flag() {
-                return static_cast<subreg_enum>(regs::in.b2 & opflag_subreg);
+                return static_cast<subreg_enum>(regs::ri.b2 & opflag_subreg);
             }
 
             u_byte op2_subreg_size() {
-                return subreg_size_map[static_cast<subreg_enum>(regs::in.b2 & opflag_subreg)];
+                return subreg_size_map[static_cast<subreg_enum>(regs::ri.b2 & opflag_subreg)];
             }
 
             reg& op2_reg() {
-                return *reg_map[(regs::in.b2 & opflag_reg) >> 4];
+                return *reg_map[(regs::ri.b2 & opflag_reg) >> 4];
             }
 
             u_byte op3_reg_flag() {
-                return regs::in.b3 & opflag_reg;
+                return regs::ri.b3 & opflag_reg;
             }
 
             u_byte op3_reg_index() {
-                return (regs::in.b3 & opflag_reg) >> 4;
+                return (regs::ri.b3 & opflag_reg) >> 4;
             }
 
             u_byte op3_subreg_index() {
-                return regs::in.b3 & opflag_subreg;
+                return regs::ri.b3 & opflag_subreg;
             }
 
             subreg_enum op3_subreg_flag() {
-                return static_cast<subreg_enum>(regs::in.b3 & opflag_subreg);
+                return static_cast<subreg_enum>(regs::ri.b3 & opflag_subreg);
             }
 
             u_byte op3_subreg_size() {
-                return subreg_size_map[static_cast<subreg_enum>(regs::in.b3 & opflag_subreg)];
+                return subreg_size_map[static_cast<subreg_enum>(regs::ri.b3 & opflag_subreg)];
             }
 
             reg &op3_reg() {
-                return *reg_map[(regs::in.b3 & opflag_reg) >> 4];
+                return *reg_map[(regs::ri.b3 & opflag_reg) >> 4];
             }
 
             subreg_enum pc_src_imm_subreg_flag() {
@@ -1444,12 +1444,12 @@ namespace maize {
 
             while (running_flag) {
                 /* Decode next instruction */
-                mm.read(regs::p.h0, regs::in, subreg_enum::w0);
-                ++regs::p.h0;
+                mm.read(regs::rp.h0, regs::ri, subreg_enum::w0);
+                ++regs::rp.h0;
                 run_state = run_states::execute;
 
                 /* Execute instruction */
-                switch (regs::in.b0) {
+                switch (regs::ri.b0) {
                     case instr::halt_opcode: {
                         running_flag = false;
                         is_power_on = false; // just temporary until I get "device" interaction working
@@ -1457,80 +1457,80 @@ namespace maize {
                     }
 
                     case instr::clr_regVal: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
                         clr_reg(op1_reg(), op1_subreg_flag());
                         break;
                     }
 
                     case instr::ld_regVal_reg: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
                         break;
                     }
 
                     case instr::ld_immVal_reg: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         u_hword imm_size = op1_imm_size();
-                        copy_memval_reg(regs::p.h0, imm_size, op2_reg(), op2_subreg_flag());
-                        regs::p.h0 += imm_size;
+                        copy_memval_reg(regs::rp.h0, imm_size, op2_reg(), op2_subreg_flag());
+                        regs::rp.h0 += imm_size;
                         break;
                     }
 
                     case instr::ld_regAddr_reg: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
                         break;
                     }
 
                     case instr::ld_immAddr_reg: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         u_hword imm_size = op1_imm_size();
                         u_hword dst_size = op2_subreg_size();
-                        copy_memaddr_reg(regs::p.h0, dst_size, op2_reg(), op2_subreg_flag());
-                        regs::p.h0 += imm_size;
+                        copy_memaddr_reg(regs::rp.h0, dst_size, op2_reg(), op2_subreg_flag());
+                        regs::rp.h0 += imm_size;
                         break;
                     }
 
                     case instr::ldz_regVal_reg: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
                         break;
                     }
 
                     case instr::ldz_immVal_reg: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         u_hword imm_size = op1_imm_size();
-                        copy_memval_reg(regs::p.h0, imm_size, op2_reg(), op2_subreg_flag());
-                        regs::p.h0 += imm_size;
+                        copy_memval_reg(regs::rp.h0, imm_size, op2_reg(), op2_subreg_flag());
+                        regs::rp.h0 += imm_size;
                         break;
                     }
 
                     case instr::ldz_regAddr_reg: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
                         break;
                     }
 
                     case instr::ldz_immAddr_reg: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         u_hword imm_size = op1_imm_size();
                         u_hword dst_size = op2_subreg_size();
-                        copy_memaddr_reg(regs::p.h0, dst_size, op2_reg(), op2_subreg_flag());
-                        regs::p.h0 += imm_size;
+                        copy_memaddr_reg(regs::rp.h0, dst_size, op2_reg(), op2_subreg_flag());
+                        regs::rp.h0 += imm_size;
                         break;
                     }
 
                     case instr::st_regVal_regAddr: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         copy_regval_regaddr(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
                         break;
                     }
 
                     case instr::st_immVal_regAddr: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         u_hword imm_size = op1_imm_size();
-                        copy_memval_regaddr(regs::p.h0, imm_size, op2_reg(), op2_subreg_flag());
-                        regs::p.h0 += imm_size;
+                        copy_memval_regaddr(regs::rp.h0, imm_size, op2_reg(), op2_subreg_flag());
+                        regs::rp.h0 += imm_size;
                         break;
                     }
 
@@ -1548,10 +1548,10 @@ namespace maize {
                     case instr::shr_regVal_reg:
                     case instr::cmp_regVal_reg:
                     case instr::test_regVal_reg: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
-                        alu.b0 = regs::in.b0;
+                        alu.b0 = regs::ri.b0;
                         alu.b1 = op1_subreg_size();
                         alu.b2 = op2_subreg_size();
                         run_alu();
@@ -1573,15 +1573,15 @@ namespace maize {
                     case instr::shr_immVal_reg:
                     case instr::cmp_immVal_reg:
                     case instr::test_immVal_reg: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::p.h0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.h0, src_size, alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
-                        alu.b0 = regs::in.b0;
+                        alu.b0 = regs::ri.b0;
                         alu.b1 = src_size;
                         alu.b2 = op2_subreg_size();
                         run_alu();
-                        regs::p.h0 += src_size;
+                        regs::rp.h0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
                         break;
                     }
@@ -1600,10 +1600,10 @@ namespace maize {
                     case instr::shr_regAddr_reg:
                     case instr::cmp_regAddr_reg:
                     case instr::test_regAddr_reg: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
-                        alu.b0 = regs::in.b0;
+                        alu.b0 = regs::ri.b0;
                         alu.b1 = op1_subreg_size();
                         alu.b2 = op2_subreg_size();
                         run_alu();
@@ -1625,15 +1625,15 @@ namespace maize {
                     case instr::shr_immAddr_reg:
                     case instr::cmp_immAddr_reg:
                     case instr::test_immAddr_reg: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         u_byte src_size = op1_imm_size();
-                        copy_memaddr_reg(regs::p.h0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_memaddr_reg(regs::rp.h0, src_size, alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
-                        alu.b0 = regs::in.b0;
+                        alu.b0 = regs::ri.b0;
                         alu.b1 = src_size;
                         alu.b2 = op2_subreg_size();
                         run_alu();
-                        regs::p.h0 += src_size;
+                        regs::rp.h0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
                         break;
                     }
@@ -1641,9 +1641,9 @@ namespace maize {
                     case instr::inc_regVal:
                     case instr::dec_regVal:
                     case instr::not_regVal: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), alu.op2_reg, subreg_enum::w0);
-                        alu.b0 = regs::in.b0;
+                        alu.b0 = regs::ri.b0;
                         alu.b1 = op1_subreg_size();
                         alu.b2 = op1_subreg_size();
                         run_alu();
@@ -1654,12 +1654,12 @@ namespace maize {
                     case instr::cmpind_immVal_regAddr:
                     case instr::testind_immVal_regAddr:
                     {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::p.h0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.h0, src_size, alu.op1_reg, subreg_enum::w0);
                         copy_regaddr_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, op2_subreg_flag());
-                        regs::p.h0 += src_size;
-                        alu.b0 = regs::in.b0;
+                        regs::rp.h0 += src_size;
+                        alu.b0 = regs::ri.b0;
                         alu.b1 = src_size;
                         alu.b2 = op1_subreg_size();
                         run_alu();
@@ -1669,11 +1669,11 @@ namespace maize {
                     case instr::cmpind_regVal_regAddr:
                     case instr::testind_regVal_regAddr:
                     {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         u_byte src_size = op1_subreg_size();
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
                         copy_regaddr_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, op2_subreg_flag());
-                        alu.b0 = regs::in.b0;
+                        alu.b0 = regs::ri.b0;
                         alu.b1 = src_size;
                         alu.b2 = op1_subreg_size();
                         run_alu();
@@ -1681,7 +1681,7 @@ namespace maize {
                     }
 
                     case instr::cmpxchg_regVal_regreg: {
-                        regs::p.h0 += 3;
+                        regs::rp.h0 += 3;
 
                         if (cmp_regval_reg(op3_reg(), op3_subreg_flag(), op2_reg(), op2_subreg_flag())) {
                             zero_flag = 1;
@@ -1696,7 +1696,7 @@ namespace maize {
                     }
 
                     case instr::cmpxchg_regAddr_regreg: {
-                        regs::p.h0 += 3;
+                        regs::rp.h0 += 3;
 
                         if (cmp_regval_reg(op3_reg(), op3_subreg_flag(), op2_reg(), op2_subreg_flag())) {
                             zero_flag = 1;
@@ -1711,13 +1711,13 @@ namespace maize {
                     }
 
                     case instr::cmpxchg_immVal_regreg: {
-                        regs::p.h0 += 3;
+                        regs::rp.h0 += 3;
                         u_byte src_size = op1_imm_size();
-                        regs::p.h0 += src_size;
+                        regs::rp.h0 += src_size;
 
                         if (cmp_regval_reg(op3_reg(), op3_subreg_flag(), op2_reg(), op2_subreg_flag())) {
                             zero_flag = 1;
-                            copy_memval_reg(regs::p.h0, src_size, op2_reg(), op2_subreg_flag());
+                            copy_memval_reg(regs::rp.h0, src_size, op2_reg(), op2_subreg_flag());
                         }
                         else {
                             zero_flag = 0;
@@ -1728,13 +1728,13 @@ namespace maize {
                     }
 
                     case instr::cmpxchg_immAddr_regreg: {
-                        regs::p.h0 += 3;
+                        regs::rp.h0 += 3;
                         u_byte src_size = op1_imm_size();
-                        regs::p.h0 += src_size;
+                        regs::rp.h0 += src_size;
 
                         if (cmp_regval_reg(op3_reg(), op3_subreg_flag(), op2_reg(), op2_subreg_flag())) {
                             zero_flag = 1;
-                            copy_memaddr_reg(regs::p.h0, src_size, op2_reg(), op2_subreg_flag());
+                            copy_memaddr_reg(regs::rp.h0, src_size, op2_reg(), op2_subreg_flag());
                         }
                         else {
                             zero_flag = 0;
@@ -1745,7 +1745,7 @@ namespace maize {
                     }
 
                     case instr::lea_regVal_regreg: {
-                        regs::p.h0 += 3;
+                        regs::rp.h0 += 3;
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
                         alu.b0 = instr::add_regVal_reg;
@@ -1757,7 +1757,7 @@ namespace maize {
                     }
 
                     case instr::lea_regAddr_regreg: {
-                        regs::p.h0 += 3;
+                        regs::rp.h0 += 3;
                         u_byte src_size = op1_imm_size();
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
@@ -1770,35 +1770,35 @@ namespace maize {
                     }
 
                     case instr::lea_immVal_regreg: {
-                        regs::p.h0 += 3;
+                        regs::rp.h0 += 3;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::p.h0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.h0, src_size, alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
                         alu.b0 = instr::add_immVal_reg;
                         alu.b1 = src_size;
                         alu.b2 = op2_subreg_size();
                         run_alu();
-                        regs::p.h0 += src_size;
+                        regs::rp.h0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
                         break;
                     }
 
                     case instr::lea_immAddr_regreg: {
-                        regs::p.h0 += 3;
+                        regs::rp.h0 += 3;
                         u_byte src_size = op1_imm_size();
-                        copy_memaddr_reg(regs::p.h0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_memaddr_reg(regs::rp.h0, src_size, alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
                         alu.b0 = instr::add_immAddr_reg;
                         alu.b1 = src_size;
                         alu.b2 = op2_subreg_size();
                         run_alu();
-                        regs::p.h0 += src_size;
+                        regs::rp.h0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
                         break;
                     }
 
                     case instr::xchg_opcode: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), operand1, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), op1_reg(), op1_subreg_flag());
                         copy_regval_reg(operand1, subreg_enum::w0, op2_reg(), op2_subreg_flag());
@@ -1806,251 +1806,251 @@ namespace maize {
                     }
 
                     case instr::out_regVal_imm: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         u_byte dst_size = op2_imm_size();
-                        copy_memval_reg(regs::p.h0, dst_size, operand2, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.h0, dst_size, operand2, subreg_enum::w0);
                         device *pdst_dev = devices[operand2.q0];
                         device &dst_dev = *(pdst_dev);
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), dst_dev, subreg_enum::w0);
-                        regs::p.h0 += dst_size;
+                        regs::rp.h0 += dst_size;
                         break;
                     }
 
                     case instr::out_immVal_imm: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::p.h0, src_size, operand1, subreg_enum::w0);
-                        regs::p.h0 += src_size;
+                        copy_memval_reg(regs::rp.h0, src_size, operand1, subreg_enum::w0);
+                        regs::rp.h0 += src_size;
                         u_byte dst_size = op2_imm_size();
-                        copy_memval_reg(regs::p.h0, dst_size, operand2, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.h0, dst_size, operand2, subreg_enum::w0);
                         device *pdst_dev = devices[operand2.q0];
                         device &dst_dev = *(pdst_dev);
                         copy_regval_reg(operand1, subreg_enum::w0, dst_dev, subreg_enum::w0);
-                        regs::p.h0 += dst_size;
+                        regs::rp.h0 += dst_size;
                         break;
                     }
 
                     case instr::out_regAddr_imm: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), operand1, subreg_enum::w0);
                         u_byte dst_size = op2_imm_size();
-                        copy_memval_reg(regs::p.h0, dst_size, operand2, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.h0, dst_size, operand2, subreg_enum::w0);
                         device *pdst_dev = devices[operand2.q0];
                         device &dst_dev = *(pdst_dev);
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), dst_dev, subreg_enum::w0);
-                        regs::p.h0 += dst_size;
+                        regs::rp.h0 += dst_size;
                         break;
                     }
 
                     case instr::out_immAddr_imm: {
-                        regs::p.h0 += 2;
+                        regs::rp.h0 += 2;
                         u_byte src_size = op1_imm_size();
-                        copy_memaddr_reg(regs::p.h0, src_size, operand1, subreg_enum::w0);
-                        regs::p.h0 += src_size;
+                        copy_memaddr_reg(regs::rp.h0, src_size, operand1, subreg_enum::w0);
+                        regs::rp.h0 += src_size;
                         u_byte dst_size = op2_imm_size();
-                        copy_memval_reg(regs::p.h0, dst_size, operand2, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.h0, dst_size, operand2, subreg_enum::w0);
                         device *pdst_dev = devices[operand2.q0];
                         device &dst_dev = *(pdst_dev);
                         copy_regval_reg(operand1, subreg_enum::w0, dst_dev, subreg_enum::w0);
-                        regs::p.h0 += dst_size;
+                        regs::rp.h0 += dst_size;
                         break;
                     }
 
                     case instr::sys_immVal: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::p.h0, src_size, operand1, subreg_enum::w0);
-                        regs::p.h0 += src_size;
+                        copy_memval_reg(regs::rp.h0, src_size, operand1, subreg_enum::w0);
+                        regs::rp.h0 += src_size;
                         regs::rv.w0 = sys::call(operand1.b0);
                         break;
                     }
 
                     case instr::sys_regVal: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
                         regs::rv.w0 = sys::call(op1_reg().b0);
                         break;
                     }
 
                     case instr::pop_regVal: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
                         auto src_size = op1_subreg_size();
-                        copy_memval_reg(regs::s.h0, src_size, op1_reg(), op1_subreg_flag());
-                        regs::s.h0 += src_size;
+                        copy_memval_reg(regs::rs.h0, src_size, op1_reg(), op1_subreg_flag());
+                        regs::rs.h0 += src_size;
                         break;
                     }
 
                     case instr::push_regVal: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
                         u_byte src_size = op1_subreg_size();
-                        regs::s.h0 -= src_size;
-                        copy_regval_regaddr(op1_reg(), op1_subreg_flag(), regs::s, subreg_enum::h0);
+                        regs::rs.h0 -= src_size;
+                        copy_regval_regaddr(op1_reg(), op1_subreg_flag(), regs::rs, subreg_enum::h0);
                         break;
                     }
 
                     case instr::push_immVal: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
                         u_byte src_size = op1_imm_size();
-                        regs::s.h0 -= src_size;
-                        copy_memval_regaddr(regs::p.h0, src_size, regs::s, subreg_enum::h0);
-                        regs::p.h0 += src_size;
+                        regs::rs.h0 -= src_size;
+                        copy_memval_regaddr(regs::rp.h0, src_size, regs::rs, subreg_enum::h0);
+                        regs::rp.h0 += src_size;
                         break;
                     }
 
                     case instr::call_regVal: {
-                        regs::p.h0 += 1;
-                        regs::s.h0 -= subreg_size_map[subreg_enum::h0];
-                        copy_regval_regaddr(regs::p, subreg_enum::h0, regs::s, subreg_enum::h0);
-                        regs::p.h0 = op1_reg().h0;
+                        regs::rp.h0 += 1;
+                        regs::rs.h0 -= subreg_size_map[subreg_enum::h0];
+                        copy_regval_regaddr(regs::rp, subreg_enum::h0, regs::rs, subreg_enum::h0);
+                        regs::rp.h0 = op1_reg().h0;
                         break;
                     }
 
                     case instr::call_immVal: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::p.h0, src_size, operand1, subreg_enum::h0);
-                        regs::s.h0 -= subreg_size_map[subreg_enum::h0];
-                        regs::p.h0 += src_size;
-                        copy_regval_regaddr(regs::p, subreg_enum::h0, regs::s, subreg_enum::h0);
-                        regs::p.h0 = operand1.h0;
+                        copy_memval_reg(regs::rp.h0, src_size, operand1, subreg_enum::h0);
+                        regs::rs.h0 -= subreg_size_map[subreg_enum::h0];
+                        regs::rp.h0 += src_size;
+                        copy_regval_regaddr(regs::rp, subreg_enum::h0, regs::rs, subreg_enum::h0);
+                        regs::rp.h0 = operand1.h0;
                         break;
                     }
 
                     case instr::ret_opcode: {
                         u_byte src_size = subreg_size_map[subreg_enum::h0];
-                        copy_memval_reg(regs::s.h0, src_size, regs::p, subreg_enum::h0);
-                        regs::s.h0 += src_size;
+                        copy_memval_reg(regs::rs.h0, src_size, regs::rp, subreg_enum::h0);
+                        regs::rs.h0 += src_size;
                         break;
                     }
 
                     case instr::iret_opcode: {
                         auto src_size = subreg_size_map[subreg_enum::w0];
-                        copy_memval_reg(regs::s.h0, src_size, regs::f, subreg_enum::w0);
-                        regs::s.h0 += src_size;
-                        copy_memval_reg(regs::s.h0, src_size, regs::p, subreg_enum::w0);
-                        regs::s.h0 += src_size;
+                        copy_memval_reg(regs::rs.h0, src_size, regs::rf, subreg_enum::w0);
+                        regs::rs.h0 += src_size;
+                        copy_memval_reg(regs::rs.h0, src_size, regs::rp, subreg_enum::w0);
+                        regs::rs.h0 += src_size;
                         break;
                     }
 
                     case instr::jmp_regVal: {
-                        regs::p.h0 += 1;
-                        copy_regval_reg(op1_reg(), op1_subreg_flag(), regs::p, subreg_enum::h0);
+                        regs::rp.h0 += 1;
+                        copy_regval_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
                         break;
                     }
 
                     case instr::jmp_immVal: {
-                        regs::p.h0 += 1;
-                        copy_memval_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
+                        regs::rp.h0 += 1;
+                        copy_memval_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
                         break;
                     }
 
                     case instr::jmp_regAddr: {
-                        regs::p.h0 += 1;
-                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::p, subreg_enum::h0);
+                        regs::rp.h0 += 1;
+                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
                         break;
                     }
 
                     case instr::jmp_immAddr: {
-                        regs::p.h0 += 1;
-                        copy_memaddr_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
+                        regs::rp.h0 += 1;
+                        copy_memaddr_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
                         break;
                     }
 
                     case instr::jz_regVal: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
 
                         if (cpu::zero_flag) {
-                            copy_regval_reg(op1_reg(), op1_subreg_flag(), regs::p, subreg_enum::h0);
+                            copy_regval_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
                         }
 
                         break;
                     }
 
                     case instr::jz_immVal: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
 
                         if (cpu::zero_flag) {
-                            copy_memval_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
+                            copy_memval_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
                         }
                         else {
                             u_byte src_size = op1_imm_size();
-                            regs::p.h0 += src_size;
+                            regs::rp.h0 += src_size;
                         }
 
                         break;
                     }
 
                     case instr::jz_regAddr: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
 
                         if (cpu::zero_flag) {
-                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::p, subreg_enum::h0);
+                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
                         }
                         else {
                             u_byte src_size = op1_imm_size();
-                            regs::p.h0 += src_size;
+                            regs::rp.h0 += src_size;
                         }
                         break;
                     }
 
                     case instr::jz_immAddr: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
 
                         if (cpu::zero_flag) {
-                            copy_memaddr_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
+                            copy_memaddr_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
                         }
                         else {
                             u_byte src_size = op1_imm_size();
-                            regs::p.h0 += src_size;
+                            regs::rp.h0 += src_size;
                         }
                         break;
                     }
 
                     case instr::jnz_regVal: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
 
                         if (!cpu::zero_flag) {
-                            copy_regval_reg(op1_reg(), op1_subreg_flag(), regs::p, subreg_enum::h0);
+                            copy_regval_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
                         }
 
                         break;
                     }
 
                     case instr::jnz_immVal: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
 
                         if (!cpu::zero_flag) {
-                            copy_memval_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
+                            copy_memval_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
                         }
                         else {
                             u_byte src_size = op1_imm_size();
-                            regs::p.h0 += src_size;
+                            regs::rp.h0 += src_size;
                         }
 
                         break;
                     }
 
                     case instr::jnz_regAddr: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
 
                         if (!cpu::zero_flag) {
-                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::p, subreg_enum::h0);
+                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
                         }
                         else {
                             u_byte src_size = op1_imm_size();
-                            regs::p.h0 += src_size;
+                            regs::rp.h0 += src_size;
                         }
                         break;
                     }
 
                     case instr::jnz_immAddr: {
-                        regs::p.h0 += 1;
+                        regs::rp.h0 += 1;
 
                         if (!cpu::zero_flag) {
-                            copy_memaddr_reg(regs::p.h0, subreg_size_map[subreg_enum::h0], regs::p, subreg_enum::h0);
+                            copy_memaddr_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
                         }
                         else {
                             u_byte src_size = op1_imm_size();
-                            regs::p.h0 += src_size;
+                            regs::rp.h0 += src_size;
                         }
                         break;
                     }
@@ -2062,7 +2062,7 @@ namespace maize {
 
                     default: {
                         std::stringstream err {};
-                        err << "unknown opcode: " << std::hex << regs::in.b0;
+                        err << "unknown opcode: " << std::hex << regs::ri.b0;
                         throw std::logic_error(err.str());
                         break;
                     }
@@ -2092,10 +2092,10 @@ namespace maize {
                         /*
                         If interrupt set
                             look up interrupt handler
-                            push regs::p
-                            push regs::f
-                            regs::p.h1 = interrupt handler segment
-                            regs::p.h0 = interrupt handler address
+                            push regs::rp
+                            push regs::rf
+                            regs::rp.h1 = interrupt handler segment
+                            regs::rp.h0 = interrupt handler address
                             running_flag = true
                         */
                     }

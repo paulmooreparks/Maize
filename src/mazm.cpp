@@ -1124,10 +1124,10 @@ namespace {
         {"R9", cpu::opflag_reg_r9},
         {"RT", cpu::opflag_reg_rt},
         {"RV", cpu::opflag_reg_rv},
-        {"F", cpu::opflag_reg_f},
-        {"IN", cpu::opflag_reg_in},
-        {"P", cpu::opflag_reg_p},
-        {"S", cpu::opflag_reg_s}
+        {"RF", cpu::opflag_reg_rf},
+        {"RI", cpu::opflag_reg_ri},
+        {"RP", cpu::opflag_reg_rp},
+        {"RS", cpu::opflag_reg_rs}
     };
 
     std::unordered_map<std::string, u_byte> subreg_map {
@@ -1156,19 +1156,19 @@ namespace {
 
         /* Get some special cases out of the way */
         if (reg_str == "SP") {
-            reg_byte = cpu::opflag_reg_s | cpu::opflag_subreg_h0;
+            reg_byte = cpu::opflag_reg_rs | cpu::opflag_subreg_h0;
         }
         else if (reg_str == "BP") {
-            reg_byte = cpu::opflag_reg_s | cpu::opflag_subreg_h1;
+            reg_byte = cpu::opflag_reg_rs | cpu::opflag_subreg_h1;
         }
         else if (reg_str == "PC") {
-            reg_byte = cpu::opflag_reg_p | cpu::opflag_subreg_h0;
+            reg_byte = cpu::opflag_reg_rp | cpu::opflag_subreg_h0;
         }
         else if (reg_str == "CS") {
-            reg_byte = cpu::opflag_reg_p | cpu::opflag_subreg_h1;
+            reg_byte = cpu::opflag_reg_rp | cpu::opflag_subreg_h1;
         }
         else if (reg_str == "FL") {
-            reg_byte = cpu::opflag_reg_f | cpu::opflag_subreg_h0;
+            reg_byte = cpu::opflag_reg_rf | cpu::opflag_subreg_h0;
         }
         else {
             std::string reg {reg_str};

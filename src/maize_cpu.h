@@ -41,17 +41,17 @@ namespace maize {
 		const u_byte opflag_reg_r9	= 0b10010000;
 		const u_byte opflag_reg_rt	= 0b10100000;
 		const u_byte opflag_reg_rv	= 0b10110000;
-		const u_byte opflag_reg_f	= 0b11000000;
-		const u_byte opflag_reg_in	= 0b11010000;
-		const u_byte opflag_reg_p	= 0b11100000;
-		const u_byte opflag_reg_s	= 0b11110000;
+		const u_byte opflag_reg_rf	= 0b11000000;
+		const u_byte opflag_reg_ri	= 0b11010000;
+		const u_byte opflag_reg_rp	= 0b11100000;
+		const u_byte opflag_reg_rs	= 0b11110000;
 
 #if false
-		const u_byte opflag_reg_sp = 0b11111100; // S.H0 = stack pointer
-		const u_byte opflag_reg_bp = 0b11111101; // S.H1 = base pointer
-		const u_byte opflag_reg_pc = 0b11101100; // P.H0 = program counter
-		const u_byte opflag_reg_cs = 0b11101101; // P.H1 = program segment
-		const u_byte opflag_reg_fl = 0b11001100; // F.H0 = flags
+		const u_byte opflag_reg_sp = 0b11111100; // RS.H0 = stack pointer
+		const u_byte opflag_reg_bp = 0b11111101; // RS.H1 = base pointer
+		const u_byte opflag_reg_pc = 0b11101100; // RP.H0 = program counter
+		const u_byte opflag_reg_cs = 0b11101101; // RP.H1 = program segment
+		const u_byte opflag_reg_fl = 0b11001100; // RF.H0 = flags
 #endif
 
 		const u_byte opflag_subreg = 0b00001111;
@@ -633,10 +633,10 @@ namespace maize {
 			extern reg r9;
 			extern reg rt;
 			extern reg rv;
-			extern reg f; // flags register
-			extern reg in; // instruction register
-			extern reg p; // program execution register
-			extern reg s; // stack register
+			extern reg rf; // flags register
+			extern reg ri; // instruction register
+			extern reg rp; // program execution register
+			extern reg rs; // stack register
 		}
 
 		extern bus address_bus;
