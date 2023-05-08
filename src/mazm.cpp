@@ -176,6 +176,7 @@ namespace {
     std::unordered_map<std::string, opcode_data> opcodes {
         { "HALT",   {cpu::instr::halt_opcode   , opcode_0param_tokenizer, no_operand_compiler}},
         { "LD",     {cpu::instr::ld_opcode     , opcode_2param_tokenizer, regimm_reg_compiler}},
+        { "CP",     {cpu::instr::ld_opcode     , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "ST",     {cpu::instr::st_opcode     , opcode_2param_tokenizer, regimm_regaddr_compiler}},
         { "ADD",    {cpu::instr::add_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "SUB",    {cpu::instr::sub_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},

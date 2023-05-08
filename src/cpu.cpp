@@ -1462,13 +1462,13 @@ namespace maize {
                         break;
                     }
 
-                    case instr::ld_regVal_reg: {
+                    case instr::cp_regVal_reg: {
                         regs::rp.h0 += 2;
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
                         break;
                     }
 
-                    case instr::ld_immVal_reg: {
+                    case instr::cp_immVal_reg: {
                         regs::rp.h0 += 2;
                         u_hword imm_size = op1_imm_size();
                         copy_memval_reg(regs::rp.h0, imm_size, op2_reg(), op2_subreg_flag());
@@ -1491,13 +1491,13 @@ namespace maize {
                         break;
                     }
 
-                    case instr::ldz_regVal_reg: {
+                    case instr::cpz_regVal_reg: {
                         regs::rp.h0 += 2;
                         copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
                         break;
                     }
 
-                    case instr::ldz_immVal_reg: {
+                    case instr::cpz_immVal_reg: {
                         regs::rp.h0 += 2;
                         u_hword imm_size = op1_imm_size();
                         copy_memval_reg(regs::rp.h0, imm_size, op2_reg(), op2_subreg_flag());

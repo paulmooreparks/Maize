@@ -376,9 +376,10 @@ namespace maize {
 		namespace instr {
 			const opcode halt_opcode			{0x00};
 
+			/* The first two instructions */
 			const opcode ld_opcode				{0x01};
-			const opcode ld_regVal_reg			{ld_opcode | opcode_flag_srcReg};
-			const opcode ld_immVal_reg			{ld_opcode | opcode_flag_srcImm};
+			const opcode cp_regVal_reg			{ld_opcode | opcode_flag_srcReg};
+			const opcode cp_immVal_reg			{ld_opcode | opcode_flag_srcImm};
 			const opcode ld_regAddr_reg			{ld_opcode | opcode_flag_srcAddr};
 			const opcode ld_immAddr_reg			{ld_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
@@ -483,8 +484,8 @@ namespace maize {
 			const opcode lea_immAddr_regreg		{lea_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
 			const opcode ldz_opcode				{0x13};
-			const opcode ldz_regVal_reg			{ldz_opcode | opcode_flag_srcReg};
-			const opcode ldz_immVal_reg			{ldz_opcode | opcode_flag_srcImm};
+			const opcode cpz_regVal_reg			{ldz_opcode | opcode_flag_srcReg};
+			const opcode cpz_immVal_reg			{ldz_opcode | opcode_flag_srcImm};
 			const opcode ldz_regAddr_reg		{ldz_opcode | opcode_flag_srcAddr};
 			const opcode ldz_immAddr_reg		{ldz_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 

@@ -125,22 +125,22 @@ written in Maize assembly.
 
     strlen:
         PUSH BP                 ; Save the base pointer
-        LD SP BP                ; Copy the stack pointer to the base pointer
+        CP SP BP                ; Copy the stack pointer to the base pointer
         SUB $04 SP              ; Make room for a 32-bit (4-byte) counter on the stack
         LEA $-04 BP RT.H0       ; Load the address of the counter's stack location into RT.H0
         ST $00 @RT.H0           ; Set the counter to zero.
     loop_condition:
 	    LEA @RT.H0 R0.H0 R1.H0  ; Add the counter value to the address and put the result into H.H0.
-        LD @R1.H0 R1.B4         ; Copy the character at the address in R1.H0 into R1.B4.
+        LD @R1.H0 R1.B4         ; Load the character value at the address in R1.H0 into R1.B4.
 	    JZ loop_exit            ; LD sets the zero flag if the value copied to R1.B4 is zero.
     loop_body:
-        LD @RT.H0 RT.H1         ; Put the counter value at RT.H0 into RT.H1
+        LD @RT.H0 RT.H1         ; Load the counter value at the address in RT.H0 into RT.H1
 	    INC RT.H1               ; Add 1 to the temporary
         ST RT.H1 @RT.H0         ; Store the new value back into the counter's address
 	    JMP loop_condition      ; ...and continue the loop.
     loop_exit:
-	    LD @RT.H0 RV            ; Put the (sign-extended) counter value into RV, the return register.
-        LD BP SP                ; Restore the stack
+	    LD @RT.H0 RV            ; Load the (sign-extended) counter value into RV, the return register.
+        CP BP SP                ; Restore the stack
         POP BP                  ; Restore the base pointer
 	    RET                     ; Pop return address from stack and place into PC.
 
@@ -148,13 +148,13 @@ written in Maize assembly.
     ; The main function
 
     main:
-        LD hw_string R0.H0      ; Put address of message string into R0.H0
+        CP hw_string R0.H0      ; Copy the address of the message string into R0.H0
         CALL strlen             ; Call strlen function to get the string length
-        LD $01 R0               ; $01 in R0 indicates output to stdout
-        LD hw_string R1.H0      ; R1.H0 holds address of message to output
-        LD RV R2                ; Put the string length into R2
+        CP $01 R0               ; $01 in R0 indicates output to stdout
+        CP hw_string R1.H0      ; R1.H0 holds address of message to output
+        CP RV R2                ; Put the string length into R2
         SYS $01                 ; Call output function implemented in Maize VM
-        LD $0 RV                ; Set return value for main
+        CP $0 RV                ; Set return value for main
         RET                     ; Leave main
 
 ## Instruction Description 
@@ -189,12 +189,12 @@ stored lower in memory).
 When an instruction has two parameters, the first parameter is the source parameter, and the second
 parameter is the destination parameter.
 
-Example: Load the value $01 into register R0.
+Example: Copy the immediate value $01 into register R0.
 
-    LD $01 R0
+    CP $01 R0
 
-Example: Encoding of "LD $FFCC4411 R3", which loads the immediate value $FFCC4411 into register R3.
-$41 is the opcode and flags for the instruction which loads an immediate value into a register.
+Example: Encoding of "CP $FFCC4411 R3", which copies the immediate value $FFCC4411 into register R3.
+$41 is the opcode and flags for the instruction which copies an immediate value into a register.
 $02 is the parameter byte specifying a four-byte immediate value as the source parameter. $3E is
 the parameter byte specifying the 64-bit register R3 as the destination parameter. The bytes
 following the parameters bytes are the immediate value in little-endian format.
@@ -204,9 +204,9 @@ following the parameters bytes are the immediate value in little-endian format.
 Immediate values may used as pointers into memory. This is represented in assembly by the '@'
 prefix in front of the immediate value.
 
-Example: Load the 64-bit value at address $0000`1000 into register R1.
+Example: Copy the 64-bit value at address $0000`1000 into register R1.
 
-    LD @$0000`1000 R1
+    CP @$0000`1000 R1
 
 Register values may be used as pointers into memory by adding a '@' prefix in front of the
 register name.
@@ -263,7 +263,7 @@ Shown graphically, the 64-bit value $FEDCBA9876543210 would be stored as follows
 
 In other words, if the following instruction were executed:
 
-    LD $FEDCBA9876543210 R0
+    CP $FEDCBA9876543210 R0
 
 The value stored in register R0 could then be represented as follows:
 
@@ -342,8 +342,6 @@ bit 7 is interpreted as follows:
     %0xxx`xxxx  source parameter is a value
     %1xxx`xxxx  source parameter is a memory address
 
-When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric opcode value.
-
 
 ## Instructions
 
@@ -351,13 +349,14 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     ----------  ---   --------  ----------      --------------------------------------------------------------------------------------------------------------------------------------
     %0000`0000  $00   HALT                      Halt the clock, thereby stopping execution (privileged)
     
-    %0000`0001  $01   LD        regVal  reg     Load source register value into destination register
-    %0100`0001  $41   LD        immVal  reg     Load immediate value into destination register
+    %0000`0001  $01   CP        regVal  reg     Copy source register value into destination register
+    %0100`0001  $41   CP        immVal  reg     Copy immediate value into destination register
+
     %1000`0001  $81   LD        regAddr reg     Load value at address in source register into destination register
     %1100`0001  $C1   LD        immAddr reg     Load value at immediate address into destination register
     
-    %0000`0010  $02   ST        regVal regAddr  Store source register value at address in second register
-    %0100`0010  $42   ST        immVal regAddr  Store immediate value at address in destination register
+    %0000`0010  $02   ST        regVal  regAddr Store source register value at address in second register
+    %0100`0010  $42   ST        immVal  regAddr Store immediate value at address in destination register
     
     %0000`0011  $03   ADD       regVal  reg     Add source register value to destination register
     %0100`0011  $43   ADD       immVal  reg     Add immediate value to destination register
@@ -429,8 +428,8 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     %1001`0000  $90   TEST      regAddr reg     Set flags by ANDing value at address in source register with destination register
     %1101`0000  $D0   TEST      immAddr reg     Set flags by ANDing value at immediate address with destination register
     
-    %0001`0001  $11   CMPXCHG   regVal  reg reg Compare value in operand 2 with value in operand 3. If equal, set zero flag and load value in operand 1 register into operand 2. Otherwise, clear zero flag and load value in operand 2 into operand 3.
-    %0101`0001  $51   CMPXCHG   immVal  reg reg Compare value in operand 2 with value in operand 3. If equal, set zero flag and load value in operand 1 immediate value into operand 2. Otherwise, clear zero flag and load value in operand 2 into operand 3.
+    %0001`0001  $11   CMPXCHG   regVal  reg reg Compare value in operand 2 with value in operand 3. If equal, set zero flag and copy value in operand 1 register into operand 2. Otherwise, clear zero flag and copy value in operand 2 into operand 3.
+    %0101`0001  $51   CMPXCHG   immVal  reg reg Compare value in operand 2 with value in operand 3. If equal, set zero flag and copy value in operand 1 immediate value into operand 2. Otherwise, clear zero flag and copy value in operand 2 into operand 3.
     %1001`0001  $91   CMPXCHG   regAddr reg reg Compare value in operand 2 with value in operand 3. If equal, set zero flag and load value at address in operand 1 register into operand 2. Otherwise, clear zero flag and load value in operand 2 into operand 3.
     %1101`0001  $D1   CMPXCHG   immAddr reg reg Compare value in operand 2 with value in operand 3. If equal, set zero flag and load value at address in operand 1 immediate value into operand 2. Otherwise, clear zero flag and load value in operand 2 into operand 3.
     
@@ -439,10 +438,11 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     %1001`0010  $92   LEA       regAddr reg reg Add value at address in operand 1 register to value in operand 2 register and store result in operand 3 register
     %1101`0010  $D2   LEA       immAddr reg reg Add value at immediate address in operand 1 to value in operand 2 register and store result in operand 3 register
     
-    %0001`0011  $13   LDX       regVal  reg     Load source register value into destination register with zero extension
-    %0101`0011  $53   LDX       immVal  reg     Load immediate value into destination register with zero extension
-    %1001`0011  $93   LDX       regAddr reg     Load value at address in source register into destination register with zero extension
-    %1101`0011  $D3   LDX       immAddr reg     Load value at immediate address into destination register with zero extension
+    %0001`0011  $13   CPZ       regVal  reg     Copy source register value into destination register with zero extension
+    %0101`0011  $53   CPZ       immVal  reg     Copy immediate value into destination register with zero extension
+
+    %1001`0011  $93   LDZ       regAddr reg     Load value at address in source register into destination register with zero extension
+    %1101`0011  $D3   LDZ       immAddr reg     Load value at immediate address into destination register with zero extension
     
     %0001`0100  $14   OUT       regVal  imm     Output value in source register to destination port
     %0101`0100  $54   OUT       immVal  imm     Output immediate value to destination port
@@ -520,6 +520,76 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
     
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
     
+    %0010`1011  $2B                             reserved
+    %0110`1011  $6B                             reserved   
+    %1010`1011  $AB                             reserved   
+    %1110`1011  $EB                             reserved   
+
+    %0010`1100  $2C                             reserved
+    %0110`1100  $6C                             reserved   
+    %1010`1100  $AC                             reserved   
+    %1110`1100  $EC                             reserved   
+
+    %0010`1101  $2D                             reserved
+    %0110`1101  $6D                             reserved   
+    %1010`1101  $AD                             reserved   
+    %1110`1101  $ED                             reserved   
+
+    %0010`1110  $2E                             reserved
+    %0110`1110  $6E                             reserved   
+    %1010`1110  $AE                             reserved   
+    %1110`1110  $EE                             reserved   
+
+    %0011`0101  $35                             reserved
+    %0111`0101  $75                             reserved
+    %1011`0101  $B5                             reserved
+    %1111`0101  $F5                             reserved
+
+    %0011`0110  $36                             reserved
+    %0111`0110  $76                             reserved
+    %1011`0110  $B6                             reserved
+    %1111`0110  $F6                             reserved
+
+    %0011`0111  $37                             reserved
+    %0111`0111  $77                             reserved
+    %1011`0111  $B7                             reserved
+    %1111`0111  $F7                             reserved
+
+    %0011`1000  $38                             reserved
+    %0111`1000  $78                             reserved
+    %1011`1000  $B8                             reserved
+    %1111`1000  $F8                             reserved
+
+    %0011`1001  $39                             reserved
+    %0111`1001  $79                             reserved
+    %1011`1001  $B9                             reserved
+    %1111`1001  $F9                             reserved
+
+    %0011`1010  $3A                             reserved
+    %0111`1010  $7A                             reserved
+    %1011`1010  $BA                             reserved
+    %1111`1010  $FA                             reserved
+
+    %0011`1011  $3B                             reserved
+    %0111`1011  $7B                             reserved
+    %1011`1011  $BB                             reserved
+    %1111`1011  $FB                             reserved
+
+    %0011`1100  $3C                             reserved
+    %0111`1100  $7C                             reserved
+    %1011`1100  $BC                             reserved
+    %1111`1100  $FC                             reserved
+
+    %0011`1101  $3D                             reserved
+    %0111`1101  $7D                             reserved
+    %1011`1101  $BD                             reserved
+    %1111`1101  $FD                             reserved
+
+    %0011`1110  $3E                             reserved
+    %0111`1110  $7E                             reserved
+    %1011`1110  $BE                             reserved
+    %1111`1110  $FE                             reserved
+
     %0010`1111  $2F   CMPIND    regVal regAddr  Set flags by subtracting source register value from value at address in destination register
     %0110`1111  $6F   CMPIND    immVal regAddr  Set flags by subtracting immediate value from value at address in destination register
     
@@ -556,40 +626,40 @@ When bit 5 is set (%xx1x`xxxx), all eight bits are used to define the numeric op
 
 ### Register bit field
 
-    %0000xxxx   $0    R0 register
-    %0001xxxx   $1    R1 register
-    %0010xxxx   $2    R2 register
-    %0011xxxx   $3    R3 register
-    %0100xxxx   $4    R4 register
-    %0101xxxx   $5    R5 register
-    %0110xxxx   $6    R6 register
-    %0111xxxx   $7    R7 register
-    %1000xxxx   $8    R8 register
-    %1001xxxx   $9    R9 register
-    %1010xxxx   $A    RT register
-    %1011xxxx   $B    RV register
-    %1100xxxx   $C    RF register (flags)
-    %1101xxxx   $D    RI register (instruction)
-    %1110xxxx   $E    RP register (program segment / counter)
-    %1111xxxx   $F    RS register (stack pointers)
+    %0000`xxxx  $0   R0 register
+    %0001`xxxx  $1   R1 register
+    %0010`xxxx  $2   R2 register
+    %0011`xxxx  $3   R3 register
+    %0100`xxxx  $4   R4 register
+    %0101`xxxx  $5   R5 register
+    %0110`xxxx  $6   R6 register
+    %0111`xxxx  $7   R7 register
+    %1000`xxxx  $8   R8 register
+    %1001`xxxx  $9   R9 register
+    %1010`xxxx  $A   RT register
+    %1011`xxxx  $B   RV register
+    %1100`xxxx  $C   RF register (flags)
+    %1101`xxxx  $D   RI register (instruction)
+    %1110`xxxx  $E   RP register (program segment / counter)
+    %1111`xxxx  $F   RS register (stack pointers)
 
 ### Sub-register bit field
 
-    %xxxx0000   $0   X.B0 (1-byte data)
-    %xxxx0001   $1   X.B1 (1-byte data)
-    %xxxx0010   $2   X.B2 (1-byte data)
-    %xxxx0011   $3   X.B3 (1-byte data)
-    %xxxx0100   $4   X.B4 (1-byte data)
-    %xxxx0101   $5   X.B5 (1-byte data)
-    %xxxx0110   $6   X.B6 (1-byte data)
-    %xxxx0111   $7   X.B7 (1-byte data)
-    %xxxx1000   $8   X.Q0 (2-byte data)
-    %xxxx1001   $9   X.Q1 (2-byte data)
-    %xxxx1010   $A   X.Q2 (2-byte data)
-    %xxxx1011   $B   X.Q3 (2-byte data)
-    %xxxx1100   $C   X.H0 (4-byte data)
-    %xxxx1101   $D   X.H1 (4-byte data)
-    %xxxx1110   $E   X    (8-byte data)
+    %xxxx`0000  $0   X.B0 (1-byte data)
+    %xxxx`0001  $1   X.B1 (1-byte data)
+    %xxxx`0010  $2   X.B2 (1-byte data)
+    %xxxx`0011  $3   X.B3 (1-byte data)
+    %xxxx`0100  $4   X.B4 (1-byte data)
+    %xxxx`0101  $5   X.B5 (1-byte data)
+    %xxxx`0110  $6   X.B6 (1-byte data)
+    %xxxx`0111  $7   X.B7 (1-byte data)
+    %xxxx`1000  $8   X.Q0 (2-byte data)
+    %xxxx`1001  $9   X.Q1 (2-byte data)
+    %xxxx`1010  $A   X.Q2 (2-byte data)
+    %xxxx`1011  $B   X.Q3 (2-byte data)
+    %xxxx`1100  $C   X.H0 (4-byte data)
+    %xxxx`1101  $D   X.H1 (4-byte data)
+    %xxxx`1110  $E   X    (8-byte data)
 
 
 ## Immediate Parameter
@@ -647,42 +717,43 @@ x86 PCs. The x86 registers used in BIOS calls will map to Maize registers as fol
 
 ## OS ABI
 
-The first six arguments to OS-level routines will be placed, from left to right, into the
-G, H, J, K, L, and M registers. Any remaining arguments will be pushed onto the stack.
+The first ten arguments to OS-level routines will be placed, from left to right, into the
+R0, R1, R2, R3, R4, R5, R6, R7, R8, and R9 registers. Any remaining arguments will be pushed 
+onto the stack.
+
 For example:
 
     ; Call C function "void random_os_function(int32_t a, const char *b, size_t c, int32_t* d)"
-    LD $0000`1234 R0            ; int32_t a
-    LD R9.H0 R1                 ; const char* b, assuming the pointer is in R9.H0
-    LD $0000`00FF R2            ; size_t c
-    LD R8.H1 R3                 ; int32_t* d, assuming the pointer is in R8.H1
+    CP $0000`1234 R0            ; int32_t a
+    CP R9.H0 R1                 ; const char* b, assuming the pointer is in R9.H0
+    CP $0000`00FF R2            ; size_t c
+    CP R8.H1 R3                 ; int32_t* d, assuming the pointer is in R8.H1
     CALL random_os_function
 
-The called routine will preserve R0-R9 and SP. Any other registers may not be
-preserved. Return values will placed into the RV register. For example:
+Return values will placed into the RV register. For example:
 
     ; Implement C function "int add(int a, int b)"
-    LD R0 RV
+    CP R0 RV
     ADD R1 RV
     RET
 
-For syscalls, the same standard will be followed for syscall parameters. The syscall number
-will be placed into the R9 register prior to calling the interrupt.
+The same standard will be followed for syscall parameters. The syscall number will be placed 
+into the R9 register prior to calling the interrupt.
 
     ; Output a string using sys_write
-    LD $01 R9               ; syscall 1 = sys_write
-    LD $01 R0               ; file descriptor 1 (STDOUT) in register R0
-    LD hello_world R1.H0    ; string address in register R1
-    LD hello_world_end R2
+    CP $01 R0               ; file descriptor 1 (STDOUT) in register R0
+    CP hello_world R1.H0    ; string address in register R1
+    CP hello_world_end R2
     SUB hello_world R2      ; string length in register R2
+    CP $01 R9               ; syscall 1 = sys_write
     INT $80                 ; call sys_write
 
 The same syscall may be made with the SYS instruction, which will execute the syscall directly.
 
     ; Output a string using sys_write, calling directly via SYS instruction
-    LD $01 R0               ; file descriptor 1 (STDOUT) in register G
-    LD hello_world R1.H0    ; string address in register H
-    LD hello_world_end R2
+    CP $01 R0               ; file descriptor 1 (STDOUT) in register G
+    CP hello_world R1.H0    ; string address in register H
+    CP hello_world_end R2
     SUB hello_world R2      ; string length in register J
     SYS $01                 ; call sys_write
 
@@ -691,8 +762,6 @@ The same syscall may be made with the SYS instruction, which will execute the sy
 
 (This section is incomplete and a bit of a work in progress. Refer to HelloWorld.asm,
 stdlib.asm, and core.asm for practical examples.)
-
-Tokens with leading double-underscore (e.g., __foo) are reserved.
 
     %00000001   binary
     #123        decimal
@@ -714,8 +783,8 @@ Other syntax, to be described more fully later:
     Binary      Hex   Mnemonic  Parameters      Description
     ----------  ---   --------  ----------      --------------------------------------------------------------------------------------------------------------------------------------
     %0000`0000  $00   HALT                      Halt the clock, thereby stopping execution (privileged)
-    %0000`0001  $01   LD        regVal  reg     Load source register value into destination register
-    %0000`0010  $02   ST        regVal regAddr  Store source register value at address in second register
+    %0000`0001  $01   CP        regVal  reg     Copy source register value into destination register
+    %0000`0010  $02   ST        regVal  regAddr Store source register value at address in second register
     %0000`0011  $03   ADD       regVal  reg     Add source register value to destination register
     %0000`0100  $04   SUB       regVal  reg     Subtract source register value from destination register
     %0000`0101  $05   MUL       regVal  reg     Multiply destination register by source register value
@@ -730,9 +799,9 @@ Other syntax, to be described more fully later:
     %0000`1110  $0E   SHR       regVal  reg     Shift value in destination register right by value in source register
     %0000`1111  $0F   CMP       regVal  reg     Set flags by subtracting source register value from destination register
     %0001`0000  $10   TEST      regVal  reg     Set flags by ANDing source register value with destination register
-    %0001`0001  $11   CMPXCHG   regVal  reg     reserved
+    %0001`0001  $11   CMPXCHG   regVal  reg     Compare value in operand 2 with value in operand 3. If equal, set zero flag and copy value in operand 1 register into operand 2. Otherwise, clear zero flag and copy value in operand 2 into operand 3.
     %0001`0010  $12   LEA       regVal  reg reg 
-    %0001`0011  $13   LDX       regVal  reg     Load source register value into destination register with sign extension
+    %0001`0011  $13   CPZ       regVal  reg     Copy source register value into destination register with sign extension
     %0001`0100  $14   OUT       regVal  imm     Output value in source register to destination port
     %0001`0101  $15   LNGJMP    regVal          Jump to segment and address in source register and continue execution (privileged)
     %0001`0110  $16   JMP       regVal          Jump to address in source register and continue execution
@@ -746,20 +815,40 @@ Other syntax, to be described more fully later:
     %0001`1110  $1E   OUTR      regVal  reg     Output value in source register to port in destination register
     %0001`1111  $1F   IN        regVal  reg     Read value from port in source register into destination register
     %0010`0000  $20   PUSH      regVal          Copy register value into memory at location in RS.H0, decrement RS.H0 by size of register
+    %0010`0001  $21   
     %0010`0010  $22   CLR       regVal          Set register to zero (0).
+    %0010`0011  $23   
     %0010`0100  $24   INT       regVal          Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
+    %0010`0101  $25   
     %0010`0110  $26   POP       regVal          Increment SP.H0 by size of register, copy value at SP.H0 into register
     %0010`0111  $27   RET                       Pop PC.H0 from stack and continue execution at that address. Used to return from CALL.
     %0010`1000  $28   IRET                      Pop FL and PC from stack and continue execution at segment/address in PC. Used to return from interrupt (privileged).
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
+    %0010`1010  $2A
+    %0010`1011  $2B                             reserved
+    %0010`1100  $2C                             reserved
+    %0010`1101  $2D                             reserved
+    %0010`1110  $2E                             reserved
     %0010`1111  $2F   CMPIND    regVal regAddr  Set flags by subtracting source register value from value at address in destination register
     %0011`0000  $30   TSTIND    regVal regAddr  Set flags by ANDing source register value with value at address in destination register
     %0011`0001  $31   INC       regVal          Increment register by 1.
     %0011`0010  $32   DEC       regVal          Decrement register by 1.
     %0011`0011  $33   NOT       regVal          Bitwise negate value in register, store result in register.
     %0011`0100  $34   SYS       regVal          Execute a system call using the system-call index stored in register (privileged)
-    %0100`0001  $41   LD        immVal  reg     Load immediate value into destination register
-    %0100`0010  $42   ST        immVal regAddr  Store immediate value at address in destination register
+    %0011`0101  $35                             reserved
+    %0011`0110  $36                             reserved
+    %0011`0111  $37                             reserved
+    %0011`1000  $38                             reserved
+    %0011`1001  $39                             reserved
+    %0011`1010  $3A                             reserved
+    %0011`1011  $3B                             reserved
+    %0011`1100  $3C                             reserved
+    %0011`1101  $3D                             reserved
+    %0011`1110  $3E                             reserved
+    %0011`1111  $3F   
+    %0100`0000  $40   
+    %0100`0001  $41   CP        immVal  reg     Copy immediate value into destination register
+    %0100`0010  $42   ST        immVal  regAddr Store immediate value at address in destination register
     %0100`0011  $43   ADD       immVal  reg     Add immediate value to destination register
     %0100`0100  $44   SUB       immVal  reg     Subtract immediate value from destination register
     %0100`0101  $45   MUL       immVal  reg     Multiply destination register by immediate value
@@ -774,9 +863,9 @@ Other syntax, to be described more fully later:
     %0100`1110  $4E   SHR       immVal  reg     Shift value in destination register right by immediate value
     %0100`1111  $4F   CMP       immVal  reg     Set flags by subtracting immediate value from destination register
     %0101`0000  $50   TEST      immVal  reg     Set flags by ANDing immediate value with destination register
-    %0101`0001  $51   CMPXCHG   immVal  reg     TODO
-    %0101`0010  $52   LEA       immVal  reg reg TODO
-    %0101`0011  $53   LDX       immVal  reg     Load immediate value into destination register with sign extension
+    %0101`0001  $51   CMPXCHG   immVal  reg     Compare value in operand 2 with value in operand 3. If equal, set zero flag and copy value in operand 1 immediate value into operand 2. Otherwise, clear zero flag and copy value in operand 2 into operand 3.
+    %0101`0010  $52   LEA       immVal  reg reg Add immediate value in operand 1 to value in operand 2 register and store result in operand 3 register
+    %0101`0011  $53   CPZ       immVal  reg     Copy immediate value into destination register with sign extension
     %0101`0100  $54   OUT       immVal  imm     Output immediate value to destination port
     %0101`0101  $55   LNGJMP    immVal          Jump to immediate segment and address and continue execution (privileged)
     %0101`0110  $56   JMP       immVal          Jump to immediate address and continue execution
@@ -790,13 +879,42 @@ Other syntax, to be described more fully later:
     %0101`1110  $5E   OUTR      immVal  reg     Output immediate value to port in destination register
     %0101`1111  $5F   IN        immVal  reg     Read value from port in immediate value into destination register
     %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at location in RS.H0, decrement RS.H0 by size of immediate value
+    %0110`0001  $61   
+    %0110`0010  $62   
+    %0110`0011  $63   
     %0110`0100  $64   INT       immVal          Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
+    %0110`0101  $65   
+    %0110`0110  $66   
+    %0110`0111  $67   
+    %0110`1000  $68   
+    %0110`1001  $69   
+    %0110`1010  $6A   
+    %0110`1011  $6B                             reserved
+    %0110`1100  $6C                             reserved
+    %0110`1101  $6D                             reserved
+    %0110`1110  $6E                             reserved
     %0110`1111  $6F   CMPIND    immVal regAddr  Set flags by subtracting immediate value from value at address in destination register
     %0111`0000  $70   TSTIND    immVal regAddr  Set flags by ANDing immediate value with value at address in destination register
+    %0111`0001  $71   
+    %0111`0010  $72   
+    %0111`0011  $73   
     %0111`0100  $74   SYS       immVal          Execute a system call using the immediate index (privileged)
+    %0111`0101  $75                             reserved
+    %0111`0110  $76                             reserved
+    %0111`0111  $77                             reserved
+    %0111`1000  $78                             reserved
+    %0111`1001  $79                             reserved
+    %0111`1010  $7A                             reserved
+    %0111`1011  $7B                             reserved
+    %0111`1100  $7C                             reserved
+    %0111`1101  $7D                             reserved
+    %0111`1110  $7E                             reserved
+    %0111`1111  $7F   
+    %1000`0000  $80   
     %1000`0001  $81   LD        regAddr reg     Load value at address in source register into destination register
+    %1000`0010  $82   
     %1000`0011  $83   ADD       regAddr reg     Add value at address in source register to destination register
-    %1010`0100  $84   SUB       regAddr reg     Subtract value at address in source register from destination register
+    %1000`0100  $84   SUB       regAddr reg     Subtract value at address in source register from destination register
     %1000`0101  $85   MUL       regAddr reg     Multiply destination register by value at address in source register
     %1000`0110  $86   DIV       regAddr reg     Divide destination register by value at address in source register
     %1000`0111  $87   MOD       regAddr reg     Modulo destination register by value at address in source register
@@ -809,9 +927,9 @@ Other syntax, to be described more fully later:
     %1000`1110  $8E   SHR       regAddr reg     Shift value in destination register right by value at address in source register
     %1000`1111  $8F   CMP       regAddr reg     Set flags by subtracting value at address in source register from destination register
     %1001`0000  $90   TEST      regAddr reg     Set flags by ANDing value at address in source register with destination register
-    %1001`0001  $91   CMPXCHG   regAddr reg     reserved
-    %1001`0010  $92   LEA       regAddr reg reg reserved
-    %1001`0011  $93   LDX       regAddr reg     Load value at address in source register into destination register with sign extension
+    %1001`0001  $91   CMPXCHG   regAddr reg     Compare value in operand 2 with value in operand 3. If equal, set zero flag and load value at address in operand 1 register into operand 2. Otherwise, clear zero flag and load value in operand 2 into operand 3.
+    %1001`0010  $92   LEA       regAddr reg reg Add value at address in operand 1 register to value in operand 2 register and store result in operand 3 register
+    %1001`0011  $93   LDZ       regAddr reg     Load value at address in source register into destination register with sign extension
     %1001`0100  $94   OUT       regAddr imm     Output value at address in source register to destination port
     %1001`0101  $95   LNGJMP    regAddr         Jump to segment and address pointed to by source register and continue execution (privileged)
     %1001`0110  $96   JMP       regAddr         Jump to address pointed to by source register and continue execution
@@ -824,9 +942,41 @@ Other syntax, to be described more fully later:
     %1001`1101  $9D   CALL      regAddr         Push PC.H0 to stack, jump to address pointed to by source register and continue execution until RET is executed
     %1001`1110  $9E   OUTR      regAddr reg     Output value at address in source register to port in destination register
     %1001`1111  $9F   IN        regAddr reg     Read value from port at address in source register into destination register
-    %1010`0100  $84   SUB       regAddr reg     Subtract value at address in source register from destination register
+    %1010`0000  $A0   
+    %1010`0001  $A1   
+    %1010`0010  $A2   
+    %1010`0011  $A3   
+    %1010`0100  $A4   
+    %1010`0101  $A5   
+    %1010`0110  $A6   
+    %1010`0111  $A7   
+    %1010`1000  $A8   
+    %1010`1001  $A9   
     %1010`1010  $AA   NOP                       No operation. Used as an instruction placeholder.
+    %1010`1011  $AB                             reserved
+    %1010`1100  $AC                             reserved
+    %1010`1101  $AD                             reserved
+    %1010`1110  $AE                             reserved
+    %1010`1111  $AF   
+    %1011`0000  $B0   
+    %1011`0001  $B1   
+    %1011`0010  $B2   
+    %1011`0011  $B3   
+    %1011`0100  $B4   
+    %1011`0101  $B5                             reserved
+    %1011`0110  $B6                             reserved
+    %1011`0111  $B7                             reserved
+    %1011`1000  $B8                             reserved
+    %1011`1001  $B9                             reserved
+    %1011`1010  $BA                             reserved
+    %1011`1011  $BB                             reserved
+    %1011`1100  $BC                             reserved
+    %1011`1101  $BD                             reserved
+    %1011`1110  $BE                             reserved
+    %1011`1111  $BF   
+    %1100`0000  $C0   
     %1100`0001  $C1   LD        immAddr reg     Load value at immediate address into destination register
+    %1100`0010  $C2   
     %1100`0011  $C3   ADD       immAddr reg     Add value at immediate address to destination register
     %1100`0100  $C4   SUB       immAddr reg     Subtract value at immediate address from destination register
     %1100`0101  $C5   MUL       immAddr reg     Multiply destination register by value at immediate address
@@ -841,9 +991,9 @@ Other syntax, to be described more fully later:
     %1100`1110  $CE   SHR       immAddr reg     Shift value in destination register right by value at immediate address
     %1100`1111  $CF   CMP       immAddr reg     Set flags by subtracting value at immediate address from destination register
     %1101`0000  $D0   TEST      immAddr reg     Set flags by ANDing value at immediate address with destination register
-    %1101`0001  $D1   CMPXCHG   immAddr reg     reserved
-    %1101`0010  $D2   LEA       immAddr reg reg reserved
-    %1101`0011  $D3   LDX       immAddr reg     Load value at immediate address into destination register with sign extension
+    %1101`0001  $D1   CMPXCHG   immAddr reg     Compare value in operand 2 with value in operand 3. If equal, set zero flag and load value at address in operand 1 immediate value into operand 2. Otherwise, clear zero flag and load value in operand 2 into operand 3.
+    %1101`0010  $D2   LEA       immAddr reg reg Add value at immediate address in operand 1 to value in operand 2 register and store result in operand 3 register
+    %1101`0011  $D3   LDZ       immAddr reg     Load value at immediate address into destination register with sign extension
     %1101`0100  $D4   OUT       immAddr imm     Output value at immediate address to destination port
     %1101`0101  $D5   LNGJMP    immAddr         Jump to segment and address pointed to by immediate value and continue execution (privileged)
     %1101`0110  $D6   JMP       immAddr         Jump to address pointed to by immediate value and continue execution
@@ -862,4 +1012,29 @@ Other syntax, to be described more fully later:
     %1110`0011  $E3   CLRINT                    Clear the Interrupt flag, thereby disabling hardware interrupts (privileged)
     %1110`0100  $E4   DUP                       Duplicate the top value on the stack
     %1110`0101  $E5   SWAP                      Swap the top two values on the stack
+    %1110`0110  $E6   
+    %1110`0111  $E7   
+    %1110`1000  $E8   
+    %1110`1001  $E9   
+    %1110`1010  $EA   
+    %1110`1011  $EB                             reserved
+    %1110`1100  $EC                             reserved
+    %1110`1101  $ED                             reserved
+    %1110`1110  $EE                             reserved
+    %1110`1111  $EF   
+    %1111`0000  $F0   
+    %1111`0001  $F1   
+    %1111`0010  $F2   
+    %1111`0011  $F3   
+    %1111`0100  $F4   
+    %1111`0101  $F5                             reserved
+    %1111`0110  $F6                             reserved
+    %1111`0111  $F7                             reserved
+    %1111`1000  $F8                             reserved
+    %1111`1001  $F9                             reserved
+    %1111`1010  $FA                             reserved
+    %1111`1011  $FB                             reserved
+    %1111`1100  $FC                             reserved
+    %1111`1101  $FD                             reserved
+    %1111`1110  $FE                             reserved
     %1111`1111  $FF   BRK                       Trigger a debug break
