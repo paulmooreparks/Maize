@@ -144,7 +144,13 @@ run_test() {
     if [ "$golden" -eq 1 ]; then
         asm_path="${ASM_DIR}/${file}"
     else
-        cp "${ASM_DIR}/${file}" "${TEST_RUN_DIR}/${file}"
+        src_path="${ASM_DIR}/${file}"
+        if [ ! -f "$src_path" ]; then
+            echo "Missing test source file: ${src_path}" >&2
+            echo "Setup failure: declared test '${name}' has no corresponding .asm file." >&2
+            exit 2
+        fi
+        cp "$src_path" "${TEST_RUN_DIR}/${file}"
         asm_path="${TEST_RUN_DIR}/${file}"
     fi
     bin_path="${asm_path%.asm}.bin"

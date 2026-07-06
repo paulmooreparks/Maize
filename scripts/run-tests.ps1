@@ -59,6 +59,14 @@ function Trim-TrailingNewlines([string]$s) {
     return [regex]::Replace($s, '(\r\n|\r|\n)+$', '')
 }
 
+# Setup-failure diagnostics (missing tools, failed configure/build, missing
+# corpus files) go to stderr, matching run-tests.sh, so both scripts send
+# environment/setup errors to the same stream. The normal per-test PASS/FAIL
+# report and summary line stay on stdout via Write-Host.
+function Write-SetupError([string]$msg) {
+    [Console]::Error.WriteLine($msg)
+}
+
 function Resolve-Cmake {
     $cmd = Get-Command cmake -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
@@ -76,15 +84,15 @@ function Resolve-Ninja {
 # --- Resolve build tools before attempting a configure ---------------------------
 $CmakeExe = Resolve-Cmake
 if (-not $CmakeExe) {
-    Write-Host "cmake not found on PATH or at C:\Program Files\CMake\bin\cmake.exe."
-    Write-Host "Install it: winget install Kitware.CMake"
+    Write-SetupError "cmake not found on PATH or at C:\Program Files\CMake\bin\cmake.exe."
+    Write-SetupError "Install it: winget install Kitware.CMake"
     exit 2
 }
 
 $NinjaExe = Resolve-Ninja
 if (-not $NinjaExe) {
-    Write-Host "ninja not found on PATH."
-    Write-Host "Install it: winget install Ninja-build.Ninja"
+    Write-SetupError "ninja not found on PATH."
+    Write-SetupError "Install it: winget install Ninja-build.Ninja"
     exit 2
 }
 
@@ -106,11 +114,11 @@ if (-not $SkipBuild) {
     }
 
     if ($configureExit -ne 0) {
-        Write-Host "cmake configure failed for preset '$Preset' (exit $configureExit)."
+        Write-SetupError "cmake configure failed for preset '$Preset' (exit $configureExit)."
         exit 2
     }
     if ($buildExit -ne 0) {
-        Write-Host "cmake build failed for preset '$Preset' (exit $buildExit)."
+        Write-SetupError "cmake build failed for preset '$Preset' (exit $buildExit)."
         exit 2
     }
 }
@@ -120,11 +128,11 @@ $MaizeExe = Join-Path $BuildDir 'maize.exe'
 $MazmExe  = Join-Path $BuildDir 'mazm.exe'
 
 if (-not (Test-Path $MazmExe)) {
-    Write-Host "Expected built executable not found: $MazmExe"
+    Write-SetupError "Expected built executable not found: $MazmExe"
     exit 2
 }
 if (-not (Test-Path $MaizeExe)) {
-    Write-Host "Expected built executable not found: $MaizeExe"
+    Write-SetupError "Expected built executable not found: $MaizeExe"
     exit 2
 }
 
@@ -138,6 +146,11 @@ function Invoke-Test($test) {
         $asmPath = Join-Path $AsmDir $test.File
     } else {
         $srcPath = Join-Path $AsmDir $test.File
+        if (-not (Test-Path $srcPath)) {
+            Write-SetupError "Missing test source file: $srcPath"
+            Write-SetupError "Setup failure: declared test '$($test.Name)' has no corresponding .asm file."
+            exit 2
+        }
         $asmPath = Join-Path $TestRunDir $test.File
         Copy-Item -Path $srcPath -Destination $asmPath -Force
     }
