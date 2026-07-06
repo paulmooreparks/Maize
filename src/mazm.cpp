@@ -5,6 +5,8 @@
 #include <list>
 #include <algorithm>
 #include <utility>
+#include <stdexcept>
+#include <string>
 #include "maize.h"
 #include <fstream>
 
@@ -80,6 +82,25 @@ namespace {
     std::unordered_map<maize::u_hword, std::string> fixups {};
     std::map<maize::u_word, std::vector<u_byte>> memory_map {};
 
+    /* Diagnostic state (maize-13). current_file / current_line track the source
+       position of the byte stream; token_line remembers the line a token began on
+       so a diagnostic cites where the token started rather than where it ended. */
+    std::string current_file {};
+    int current_line {1};
+    int token_line {1};
+
+    struct src_loc {
+        std::string file {};
+        int line {0};
+    };
+
+    /* Where each label was first really declared, and first referenced. Used to
+       cite both sites in a redeclaration error and the reference site in an
+       undefined-label error. */
+    std::unordered_map<std::string, src_loc> label_decl_loc {};
+    std::unordered_map<std::string, src_loc> label_ref_loc {};
+    src_loc current_ref_loc {};
+
     template <typename T> struct expression;
 
     template <typename T> struct expression {
@@ -94,10 +115,15 @@ namespace {
 
         T key;
         expression_list value {};
+        std::string loc_file {};
+        int loc_line {0};
 
         expression<T>& add(T token) {
             value.push_back(expression<T>(token));
-            return value.back();
+            expression<T> &node = value.back();
+            node.loc_file = current_file;
+            node.loc_line = token_line;
+            return node;
         }
     };
 
@@ -227,20 +253,91 @@ namespace {
         { "BRK",    {cpu::instr::brk_opcode    , opcode_0param_tokenizer, no_operand_compiler}}
     };
 
+    /* A fatal assembler diagnostic (maize-13). Carries an already-formatted
+       "mazm: <file>:<line>: error: <msg>" string; main() catches it, prints to
+       stderr, and exits nonzero. */
+    struct asm_error : public std::runtime_error {
+        asm_error(std::string const &msg) : std::runtime_error(msg) { }
+    };
+
+    [[noreturn]] void fatal(std::string const &file, int line, std::string const &msg) {
+        std::ostringstream os;
+        os << "mazm: " << file << ":" << line << ": error: " << msg;
+        throw asm_error(os.str());
+    }
+
+    /* Read one byte without skipping whitespace (the project-wide idiom was
+       "fin >> std::noskipws >> c"). Centralized so newline counting happens in
+       exactly one place. Only '\n' advances the line counter, so both LF and
+       CRLF files count one line per line. */
+    std::istream& read_char(std::fstream &fin, char &c) {
+        fin >> std::noskipws >> c;
+
+        if (fin && c == '\n') {
+            ++current_line;
+        }
+
+        return fin;
+    }
+
+    /* Skip a leading UTF-8 BOM (EF BB BF) if present. Files without a BOM are
+       left byte-for-byte untouched. */
+    void skip_bom(std::fstream &fin) {
+        if (!fin.good()) {
+            return;
+        }
+
+        std::streampos start = fin.tellg();
+        char b[3] = {0, 0, 0};
+        fin.read(b, 3);
+        std::streamsize got = fin.gcount();
+
+        bool is_bom = got == 3
+            && static_cast<unsigned char>(b[0]) == 0xEF
+            && static_cast<unsigned char>(b[1]) == 0xBB
+            && static_cast<unsigned char>(b[2]) == 0xBF;
+
+        if (!is_bom) {
+            fin.clear();
+            fin.seekg(start);
+        }
+    }
+
+    /* Append a byte to the token under construction, remembering the line the
+       token started on the first time a character is added. */
+    void tok_push(char c) {
+        if (current_token.empty()) {
+            token_line = current_line;
+        }
+
+        current_token.push_back(c);
+    }
+
     void assemble(std::string file_path) {
         std::filesystem::path asm_path {std::filesystem::canonical(file_path)};
+
+        std::filesystem::path bin_path {asm_path};
+        std::filesystem::path ext {"bin"};
+        bin_path.replace_extension(ext);
+
+        /* Stale-binary rule (maize-13, AC9): remove any pre-existing output up
+           front, so a failed assembly never leaves a previously-good .bin sitting
+           at the target path looking like a fresh build for the now-broken .asm. */
+        std::error_code remove_ec;
+        std::filesystem::remove(bin_path, remove_ec);
+
         std::fstream fin(file_path, std::fstream::in);
+        current_file = file_path;
+        current_line = 1;
+        token_line = 1;
+        skip_bom(fin);
+
         token_tree tree {file_path};
         tokenize(fin, tree);
         compile(tree);
 
-        std::filesystem::path bin_path {asm_path};
-        std::filesystem::path ext {"bin"};
-
-        bin_path.replace_extension(ext);
-
         /* write here */
-        std::wcout << "Output to " << bin_path.native() << std::endl;
+        std::cout << "Output to " << bin_path.string() << std::endl;
         std::ofstream bin(bin_path, std::fstream::binary);
 
         maize::u_word last_block {cpu::mm.last_block()};
@@ -260,7 +357,7 @@ namespace {
         parser_state state {parser_state::whitespace};
         char c {};
 
-        while (fin >> std::noskipws >> c) {
+        while (read_char(fin, c)) {
             switch (state) {
             case parser_state::comment:
                 switch (c) {
@@ -307,7 +404,22 @@ namespace {
         }
 
         for (auto &pair : fixups) {
-            cpu::mm.write_hword(pair.first, labels[pair.second]);
+            auto &label = pair.second;
+            auto value = labels.contains(label)
+                ? labels[label]
+                : std::numeric_limits<u_hword>::max();
+
+            /* Undefined label (maize-13): a reference that was never declared
+               keeps the max() placeholder. Report it instead of writing the
+               sentinel into the binary. */
+            if (value == std::numeric_limits<u_hword>::max()) {
+                src_loc loc = label_ref_loc.contains(label)
+                    ? label_ref_loc[label]
+                    : src_loc {current_file, 0};
+                fatal(loc.file, loc.line, "undefined label '" + label + "'");
+            }
+
+            cpu::mm.write_hword(pair.first, value);
         }
     }
 
@@ -317,14 +429,14 @@ namespace {
         while (c >= 0) {
             switch (state) {
             case literal_state::start:
-                if (isspace(c)) {
+                if (isspace(static_cast<unsigned char>(c))) {
                     state = literal_state::start;
                 }
                 else if (c == ',' || c == '`') {
                     state = literal_state::value;
                 }
                 else {
-                    current_token.push_back(c);
+                    tok_push(c);
                     state = literal_state::value;
                 }
                 break;
@@ -337,13 +449,13 @@ namespace {
                     break;
                 }
 
-                if (isspace(c)) {
+                if (isspace(static_cast<unsigned char>(c))) {
                     tree.add(current_token);
                     current_token.clear();
                     return literal_state::end;
                 }
                 else {
-                    current_token.push_back(c);
+                    tok_push(c);
                     state = literal_state::value;
                 }
 
@@ -357,18 +469,18 @@ namespace {
                 break;
             }
 
-            fin >> std::noskipws >> c;
+            read_char(fin, c);
         }
 
         return literal_state::end;
     }
 
     parser_state process_char_stream(parser_state state, std::fstream &fin, token_tree &tree, char c) {
-        if (isspace(c)) {
+        if (isspace(static_cast<unsigned char>(c))) {
             return parser_state::whitespace;
         }
 
-        if (isalnum(c) || c == ',' || c == '`') {
+        if (isalnum(static_cast<unsigned char>(c)) || c == ',' || c == '`') {
             state = parser_state::keyword;
         }
         else {
@@ -388,14 +500,14 @@ namespace {
             }
         }
 
-        current_token.push_back(c);
+        tok_push(c);
         return state;
     }
 
     parser_state process_keyword(parser_state state, std::fstream &fin, token_tree &tree, char c) {
         /* TODO: Why am I processing this up here instead of in parse_keyword with the rest of the keywords?
         I didn't document this in the C# version, so I have no idea. */
-        if (isspace(c)) {
+        if (isspace(static_cast<unsigned char>(c))) {
             if (current_token == "INCLUDE") {
                 std::string keyword = current_token;
                 current_token.clear();
@@ -425,6 +537,12 @@ namespace {
         if (opcodes.contains(keyword)) {
             token_tree &sub_tree = tree.add(keyword);
             return opcodes[keyword].tokenizer(fin, sub_tree, c);
+        }
+
+        /* Unknown keyword/opcode (maize-13): previously silently dropped. */
+        if (!keyword.empty()) {
+            fatal(current_file, token_line,
+                "unknown keyword or opcode '" + keyword + "'");
         }
 
         return parser_state::whitespace;
@@ -465,7 +583,7 @@ namespace {
                 break;
             }
 
-        } while (fin >> std::noskipws >> c);
+        } while (read_char(fin, c));
 
         return state;
     }
@@ -493,23 +611,23 @@ namespace {
         label_state state {label_state::start};
 
         while (fin.peek() >= 0) {
-            fin >> std::noskipws >> c;
+            read_char(fin, c);
 
             switch (state) {
             case label_state::start:
-                if (isalpha(c) || c == '_' || c == '.') {
+                if (isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '.') {
                     state = label_state::name;
-                    current_token.push_back(c);
+                    tok_push(c);
                 }
 
                 break;
 
             case label_state::name:
-                if (isalnum(c) || c == '_' || c == '.') {
+                if (isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.') {
                     state = label_state::name;
-                    current_token.push_back(c);
+                    tok_push(c);
                 }
-                else if (isspace(c)) {
+                else if (isspace(static_cast<unsigned char>(c))) {
                     tree.add(current_token);
                     current_token.clear();
                     state = label_state::value;
@@ -532,11 +650,20 @@ namespace {
 
     parser_state string_tokenizer(std::fstream &fin, token_tree &tree, char c) {
         auto state = string_state::start;
+        int string_open_line {current_line};
 
         while (fin.peek() >= 0) {
-            fin >> std::noskipws >> c;
+            read_char(fin, c);
 
             if (c == '\r' || c == '\n') {
+                /* Unterminated string (maize-13): a newline arrived before the
+                   closing quote. */
+                if (state == string_state::read || state == string_state::escape) {
+                    fatal(current_file, string_open_line,
+                        "unterminated string literal starting at line "
+                        + std::to_string(string_open_line));
+                }
+
                 return parser_state::newline;
             }
 
@@ -547,14 +674,15 @@ namespace {
                 }
 
                 if (c == special_chars::quote) {
+                    string_open_line = current_line;
                     state = string_state::read;
                 }
 
                 break;
-            
+
             case string_state::read:
                 if (c == special_chars::escape) {
-                    current_token.push_back(c);
+                    tok_push(c);
                     state = string_state::escape;
                     break;
                 }
@@ -565,21 +693,28 @@ namespace {
                     return parser_state::whitespace;
                 }
 
-                current_token.push_back(c);
+                tok_push(c);
 
                 break;
-            
+
             case string_state::escape:
-                current_token.push_back(c);
+                tok_push(c);
                 state = string_state::read;
                 break;
-            
+
             case string_state::end:
                 break;
-            
+
             default:
                 break;
             }
+        }
+
+        /* Unterminated string (maize-13): EOF arrived before the closing quote. */
+        if (state == string_state::read || state == string_state::escape) {
+            fatal(current_file, string_open_line,
+                "unterminated string literal starting at line "
+                + std::to_string(string_open_line));
         }
 
         return parser_state::whitespace;
@@ -587,16 +722,16 @@ namespace {
 
     parser_state data_tokenizer(std::fstream& fin, token_tree &tree, char c) {
         while (fin.peek() >= 0) {
-            fin >> std::noskipws >> c;
+            read_char(fin, c);
 
             if (c == '.' || c == '`') {
                 continue;
             }
 
-            if (isalnum(c) || c == special_chars::bin || c == special_chars::dec || c == special_chars::hex) {
-                current_token.push_back(c);
+            if (isalnum(static_cast<unsigned char>(c)) || c == special_chars::bin || c == special_chars::dec || c == special_chars::hex) {
+                tok_push(c);
             }
-            else if ((isspace(c) || c == '\r' || c == '\n' || c == special_chars::comment_start) && !current_token.empty()) {
+            else if ((isspace(static_cast<unsigned char>(c)) || c == '\r' || c == '\n' || c == special_chars::comment_start) && !current_token.empty()) {
                 tree.add(current_token);
                 current_token.clear();
             }
@@ -614,6 +749,9 @@ namespace {
     }
 
     parser_state include_tokenizer(std::fstream& fin, token_tree &tree, char c) {
+        std::string include_from_file {current_file};
+        int include_from_line {current_line};
+
         token_tree string_tree {""};
         string_tokenizer(fin, string_tree, c);
         auto file_path = string_tree.value.begin()->key;
@@ -621,8 +759,34 @@ namespace {
         include_path.append(file_path);
 
         std::fstream finclude(include_path.string(), std::fstream::in);
+
+        /* Missing INCLUDE target (maize-13): an unopened stream would otherwise
+           make tokenize's read loop immediately false, silently assembling as if
+           the directive were absent. */
+        if (!finclude.is_open()) {
+            fatal(include_from_file, include_from_line,
+                "cannot open include file '" + include_path.string()
+                + "' (included from " + include_from_file + ":"
+                + std::to_string(include_from_line) + ")");
+        }
+
+        /* Line tracking spans INCLUDE'd files independently: the included file
+           reports its own name and its own 1-based line numbers. */
+        std::string saved_file {current_file};
+        int saved_line {current_line};
+        int saved_token_line {token_line};
+
+        current_file = include_path.string();
+        current_line = 1;
+        token_line = 1;
+        skip_bom(finclude);
+
         tokenize(finclude, tree);
         finclude.close();
+
+        current_file = saved_file;
+        current_line = saved_line;
+        token_line = saved_token_line;
 
         return parser_state::whitespace;
     }
@@ -633,13 +797,14 @@ namespace {
 
     parser_state opcode_1param_tokenizer(std::fstream &fin, token_tree &tree, char c) {
         opcode_state state {opcode_state::start};
+        int instr_line {current_line};
 
         while (fin.peek() >= 0) {
-            fin >> std::noskipws >> c;
+            read_char(fin, c);
 
             switch (state) {
             case opcode_state::start:
-                if (isspace(c)) {
+                if (isspace(static_cast<unsigned char>(c))) {
                     continue;
                 }
                 else if (c == ',' || c == '`') {
@@ -647,13 +812,13 @@ namespace {
                 }
                 else {
                     state = opcode_state::operand1;
-                    current_token.push_back(c);
+                    tok_push(c);
                 }
 
                 break;
 
             case opcode_state::operand1:
-                if (isspace(c)) {
+                if (isspace(static_cast<unsigned char>(c))) {
                     tree.add(current_token);
                     current_token.clear();
                     return parser_state::whitespace;
@@ -662,11 +827,24 @@ namespace {
                     break;
                 }
                 else {
-                    current_token.push_back(c);
+                    tok_push(c);
                 }
 
                 break;
             }
+        }
+
+        /* EOF reached (maize-13). Flush a trailing operand not terminated by
+           whitespace, then reject a truncated instruction. */
+        if (!current_token.empty()) {
+            tree.add(current_token);
+            current_token.clear();
+        }
+
+        if (tree.value.size() < 1) {
+            fatal(current_file, instr_line,
+                "unexpected end of file: '" + tree.key + "' expects 1 operand(s), got "
+                + std::to_string(tree.value.size()));
         }
 
         return parser_state::whitespace;
@@ -674,13 +852,14 @@ namespace {
 
     parser_state opcode_2param_tokenizer(std::fstream &fin, token_tree &tree, char c) {
         opcode_state state {opcode_state::start};
+        int instr_line {current_line};
 
         while (fin.peek() >= 0) {
-            fin >> std::noskipws >> c;
+            read_char(fin, c);
 
             switch (state) {
             case opcode_state::start:
-                if (isspace(c)) {
+                if (isspace(static_cast<unsigned char>(c))) {
                     continue;
                 }
                 else if (c == ',' || c == '`') {
@@ -688,13 +867,13 @@ namespace {
                 }
                 else {
                     state = opcode_state::operand1;
-                    current_token.push_back(c);
+                    tok_push(c);
                 }
 
                 break;
 
             case opcode_state::operand1:
-                if (isspace(c)) {
+                if (isspace(static_cast<unsigned char>(c))) {
                     tree.add(current_token);
                     current_token.clear();
                     state = opcode_state::operand2;
@@ -703,13 +882,13 @@ namespace {
                     break;
                 }
                 else {
-                    current_token.push_back(c);
+                    tok_push(c);
                 }
 
                 break;
 
             case opcode_state::operand2:
-                if (isspace(c)) {
+                if (isspace(static_cast<unsigned char>(c))) {
                     tree.add(current_token);
                     current_token.clear();
                     return parser_state::whitespace;
@@ -718,11 +897,24 @@ namespace {
                     break;
                 }
                 else {
-                    current_token.push_back(c);
+                    tok_push(c);
                 }
 
                 break;
             }
+        }
+
+        /* EOF reached (maize-13). Flush a trailing operand not terminated by
+           whitespace, then reject a truncated instruction. */
+        if (!current_token.empty()) {
+            tree.add(current_token);
+            current_token.clear();
+        }
+
+        if (tree.value.size() < 2) {
+            fatal(current_file, instr_line,
+                "unexpected end of file: '" + tree.key + "' expects 2 operand(s), got "
+                + std::to_string(tree.value.size()));
         }
 
         return parser_state::whitespace;
@@ -730,13 +922,14 @@ namespace {
 
     parser_state opcode_3param_tokenizer(std::fstream &fin, token_tree &tree, char c) {
         opcode_state state {opcode_state::start};
+        int instr_line {current_line};
 
         while (fin.peek() >= 0) {
-            fin >> std::noskipws >> c;
+            read_char(fin, c);
 
             switch (state) {
                 case opcode_state::start:
-                    if (isspace(c)) {
+                    if (isspace(static_cast<unsigned char>(c))) {
                         continue;
                     }
                     else if (c == ',' || c == '`') {
@@ -744,13 +937,13 @@ namespace {
                     }
                     else {
                         state = opcode_state::operand1;
-                        current_token.push_back(c);
+                        tok_push(c);
                     }
 
                     break;
 
                 case opcode_state::operand1:
-                    if (isspace(c)) {
+                    if (isspace(static_cast<unsigned char>(c))) {
                         tree.add(current_token);
                         current_token.clear();
                         state = opcode_state::operand2;
@@ -759,13 +952,13 @@ namespace {
                         break;
                     }
                     else {
-                        current_token.push_back(c);
+                        tok_push(c);
                     }
 
                     break;
 
                 case opcode_state::operand2:
-                    if (isspace(c)) {
+                    if (isspace(static_cast<unsigned char>(c))) {
                         tree.add(current_token);
                         current_token.clear();
                         state = opcode_state::operand3;
@@ -774,13 +967,13 @@ namespace {
                         break;
                     }
                     else {
-                        current_token.push_back(c);
+                        tok_push(c);
                     }
 
                     break;
 
                 case opcode_state::operand3:
-                    if (isspace(c)) {
+                    if (isspace(static_cast<unsigned char>(c))) {
                         tree.add(current_token);
                         current_token.clear();
                         return parser_state::whitespace;
@@ -789,11 +982,24 @@ namespace {
                         break;
                     }
                     else {
-                        current_token.push_back(c);
+                        tok_push(c);
                     }
 
                     break;
             }
+        }
+
+        /* EOF reached (maize-13). Flush a trailing operand not terminated by
+           whitespace, then reject a truncated instruction. */
+        if (!current_token.empty()) {
+            tree.add(current_token);
+            current_token.clear();
+        }
+
+        if (tree.value.size() < 3) {
+            fatal(current_file, instr_line,
+                "unexpected end of file: '" + tree.key + "' expects 3 operand(s), got "
+                + std::to_string(tree.value.size()));
         }
 
         return parser_state::whitespace;
@@ -969,12 +1175,25 @@ namespace {
 
     void label_compiler(token_tree &tree, std::string &opcode_str) {
         expression<std::string>::expression_list::iterator it = tree.value.begin();
-        auto label = it->key;
+        auto &label_node = *it;
+        auto label = label_node.key;
         ++it;
         auto value = it->key;
 
-         auto hvalue = convert_label_string(value);
-         labels[label] = hvalue;
+        /* Duplicate label declaration (maize-13): a second real declaration used
+           to silently overwrite the resolved address. Reject it, citing both
+           sites. A max() entry is only a forward-reference placeholder, which is
+           a legitimate resolution, not a redeclaration. */
+        if (labels.contains(label) && labels[label] != std::numeric_limits<u_hword>::max()) {
+            src_loc first = label_decl_loc[label];
+            fatal(label_node.loc_file, label_node.loc_line,
+                "label '" + label + "' redeclared (first declared at "
+                + first.file + ":" + std::to_string(first.line) + ")");
+        }
+
+        auto hvalue = convert_label_string(value);
+        labels[label] = hvalue;
+        label_decl_loc[label] = { label_node.loc_file, label_node.loc_line };
     }
 
     void address_compiler(token_tree &tree, std::string &opcode_str) {
@@ -1081,21 +1300,30 @@ namespace {
     }
 
     void code_compiler(token_tree &tree, std::string &opcode_str) {
-        auto label {tree.value.begin()->key};
+        auto &label_node = *tree.value.begin();
+        auto label {label_node.key};
         auto address = convert_label_string(label);
 
         if (address == std::numeric_limits<u_hword>::max()) {
-            if (labels.contains(label)) {
-                address = labels[label];
-            }
-            else {
-                address = std::numeric_limits<u_hword>::max();
+            /* Duplicate label declaration (maize-13): the old code read the
+               stale, already-resolved address out of labels[label] and rewound
+               current_address to it, silently corrupting the output. A real
+               (non-max) entry here means this label was already declared, so this
+               is a redeclaration; reject it citing both sites. A max() entry is a
+               forward-reference placeholder, which we correctly resolve below. */
+            bool already_declared = labels.contains(label)
+                && labels[label] != std::numeric_limits<u_hword>::max();
+
+            if (already_declared) {
+                src_loc first = label_decl_loc[label];
+                fatal(label_node.loc_file, label_node.loc_line,
+                    "label '" + label + "' redeclared (first declared at "
+                    + first.file + ":" + std::to_string(first.line) + ")");
             }
 
-            if (address == std::numeric_limits<u_hword>::max()) {
-                address = current_address;
-                labels[label] = address;
-            }
+            address = current_address;
+            labels[label] = address;
+            label_decl_loc[label] = { label_node.loc_file, label_node.loc_line };
         }
 
         current_address = address;
@@ -1249,12 +1477,20 @@ namespace {
     u_byte add_label(std::string &label, cpu::reg_value &value) {
         value.h0 = std::numeric_limits<u_hword>::max();
         labels[label] = value.h0;
+
+        /* Remember where a label was first referenced so an undefined-label
+           error (maize-13) can cite the reference site. */
+        if (!label_ref_loc.contains(label)) {
+            label_ref_loc[label] = current_ref_loc;
+        }
+
         return cpu::opflag_imm_size_32b;
     }
 
     void regimm_reg_compiler(token_tree &tree, std::string &opcode_str) {
         u_byte opcode {opcodes[opcode_str].opcode};
         auto it {tree.value.begin()};
+        current_ref_loc = { it->loc_file, it->loc_line };
         auto operand1 {it->key};
         ++it;
         auto operand2 {it->key};
@@ -1321,6 +1557,7 @@ namespace {
     void regimm_compiler(token_tree &tree, std::string &opcode_str) {
         u_byte opcode {opcodes[opcode_str].opcode};
         auto it {tree.value.begin()};
+        current_ref_loc = { it->loc_file, it->loc_line };
         auto operand1 {it->key};
         u_byte operand1_byte {0};
         bool operand_is_immediate {false};
@@ -1382,6 +1619,7 @@ namespace {
     void reg_compiler(token_tree &tree, std::string &opcode_str) {
         u_byte opcode {opcodes[opcode_str].opcode};
         auto it {tree.value.begin()};
+        current_ref_loc = { it->loc_file, it->loc_line };
         auto operand1 {it->key};
         u_byte operand1_byte {compile_register(operand1)};
         current_address += cpu::mm.write_byte(current_address, opcode);
@@ -1391,6 +1629,7 @@ namespace {
     void regimm_imm_compiler(token_tree &tree, std::string &opcode_str) {
         u_byte opcode {opcodes[opcode_str].opcode};
         auto it {tree.value.begin()};
+        current_ref_loc = { it->loc_file, it->loc_line };
         auto operand1 {it->key};
         ++it;
         auto operand2 {it->key};
@@ -1478,6 +1717,7 @@ namespace {
     void regimm_regaddr_compiler(token_tree &tree, std::string &opcode_str) {
         u_byte opcode {opcodes[opcode_str].opcode};
         auto it {tree.value.begin()};
+        current_ref_loc = { it->loc_file, it->loc_line };
         auto operand1 {it->key};
         ++it;
         auto operand2 {it->key};
@@ -1540,6 +1780,7 @@ namespace {
     void regimm_regreg_compiler(token_tree &tree, std::string &opcode_str) {
         u_byte opcode {opcodes[opcode_str].opcode};
         auto it {tree.value.begin()};
+        current_ref_loc = { it->loc_file, it->loc_line };
         auto operand1 {it->key};
         ++it;
         auto operand2 {it->key};
@@ -1612,14 +1853,30 @@ namespace {
 int main(int argc, char* argv[]) {
 
     if (argc > 1) {
-        std::string input_file {argv[1]};
-        auto input_path = std::filesystem::path(input_file);
-        auto canonical_path = std::filesystem::canonical(input_path).make_preferred();
-        auto parent_path = canonical_path.parent_path().make_preferred();
-        base_path = parent_path.string();
+        try {
+            std::string input_file {argv[1]};
+            auto input_path = std::filesystem::path(input_file);
+            auto canonical_path = std::filesystem::canonical(input_path).make_preferred();
+            auto parent_path = canonical_path.parent_path().make_preferred();
+            base_path = parent_path.string();
 
-        std::wcout << "Assembling from " << canonical_path.native() << std::endl;
+            std::cout << "Assembling from " << canonical_path.string() << std::endl;
 
-        assemble(canonical_path.string());
+            assemble(canonical_path.string());
+        }
+        catch (const asm_error &e) {
+            /* Already formatted as "mazm: <file>:<line>: error: <msg>". */
+            std::cerr << e.what() << std::endl;
+            return 1;
+        }
+        catch (const std::exception &e) {
+            /* Anything else (e.g. a missing input file makes std::filesystem
+               throw): still exit nonzero with a mazm-prefixed message rather than
+               an unhandled-exception abort. */
+            std::cerr << "mazm: error: " << e.what() << std::endl;
+            return 1;
+        }
     }
+
+    return 0;
 }

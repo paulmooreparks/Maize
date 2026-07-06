@@ -1,0 +1,34 @@
+; **********************************************************************************
+; Duplicate-label regression test for card maize-13.
+;
+; This mirrors the historical combined SHL/SHR shape that was split into
+; test_flags_shl.asm and test_flags_shr.asm specifically to sidestep the mazm
+; back-patch defect: two independent blocks that each declared the same label
+; name (fail:, pass_string:, fail_string:). Before maize-13, a second real
+; declaration of an already-resolved label silently rewound the emit address and
+; produced a corrupt binary with exit 0.
+;
+; Expected behavior after maize-13: mazm rejects this file with a nonzero exit and
+; a diagnostic of the form
+;     mazm: <file>:<line>: error: label 'done' redeclared (first declared at <file>:<line>)
+; citing both declaration sites, and writes no .bin.
+;
+; This file is intentionally NOT a passing program; it exists to assert the
+; assembler diagnostic. There is no accompanying committed .bin.
+; **********************************************************************************
+
+$0000`0000:
+    CP $01 R0
+    JMP done
+
+; ---- first declaration of 'done' ----
+done:
+    CP $00 R1
+    JMP second
+
+; ---- second, conflicting declaration of the same label name 'done' ----
+second:
+    CP $02 R2
+
+done:
+    HALT
