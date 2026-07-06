@@ -204,9 +204,13 @@ namespace maize {
 
         u_word read(u_word fd, void* buf, u_hword count) {
             if (fd == 0) {
-                DWORD chars_read {0};
-                ReadConsole(hStdin, buf, count, &chars_read, nullptr);
-                return chars_read;
+                DWORD bytes_read {0};
+
+                if (!ReadFile(hStdin, buf, count, &bytes_read, nullptr)) {
+                    return (u_word)-1;
+                }
+
+                return bytes_read;
             }
 
             if (fd == 1 || fd == 2) {
@@ -228,9 +232,13 @@ namespace maize {
                     hStdHandle = hStderr;
                 }
 
-                DWORD charsWritten {0};
-                WriteConsole(hStdHandle, buf, count, &charsWritten, nullptr);
-                return charsWritten;
+                DWORD bytes_written {0};
+
+                if (!WriteFile(hStdHandle, buf, count, &bytes_written, nullptr)) {
+                    return (u_word)-1;
+                }
+
+                return bytes_written;
             }
 
             return static_cast<u_word>(-1);
