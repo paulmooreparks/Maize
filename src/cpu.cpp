@@ -907,7 +907,7 @@ namespace maize {
                 case instr::mul_opcode: {
                     switch (op_size) {
                         case 1: {
-                            u_byte result = alu.op2_reg.b0 - alu.op1_reg.b0;
+                            u_byte result = alu.op2_reg.b0 * alu.op1_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
                             overflow_flag = is_mul_overflow(alu.op1_reg.b0, alu.op2_reg.b0) || is_mul_underflow(alu.op1_reg.b0, alu.op2_reg.b0);
@@ -916,7 +916,7 @@ namespace maize {
                         }
 
                         case 2: {
-                            u_qword result = alu.op2_reg.q0 - alu.op1_reg.q0;
+                            u_qword result = alu.op2_reg.q0 * alu.op1_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
                             overflow_flag = is_mul_overflow(alu.op1_reg.q0, alu.op2_reg.q0) || is_mul_underflow(alu.op1_reg.q0, alu.op2_reg.q0);
@@ -925,7 +925,7 @@ namespace maize {
                         }
 
                         case 4: {
-                            u_hword result = alu.op2_reg.h0 - alu.op1_reg.h0;
+                            u_hword result = alu.op2_reg.h0 * alu.op1_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
                             overflow_flag = is_mul_overflow(alu.op1_reg.h0, alu.op2_reg.h0) || is_mul_underflow(alu.op1_reg.h0, alu.op2_reg.h0);
@@ -934,7 +934,7 @@ namespace maize {
                         }
 
                         case 8: {
-                            u_word result = alu.op2_reg.w0 - alu.op1_reg.w0;
+                            u_word result = alu.op2_reg.w0 * alu.op1_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
                             overflow_flag = is_mul_overflow(alu.op1_reg.h0, alu.op2_reg.h0) || is_mul_underflow(alu.op1_reg.h0, alu.op2_reg.h0);
