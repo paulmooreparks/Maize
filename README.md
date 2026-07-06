@@ -112,6 +112,17 @@ Uses the system Clang from the Xcode Command Line Tools (xcode-select --install)
 
 Should print "Hello, world!". Every preset's build directory lives under build/<preset-name>/.
 
+### Running the test suite
+
+    scripts\run-tests.ps1        Windows
+    scripts/run-tests.sh         Linux
+
+Each script builds both binaries, then assembles and runs every in-scope test
+under asm/, comparing captured output against the expected result for each.
+Prints a per-test PASS/FAIL report plus a summary line. Exits 0 if all tests
+pass, 1 if any test fails, 2 if the environment isn't set up correctly
+(missing CMake or Ninja, or a build failure).
+
 ### Editor setup (VS Code)
 
 Open the repo in VS Code, install the recommended extensions when prompted (CMake Tools
