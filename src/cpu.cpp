@@ -943,7 +943,7 @@ namespace maize {
                             u_byte result = alu.op2_reg.b0 * alu.op1_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            bool ovf = is_mul_overflow(alu.op1_reg.b0, alu.op2_reg.b0) || is_mul_underflow(alu.op1_reg.b0, alu.op2_reg.b0);
+                            bool ovf = is_mul_overflow(static_cast<u_byte>(alu.op1_reg.b0), static_cast<u_byte>(alu.op2_reg.b0)) || is_mul_underflow(static_cast<u_byte>(alu.op1_reg.b0), static_cast<u_byte>(alu.op2_reg.b0));
                             overflow_flag = ovf;
                             carryout_flag = ovf;
                             alu.op2_reg.w0 = result;
@@ -954,7 +954,7 @@ namespace maize {
                             u_qword result = alu.op2_reg.q0 * alu.op1_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            bool ovf = is_mul_overflow(alu.op1_reg.q0, alu.op2_reg.q0) || is_mul_underflow(alu.op1_reg.q0, alu.op2_reg.q0);
+                            bool ovf = is_mul_overflow(static_cast<u_qword>(alu.op1_reg.q0), static_cast<u_qword>(alu.op2_reg.q0)) || is_mul_underflow(static_cast<u_qword>(alu.op1_reg.q0), static_cast<u_qword>(alu.op2_reg.q0));
                             overflow_flag = ovf;
                             carryout_flag = ovf;
                             alu.op2_reg.w0 = result;
@@ -965,7 +965,7 @@ namespace maize {
                             u_hword result = alu.op2_reg.h0 * alu.op1_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            bool ovf = is_mul_overflow(alu.op1_reg.h0, alu.op2_reg.h0) || is_mul_underflow(alu.op1_reg.h0, alu.op2_reg.h0);
+                            bool ovf = is_mul_overflow(static_cast<u_hword>(alu.op1_reg.h0), static_cast<u_hword>(alu.op2_reg.h0)) || is_mul_underflow(static_cast<u_hword>(alu.op1_reg.h0), static_cast<u_hword>(alu.op2_reg.h0));
                             overflow_flag = ovf;
                             carryout_flag = ovf;
                             alu.op2_reg.w0 = result;

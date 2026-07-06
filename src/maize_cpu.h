@@ -86,75 +86,14 @@ namespace maize {
 		class bus;
 		class device;
 
-		namespace {
-			struct reg_byte {
-				u_byte b0;
-				u_byte b1;
-				u_byte b2;
-				u_byte b3;
-				u_byte b4;
-				u_byte b5;
-				u_byte b6;
-				u_byte b7;
-			};
-
-			struct reg_qword {
-				u_qword q0;
-				u_qword q1;
-				u_qword q2;
-				u_qword q3;
-			};
-
-			struct reg_hword {
-				u_hword h0;
-				u_hword h1;
-			};
-
-			struct reg_word {
-				u_word w0;
-			};
-
-			template <u_word flag_bit> class flag {
-			public:
-				flag(reg& reg_init, bool value = false) : flag_reg {reg_init} {
-					set(value);
-				}
-
-				bool get() {
-					return (flag_reg.w0 & flag_bit);
-				}
-
-				void set(bool value) {
-					flag_reg.w0 = ((flag_reg.w0 & ~flag_bit) | (value ? flag_bit : 0));
-				}
-
-				flag& operator=(const flag& that) {
-					if (this == that) {
-						return *this;
-					}
-
-					set(that.value);
-					return *this;
-				}
-
-				flag& operator=(bool value) {
-					set(value);
-					return *this;
-				}
-
-				bool operator==(bool value) {
-					return get() == value;
-				}
-
-				operator bool() {
-					return get();
-				}
-
-			private:
-				reg& flag_reg;
-			};
-
-		}
+		/* The reg_byte/reg_qword/reg_hword/reg_word union-alternative structs that
+		   used to live here are gone (maize-30): reg_value now holds a single
+		   non-union backing word and derives every sub-register view by explicit
+		   shift/mask arithmetic, so there is no inactive-union-member type punning
+		   for the optimizer to miscompile. The flag<> template that shared this
+		   block has moved to after class reg's complete definition (below), so its
+		   flag_reg.w0 access resolves against a complete type under two-phase
+		   lookup on every compiler (clang included). */
 
 		enum class reg_enum {
 			r0 = 0x00,
@@ -212,9 +151,77 @@ namespace maize {
 			w0 = 0b1111111111111111111111111111111111111111111111111111111111111111,
 		};
 
+		/* Compile-time-positioned sub-register view over a single backing word
+		   (maize-30). Reproduces the old union's bit-position-to-subregister
+		   mapping (README: $FEDCBA9876543210 => b7=$FE .. b0=$10) via explicit
+		   shift/mask arithmetic, so it is host-endianness-independent and free of
+		   inactive-union-member type punning. T is the primitive value type
+		   (u_hword/u_qword/u_byte); Shift is the low-bit position of the field. */
+		template <typename T, unsigned Shift>
+		class subword_ref {
+		public:
+			explicit subword_ref(u_word& backing) : storage_ {backing} {}
+
+			operator T() const { return static_cast<T>(storage_ >> Shift); }
+
+			subword_ref& operator=(T value) {
+				// ~u_word{0} >> (64 - bits) is safe for bits==64 (shift-by-0);
+				// (1 << bits) - 1 would be UB for the 64-bit case (shift-by-64).
+				constexpr u_word mask = (~u_word {0} >> (64 - sizeof(T) * 8)) << Shift;
+				storage_ = (storage_ & ~mask) | ((static_cast<u_word>(value) << Shift) & mask);
+				return *this;
+			}
+
+			subword_ref& operator=(const subword_ref& other) { return *this = static_cast<T>(other); }
+
+			subword_ref& operator++() { return *this = static_cast<T>(static_cast<T>(*this) + 1); }
+			T operator++(int) { T old = *this; ++*this; return old; }
+			subword_ref& operator--() { return *this = static_cast<T>(static_cast<T>(*this) - 1); }
+			T operator--(int) { T old = *this; --*this; return old; }
+			subword_ref& operator+=(T v) { return *this = static_cast<T>(static_cast<T>(*this) + v); }
+			subword_ref& operator-=(T v) { return *this = static_cast<T>(static_cast<T>(*this) - v); }
+
+		private:
+			u_word& storage_;
+		};
+
+		/* Runtime-indexed byte view over the backing word, returned by value from
+		   reg_value::operator[] (maize-30). No call site takes its address or binds
+		   it to a u_byte&, so a value proxy with operator=/operator u_byte()
+		   preserves every existing operator[] use. */
+		class byte_ref {
+		public:
+			byte_ref(u_word& backing, size_t index) : storage_ {backing}, index_ {index} {}
+
+			operator u_byte() const { return static_cast<u_byte>(storage_ >> (index_ * 8)); }
+
+			byte_ref& operator=(u_byte value) {
+				const u_word mask = u_word {0xFF} << (index_ * 8);
+				storage_ = (storage_ & ~mask) | ((static_cast<u_word>(value) << (index_ * 8)) & mask);
+				return *this;
+			}
+
+			byte_ref& operator=(const byte_ref& other) { return *this = static_cast<u_byte>(other); }
+
+		private:
+			u_word& storage_;
+			size_t index_;
+		};
+
 		struct reg_value {
-			reg_value() {};
-			reg_value(u_word init) : w {init} {}
+			reg_value() {}
+			reg_value(u_word init) : storage_ {init} {}
+
+			/* Explicit copy operations that name ONLY storage_ (maize-30). Because
+			   w0/h0/h1/q0..q3/b0..b7 are not named here, each falls back to its own
+			   default member initializer ({storage_}), which per [class.base.init]
+			   binds to THIS object's storage_, not the source's, closing the
+			   reference-aliasing footgun a compiler-generated copy would open. */
+			reg_value(const reg_value& other) : storage_ {other.storage_} {}
+			reg_value& operator=(const reg_value& other) {
+				storage_ = other.storage_;
+				return *this;
+			}
 
 			operator u_word() { return w0; }
 
@@ -234,56 +241,49 @@ namespace maize {
 				return w0 = value;
 			}
 
-			u_byte& operator[](size_t index) {
-				return byte_array[index];
+			byte_ref operator[](size_t index) {
+				return byte_ref {storage_, index};
 			}
 
-			u_byte const& operator[](size_t index) const {
-				return byte_array[index];
+			u_byte operator[](size_t index) const {
+				return static_cast<u_byte>(storage_ >> (index * 8));
 			}
 
 			u_byte byte_index(size_t index) const {
 				// TODO: range error handling
-				return byte_array[index];
+				return static_cast<u_byte>(storage_ >> (index * 8));
 			}
 
 			u_qword qword_index(size_t index) const {
 				// TODO: range error handling
-				return qword_array[index];
+				return static_cast<u_qword>(storage_ >> (index * 16));
 			}
 
 			u_hword hword_index(size_t index) const {
 				// TODO: range error handling
-				return hword_array[index];
+				return static_cast<u_hword>(storage_ >> (index * 32));
 			}
 
-			u_word& w0 {w.w0};
-			u_hword& h0 {h.h0};
-			u_hword& h1 {h.h1};
-			u_qword& q0 {q.q0};
-			u_qword& q1 {q.q1};
-			u_qword& q2 {q.q2};
-			u_qword& q3 {q.q3};
-			u_byte& b0 {b.b0};
-			u_byte& b1 {b.b1};
-			u_byte& b2 {b.b2};
-			u_byte& b3 {b.b3};
-			u_byte& b4 {b.b4};
-			u_byte& b5 {b.b5};
-			u_byte& b6 {b.b6};
-			u_byte& b7 {b.b7};
+			/* storage_ MUST be the first data member: declaration order governs
+			   initialization order, so the single real object must exist before any
+			   reference/proxy member's default member initializer binds to it. */
+			u_word storage_ {0};
 
-		private:
-			union {
-				reg_word w {0};
-				reg_hword h;
-				reg_qword q;
-				reg_byte b;
-				u_hword hword_array[2];
-				u_qword qword_array[4];
-				u_byte byte_array[8];
-			};
-
+			u_word& w0 {storage_};
+			subword_ref<u_hword,  0> h0 {storage_};
+			subword_ref<u_hword, 32> h1 {storage_};
+			subword_ref<u_qword,  0> q0 {storage_};
+			subword_ref<u_qword, 16> q1 {storage_};
+			subword_ref<u_qword, 32> q2 {storage_};
+			subword_ref<u_qword, 48> q3 {storage_};
+			subword_ref<u_byte,   0> b0 {storage_};
+			subword_ref<u_byte,   8> b1 {storage_};
+			subword_ref<u_byte,  16> b2 {storage_};
+			subword_ref<u_byte,  24> b3 {storage_};
+			subword_ref<u_byte,  32> b4 {storage_};
+			subword_ref<u_byte,  40> b5 {storage_};
+			subword_ref<u_byte,  48> b6 {storage_};
+			subword_ref<u_byte,  56> b7 {storage_};
 		};
 
 		class bus : public reg_value {
@@ -321,6 +321,52 @@ namespace maize {
 			void decrement(u_byte value, subreg_enum subreg = subreg_enum::w0);
 			// u_word privilege_flags {0};
 			// u_word privilege_mask {0};
+		};
+
+		/* flag<> lives here, AFTER class reg is a complete type (maize-30), so
+		   flag_reg.w0 resolves against a complete type at template-definition parse
+		   time under two-phase lookup on every compiler (clang no longer errors).
+		   Latent bugs fixed while relocating: operator= read a nonexistent
+		   that.value (now that.get()), compared this==that (flag* vs const flag&;
+		   now this!=&that), and get()/operator bool() are const-qualified so they
+		   are callable on the const reference operator= receives. */
+		template <u_word flag_bit> class flag {
+		public:
+			flag(reg& reg_init, bool value = false) : flag_reg {reg_init} {
+				set(value);
+			}
+
+			bool get() const {
+				return (flag_reg.w0 & flag_bit);
+			}
+
+			void set(bool value) {
+				flag_reg.w0 = ((flag_reg.w0 & ~flag_bit) | (value ? flag_bit : 0));
+			}
+
+			flag& operator=(const flag& that) {
+				if (this != &that) {
+					set(that.get());
+				}
+
+				return *this;
+			}
+
+			flag& operator=(bool value) {
+				set(value);
+				return *this;
+			}
+
+			bool operator==(bool value) {
+				return get() == value;
+			}
+
+			operator bool() const {
+				return get();
+			}
+
+		private:
+			reg& flag_reg;
 		};
 
 		class device : public reg {
