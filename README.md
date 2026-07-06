@@ -122,9 +122,10 @@ interface CMake Tools uses.
 
 ### A note on build type
 
-All presets currently build Debug. Release and RelWithDebInfo optimized builds are
-withheld until maize-30 (a release-only miscompile in the register union design) is
-fixed; both enable optimization levels that can trigger the same undefined behavior.
+All presets currently build Debug. The register-storage undefined behavior that once
+made optimized builds unsafe has been fixed, so Release and RelWithDebInfo builds are
+now sound; optimized preset variants are a small follow-up. Debug remains the default
+for now.
 
 ## How To Use Maize
 
