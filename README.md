@@ -311,7 +311,51 @@ There are six special-purpose registers.
 
 ### Flags
 
-(more coming on this)
+`RF.H0` (aliased as `FL`) holds the arithmetic/logic status flags. Bits are assigned as follows:
+
+    Bit  Name  Symbol  Meaning
+    0    C     Carry   Unsigned carry-out (ADD/INC) or borrow (SUB/CMP/CMPIND/DEC). For shifts,
+                       the last bit shifted out. Set directly by SETCRY, cleared by CLRCRY.
+    1    N     Neg     Negative: the sign bit of the result.
+    2    V     Ovfl    Signed overflow: the signed result does not fit the operand width.
+    3    P     Par     Parity. Reserved; not currently computed by any instruction.
+    4    Z     Zero    Zero: the result is zero.
+    5    -     -       Reserved (an unused sign-flag bit is declared but never read or written).
+    6    -     -       Reserved.
+
+C (unsigned carry/borrow) and V (signed overflow) are distinct flags. C uses the x86 borrow
+convention: after a SUB or CMP, C is set when the destination was unsigned-less-than the source
+(a borrow occurred), which is what makes JB ("below") and JA ("above") the correct unsigned
+comparisons directly off a CMP. V uses the standard signed-overflow test and drives the signed
+comparisons JLT ("less than") and JGT ("greater than"). See the conditional-branch opcode table
+below (JZ/JNZ/JLT/JGT/JB/JA) for the exact branch conditions.
+
+`RF.H1` holds the privilege, interrupt-enabled, interrupt-set, and running flags, which may only
+be set in privileged mode and are unaffected by the arithmetic/logic instructions.
+
+#### Per-instruction flag effects
+
+    Instruction              C                       N        V                       Z
+    ADD, INC                 unsigned carry-out      result   signed overflow         result == 0
+    SUB, CMP, CMPIND, DEC    unsigned borrow         result   signed overflow         result == 0
+    MUL                      = V (mirrors overflow)  result   signed overflow         result == 0
+    DIV, MOD                 0 (cleared)             result   0 (cleared)             result == 0
+    AND, OR, XOR, NAND,      0 (cleared)             result   0 (cleared)             result == 0
+      NOR, NOT, TEST, TESTIND
+    SHL, SHR                 last bit shifted out    result   see below               result == 0
+    SETCRY                   1                       -        -                       -
+    CLRCRY                   0                       -        -                       -
+
+Notes:
+
+- MUL's carry currently mirrors its overflow flag; a distinct "high half nonzero" carry test is
+  deferred until the wide-multiply (high-half product) instruction lands.
+- Shift-count edge cases (SHL/SHR): a count of 0 leaves all flags unaffected; a count from 1 to the
+  operand width shifts normally, with C set to the last bit shifted out and V defined only for a
+  count of 1 (SHL: the sign bit changed; SHR: the prior sign bit); a count greater than the operand
+  width yields a zero result with C, N, V all cleared and Z set. Out-of-range counts never invoke a
+  C++ undefined shift.
+- Flags-on-load (whether LD/CP affect flags) is specified separately and is not part of this table.
 
 ## Execution
 
@@ -479,10 +523,10 @@ bit 7 is interpreted as follows:
     %1001`1010  $9A   JB        regAddr         If Carry flag is set, jump to address pointed to by source register and continue execution
     %1101`1010  $DA   JB        immAddr         If Carry flag is set, jump to address pointed to by immediate value and continue execution
     
-    %0001`1011  $1B   JGT       regVal          If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to address in source register and continue execution
-    %0101`1011  $5B   JGT       immVal          If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to immediate address and continue execution
-    %1001`1011  $9B   JGT       regAddr         If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to address pointed to by source register and continue execution
-    %1101`1011  $DB   JGT       immAddr         If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to address pointed to by immediate value and continue execution
+    %0001`1011  $1B   JGT       regVal          If Zero flag is clear and Negative flag is equal to Overflow flag, jump to address in source register and continue execution
+    %0101`1011  $5B   JGT       immVal          If Zero flag is clear and Negative flag is equal to Overflow flag, jump to immediate address and continue execution
+    %1001`1011  $9B   JGT       regAddr         If Zero flag is clear and Negative flag is equal to Overflow flag, jump to address pointed to by source register and continue execution
+    %1101`1011  $DB   JGT       immAddr         If Zero flag is clear and Negative flag is equal to Overflow flag, jump to address pointed to by immediate value and continue execution
     
     %0001`1100  $1C   JA        regVal          If Carry flag is clear and Zero flag is clear, jump to address in source register and continue execution
     %0101`1100  $5C   JA        immVal          If Carry flag is clear and Zero flag is clear, jump to immediate address and continue execution
@@ -809,7 +853,7 @@ Other syntax, to be described more fully later:
     %0001`1000  $18   JNZ       regVal          If Zero flag is not set, jump to address in source register and continue execution
     %0001`1001  $19   JLT       regVal          If Negative flag is not equal to Overflow flag, jump to address in source register and continue execution
     %0001`1010  $1A   JB        reg             If Carry flag is set, jump to address in source register and continue execution
-    %0001`1011  $1B   JGT       regVal          If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to address in source register and continue execution
+    %0001`1011  $1B   JGT       regVal          If Zero flag is clear and Negative flag is equal to Overflow flag, jump to address in source register and continue execution
     %0001`1100  $1C   JA        regVal          If Carry flag is clear and Zero flag is clear, jump to address in source register and continue execution
     %0001`1101  $1D   CALL      regVal          Push PC.H0 to stack, jump to address in source register and continue execution until RET is executed
     %0001`1110  $1E   OUTR      regVal  reg     Output value in source register to port in destination register
@@ -873,7 +917,7 @@ Other syntax, to be described more fully later:
     %0101`1000  $58   JNZ       immVal          If Zero flag is not set, jump to immediate address and continue execution
     %0101`1001  $59   JLT       immVal          If Negative flag is not equal to Overflow flag, jump to immediate address and continue execution
     %0101`1010  $5A   JB        imm             If Carry flag is set, jump to immediate address and continue execution
-    %0101`1011  $5B   JGT       immVal          If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to immediate address and continue execution
+    %0101`1011  $5B   JGT       immVal          If Zero flag is clear and Negative flag is equal to Overflow flag, jump to immediate address and continue execution
     %0101`1100  $5C   JA        immVal          If Carry flag is clear and Zero flag is clear, jump to immediate address and continue execution
     %0101`1101  $5D   CALL      immVal          Push PC.H0 to stack, jump to immediate address and continue execution until RET is executed
     %0101`1110  $5E   OUTR      immVal  reg     Output immediate value to port in destination register
@@ -937,7 +981,7 @@ Other syntax, to be described more fully later:
     %1001`1000  $98   JNZ       regAddr         If Zero flag is not set, jump to address pointed to by source register and continue execution
     %1001`1001  $99   JLT       regAddr         If Negative flag is not equal to Overflow flag, jump to address pointed to by source register and continue execution
     %1001`1010  $9A   JB        regAddr         If Carry flag is set, jump to address pointed to by source register and continue execution
-    %1001`1011  $9B   JGT       regAddr         If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to address pointed to by source register and continue execution
+    %1001`1011  $9B   JGT       regAddr         If Zero flag is clear and Negative flag is equal to Overflow flag, jump to address pointed to by source register and continue execution
     %1001`1100  $9C   JA        regAddr         If Carry flag is clear and Zero flag is clear, jump to address pointed to by source register and continue execution
     %1001`1101  $9D   CALL      regAddr         Push PC.H0 to stack, jump to address pointed to by source register and continue execution until RET is executed
     %1001`1110  $9E   OUTR      regAddr reg     Output value at address in source register to port in destination register
@@ -1001,7 +1045,7 @@ Other syntax, to be described more fully later:
     %1101`1000  $D8   JNZ       immAddr         If Zero flag is not set, jump to address pointed to by immediate value and continue execution
     %1101`1001  $D9   JLT       immAddr         If Negative flag is not equal to Overflow flag, jump to address pointed to by immediate value and continue execution
     %1101`1010  $DA   JB        immAddr         If Carry flag is set, jump to address pointed to by immediate value and continue execution
-    %1101`1011  $DB   JGT       immAddr         If Zero flag is clear and Negative flag is not equal to Overflow flag, jump to address pointed to by immediate value and continue execution
+    %1101`1011  $DB   JGT       immAddr         If Zero flag is clear and Negative flag is equal to Overflow flag, jump to address pointed to by immediate value and continue execution
     %1101`1100  $DC   JA        immAddr         If Carry flag is clear and Zero flag is clear, jump to address pointed to by immediate value and continue execution
     %1101`1101  $DD   CALL      immAddr         Push PC.H0 to stack, jump to address pointed to by immediate value and continue execution until RET is executed
     %1101`1110  $DE   OUTR      immAddr reg     Output value at immediate address to port in destination register

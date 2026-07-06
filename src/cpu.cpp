@@ -819,39 +819,53 @@ namespace maize {
 
             switch (alu.b0 & arithmetic_logic_unit::opflag_code) {
                 case instr::add_opcode: {
+                    /* Carry (C) is the unsigned carry-out; overflow (V) is the signed-overflow
+                       test (same-sign operands, result sign differs). See card maize-1. */
                     switch (op_size) {
                         case 1: {
-                            u_byte result = alu.op2_reg.b0 + alu.op1_reg.b0;
+                            u_byte dst_before = alu.op2_reg.b0;
+                            u_byte src = alu.op1_reg.b0;
+                            u_byte result = dst_before + src;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            overflow_flag = result < alu.op2_reg.b0;
+                            carryout_flag = result < dst_before;
+                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x80;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            u_qword result = alu.op2_reg.q0 + alu.op1_reg.q0;
+                            u_qword dst_before = alu.op2_reg.q0;
+                            u_qword src = alu.op1_reg.q0;
+                            u_qword result = dst_before + src;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            overflow_flag = result < alu.op2_reg.q0;
+                            carryout_flag = result < dst_before;
+                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x8000;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            u_hword result = alu.op2_reg.h0 + alu.op1_reg.h0;
+                            u_hword dst_before = alu.op2_reg.h0;
+                            u_hword src = alu.op1_reg.h0;
+                            u_hword result = dst_before + src;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            overflow_flag = result < alu.op2_reg.h0;
+                            carryout_flag = result < dst_before;
+                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x80000000;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            u_word result = alu.op2_reg.w0 + alu.op1_reg.w0;
+                            u_word dst_before = alu.op2_reg.w0;
+                            u_word src = alu.op1_reg.w0;
+                            u_word result = dst_before + src;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            overflow_flag = result < alu.op2_reg.w0;
+                            carryout_flag = result < dst_before;
+                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x8000000000000000;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -863,39 +877,54 @@ namespace maize {
                 case instr::cmp_opcode:
                 case instr::cmpind_opcode:
                 case instr::sub_opcode: {
+                    /* Carry (C) is the unsigned borrow (x86 convention: C=1 means dst_before <u src);
+                       overflow (V) is the signed-overflow test (operands differ in sign, result differs
+                       from the minuend's sign). See card maize-1. */
                     switch (op_size) {
                         case 1: {
-                            u_byte result = alu.op2_reg.b0 - alu.op1_reg.b0;
+                            u_byte dst_before = alu.op2_reg.b0;
+                            u_byte src = alu.op1_reg.b0;
+                            u_byte result = dst_before - src;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            overflow_flag = result > alu.op2_reg.b0;
+                            carryout_flag = result > dst_before;
+                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x80;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            u_qword result = alu.op2_reg.q0 - alu.op1_reg.q0;
+                            u_qword dst_before = alu.op2_reg.q0;
+                            u_qword src = alu.op1_reg.q0;
+                            u_qword result = dst_before - src;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            overflow_flag = result > alu.op2_reg.q0;
+                            carryout_flag = result > dst_before;
+                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x8000;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            u_hword result = alu.op2_reg.h0 - alu.op1_reg.h0;
+                            u_hword dst_before = alu.op2_reg.h0;
+                            u_hword src = alu.op1_reg.h0;
+                            u_hword result = dst_before - src;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            overflow_flag = result > alu.op2_reg.h0;
+                            carryout_flag = result > dst_before;
+                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x80000000;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            u_word result = alu.op2_reg.w0 - alu.op1_reg.w0;
+                            u_word dst_before = alu.op2_reg.w0;
+                            u_word src = alu.op1_reg.w0;
+                            u_word result = dst_before - src;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            overflow_flag = result > alu.op2_reg.w0;
+                            carryout_flag = result > dst_before;
+                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x8000000000000000;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -905,12 +934,18 @@ namespace maize {
                 }
 
                 case instr::mul_opcode: {
+                    /* Overflow (V) is the signed-overflow test on the pre-op operands. Carry (C) mirrors
+                       V until the wide-multiply card (97821c447640) lands a high-half product; see card
+                       maize-1 decision. The width-8 case reads the .w0 (64-bit) subregisters that its own
+                       multiply uses, not the .h0 (32-bit) subregisters. */
                     switch (op_size) {
                         case 1: {
                             u_byte result = alu.op2_reg.b0 * alu.op1_reg.b0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            overflow_flag = is_mul_overflow(alu.op1_reg.b0, alu.op2_reg.b0) || is_mul_underflow(alu.op1_reg.b0, alu.op2_reg.b0);
+                            bool ovf = is_mul_overflow(alu.op1_reg.b0, alu.op2_reg.b0) || is_mul_underflow(alu.op1_reg.b0, alu.op2_reg.b0);
+                            overflow_flag = ovf;
+                            carryout_flag = ovf;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -919,7 +954,9 @@ namespace maize {
                             u_qword result = alu.op2_reg.q0 * alu.op1_reg.q0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            overflow_flag = is_mul_overflow(alu.op1_reg.q0, alu.op2_reg.q0) || is_mul_underflow(alu.op1_reg.q0, alu.op2_reg.q0);
+                            bool ovf = is_mul_overflow(alu.op1_reg.q0, alu.op2_reg.q0) || is_mul_underflow(alu.op1_reg.q0, alu.op2_reg.q0);
+                            overflow_flag = ovf;
+                            carryout_flag = ovf;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -928,7 +965,9 @@ namespace maize {
                             u_hword result = alu.op2_reg.h0 * alu.op1_reg.h0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            overflow_flag = is_mul_overflow(alu.op1_reg.h0, alu.op2_reg.h0) || is_mul_underflow(alu.op1_reg.h0, alu.op2_reg.h0);
+                            bool ovf = is_mul_overflow(alu.op1_reg.h0, alu.op2_reg.h0) || is_mul_underflow(alu.op1_reg.h0, alu.op2_reg.h0);
+                            overflow_flag = ovf;
+                            carryout_flag = ovf;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -937,7 +976,9 @@ namespace maize {
                             u_word result = alu.op2_reg.w0 * alu.op1_reg.w0;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            overflow_flag = is_mul_overflow(alu.op1_reg.h0, alu.op2_reg.h0) || is_mul_underflow(alu.op1_reg.h0, alu.op2_reg.h0);
+                            bool ovf = is_mul_overflow(alu.op1_reg.w0, alu.op2_reg.w0) || is_mul_underflow(alu.op1_reg.w0, alu.op2_reg.w0);
+                            overflow_flag = ovf;
+                            carryout_flag = ovf;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -948,6 +989,7 @@ namespace maize {
 
                 case instr::div_opcode: {
                     overflow_flag = false;
+                    carryout_flag = false;
 
                     switch (op_size) {
                         case 1: {
@@ -988,6 +1030,7 @@ namespace maize {
 
                 case instr::mod_opcode: {
                     overflow_flag = false;
+                    carryout_flag = false;
 
                     switch (op_size) {
                         case 1: {
@@ -1026,10 +1069,11 @@ namespace maize {
                     break;
                 }
 
-                case instr::test_opcode: 
-                case instr::testind_opcode: 
+                case instr::test_opcode:
+                case instr::testind_opcode:
                 case instr::and_opcode: {
                     overflow_flag = false;
+                    carryout_flag = false;
 
                     switch (op_size) {
                         case 1: {
@@ -1070,6 +1114,7 @@ namespace maize {
 
                 case instr::or_opcode: {
                     overflow_flag = false;
+                    carryout_flag = false;
 
                     switch (op_size) {
                         case 1: {
@@ -1110,6 +1155,7 @@ namespace maize {
 
                 case instr::nor_opcode: {
                     overflow_flag = false;
+                    carryout_flag = false;
 
                     switch (op_size) {
                         case 1: {
@@ -1150,6 +1196,7 @@ namespace maize {
 
                 case instr::nand_opcode: {
                     overflow_flag = false;
+                    carryout_flag = false;
 
                     switch (op_size) {
                         case 1: {
@@ -1190,6 +1237,7 @@ namespace maize {
 
                 case instr::xor_opcode: {
                     overflow_flag = false;
+                    carryout_flag = false;
 
                     switch (op_size) {
                         case 1: {
@@ -1229,40 +1277,108 @@ namespace maize {
                 }
 
                 case instr::shl_opcode: {
+                    /* Shift-count edge cases (card maize-1): n==0 leaves all flags unaffected;
+                       1<=n<=bits shifts normally with C = last bit shifted out the top and V defined
+                       only for n==1 (sign bit changed); n>bits yields result=0 with all flags cleared.
+                       Never pass an out-of-range count to C++'s << (that is undefined behavior). */
                     switch (op_size) {
                         case 1: {
-                            u_byte result = alu.op2_reg.b0 << alu.op1_reg.b0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
-                            overflow_flag = result < alu.op2_reg.b0;
-                            alu.op2_reg.w0 = result;
+                            u_byte dst_before = alu.op2_reg.b0;
+                            u_word n = alu.op1_reg.b0;
+                            const u_word bits = 8;
+                            if (n == 0) {
+                                alu.op2_reg.w0 = dst_before;
+                            }
+                            else if (n <= bits) {
+                                u_byte result = (n == bits) ? u_byte(0) : u_byte(dst_before << n);
+                                zero_flag = result == 0;
+                                negative_flag = result & 0x80;
+                                carryout_flag = (dst_before >> (bits - n)) & 1;
+                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != ((dst_before >> (bits - 2)) & 1));
+                                alu.op2_reg.w0 = result;
+                            }
+                            else {
+                                zero_flag = true;
+                                negative_flag = false;
+                                carryout_flag = false;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = 0;
+                            }
                             break;
                         }
 
                         case 2: {
-                            u_qword result = alu.op2_reg.q0 << alu.op1_reg.q0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
-                            overflow_flag = result < alu.op2_reg.q0;
-                            alu.op2_reg.w0 = result;
+                            u_qword dst_before = alu.op2_reg.q0;
+                            u_word n = alu.op1_reg.q0;
+                            const u_word bits = 16;
+                            if (n == 0) {
+                                alu.op2_reg.w0 = dst_before;
+                            }
+                            else if (n <= bits) {
+                                u_qword result = (n == bits) ? u_qword(0) : u_qword(dst_before << n);
+                                zero_flag = result == 0;
+                                negative_flag = result & 0x8000;
+                                carryout_flag = (dst_before >> (bits - n)) & 1;
+                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != ((dst_before >> (bits - 2)) & 1));
+                                alu.op2_reg.w0 = result;
+                            }
+                            else {
+                                zero_flag = true;
+                                negative_flag = false;
+                                carryout_flag = false;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = 0;
+                            }
                             break;
                         }
 
                         case 4: {
-                            u_hword result = alu.op2_reg.h0 << alu.op1_reg.h0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
-                            overflow_flag = result < alu.op2_reg.h0;
-                            alu.op2_reg.w0 = result;
+                            u_hword dst_before = alu.op2_reg.h0;
+                            u_word n = alu.op1_reg.h0;
+                            const u_word bits = 32;
+                            if (n == 0) {
+                                alu.op2_reg.w0 = dst_before;
+                            }
+                            else if (n <= bits) {
+                                u_hword result = (n == bits) ? u_hword(0) : u_hword(dst_before << n);
+                                zero_flag = result == 0;
+                                negative_flag = result & 0x80000000;
+                                carryout_flag = (dst_before >> (bits - n)) & 1;
+                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != ((dst_before >> (bits - 2)) & 1));
+                                alu.op2_reg.w0 = result;
+                            }
+                            else {
+                                zero_flag = true;
+                                negative_flag = false;
+                                carryout_flag = false;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = 0;
+                            }
                             break;
                         }
 
                         case 8: {
-                            u_word result = alu.op2_reg.w0 << alu.op1_reg.w0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
-                            overflow_flag = result < alu.op2_reg.w0;
-                            alu.op2_reg.w0 = result;
+                            u_word dst_before = alu.op2_reg.w0;
+                            u_word n = alu.op1_reg.w0;
+                            const u_word bits = 64;
+                            if (n == 0) {
+                                alu.op2_reg.w0 = dst_before;
+                            }
+                            else if (n <= bits) {
+                                u_word result = (n == bits) ? u_word(0) : u_word(dst_before << n);
+                                zero_flag = result == 0;
+                                negative_flag = result & 0x8000000000000000;
+                                carryout_flag = (dst_before >> (bits - n)) & 1;
+                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != ((dst_before >> (bits - 2)) & 1));
+                                alu.op2_reg.w0 = result;
+                            }
+                            else {
+                                zero_flag = true;
+                                negative_flag = false;
+                                carryout_flag = false;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = 0;
+                            }
                             break;
                         }
                     }
@@ -1271,40 +1387,109 @@ namespace maize {
                 }
 
                 case instr::shr_opcode: {
+                    /* Shift-count edge cases (card maize-1): n==0 leaves all flags unaffected;
+                       1<=n<=bits shifts normally with C = last bit shifted out the bottom and V defined
+                       only for n==1 (logical shift always clears the sign bit, so V reflects whether it
+                       was set beforehand); n>bits yields result=0 with all flags cleared. Never pass an
+                       out-of-range count to C++'s >> (that is undefined behavior). */
                     switch (op_size) {
                         case 1: {
-                            u_byte result = alu.op2_reg.b0 >> alu.op1_reg.b0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
-                            overflow_flag = result < alu.op2_reg.b0;
-                            alu.op2_reg.w0 = result;
+                            u_byte dst_before = alu.op2_reg.b0;
+                            u_word n = alu.op1_reg.b0;
+                            const u_word bits = 8;
+                            if (n == 0) {
+                                alu.op2_reg.w0 = dst_before;
+                            }
+                            else if (n <= bits) {
+                                u_byte result = (n == bits) ? u_byte(0) : u_byte(dst_before >> n);
+                                zero_flag = result == 0;
+                                negative_flag = result & 0x80;
+                                carryout_flag = (dst_before >> (n - 1)) & 1;
+                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != 0);
+                                alu.op2_reg.w0 = result;
+                            }
+                            else {
+                                zero_flag = true;
+                                negative_flag = false;
+                                carryout_flag = false;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = 0;
+                            }
                             break;
                         }
 
                         case 2: {
-                            u_qword result = alu.op2_reg.q0 >> alu.op1_reg.q0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
-                            overflow_flag = result < alu.op2_reg.q0;
-                            alu.op2_reg.w0 = result;
+                            u_qword dst_before = alu.op2_reg.q0;
+                            u_word n = alu.op1_reg.q0;
+                            const u_word bits = 16;
+                            if (n == 0) {
+                                alu.op2_reg.w0 = dst_before;
+                            }
+                            else if (n <= bits) {
+                                u_qword result = (n == bits) ? u_qword(0) : u_qword(dst_before >> n);
+                                zero_flag = result == 0;
+                                negative_flag = result & 0x8000;
+                                carryout_flag = (dst_before >> (n - 1)) & 1;
+                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != 0);
+                                alu.op2_reg.w0 = result;
+                            }
+                            else {
+                                zero_flag = true;
+                                negative_flag = false;
+                                carryout_flag = false;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = 0;
+                            }
                             break;
                         }
 
                         case 4: {
-                            u_hword result = alu.op2_reg.h0 >> alu.op1_reg.h0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
-                            overflow_flag = result < alu.op2_reg.h0;
-                            alu.op2_reg.w0 = result;
+                            u_hword dst_before = alu.op2_reg.h0;
+                            u_word n = alu.op1_reg.h0;
+                            const u_word bits = 32;
+                            if (n == 0) {
+                                alu.op2_reg.w0 = dst_before;
+                            }
+                            else if (n <= bits) {
+                                u_hword result = (n == bits) ? u_hword(0) : u_hword(dst_before >> n);
+                                zero_flag = result == 0;
+                                negative_flag = result & 0x80000000;
+                                carryout_flag = (dst_before >> (n - 1)) & 1;
+                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != 0);
+                                alu.op2_reg.w0 = result;
+                            }
+                            else {
+                                zero_flag = true;
+                                negative_flag = false;
+                                carryout_flag = false;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = 0;
+                            }
                             break;
                         }
 
                         case 8: {
-                            u_word result = alu.op2_reg.w0 >> alu.op1_reg.w0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
-                            overflow_flag = result < alu.op2_reg.w0;
-                            alu.op2_reg.w0 = result;
+                            u_word dst_before = alu.op2_reg.w0;
+                            u_word n = alu.op1_reg.w0;
+                            const u_word bits = 64;
+                            if (n == 0) {
+                                alu.op2_reg.w0 = dst_before;
+                            }
+                            else if (n <= bits) {
+                                u_word result = (n == bits) ? u_word(0) : u_word(dst_before >> n);
+                                zero_flag = result == 0;
+                                negative_flag = result & 0x8000000000000000;
+                                carryout_flag = (dst_before >> (n - 1)) & 1;
+                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != 0);
+                                alu.op2_reg.w0 = result;
+                            }
+                            else {
+                                zero_flag = true;
+                                negative_flag = false;
+                                carryout_flag = false;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = 0;
+                            }
                             break;
                         }
                     }
@@ -1313,39 +1498,48 @@ namespace maize {
                 }
 
                 case instr::inc_opcode: {
+                    /* INC is ADD with src = 1; C and V follow the ADD family (card maize-1). */
                     switch (op_size) {
                         case 1: {
-                            u_byte result = alu.op2_reg.b0 + u_byte(1);
+                            u_byte dst_before = alu.op2_reg.b0;
+                            u_byte result = dst_before + u_byte(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            overflow_flag = result < alu.op2_reg.b0;
+                            carryout_flag = result < dst_before;
+                            overflow_flag = (~(dst_before ^ u_byte(1)) & (dst_before ^ result)) & 0x80;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            u_qword result = alu.op2_reg.q0 + u_qword(1);
+                            u_qword dst_before = alu.op2_reg.q0;
+                            u_qword result = dst_before + u_qword(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            overflow_flag = result < alu.op2_reg.q0;
+                            carryout_flag = result < dst_before;
+                            overflow_flag = (~(dst_before ^ u_qword(1)) & (dst_before ^ result)) & 0x8000;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            u_hword result = alu.op2_reg.h0 + u_hword(1);
+                            u_hword dst_before = alu.op2_reg.h0;
+                            u_hword result = dst_before + u_hword(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            overflow_flag = result < alu.op2_reg.h0;
+                            carryout_flag = result < dst_before;
+                            overflow_flag = (~(dst_before ^ u_hword(1)) & (dst_before ^ result)) & 0x80000000;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            u_word result = alu.op2_reg.w0 + u_word(1);
+                            u_word dst_before = alu.op2_reg.w0;
+                            u_word result = dst_before + u_word(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            overflow_flag = result < alu.op2_reg.w0;
+                            carryout_flag = result < dst_before;
+                            overflow_flag = (~(dst_before ^ u_word(1)) & (dst_before ^ result)) & 0x8000000000000000;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1355,39 +1549,48 @@ namespace maize {
                 }
 
                 case instr::dec_opcode: {
+                    /* DEC is SUB with src = 1; C and V follow the SUB family (card maize-1). */
                     switch (op_size) {
                         case 1: {
-                            u_byte result = alu.op2_reg.b0 - u_byte(1);
+                            u_byte dst_before = alu.op2_reg.b0;
+                            u_byte result = dst_before - u_byte(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
-                            overflow_flag = result > alu.op2_reg.b0;
+                            carryout_flag = result > dst_before;
+                            overflow_flag = ((dst_before ^ u_byte(1)) & (dst_before ^ result)) & 0x80;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
-                            u_qword result = alu.op2_reg.q0 - u_qword(1);
+                            u_qword dst_before = alu.op2_reg.q0;
+                            u_qword result = dst_before - u_qword(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
-                            overflow_flag = result > alu.op2_reg.q0;
+                            carryout_flag = result > dst_before;
+                            overflow_flag = ((dst_before ^ u_qword(1)) & (dst_before ^ result)) & 0x8000;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
-                            u_hword result = alu.op2_reg.h0 - u_hword(1);
+                            u_hword dst_before = alu.op2_reg.h0;
+                            u_hword result = dst_before - u_hword(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
-                            overflow_flag = result > alu.op2_reg.h0;
+                            carryout_flag = result > dst_before;
+                            overflow_flag = ((dst_before ^ u_hword(1)) & (dst_before ^ result)) & 0x80000000;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
-                            u_word result = alu.op2_reg.w0 - u_word(1);
+                            u_word dst_before = alu.op2_reg.w0;
+                            u_word result = dst_before - u_word(1);
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
-                            overflow_flag = result > alu.op2_reg.w0;
+                            carryout_flag = result > dst_before;
+                            overflow_flag = ((dst_before ^ u_word(1)) & (dst_before ^ result)) & 0x8000000000000000;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1398,6 +1601,7 @@ namespace maize {
 
                 case instr::not_opcode: {
                     overflow_flag = 0;
+                    carryout_flag = 0;
 
                     switch (op_size) {
                         case 1: {
@@ -1555,7 +1759,17 @@ namespace maize {
                         alu.b1 = op1_subreg_size();
                         alu.b2 = op2_subreg_size();
                         run_alu();
-                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        /* Preserve the ALU's per-width N flag. The value writeback below goes through
+                           copy_regval_reg with a w0 (64-bit) source subreg, which recomputes
+                           negative_flag from bit 63 and would clobber the correct sub-word sign that
+                           the signed branches (JLT/JGT) consume (card maize-1). C and V are untouched
+                           by the copy, and Z is recomputed at the destination width, so only N needs
+                           to be restored. */
+                        {
+                            bool alu_negative = negative_flag;
+                            copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                            negative_flag = alu_negative;
+                        }
                         break;
                     }
 
@@ -1582,7 +1796,13 @@ namespace maize {
                         alu.b2 = op2_subreg_size();
                         run_alu();
                         regs::rp.h0 += src_size;
-                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        /* Preserve the ALU's per-width N flag across the value writeback; see the
+                           regVal_reg case above for the full rationale (card maize-1). */
+                        {
+                            bool alu_negative = negative_flag;
+                            copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                            negative_flag = alu_negative;
+                        }
                         break;
                     }
 
@@ -1607,7 +1827,17 @@ namespace maize {
                         alu.b1 = op1_subreg_size();
                         alu.b2 = op2_subreg_size();
                         run_alu();
-                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        /* Preserve the ALU's per-width N flag. The value writeback below goes through
+                           copy_regval_reg with a w0 (64-bit) source subreg, which recomputes
+                           negative_flag from bit 63 and would clobber the correct sub-word sign that
+                           the signed branches (JLT/JGT) consume (card maize-1). C and V are untouched
+                           by the copy, and Z is recomputed at the destination width, so only N needs
+                           to be restored. */
+                        {
+                            bool alu_negative = negative_flag;
+                            copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                            negative_flag = alu_negative;
+                        }
                         break;
                     }
 
@@ -1634,7 +1864,13 @@ namespace maize {
                         alu.b2 = op2_subreg_size();
                         run_alu();
                         regs::rp.h0 += src_size;
-                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        /* Preserve the ALU's per-width N flag across the value writeback; see the
+                           regVal_reg case above for the full rationale (card maize-1). */
+                        {
+                            bool alu_negative = negative_flag;
+                            copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                            negative_flag = alu_negative;
+                        }
                         break;
                     }
 
@@ -1647,7 +1883,13 @@ namespace maize {
                         alu.b1 = op1_subreg_size();
                         alu.b2 = op1_subreg_size();
                         run_alu();
-                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op1_reg(), op1_subreg_flag());
+                        /* Preserve the ALU's per-width N flag across the value writeback; see the
+                           regVal_reg case above for the full rationale (card maize-1). */
+                        {
+                            bool alu_negative = negative_flag;
+                            copy_regval_reg(alu.op2_reg, subreg_enum::w0, op1_reg(), op1_subreg_flag());
+                            negative_flag = alu_negative;
+                        }
                         break;
                     }
 
@@ -2052,6 +2294,229 @@ namespace maize {
                             u_byte src_size = op1_imm_size();
                             regs::rp.h0 += src_size;
                         }
+                        break;
+                    }
+
+                    /* Signed less-than: N != V (card maize-1). */
+                    case instr::jlt_regVal: {
+                        regs::rp.h0 += 1;
+
+                        if ((bool)negative_flag != (bool)overflow_flag) {
+                            copy_regval_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
+                        }
+
+                        break;
+                    }
+
+                    case instr::jlt_immVal: {
+                        regs::rp.h0 += 1;
+
+                        if ((bool)negative_flag != (bool)overflow_flag) {
+                            copy_memval_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jlt_regAddr: {
+                        regs::rp.h0 += 1;
+
+                        if ((bool)negative_flag != (bool)overflow_flag) {
+                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jlt_immAddr: {
+                        regs::rp.h0 += 1;
+
+                        if ((bool)negative_flag != (bool)overflow_flag) {
+                            copy_memaddr_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    /* Signed greater-than: Zero clear and N == V (card maize-1). */
+                    case instr::jgt_regVal: {
+                        regs::rp.h0 += 1;
+
+                        if (!zero_flag && ((bool)negative_flag == (bool)overflow_flag)) {
+                            copy_regval_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
+                        }
+
+                        break;
+                    }
+
+                    case instr::jgt_immVal: {
+                        regs::rp.h0 += 1;
+
+                        if (!zero_flag && ((bool)negative_flag == (bool)overflow_flag)) {
+                            copy_memval_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jgt_regAddr: {
+                        regs::rp.h0 += 1;
+
+                        if (!zero_flag && ((bool)negative_flag == (bool)overflow_flag)) {
+                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jgt_immAddr: {
+                        regs::rp.h0 += 1;
+
+                        if (!zero_flag && ((bool)negative_flag == (bool)overflow_flag)) {
+                            copy_memaddr_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    /* Unsigned below: Carry set (card maize-1). */
+                    case instr::jb_regVal: {
+                        regs::rp.h0 += 1;
+
+                        if (carryout_flag) {
+                            copy_regval_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
+                        }
+
+                        break;
+                    }
+
+                    case instr::jb_immVal: {
+                        regs::rp.h0 += 1;
+
+                        if (carryout_flag) {
+                            copy_memval_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jb_regAddr: {
+                        regs::rp.h0 += 1;
+
+                        if (carryout_flag) {
+                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jb_immAddr: {
+                        regs::rp.h0 += 1;
+
+                        if (carryout_flag) {
+                            copy_memaddr_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    /* Unsigned above: Carry clear and Zero clear (card maize-1). */
+                    case instr::ja_regVal: {
+                        regs::rp.h0 += 1;
+
+                        if (!carryout_flag && !zero_flag) {
+                            copy_regval_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
+                        }
+
+                        break;
+                    }
+
+                    case instr::ja_immVal: {
+                        regs::rp.h0 += 1;
+
+                        if (!carryout_flag && !zero_flag) {
+                            copy_memval_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::ja_regAddr: {
+                        regs::rp.h0 += 1;
+
+                        if (!carryout_flag && !zero_flag) {
+                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::ja_immAddr: {
+                        regs::rp.h0 += 1;
+
+                        if (!carryout_flag && !zero_flag) {
+                            copy_memaddr_reg(regs::rp.h0, subreg_size_map[subreg_enum::h0], regs::rp, subreg_enum::h0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.h0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    /* No-operand carry manipulation (card maize-1). */
+                    case instr::setcry_opcode: {
+                        carryout_flag = true;
+                        break;
+                    }
+
+                    case instr::clrcry_opcode: {
+                        carryout_flag = false;
                         break;
                     }
 
