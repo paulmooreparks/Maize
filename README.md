@@ -50,6 +50,82 @@ Honestly, it's mainly a toy to learn about a few concepts:
 It's been really useful for all of the above, but what I'm most excited about is the promise of compiling any language to Maize byte code and running 
 it anywhere that can run the Maize VM. 
 
+## Building From Source
+
+Maize builds with CMake + Ninja and either Clang or GCC. There is no Visual Studio or
+MSVC dependency anywhere in the build; on Windows the primary compiler is a pinned
+llvm-mingw toolchain fetched by a small bootstrap script, no installer or admin rights
+required.
+
+### Prerequisites (all platforms)
+
+* CMake 3.21 or newer
+* Ninja
+
+Windows: `winget install Kitware.CMake` and `winget install Ninja-build.Ninja` (both
+install per-user, no admin required). Linux: `sudo apt install cmake ninja-build`.
+macOS: `brew install cmake ninja`.
+
+### Windows, primary path: llvm-mingw
+
+    scripts\bootstrap-toolchain.ps1
+    cmake --preset windows-llvm-mingw-debug
+    cmake --build --preset windows-llvm-mingw-debug
+
+The bootstrap script downloads a pinned llvm-mingw release into `.toolchains\llvm-mingw\`
+(gitignored) and verifies it against a pinned SHA256 checksum. Re-running it is a no-op
+once the pinned version is already present.
+
+### Windows, fallback: MSYS2 UCRT64 GCC
+
+Install MSYS2 (msys2.org) to its default location (C:\msys64), then from an MSYS2
+UCRT64 shell:
+
+    pacman -S mingw-w64-ucrt-x86_64-toolchain
+
+From a regular Windows shell (PowerShell or Git Bash):
+
+    cmake --preset windows-msys2-debug
+    cmake --build --preset windows-msys2-debug
+
+If MSYS2 is installed somewhere other than C:\msys64, override the compiler paths in a
+local, gitignored CMakeUserPresets.json.
+
+### Linux (WSL or native)
+
+    cmake --preset linux-debug
+    cmake --build --preset linux-debug
+
+Uses whichever of GCC or Clang CMake finds by default; set CC/CXX before configuring to
+force a specific compiler.
+
+### macOS
+
+    cmake --preset macos-debug
+    cmake --build --preset macos-debug
+
+Uses the system Clang from the Xcode Command Line Tools (xcode-select --install).
+
+### Smoke test
+
+    mazm asm/hello.asm
+    maize asm/hello.bin
+
+Should print "Hello, world!". Every preset's build directory lives under build/<preset-name>/.
+
+### Editor setup (VS Code)
+
+Open the repo in VS Code, install the recommended extensions when prompted (CMake Tools
+and clangd), pick a configure preset from the CMake Tools status bar, and build.
+Everything above also works from any editor or a bare terminal; presets are the only
+interface CMake Tools uses.
+
+### A note on build type
+
+All presets currently build Debug. Release and RelWithDebInfo optimized builds are
+withheld until maize-30 (a release-only miscompile in the register union design) is
+fixed; both enable optimization levels that can trigger the same undefined behavior.
+
 ## How To Use Maize
 
 Maize is implemented in standard C++ and will run on Windows and Linux. The primary executable is 

@@ -48,3 +48,8 @@
 /Debug
 /Release
 /x64
+/build/
+/build-wsl/
+/.toolchains/
+/compile_commands.json
+CMakeUserPresets.json
