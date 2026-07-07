@@ -1,0 +1,261 @@
+; **********************************************************************************
+; MULW / UMULW wide-multiply regression test (card maize-7)
+;
+; Exercises the two 3-operand wide-multiply instructions across widths, verifying
+; BOTH the low-half destination (dst) and the high-half destination (hi) against
+; known-good constants. Operand order is `MULW src dst hi` (op1=multiplier,
+; op2=multiplicand+low dest, op3=high dest), the same encoding shape as LEA.
+;
+; Coverage:
+;   - UMULW 8-byte with a nonzero high half (0xFFFF... squared)
+;   - MULW  8-byte signed negative*positive (high half is a nonzero sign extension)
+;   - MULW  8-byte signed overflow of the low half (2^32 * 2^32 = 2^64)
+;   - UMULW 4-byte with a nonzero high half (proves the width-4 high half is not
+;     lost to C++ integer promotion; open_question 6459)
+;   - MULW  4-byte signed negative*positive
+;   - MUL/MULW low-half equivalence: MULW's dst matches plain MUL byte-for-byte
+;
+; Reporting mirrors test_mul.mazm: a direct stdout report (SYS $01) at each exit,
+; a single PASS line on success and a distinct FAIL line per failing case.
+; **********************************************************************************
+
+$0000`0000:
+    CALL test_umulw_8
+    CALL test_mulw_8_neg
+    CALL test_mulw_8_ovf
+    CALL test_umulw_4
+    CALL test_mulw_4_neg
+    CALL test_mul_equiv
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1
+    CP $10 R2               ; 16 bytes
+    SYS $01
+    HALT
+
+; ----------------------------------------------------------------------------------
+; UMULW 8-byte: 0xFFFFFFFFFFFFFFFF * 0xFFFFFFFFFFFFFFFF
+; Expected: lo = 0x0000000000000001, hi = 0xFFFFFFFFFFFFFFFE
+test_umulw_8:
+    PUSH BP
+    CP SP BP
+
+    CP $FFFFFFFFFFFFFFFF R0  ; dst / multiplicand
+    CP $FFFFFFFFFFFFFFFF R1  ; src / multiplier
+    CLR R2                   ; hi destination
+    UMULW R1 R0 R2           ; R0 = low half, R2 = high half
+
+    CP $01 R3
+    CMP R3 R0                ; low == 1 ?
+    JNZ test_umulw_8_fail
+    CP $FFFFFFFFFFFFFFFE R3
+    CMP R3 R2                ; high == 0xFFFFFFFFFFFFFFFE ?
+    JNZ test_umulw_8_fail
+
+    CP BP SP
+    POP BP
+    RET
+
+test_umulw_8_fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_umulw8_string R1
+    CP $1F R2               ; 31 bytes
+    SYS $01
+    HALT
+
+; ----------------------------------------------------------------------------------
+; MULW 8-byte signed: -2 * 3 = -6
+; Expected: lo = 0xFFFFFFFFFFFFFFFA, hi = 0xFFFFFFFFFFFFFFFF (sign extension, nonzero)
+test_mulw_8_neg:
+    PUSH BP
+    CP SP BP
+
+    CP $FFFFFFFFFFFFFFFE R0  ; dst = -2
+    CP $03 R1               ; src = 3
+    CLR R2
+    MULW R1 R0 R2           ; R0 = low half, R2 = high half
+
+    CP $FFFFFFFFFFFFFFFA R3
+    CMP R3 R0               ; low == -6 ?
+    JNZ test_mulw_8_neg_fail
+    CP $FFFFFFFFFFFFFFFF R3
+    CMP R3 R2               ; high == -1 (sign extension) ?
+    JNZ test_mulw_8_neg_fail
+
+    CP BP SP
+    POP BP
+    RET
+
+test_mulw_8_neg_fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_mulw8neg_string R1
+    CP $22 R2               ; 34 bytes
+    SYS $01
+    HALT
+
+; ----------------------------------------------------------------------------------
+; MULW 8-byte signed overflow of the low half: 2^32 * 2^32 = 2^64
+; Expected: lo = 0x0000000000000000, hi = 0x0000000000000001
+test_mulw_8_ovf:
+    PUSH BP
+    CP SP BP
+
+    CP $100000000 R0        ; dst = 2^32
+    CP $100000000 R1        ; src = 2^32
+    CLR R2
+    MULW R1 R0 R2           ; R0 = low half, R2 = high half
+
+    CLR R3
+    CMP R3 R0               ; low == 0 ?
+    JNZ test_mulw_8_ovf_fail
+    CP $01 R3
+    CMP R3 R2               ; high == 1 ?
+    JNZ test_mulw_8_ovf_fail
+
+    CP BP SP
+    POP BP
+    RET
+
+test_mulw_8_ovf_fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_mulw8ovf_string R1
+    CP $22 R2               ; 34 bytes
+    SYS $01
+    HALT
+
+; ----------------------------------------------------------------------------------
+; UMULW 4-byte: 0xFFFFFFFF * 0xFFFFFFFF (width-4 promotion guard, open_question 6459)
+; Expected: lo = 0x00000001, hi = 0xFFFFFFFE
+test_umulw_4:
+    PUSH BP
+    CP SP BP
+
+    CP $FFFFFFFF R0.H0      ; dst
+    CP $FFFFFFFF R1.H0      ; src
+    CLR R2
+    UMULW R1.H0 R0.H0 R2.H0 ; R0.H0 = low half, R2.H0 = high half
+
+    CP $01 R3.H0
+    CMP R3.H0 R0.H0         ; low == 1 ?
+    JNZ test_umulw_4_fail
+    CP $FFFFFFFE R3.H0
+    CMP R3.H0 R2.H0         ; high == 0xFFFFFFFE (would be 0 under the promotion bug) ?
+    JNZ test_umulw_4_fail
+
+    CP BP SP
+    POP BP
+    RET
+
+test_umulw_4_fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_umulw4_string R1
+    CP $1F R2               ; 31 bytes
+    SYS $01
+    HALT
+
+; ----------------------------------------------------------------------------------
+; MULW 4-byte signed: -3 * 5 = -15
+; Expected: lo = 0xFFFFFFF1, hi = 0xFFFFFFFF (sign extension)
+test_mulw_4_neg:
+    PUSH BP
+    CP SP BP
+
+    CP $FFFFFFFD R0.H0      ; dst = -3 (32-bit)
+    CP $05 R1.H0           ; src = 5
+    CLR R2
+    MULW R1.H0 R0.H0 R2.H0 ; R0.H0 = low half, R2.H0 = high half
+
+    CP $FFFFFFF1 R3.H0
+    CMP R3.H0 R0.H0        ; low == -15 ?
+    JNZ test_mulw_4_neg_fail
+    CP $FFFFFFFF R3.H0
+    CMP R3.H0 R2.H0        ; high == -1 (sign extension) ?
+    JNZ test_mulw_4_neg_fail
+
+    CP BP SP
+    POP BP
+    RET
+
+test_mulw_4_neg_fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_mulw4neg_string R1
+    CP $22 R2               ; 34 bytes
+    SYS $01
+    HALT
+
+; ----------------------------------------------------------------------------------
+; MUL / MULW low-half equivalence: 100000 * 100000 = 10000000000 (fits in 64 bits)
+; MULW's dst must equal what plain MUL leaves, and hi must be 0.
+test_mul_equiv:
+    PUSH BP
+    CP SP BP
+
+    CP $186A0 R0           ; plain MUL inputs
+    CP $186A0 R1
+    MUL R1 R0              ; R0 = 0x00000002540BE400
+
+    CP $186A0 R3           ; wide-multiply the same inputs
+    CP $186A0 R4
+    CLR R5
+    MULW R4 R3 R5          ; R3 = low half, R5 = high half
+
+    CMP R0 R3             ; MULW low half == MUL result ?
+    JNZ test_mul_equiv_fail
+    CLR R0
+    CMP R0 R5             ; high half == 0 ?
+    JNZ test_mul_equiv_fail
+
+    CP BP SP
+    POP BP
+    RET
+
+test_mul_equiv_fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_mulequiv_string R1
+    CP $1C R2               ; 28 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+; Messages (lengths above are computed excluding the trailing \0 terminator)
+
+pass_string:
+    STRING "MULW test: PASS\n\0"
+
+fail_umulw8_string:
+    STRING "MULW test: FAIL (umulw 8-byte)\n\0"
+
+fail_mulw8neg_string:
+    STRING "MULW test: FAIL (mulw 8-byte neg)\n\0"
+
+fail_mulw8ovf_string:
+    STRING "MULW test: FAIL (mulw 8-byte ovf)\n\0"
+
+fail_umulw4_string:
+    STRING "MULW test: FAIL (umulw 4-byte)\n\0"
+
+fail_mulw4neg_string:
+    STRING "MULW test: FAIL (mulw 4-byte neg)\n\0"
+
+fail_mulequiv_string:
+    STRING "MULW test: FAIL (mul equiv)\n\0"

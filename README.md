@@ -481,6 +481,8 @@ be set in privileged mode and are unaffected by the arithmetic/logic instruction
     SUB, CMP, CMPIND, DEC    unsigned borrow         result   signed overflow         result == 0
     SBB                      unsigned borrow         result   signed overflow         result == 0
     MUL                      = V (mirrors overflow)  result   signed overflow         result == 0
+    MULW                     high half nonzero       product  signed overflow         product == 0
+    UMULW                    high half nonzero       product  = C (high half nonzero) product == 0
     DIV, MOD, UDIV, UMOD     0 (cleared)             result   0 (cleared)             result == 0
     AND, OR, XOR, NAND,      0 (cleared)             result   0 (cleared)             result == 0
       NOR, NOT, TEST, TESTIND
@@ -494,8 +496,13 @@ Notes:
   of the dividend). UDIV and UMOD are the unsigned counterparts. A zero divisor, and the signed
   INT_MIN / -1 quotient overflow, raise a divide-error trap; until the interrupt mechanism exists
   the VM halts with a diagnostic rather than continuing with an undefined result.
-- MUL's carry currently mirrors its overflow flag; a distinct "high half nonzero" carry test is
-  deferred until the wide-multiply (high-half product) instruction lands.
+- MUL keeps only the low half of the product, with C mirroring its overflow flag. For the full
+  double-width product and a distinct "high half nonzero" carry test, use MULW (signed) or UMULW
+  (unsigned), which write the low half to dst and the high half to a second destination register.
+  For MULW and UMULW, C is set when the high half is nonzero (the product spilled out of the low
+  register); N is the sign bit of the whole double-width product; Z is set when the entire product
+  is zero; MULW's V is the true signed-overflow test (the product does not fit the low register's
+  signed range), while UMULW's V equals C.
 - ADC and SBB carry the C flag into the operation: ADC computes dst + src + C, and SBB computes
   dst - src - C. A multi-word add or subtract runs ADD/SUB on the low word (which sets C) and then
   ADC/SBB on each higher word. Z reflects only the current word, so a full-width zero test ANDs the
@@ -776,15 +783,15 @@ bit 7 is interpreted as follows:
     %1011`1100  $BC   SBB       regAddr reg     Subtract value at address in source register plus Carry (borrow) from destination register
     %1111`1100  $FC   SBB       immAddr reg     Subtract value at immediate address plus Carry (borrow) from destination register
 
-    %0011`1101  $3D                             reserved
-    %0111`1101  $7D                             reserved
-    %1011`1101  $BD                             reserved
-    %1111`1101  $FD                             reserved
+    %0011`1101  $3D   MULW      regVal  reg reg Signed wide multiply: full product of operand 2 by source register value; low half to operand 2, high half to operand 3
+    %0111`1101  $7D   MULW      immVal  reg reg Signed wide multiply: full product of operand 2 by immediate value; low half to operand 2, high half to operand 3
+    %1011`1101  $BD   MULW      regAddr reg reg Signed wide multiply: full product of operand 2 by value at address in source register; low half to operand 2, high half to operand 3
+    %1111`1101  $FD   MULW      immAddr reg reg Signed wide multiply: full product of operand 2 by value at immediate address; low half to operand 2, high half to operand 3
 
-    %0011`1110  $3E                             reserved
-    %0111`1110  $7E                             reserved
-    %1011`1110  $BE                             reserved
-    %1111`1110  $FE                             reserved
+    %0011`1110  $3E   UMULW     regVal  reg reg Unsigned wide multiply: full product of operand 2 by source register value; low half to operand 2, high half to operand 3
+    %0111`1110  $7E   UMULW     immVal  reg reg Unsigned wide multiply: full product of operand 2 by immediate value; low half to operand 2, high half to operand 3
+    %1011`1110  $BE   UMULW     regAddr reg reg Unsigned wide multiply: full product of operand 2 by value at address in source register; low half to operand 2, high half to operand 3
+    %1111`1110  $FE   UMULW     immAddr reg reg Unsigned wide multiply: full product of operand 2 by value at immediate address; low half to operand 2, high half to operand 3
 
     %0010`1111  $2F   CMPIND    regVal regAddr  Set flags by subtracting source register value from value at address in destination register
     %0110`1111  $6F   CMPIND    immVal regAddr  Set flags by subtracting immediate value from value at address in destination register
@@ -1022,8 +1029,8 @@ Other syntax, to be described more fully later:
     %0011`1010  $3A   JAE       regVal          If Carry flag is clear (unsigned >=), jump to address in source register and continue execution
     %0011`1011  $3B   ADC       regVal  reg     Add source register value plus Carry to destination register
     %0011`1100  $3C   SBB       regVal  reg     Subtract source register value plus Carry (borrow) from destination register
-    %0011`1101  $3D                             reserved
-    %0011`1110  $3E                             reserved
+    %0011`1101  $3D   MULW      regVal  reg reg Signed wide multiply: full product of operand 2 by source register value; low half to operand 2, high half to operand 3
+    %0011`1110  $3E   UMULW     regVal  reg reg Unsigned wide multiply: full product of operand 2 by source register value; low half to operand 2, high half to operand 3
     %0011`1111  $3F
     %0100`0000  $40
     %0100`0001  $41   CP        immVal  reg     Copy immediate value into destination register with sign extension
@@ -1086,8 +1093,8 @@ Other syntax, to be described more fully later:
     %0111`1010  $7A   JAE       immVal          If Carry flag is clear (unsigned >=), jump to immediate address and continue execution
     %0111`1011  $7B   ADC       immVal  reg     Add immediate value plus Carry to destination register
     %0111`1100  $7C   SBB       immVal  reg     Subtract immediate value plus Carry (borrow) from destination register
-    %0111`1101  $7D                             reserved
-    %0111`1110  $7E                             reserved
+    %0111`1101  $7D   MULW      immVal  reg reg Signed wide multiply: full product of operand 2 by immediate value; low half to operand 2, high half to operand 3
+    %0111`1110  $7E   UMULW     immVal  reg reg Unsigned wide multiply: full product of operand 2 by immediate value; low half to operand 2, high half to operand 3
     %0111`1111  $7F
     %1000`0000  $80
     %1000`0001  $81   LD        regAddr reg     Load value at address in source register into destination register
@@ -1150,8 +1157,8 @@ Other syntax, to be described more fully later:
     %1011`1010  $BA   JAE       regAddr         If Carry flag is clear (unsigned >=), jump to address pointed to by source register and continue execution
     %1011`1011  $BB   ADC       regAddr reg     Add value at address in source register plus Carry to destination register
     %1011`1100  $BC   SBB       regAddr reg     Subtract value at address in source register plus Carry (borrow) from destination register
-    %1011`1101  $BD                             reserved
-    %1011`1110  $BE                             reserved
+    %1011`1101  $BD   MULW      regAddr reg reg Signed wide multiply: full product of operand 2 by value at address in source register; low half to operand 2, high half to operand 3
+    %1011`1110  $BE   UMULW     regAddr reg reg Unsigned wide multiply: full product of operand 2 by value at address in source register; low half to operand 2, high half to operand 3
     %1011`1111  $BF
     %1100`0000  $C0
     %1100`0001  $C1   LD        immAddr reg     Load value at immediate address into destination register
@@ -1214,8 +1221,8 @@ Other syntax, to be described more fully later:
     %1111`1010  $FA   JAE       immAddr         If Carry flag is clear (unsigned >=), jump to address pointed to by immediate value and continue execution
     %1111`1011  $FB   ADC       immAddr reg     Add value at immediate address plus Carry to destination register
     %1111`1100  $FC   SBB       immAddr reg     Subtract value at immediate address plus Carry (borrow) from destination register
-    %1111`1101  $FD                             reserved
-    %1111`1110  $FE                             reserved
+    %1111`1101  $FD   MULW      immAddr reg reg Signed wide multiply: full product of operand 2 by value at immediate address; low half to operand 2, high half to operand 3
+    %1111`1110  $FE   UMULW     immAddr reg reg Unsigned wide multiply: full product of operand 2 by value at immediate address; low half to operand 2, high half to operand 3
     %1111`1111  $FF   BRK                       Trigger a debug break
 
 ## License

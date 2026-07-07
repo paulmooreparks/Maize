@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     Configures and builds the windows-llvm-mingw-debug preset (or an override given
-    via -Preset), then assembles and runs each of the 20 in-scope tests under asm/,
+    via -Preset), then assembles and runs each of the 21 in-scope tests under asm/,
     comparing captured stdout against the expected output embedded below. Prints a
     per-test PASS/FAIL report plus a summary line.
 
@@ -47,6 +47,7 @@ $TestRunDir = Join-Path $BuildDir 'test-run'
 $Tests = @(
     [pscustomobject]@{ Name = 'hello';            File = 'hello.mazm';             Expected = 'Hello, world!';                 Golden = $true }
     [pscustomobject]@{ Name = 'test_mul';          File = 'test_mul.mazm';          Expected = 'MUL test: PASS (1/2/4/8-byte)'; Golden = $false }
+    [pscustomobject]@{ Name = 'test_mulw';         File = 'test_mulw.mazm';         Expected = 'MULW test: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_flags_arith';  File = 'test_flags_arith.mazm';  Expected = 'flags arith: PASS';             Golden = $false }
     [pscustomobject]@{ Name = 'test_flags_branch'; File = 'test_flags_branch.mazm'; Expected = 'flags branch: PASS';           Golden = $false }
     [pscustomobject]@{ Name = 'test_flags_shl';    File = 'test_flags_shl.mazm';    Expected = 'flags shl: PASS';               Golden = $false }

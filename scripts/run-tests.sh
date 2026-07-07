@@ -3,7 +3,7 @@
 # point; this is what maize-36 invokes).
 #
 # Configures and builds the linux-debug preset (or an override given via
-# --preset), then assembles and runs each of the 20 in-scope tests under asm/,
+# --preset), then assembles and runs each of the 21 in-scope tests under asm/,
 # comparing captured stdout against the expected output embedded below. Prints
 # a per-test PASS/FAIL report plus a summary line. Never prompts for input, so
 # it is safe for non-interactive CI use.
@@ -211,6 +211,7 @@ run_test() {
 
 run_test "hello"             "hello.mazm"             "Hello, world!"                 1
 run_test "test_mul"          "test_mul.mazm"          "MUL test: PASS (1/2/4/8-byte)" 0
+run_test "test_mulw"         "test_mulw.mazm"         "MULW test: PASS"               0
 run_test "test_flags_arith"  "test_flags_arith.mazm"  "flags arith: PASS"             0
 run_test "test_flags_branch" "test_flags_branch.mazm" "flags branch: PASS"            0
 run_test "test_flags_shl"    "test_flags_shl.mazm"    "flags shl: PASS"               0

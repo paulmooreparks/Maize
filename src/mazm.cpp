@@ -239,6 +239,8 @@ namespace {
         { "TEST",   {cpu::instr::test_opcode   , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "CMPXCHG",{cpu::instr::cmpxchg_opcode, opcode_3param_tokenizer, regimm_regreg_compiler}},
         { "LEA",    {cpu::instr::lea_opcode,     opcode_3param_tokenizer, regimm_regreg_compiler}},
+        { "MULW",   {cpu::instr::mulw_opcode,    opcode_3param_tokenizer, regimm_regreg_compiler}},
+        { "UMULW",  {cpu::instr::umulw_opcode,   opcode_3param_tokenizer, regimm_regreg_compiler}},
         { "CPZ",    {cpu::instr::cpz_opcode,     opcode_2param_tokenizer, regimm_reg_compiler}},
         { "INC",    {cpu::instr::inc_opcode    , opcode_1param_tokenizer, reg_compiler}},
         { "DEC",    {cpu::instr::dec_opcode    , opcode_1param_tokenizer, reg_compiler}},

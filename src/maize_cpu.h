@@ -485,6 +485,21 @@ namespace maize {
 			const opcode sbb_regAddr_reg		{sbb_opcode | opcode_flag_srcAddr};
 			const opcode sbb_immAddr_reg		{sbb_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
+			/* Wide multiply (card maize-7): 3-operand src/dst/hi form (same encoding shape as
+			   LEA/CMPXCHG). MULW is signed, UMULW unsigned; both write the low half to dst and
+			   the high half to hi. Plain MUL ($05) is unchanged. */
+			const opcode mulw_opcode			{0x3D};
+			const opcode mulw_regVal_regreg		{mulw_opcode | opcode_flag_srcReg};
+			const opcode mulw_immVal_regreg		{mulw_opcode | opcode_flag_srcImm};
+			const opcode mulw_regAddr_regreg	{mulw_opcode | opcode_flag_srcAddr};
+			const opcode mulw_immAddr_regreg	{mulw_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			const opcode umulw_opcode			{0x3E};
+			const opcode umulw_regVal_regreg	{umulw_opcode | opcode_flag_srcReg};
+			const opcode umulw_immVal_regreg	{umulw_opcode | opcode_flag_srcImm};
+			const opcode umulw_regAddr_regreg	{umulw_opcode | opcode_flag_srcAddr};
+			const opcode umulw_immAddr_regreg	{umulw_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
 			const opcode and_opcode				{0x08};
 			const opcode and_regVal_reg			{and_opcode | opcode_flag_srcReg};
 			const opcode and_immVal_reg			{and_opcode | opcode_flag_srcImm};

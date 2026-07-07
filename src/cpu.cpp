@@ -1111,6 +1111,136 @@ namespace maize {
                     break;
                 }
 
+                case instr::mulw_opcode: {
+                    /* Signed wide multiply (card maize-7). Full 2w-bit product; low w bytes go to
+                       dst (alu.op2_reg, byte-for-byte identical to MUL) and the high w bytes are
+                       stashed in alu.op1_reg (dead src slot) for the dispatch to copy into hi.
+                       Operands are cast to the signed 2w-bit type before the multiply so the high
+                       half is not lost to C++ integer promotion (which does NOT widen 32x32 to 64,
+                       open_question 6459). Flags: C = high half nonzero, N = full-product MSB,
+                       Z = full product zero, V = product does not fit the low w-byte signed range. */
+                    switch (op_size) {
+                        case 1: {
+                            s_qword p = static_cast<s_qword>(static_cast<s_byte>(alu.op2_reg.b0)) * static_cast<s_qword>(static_cast<s_byte>(alu.op1_reg.b0));
+                            u_qword up = static_cast<u_qword>(p);
+                            u_word lo = up & 0xFF;
+                            u_word hi = (up >> 8) & 0xFF;
+                            zero_flag = (lo == 0 && hi == 0);
+                            negative_flag = hi & 0x80;
+                            carryout_flag = hi != 0;
+                            overflow_flag = (p < -128 || p > 127);
+                            alu.op2_reg.w0 = lo;
+                            alu.op1_reg.w0 = hi;
+                            break;
+                        }
+
+                        case 2: {
+                            s_hword p = static_cast<s_hword>(static_cast<s_qword>(alu.op2_reg.q0)) * static_cast<s_hword>(static_cast<s_qword>(alu.op1_reg.q0));
+                            u_hword up = static_cast<u_hword>(p);
+                            u_word lo = up & 0xFFFF;
+                            u_word hi = (up >> 16) & 0xFFFF;
+                            zero_flag = (lo == 0 && hi == 0);
+                            negative_flag = hi & 0x8000;
+                            carryout_flag = hi != 0;
+                            overflow_flag = (p < -32768 || p > 32767);
+                            alu.op2_reg.w0 = lo;
+                            alu.op1_reg.w0 = hi;
+                            break;
+                        }
+
+                        case 4: {
+                            s_word p = static_cast<s_word>(static_cast<s_hword>(alu.op2_reg.h0)) * static_cast<s_word>(static_cast<s_hword>(alu.op1_reg.h0));
+                            u_word up = static_cast<u_word>(p);
+                            u_word lo = up & 0xFFFFFFFF;
+                            u_word hi = (up >> 32) & 0xFFFFFFFF;
+                            zero_flag = (lo == 0 && hi == 0);
+                            negative_flag = hi & 0x80000000;
+                            carryout_flag = hi != 0;
+                            overflow_flag = (p < INT32_MIN || p > INT32_MAX);
+                            alu.op2_reg.w0 = lo;
+                            alu.op1_reg.w0 = hi;
+                            break;
+                        }
+
+                        case 8: {
+                            __int128 p = static_cast<__int128>(static_cast<s_word>(alu.op2_reg.w0)) * static_cast<__int128>(static_cast<s_word>(alu.op1_reg.w0));
+                            unsigned __int128 up = static_cast<unsigned __int128>(p);
+                            u_word lo = static_cast<u_word>(up);
+                            u_word hi = static_cast<u_word>(up >> 64);
+                            zero_flag = (lo == 0 && hi == 0);
+                            negative_flag = hi & 0x8000000000000000;
+                            carryout_flag = hi != 0;
+                            overflow_flag = (p < static_cast<__int128>(INT64_MIN) || p > static_cast<__int128>(INT64_MAX));
+                            alu.op2_reg.w0 = lo;
+                            alu.op1_reg.w0 = hi;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case instr::umulw_opcode: {
+                    /* Unsigned wide multiply (card maize-7). Same shape as MULW but zero-extended
+                       operands and V == C == (high half nonzero). Operands are cast to the unsigned
+                       2w-bit type before multiplying so w==4 keeps its high half (open_question 6459). */
+                    switch (op_size) {
+                        case 1: {
+                            u_qword up = static_cast<u_qword>(alu.op2_reg.b0) * static_cast<u_qword>(alu.op1_reg.b0);
+                            u_word lo = up & 0xFF;
+                            u_word hi = (up >> 8) & 0xFF;
+                            zero_flag = (lo == 0 && hi == 0);
+                            negative_flag = hi & 0x80;
+                            carryout_flag = hi != 0;
+                            overflow_flag = hi != 0;
+                            alu.op2_reg.w0 = lo;
+                            alu.op1_reg.w0 = hi;
+                            break;
+                        }
+
+                        case 2: {
+                            u_hword up = static_cast<u_hword>(alu.op2_reg.q0) * static_cast<u_hword>(alu.op1_reg.q0);
+                            u_word lo = up & 0xFFFF;
+                            u_word hi = (up >> 16) & 0xFFFF;
+                            zero_flag = (lo == 0 && hi == 0);
+                            negative_flag = hi & 0x8000;
+                            carryout_flag = hi != 0;
+                            overflow_flag = hi != 0;
+                            alu.op2_reg.w0 = lo;
+                            alu.op1_reg.w0 = hi;
+                            break;
+                        }
+
+                        case 4: {
+                            u_word up = static_cast<u_word>(alu.op2_reg.h0) * static_cast<u_word>(alu.op1_reg.h0);
+                            u_word lo = up & 0xFFFFFFFF;
+                            u_word hi = (up >> 32) & 0xFFFFFFFF;
+                            zero_flag = (lo == 0 && hi == 0);
+                            negative_flag = hi & 0x80000000;
+                            carryout_flag = hi != 0;
+                            overflow_flag = hi != 0;
+                            alu.op2_reg.w0 = lo;
+                            alu.op1_reg.w0 = hi;
+                            break;
+                        }
+
+                        case 8: {
+                            unsigned __int128 up = static_cast<unsigned __int128>(alu.op2_reg.w0) * static_cast<unsigned __int128>(alu.op1_reg.w0);
+                            u_word lo = static_cast<u_word>(up);
+                            u_word hi = static_cast<u_word>(up >> 64);
+                            zero_flag = (lo == 0 && hi == 0);
+                            negative_flag = hi & 0x8000000000000000;
+                            carryout_flag = hi != 0;
+                            overflow_flag = hi != 0;
+                            alu.op2_reg.w0 = lo;
+                            alu.op1_reg.w0 = hi;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
                 case instr::div_opcode: {
                     /* Signed division (card maize-5). C and V are cleared; N and Z come from
                        the result. Divide-by-zero and the INT_MIN/-1 quotient overflow trap. */
@@ -2293,6 +2423,70 @@ namespace maize {
                         regs::rf.h0 = saved_fl;
                         regs::rp.w0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
+                        break;
+                    }
+
+                    /* Wide multiply (card maize-7): 3-operand src/dst/hi form modeled on LEA, but
+                       flag-setting (run_alu leaves C/N/V/Z as computed) and writing BOTH dst (low
+                       half, from alu.op2_reg) and hi (high half, from alu.op1_reg). The operation
+                       width is dst's subregister (op2_subreg_size); hi is written at that width. */
+                    case instr::mulw_regVal_regreg:
+                    case instr::umulw_regVal_regreg: {
+                        regs::rp.w0 += 3;
+                        copy_regval_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
+                        copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
+                        alu.b0 = regs::ri.b0;
+                        alu.b1 = op1_subreg_size();
+                        alu.b2 = op2_subreg_size();
+                        run_alu();
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        copy_regval_reg(alu.op1_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
+                        break;
+                    }
+
+                    case instr::mulw_immVal_regreg:
+                    case instr::umulw_immVal_regreg: {
+                        regs::rp.w0 += 3;
+                        u_byte src_size = op1_imm_size();
+                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
+                        alu.b0 = regs::ri.b0;
+                        alu.b1 = src_size;
+                        alu.b2 = op2_subreg_size();
+                        run_alu();
+                        regs::rp.w0 += src_size;
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        copy_regval_reg(alu.op1_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
+                        break;
+                    }
+
+                    case instr::mulw_regAddr_regreg:
+                    case instr::umulw_regAddr_regreg: {
+                        regs::rp.w0 += 3;
+                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
+                        copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
+                        alu.b0 = regs::ri.b0;
+                        alu.b1 = op1_subreg_size();
+                        alu.b2 = op2_subreg_size();
+                        run_alu();
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        copy_regval_reg(alu.op1_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
+                        break;
+                    }
+
+                    case instr::mulw_immAddr_regreg:
+                    case instr::umulw_immAddr_regreg: {
+                        regs::rp.w0 += 3;
+                        u_byte src_size = op1_imm_size();
+                        copy_memaddr_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
+                        alu.b0 = regs::ri.b0;
+                        alu.b1 = src_size;
+                        alu.b2 = op2_subreg_size();
+                        run_alu();
+                        regs::rp.w0 += src_size;
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        copy_regval_reg(alu.op1_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
                         break;
                     }
 
