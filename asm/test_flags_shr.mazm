@@ -33,6 +33,50 @@ shr0a_ok:
     SHR $00 R0.B0
     JB fail
 
+    ; ---- SHR n=0 : Z preserved SET (nonzero operand) ----
+    ; Preset Z=1 (AND -> 0), then count-0 shift on a nonzero operand ($81).
+    ; A recompute-from-operand would CLEAR Z here, so this catches a stuck-clear regression.
+    CLR R8
+    AND $00 R8.B0           ; result 0 -> Z set
+    CP $81 R0.B0            ; nonzero operand (CP is flag-neutral)
+    SHR $00 R0.B0           ; count 0: Z must stay set
+    CP RF.B0 R9.B0          ; snapshot flags (CP is flag-neutral)
+    AND $10 R9.B0           ; isolate Z
+    JZ fail                 ; Z cleared -> regression
+
+    ; ---- SHR n=0 : Z preserved CLEAR (zero operand) ----
+    ; Preset Z=0 (AND -> 1), then count-0 shift on a zero operand.
+    ; A recompute-from-operand would SET Z here, so this catches a stuck-set regression.
+    CP $01 R8.B0
+    AND $01 R8.B0           ; result 1 -> Z clear
+    CLR R0                  ; zero operand (CLR is flag-neutral)
+    SHR $00 R0.B0           ; count 0: Z must stay clear
+    CP RF.B0 R9.B0
+    AND $10 R9.B0           ; isolate Z
+    JNZ fail                ; Z set -> regression
+
+    ; ---- SHR n=0 : N preserved SET (operand high bit clear) ----
+    ; Preset N=1 (AND -> $80), then count-0 shift on an operand whose high bit is clear.
+    ; A recompute-from-operand would CLEAR N here.
+    CP $80 R8.B0
+    AND $80 R8.B0           ; result $80 -> N set
+    CP $01 R0.B0            ; operand high bit clear
+    SHR $00 R0.B0           ; count 0: N must stay set
+    CP RF.B0 R9.B0
+    AND $02 R9.B0           ; isolate N
+    JZ fail                 ; N cleared -> regression
+
+    ; ---- SHR n=0 : N preserved CLEAR (operand high bit set) ----
+    ; Preset N=0 (AND -> 1), then count-0 shift on an operand whose high bit is set ($81).
+    ; A recompute-from-operand would SET N here.
+    CP $01 R8.B0
+    AND $01 R8.B0           ; result 1 -> N clear
+    CP $81 R0.B0            ; operand high bit set
+    SHR $00 R0.B0           ; count 0: N must stay clear
+    CP RF.B0 R9.B0
+    AND $02 R9.B0           ; isolate N
+    JNZ fail                ; N set -> regression
+
     ; ---- SHR n=1 : C set, V set ----
     CP $81 R0.B0
     SHR $01 R0.B0
