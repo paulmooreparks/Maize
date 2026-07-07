@@ -456,7 +456,9 @@ be set in privileged mode and are unaffected by the arithmetic/logic instruction
 
     Instruction              C                       N        V                       Z
     ADD, INC                 unsigned carry-out      result   signed overflow         result == 0
+    ADC                      unsigned carry-out      result   signed overflow         result == 0
     SUB, CMP, CMPIND, DEC    unsigned borrow         result   signed overflow         result == 0
+    SBB                      unsigned borrow         result   signed overflow         result == 0
     MUL                      = V (mirrors overflow)  result   signed overflow         result == 0
     DIV, MOD, UDIV, UMOD     0 (cleared)             result   0 (cleared)             result == 0
     AND, OR, XOR, NAND,      0 (cleared)             result   0 (cleared)             result == 0
@@ -473,6 +475,10 @@ Notes:
   the VM halts with a diagnostic rather than continuing with an undefined result.
 - MUL's carry currently mirrors its overflow flag; a distinct "high half nonzero" carry test is
   deferred until the wide-multiply (high-half product) instruction lands.
+- ADC and SBB carry the C flag into the operation: ADC computes dst + src + C, and SBB computes
+  dst - src - C. A multi-word add or subtract runs ADD/SUB on the low word (which sets C) and then
+  ADC/SBB on each higher word. Z reflects only the current word, so a full-width zero test ANDs the
+  per-word Z results across the chain.
 - Shift-count edge cases (SHL/SHR): a count of 0 leaves all flags unaffected; a count from 1 to the
   operand width shifts normally, with C set to the last bit shifted out and V defined only for a
   count of 1 (SHL: the sign bit changed; SHR: the prior sign bit); a count greater than the operand
@@ -739,15 +745,15 @@ bit 7 is interpreted as follows:
     %1011`1010  $BA   JAE       regAddr         If Carry flag is clear (unsigned >=), jump to address pointed to by source register and continue execution
     %1111`1010  $FA   JAE       immAddr         If Carry flag is clear (unsigned >=), jump to address pointed to by immediate value and continue execution
 
-    %0011`1011  $3B                             reserved
-    %0111`1011  $7B                             reserved
-    %1011`1011  $BB                             reserved
-    %1111`1011  $FB                             reserved
+    %0011`1011  $3B   ADC       regVal  reg     Add source register value plus Carry to destination register
+    %0111`1011  $7B   ADC       immVal  reg     Add immediate value plus Carry to destination register
+    %1011`1011  $BB   ADC       regAddr reg     Add value at address in source register plus Carry to destination register
+    %1111`1011  $FB   ADC       immAddr reg     Add value at immediate address plus Carry to destination register
 
-    %0011`1100  $3C                             reserved
-    %0111`1100  $7C                             reserved
-    %1011`1100  $BC                             reserved
-    %1111`1100  $FC                             reserved
+    %0011`1100  $3C   SBB       regVal  reg     Subtract source register value plus Carry (borrow) from destination register
+    %0111`1100  $7C   SBB       immVal  reg     Subtract immediate value plus Carry (borrow) from destination register
+    %1011`1100  $BC   SBB       regAddr reg     Subtract value at address in source register plus Carry (borrow) from destination register
+    %1111`1100  $FC   SBB       immAddr reg     Subtract value at immediate address plus Carry (borrow) from destination register
 
     %0011`1101  $3D                             reserved
     %0111`1101  $7D                             reserved
@@ -1011,8 +1017,8 @@ Other syntax, to be described more fully later:
     %0011`1000  $38   JLE       regVal          If Zero flag is set or Negative flag does not equal Overflow flag (signed <=), jump to address in source register and continue execution
     %0011`1001  $39   JBE       regVal          If Carry flag is set or Zero flag is set (unsigned <=), jump to address in source register and continue execution
     %0011`1010  $3A   JAE       regVal          If Carry flag is clear (unsigned >=), jump to address in source register and continue execution
-    %0011`1011  $3B                             reserved
-    %0011`1100  $3C                             reserved
+    %0011`1011  $3B   ADC       regVal  reg     Add source register value plus Carry to destination register
+    %0011`1100  $3C   SBB       regVal  reg     Subtract source register value plus Carry (borrow) from destination register
     %0011`1101  $3D                             reserved
     %0011`1110  $3E                             reserved
     %0011`1111  $3F
@@ -1075,8 +1081,8 @@ Other syntax, to be described more fully later:
     %0111`1000  $78   JLE       immVal          If Zero flag is set or Negative flag does not equal Overflow flag (signed <=), jump to immediate address and continue execution
     %0111`1001  $79   JBE       immVal          If Carry flag is set or Zero flag is set (unsigned <=), jump to immediate address and continue execution
     %0111`1010  $7A   JAE       immVal          If Carry flag is clear (unsigned >=), jump to immediate address and continue execution
-    %0111`1011  $7B                             reserved
-    %0111`1100  $7C                             reserved
+    %0111`1011  $7B   ADC       immVal  reg     Add immediate value plus Carry to destination register
+    %0111`1100  $7C   SBB       immVal  reg     Subtract immediate value plus Carry (borrow) from destination register
     %0111`1101  $7D                             reserved
     %0111`1110  $7E                             reserved
     %0111`1111  $7F
@@ -1139,8 +1145,8 @@ Other syntax, to be described more fully later:
     %1011`1000  $B8   JLE       regAddr         If Zero flag is set or Negative flag does not equal Overflow flag (signed <=), jump to address pointed to by source register and continue execution
     %1011`1001  $B9   JBE       regAddr         If Carry flag is set or Zero flag is set (unsigned <=), jump to address pointed to by source register and continue execution
     %1011`1010  $BA   JAE       regAddr         If Carry flag is clear (unsigned >=), jump to address pointed to by source register and continue execution
-    %1011`1011  $BB                             reserved
-    %1011`1100  $BC                             reserved
+    %1011`1011  $BB   ADC       regAddr reg     Add value at address in source register plus Carry to destination register
+    %1011`1100  $BC   SBB       regAddr reg     Subtract value at address in source register plus Carry (borrow) from destination register
     %1011`1101  $BD                             reserved
     %1011`1110  $BE                             reserved
     %1011`1111  $BF
@@ -1203,8 +1209,8 @@ Other syntax, to be described more fully later:
     %1111`1000  $F8   JLE       immAddr         If Zero flag is set or Negative flag does not equal Overflow flag (signed <=), jump to address pointed to by immediate value and continue execution
     %1111`1001  $F9   JBE       immAddr         If Carry flag is set or Zero flag is set (unsigned <=), jump to address pointed to by immediate value and continue execution
     %1111`1010  $FA   JAE       immAddr         If Carry flag is clear (unsigned >=), jump to address pointed to by immediate value and continue execution
-    %1111`1011  $FB                             reserved
-    %1111`1100  $FC                             reserved
+    %1111`1011  $FB   ADC       immAddr reg     Add value at immediate address plus Carry to destination register
+    %1111`1100  $FC   SBB       immAddr reg     Subtract value at immediate address plus Carry (borrow) from destination register
     %1111`1101  $FD                             reserved
     %1111`1110  $FE                             reserved
     %1111`1111  $FF   BRK                       Trigger a debug break

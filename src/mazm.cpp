@@ -206,6 +206,8 @@ namespace {
         { "ST",     {cpu::instr::st_opcode     , opcode_2param_tokenizer, regimm_regaddr_compiler}},
         { "ADD",    {cpu::instr::add_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "SUB",    {cpu::instr::sub_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
+        { "ADC",    {cpu::instr::adc_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
+        { "SBB",    {cpu::instr::sbb_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "MUL",    {cpu::instr::mul_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "DIV",    {cpu::instr::div_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "MOD",    {cpu::instr::mod_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},

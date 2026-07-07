@@ -477,6 +477,19 @@ namespace maize {
 			const opcode umod_regAddr_reg		{umod_opcode | opcode_flag_srcAddr};
 			const opcode umod_immAddr_reg		{umod_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
+			// Add-with-carry / subtract-with-borrow (card maize-6): ADC = dst + src + C, SBB = dst - src - C.
+			const opcode adc_opcode				{0x3B};
+			const opcode adc_regVal_reg			{adc_opcode | opcode_flag_srcReg};
+			const opcode adc_immVal_reg			{adc_opcode | opcode_flag_srcImm};
+			const opcode adc_regAddr_reg		{adc_opcode | opcode_flag_srcAddr};
+			const opcode adc_immAddr_reg		{adc_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			const opcode sbb_opcode				{0x3C};
+			const opcode sbb_regVal_reg			{sbb_opcode | opcode_flag_srcReg};
+			const opcode sbb_immVal_reg			{sbb_opcode | opcode_flag_srcImm};
+			const opcode sbb_regAddr_reg		{sbb_opcode | opcode_flag_srcAddr};
+			const opcode sbb_immAddr_reg		{sbb_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
 			const opcode and_opcode				{0x08};
 			const opcode and_regVal_reg			{and_opcode | opcode_flag_srcReg};
 			const opcode and_immVal_reg			{and_opcode | opcode_flag_srcImm};

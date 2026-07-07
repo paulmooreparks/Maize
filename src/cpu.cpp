@@ -900,6 +900,132 @@ namespace maize {
                     break;
                 }
 
+                case instr::adc_opcode: {
+                    /* Add with carry: dst + src + C (card maize-6). C = unsigned carry-out, V =
+                       signed overflow, N = sign, Z = this word's result (per-word, x86-style, so
+                       multi-word chains AND the per-word Z). Carry-out uses a two-step test so the
+                       64-bit width needs no 128-bit accumulator. */
+                    unsigned carry_in = (bool)carryout_flag ? 1u : 0u;
+
+                    switch (op_size) {
+                        case 1: {
+                            u_byte dst_before = alu.op2_reg.b0;
+                            u_byte src = alu.op1_reg.b0;
+                            u_byte sum1 = dst_before + src;
+                            u_byte result = sum1 + static_cast<u_byte>(carry_in);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            carryout_flag = (sum1 < dst_before) || (result < sum1);
+                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x80;
+                            alu.op2_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            u_qword dst_before = alu.op2_reg.q0;
+                            u_qword src = alu.op1_reg.q0;
+                            u_qword sum1 = dst_before + src;
+                            u_qword result = sum1 + static_cast<u_qword>(carry_in);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            carryout_flag = (sum1 < dst_before) || (result < sum1);
+                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x8000;
+                            alu.op2_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            u_hword dst_before = alu.op2_reg.h0;
+                            u_hword src = alu.op1_reg.h0;
+                            u_hword sum1 = dst_before + src;
+                            u_hword result = sum1 + static_cast<u_hword>(carry_in);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            carryout_flag = (sum1 < dst_before) || (result < sum1);
+                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x80000000;
+                            alu.op2_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            u_word dst_before = alu.op2_reg.w0;
+                            u_word src = alu.op1_reg.w0;
+                            u_word sum1 = dst_before + src;
+                            u_word result = sum1 + static_cast<u_word>(carry_in);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            carryout_flag = (sum1 < dst_before) || (result < sum1);
+                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x8000000000000000;
+                            alu.op2_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case instr::sbb_opcode: {
+                    /* Subtract with borrow: dst - src - C (card maize-6). C = unsigned borrow
+                       (x86 convention), V = signed overflow, N = sign, Z = this word's result. */
+                    unsigned borrow_in = (bool)carryout_flag ? 1u : 0u;
+
+                    switch (op_size) {
+                        case 1: {
+                            u_byte dst_before = alu.op2_reg.b0;
+                            u_byte src = alu.op1_reg.b0;
+                            u_byte diff1 = dst_before - src;
+                            u_byte result = diff1 - static_cast<u_byte>(borrow_in);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            carryout_flag = (diff1 > dst_before) || (result > diff1);
+                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x80;
+                            alu.op2_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            u_qword dst_before = alu.op2_reg.q0;
+                            u_qword src = alu.op1_reg.q0;
+                            u_qword diff1 = dst_before - src;
+                            u_qword result = diff1 - static_cast<u_qword>(borrow_in);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            carryout_flag = (diff1 > dst_before) || (result > diff1);
+                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x8000;
+                            alu.op2_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            u_hword dst_before = alu.op2_reg.h0;
+                            u_hword src = alu.op1_reg.h0;
+                            u_hword diff1 = dst_before - src;
+                            u_hword result = diff1 - static_cast<u_hword>(borrow_in);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            carryout_flag = (diff1 > dst_before) || (result > diff1);
+                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x80000000;
+                            alu.op2_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            u_word dst_before = alu.op2_reg.w0;
+                            u_word src = alu.op1_reg.w0;
+                            u_word diff1 = dst_before - src;
+                            u_word result = diff1 - static_cast<u_word>(borrow_in);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            carryout_flag = (diff1 > dst_before) || (result > diff1);
+                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x8000000000000000;
+                            alu.op2_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
                 case instr::mul_opcode: {
                     /* Overflow (V) is the signed-overflow test on the pre-op operands. Carry (C) mirrors
                        V until the wide-multiply card (97821c447640) lands a high-half product; see card
@@ -1854,6 +1980,8 @@ namespace maize {
                     case instr::div_regVal_reg:
                     case instr::mod_regVal_reg:
                     case instr::udiv_regVal_reg:
+                    case instr::adc_regVal_reg:
+                    case instr::sbb_regVal_reg:
                     case instr::umod_regVal_reg:
                     case instr::and_regVal_reg:
                     case instr::or_regVal_reg:
@@ -1883,6 +2011,8 @@ namespace maize {
                     case instr::div_immVal_reg:
                     case instr::mod_immVal_reg:
                     case instr::udiv_immVal_reg:
+                    case instr::adc_immVal_reg:
+                    case instr::sbb_immVal_reg:
                     case instr::umod_immVal_reg:
                     case instr::and_immVal_reg:
                     case instr::or_immVal_reg:
@@ -1913,6 +2043,8 @@ namespace maize {
                     case instr::div_regAddr_reg:
                     case instr::mod_regAddr_reg:
                     case instr::udiv_regAddr_reg:
+                    case instr::adc_regAddr_reg:
+                    case instr::sbb_regAddr_reg:
                     case instr::umod_regAddr_reg:
                     case instr::and_regAddr_reg:
                     case instr::or_regAddr_reg:
@@ -1942,6 +2074,8 @@ namespace maize {
                     case instr::div_immAddr_reg:
                     case instr::mod_immAddr_reg:
                     case instr::udiv_immAddr_reg:
+                    case instr::adc_immAddr_reg:
+                    case instr::sbb_immAddr_reg:
                     case instr::umod_immAddr_reg:
                     case instr::and_immAddr_reg:
                     case instr::or_immAddr_reg:

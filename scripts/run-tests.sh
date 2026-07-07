@@ -3,7 +3,7 @@
 # point; this is what maize-36 invokes).
 #
 # Configures and builds the linux-debug preset (or an override given via
-# --preset), then assembles and runs each of the 17 in-scope tests under asm/,
+# --preset), then assembles and runs each of the 18 in-scope tests under asm/,
 # comparing captured stdout against the expected output embedded below. Prints
 # a per-test PASS/FAIL report plus a summary line. Never prompts for input, so
 # it is safe for non-interactive CI use.
@@ -225,6 +225,7 @@ run_test "test_div"          "test_div.mazm"          "div: PASS"               
 run_test "test_jcc"          "test_jcc.mazm"          "jcc: PASS"                     0
 run_test "test_memblock"     "test_memblock.mazm"     "memblock: PASS"                0
 run_test "test_crossblock"   "test_crossblock.mazm"   "crossblk: PASS"                0
+run_test "test_adc"          "test_adc.mazm"          "adc: PASS"                     0
 run_test "reject_ld_value"   "test_reject_ldval.mazm" "reads from a memory address"   0 1
 
 PASS_COUNT=$((TOTAL - FAIL_COUNT))

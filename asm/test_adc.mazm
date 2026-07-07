@@ -1,0 +1,68 @@
+; **********************************************************************************
+; Regression test for card maize-6: add-with-carry (ADC) and subtract-with-borrow (SBB).
+;
+; Exercises the carry/borrow chain by doing 128-bit arithmetic in two 64-bit halves:
+;   (R1:R0) = 0x0000000000000001 : 0xFFFFFFFFFFFFFFFF
+;   (R3:R2) = 0x0000000000000002 : 0x0000000000000001
+; ADD the low halves (carry out), ADC the high halves; the 128-bit sum is
+;   0x0000000000000004 : 0x0000000000000000
+; Then subtract it back down with SUB + SBB and check the borrow propagates.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- 128-bit add: low ADD sets carry, high ADC consumes it ----
+    CLR R0
+    NOT R0                 ; R0 = 0xFFFFFFFFFFFFFFFF  (A low)
+    CP $01 R1              ; R1 = 1                    (A high)
+    CP $01 R2              ; R2 = 1                    (B low)
+    CP $02 R3              ; R3 = 2                    (B high)
+    ADD R2 R0              ; A_low += B_low  -> 0, carry out
+    ADC R3 R1              ; A_high += B_high + carry -> 1 + 2 + 1 = 4
+    CLR R5
+    CMP R5 R0              ; A_low must be 0
+    JNZ fail
+    CP $04 R5
+    CMP R5 R1              ; A_high must be 4
+    JNZ fail
+
+    ; ---- 128-bit subtract: low SUB sets borrow, high SBB consumes it ----
+    ; (R1:R0) = 0x04:0x00 from above; subtract 0x02:0x01 -> 0x01:0xFFFFFFFFFFFFFFFF
+    CP $01 R6              ; B low
+    CP $02 R7              ; B high
+    SUB R6 R0              ; A_low - 1 -> 0xFFFFFFFFFFFFFFFF, borrow out
+    SBB R7 R1              ; A_high - 2 - borrow -> 4 - 2 - 1 = 1
+    CLR R5
+    NOT R5                 ; R5 = 0xFFFFFFFFFFFFFFFF
+    CMP R5 R0              ; A_low must be all ones
+    JNZ fail
+    CLR R5                 ; clear the all-ones left by NOT before loading a byte immediate
+    CP $01 R5
+    CMP R5 R1              ; A_high must be 1
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $0A R2              ; 10 bytes
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $0A R2              ; 10 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "adc: PASS\n\0"
+
+fail_string:
+    STRING "adc: FAIL\n\0"
