@@ -810,6 +810,13 @@ namespace maize {
             devices[id] = &new_device;
         }
 
+        /* Divide-by-zero and signed INT_MIN/-1 overflow are divide-error traps (card maize-5).
+           Until the interrupt mechanism exists, halt cleanly by throwing rather than invoking
+           C++ undefined behavior; this matches the unknown-opcode handler's shape. */
+        [[noreturn]] void raise_divide_error(const char* detail) {
+            throw std::logic_error(std::string("divide error: ") + detail);
+        }
+
         void run_alu() {
             u_byte op_size = alu.b2; // Destination size
             u_byte alu_op = alu.b0 & arithmetic_logic_unit::opflag_code;
@@ -986,12 +993,133 @@ namespace maize {
                 }
 
                 case instr::div_opcode: {
+                    /* Signed division (card maize-5). C and V are cleared; N and Z come from
+                       the result. Divide-by-zero and the INT_MIN/-1 quotient overflow trap. */
                     overflow_flag = false;
                     carryout_flag = false;
 
                     switch (op_size) {
                         case 1: {
-                            u_byte result = alu.op2_reg.b0 / alu.op1_reg.b0;
+                            s_byte divisor = alu.op1_reg.b0;
+                            s_byte dividend = alu.op2_reg.b0;
+                            if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                            if (divisor == -1 && dividend == std::numeric_limits<s_byte>::min()) { raise_divide_error("signed division overflow"); }
+                            s_byte result = dividend / divisor;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            alu.op2_reg.w0 = static_cast<u_byte>(result);
+                            break;
+                        }
+
+                        case 2: {
+                            s_qword divisor = alu.op1_reg.q0;
+                            s_qword dividend = alu.op2_reg.q0;
+                            if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                            if (divisor == -1 && dividend == std::numeric_limits<s_qword>::min()) { raise_divide_error("signed division overflow"); }
+                            s_qword result = dividend / divisor;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            alu.op2_reg.w0 = static_cast<u_qword>(result);
+                            break;
+                        }
+
+                        case 4: {
+                            s_hword divisor = alu.op1_reg.h0;
+                            s_hword dividend = alu.op2_reg.h0;
+                            if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                            if (divisor == -1 && dividend == std::numeric_limits<s_hword>::min()) { raise_divide_error("signed division overflow"); }
+                            s_hword result = dividend / divisor;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            alu.op2_reg.w0 = static_cast<u_hword>(result);
+                            break;
+                        }
+
+                        case 8: {
+                            s_word divisor = alu.op1_reg.w0;
+                            s_word dividend = alu.op2_reg.w0;
+                            if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                            if (divisor == -1 && dividend == std::numeric_limits<s_word>::min()) { raise_divide_error("signed division overflow"); }
+                            s_word result = dividend / divisor;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            alu.op2_reg.w0 = static_cast<u_word>(result);
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case instr::mod_opcode: {
+                    /* Signed remainder (card maize-5). Same trap cases as signed DIV; the C++
+                       remainder takes the sign of the dividend (truncated division). */
+                    overflow_flag = false;
+                    carryout_flag = false;
+
+                    switch (op_size) {
+                        case 1: {
+                            s_byte divisor = alu.op1_reg.b0;
+                            s_byte dividend = alu.op2_reg.b0;
+                            if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                            if (divisor == -1 && dividend == std::numeric_limits<s_byte>::min()) { raise_divide_error("signed division overflow"); }
+                            s_byte result = dividend % divisor;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            alu.op2_reg.w0 = static_cast<u_byte>(result);
+                            break;
+                        }
+
+                        case 2: {
+                            s_qword divisor = alu.op1_reg.q0;
+                            s_qword dividend = alu.op2_reg.q0;
+                            if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                            if (divisor == -1 && dividend == std::numeric_limits<s_qword>::min()) { raise_divide_error("signed division overflow"); }
+                            s_qword result = dividend % divisor;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            alu.op2_reg.w0 = static_cast<u_qword>(result);
+                            break;
+                        }
+
+                        case 4: {
+                            s_hword divisor = alu.op1_reg.h0;
+                            s_hword dividend = alu.op2_reg.h0;
+                            if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                            if (divisor == -1 && dividend == std::numeric_limits<s_hword>::min()) { raise_divide_error("signed division overflow"); }
+                            s_hword result = dividend % divisor;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            alu.op2_reg.w0 = static_cast<u_hword>(result);
+                            break;
+                        }
+
+                        case 8: {
+                            s_word divisor = alu.op1_reg.w0;
+                            s_word dividend = alu.op2_reg.w0;
+                            if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                            if (divisor == -1 && dividend == std::numeric_limits<s_word>::min()) { raise_divide_error("signed division overflow"); }
+                            s_word result = dividend % divisor;
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            alu.op2_reg.w0 = static_cast<u_word>(result);
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
+                case instr::udiv_opcode: {
+                    /* Unsigned division (card maize-5). Divide-by-zero traps. */
+                    overflow_flag = false;
+                    carryout_flag = false;
+
+                    switch (op_size) {
+                        case 1: {
+                            u_byte divisor = alu.op1_reg.b0;
+                            if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                            u_byte result = alu.op2_reg.b0 / divisor;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
                             alu.op2_reg.w0 = result;
@@ -999,7 +1127,9 @@ namespace maize {
                         }
 
                         case 2: {
-                            u_qword result = alu.op2_reg.q0 / alu.op1_reg.q0;
+                            u_qword divisor = alu.op1_reg.q0;
+                            if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                            u_qword result = alu.op2_reg.q0 / divisor;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
                             alu.op2_reg.w0 = result;
@@ -1007,7 +1137,9 @@ namespace maize {
                         }
 
                         case 4: {
-                            u_hword result = alu.op2_reg.h0 / alu.op1_reg.h0;
+                            u_hword divisor = alu.op1_reg.h0;
+                            if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                            u_hword result = alu.op2_reg.h0 / divisor;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
                             alu.op2_reg.w0 = result;
@@ -1015,7 +1147,9 @@ namespace maize {
                         }
 
                         case 8: {
-                            u_word result = alu.op2_reg.w0 / alu.op1_reg.w0;
+                            u_word divisor = alu.op1_reg.w0;
+                            if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                            u_word result = alu.op2_reg.w0 / divisor;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
                             alu.op2_reg.w0 = result;
@@ -1026,13 +1160,16 @@ namespace maize {
                     break;
                 }
 
-                case instr::mod_opcode: {
+                case instr::umod_opcode: {
+                    /* Unsigned remainder (card maize-5). Divide-by-zero traps. */
                     overflow_flag = false;
                     carryout_flag = false;
 
                     switch (op_size) {
                         case 1: {
-                            u_byte result = alu.op2_reg.b0 % alu.op1_reg.b0;
+                            u_byte divisor = alu.op1_reg.b0;
+                            if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                            u_byte result = alu.op2_reg.b0 % divisor;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80;
                             alu.op2_reg.w0 = result;
@@ -1040,7 +1177,9 @@ namespace maize {
                         }
 
                         case 2: {
-                            u_qword result = alu.op2_reg.q0 % alu.op1_reg.q0;
+                            u_qword divisor = alu.op1_reg.q0;
+                            if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                            u_qword result = alu.op2_reg.q0 % divisor;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000;
                             alu.op2_reg.w0 = result;
@@ -1048,7 +1187,9 @@ namespace maize {
                         }
 
                         case 4: {
-                            u_hword result = alu.op2_reg.h0 % alu.op1_reg.h0;
+                            u_hword divisor = alu.op1_reg.h0;
+                            if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                            u_hword result = alu.op2_reg.h0 % divisor;
                             zero_flag = result == 0;
                             negative_flag = result & 0x80000000;
                             alu.op2_reg.w0 = result;
@@ -1056,7 +1197,9 @@ namespace maize {
                         }
 
                         case 8: {
-                            u_word result = alu.op2_reg.w0 % alu.op1_reg.w0;
+                            u_word divisor = alu.op1_reg.w0;
+                            if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                            u_word result = alu.op2_reg.w0 % divisor;
                             zero_flag = result == 0;
                             negative_flag = result & 0x8000000000000000;
                             alu.op2_reg.w0 = result;
@@ -1748,6 +1891,8 @@ namespace maize {
                     case instr::mul_regVal_reg:
                     case instr::div_regVal_reg:
                     case instr::mod_regVal_reg:
+                    case instr::udiv_regVal_reg:
+                    case instr::umod_regVal_reg:
                     case instr::and_regVal_reg:
                     case instr::or_regVal_reg:
                     case instr::nor_regVal_reg:
@@ -1775,6 +1920,8 @@ namespace maize {
                     case instr::mul_immVal_reg:
                     case instr::div_immVal_reg:
                     case instr::mod_immVal_reg:
+                    case instr::udiv_immVal_reg:
+                    case instr::umod_immVal_reg:
                     case instr::and_immVal_reg:
                     case instr::or_immVal_reg:
                     case instr::nor_immVal_reg:
@@ -1803,6 +1950,8 @@ namespace maize {
                     case instr::mul_regAddr_reg:
                     case instr::div_regAddr_reg:
                     case instr::mod_regAddr_reg:
+                    case instr::udiv_regAddr_reg:
+                    case instr::umod_regAddr_reg:
                     case instr::and_regAddr_reg:
                     case instr::or_regAddr_reg:
                     case instr::nor_regAddr_reg:
@@ -1830,6 +1979,8 @@ namespace maize {
                     case instr::mul_immAddr_reg:
                     case instr::div_immAddr_reg:
                     case instr::mod_immAddr_reg:
+                    case instr::udiv_immAddr_reg:
+                    case instr::umod_immAddr_reg:
                     case instr::and_immAddr_reg:
                     case instr::or_immAddr_reg:
                     case instr::nor_immAddr_reg:

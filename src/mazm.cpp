@@ -209,6 +209,8 @@ namespace {
         { "MUL",    {cpu::instr::mul_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "DIV",    {cpu::instr::div_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "MOD",    {cpu::instr::mod_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
+        { "UDIV",   {cpu::instr::udiv_opcode   , opcode_2param_tokenizer, regimm_reg_compiler}},
+        { "UMOD",   {cpu::instr::umod_opcode   , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "AND",    {cpu::instr::and_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "OR",     {cpu::instr::or_opcode     , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "NOR",    {cpu::instr::nor_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},

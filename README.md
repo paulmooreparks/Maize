@@ -301,7 +301,7 @@ following the parameters bytes are the immediate value in little-endian format.
 Immediate values may used as pointers into memory. This is represented in assembly by the '@'
 prefix in front of the immediate value.
 
-Example: Copy the 64-bit value at address $0000`1000 into register R1.
+Example: Copy the 64-bit value at address $0000,1000 into register R1.
 
     CP @$0000`1000 R1
 
@@ -438,7 +438,7 @@ be set in privileged mode and are unaffected by the arithmetic/logic instruction
     ADD, INC                 unsigned carry-out      result   signed overflow         result == 0
     SUB, CMP, CMPIND, DEC    unsigned borrow         result   signed overflow         result == 0
     MUL                      = V (mirrors overflow)  result   signed overflow         result == 0
-    DIV, MOD                 0 (cleared)             result   0 (cleared)             result == 0
+    DIV, MOD, UDIV, UMOD     0 (cleared)             result   0 (cleared)             result == 0
     AND, OR, XOR, NAND,      0 (cleared)             result   0 (cleared)             result == 0
       NOR, NOT, TEST, TESTIND
     SHL, SHR                 last bit shifted out    result   see below               result == 0
@@ -447,6 +447,10 @@ be set in privileged mode and are unaffected by the arithmetic/logic instruction
 
 Notes:
 
+- DIV and MOD are signed (two's-complement, truncated toward zero; the remainder takes the sign
+  of the dividend). UDIV and UMOD are the unsigned counterparts. A zero divisor, and the signed
+  INT_MIN / -1 quotient overflow, raise a divide-error trap; until the interrupt mechanism exists
+  the VM halts with a diagnostic rather than continuing with an undefined result.
 - MUL's carry currently mirrors its overflow flag; a distinct "high half nonzero" carry test is
   deferred until the wide-multiply (high-half product) instruction lands.
 - Shift-count edge cases (SHL/SHR): a count of 0 leaves all flags unaffected; a count from 1 to the
@@ -462,7 +466,7 @@ Notes:
 ## Execution
 
 The CPU starts in privileged mode, and the program counter (PC) is initially set to address
-$0000`0000`0000`0000. When in privileged mode, the privilege flag is set, and instructions marked
+$0000,0000,0000,0000. When in privileged mode, the privilege flag is set, and instructions marked
 as privileged may be executed. When the privilege flag is cleared, certain flags, registers, and
 instructions are inaccessible. Program execution may return to privileged mode via hardware
 interrupts or via software-generated (INT instruction) interrupts.
@@ -518,15 +522,15 @@ bit 7 is interpreted as follows:
     %1000`0101  $85   MUL       regAddr reg     Multiply destination register by value at address in source register
     %1100`0101  $C5   MUL       immAddr reg     Multiply destination register by value at immediate address
 
-    %0000`0110  $06   DIV       regVal  reg     Divide destination register by source register value
-    %0100`0110  $46   DIV       immVal  reg     Divide destination register by immediate value
-    %1000`0110  $86   DIV       regAddr reg     Divide destination register by value at address in source register
-    %1100`0110  $C6   DIV       immAddr reg     Divide destination register by value at immediate address
+    %0000`0110  $06   DIV       regVal  reg     Signed-divide destination register by source register value
+    %0100`0110  $46   DIV       immVal  reg     Signed-divide destination register by immediate value
+    %1000`0110  $86   DIV       regAddr reg     Signed-divide destination register by value at address in source register
+    %1100`0110  $C6   DIV       immAddr reg     Signed-divide destination register by value at immediate address
 
-    %0000`0111  $07   MOD       regVal  reg     Modulo destination register by source register value
-    %0100`0111  $47   MOD       immVal  reg     Modulo destination register by immediate value
-    %1000`0111  $87   MOD       regAddr reg     Modulo destination register by value at address in source register
-    %1100`0111  $C7   MOD       immAddr reg     Modulo destination register by value at immediate address
+    %0000`0111  $07   MOD       regVal  reg     Signed remainder of destination register divided by source register value
+    %0100`0111  $47   MOD       immVal  reg     Signed remainder of destination register divided by immediate value
+    %1000`0111  $87   MOD       regAddr reg     Signed remainder of destination register divided by value at address in source register
+    %1100`0111  $C7   MOD       immAddr reg     Signed remainder of destination register divided by value at immediate address
 
     %0000`1000  $08   AND       regVal  reg     Bitwise AND destination register with source register value
     %0100`1000  $48   AND       immVal  reg     Bitwise AND destination register with immediate value
@@ -685,15 +689,15 @@ bit 7 is interpreted as follows:
     %1010`1110  $AE                             reserved
     %1110`1110  $EE                             reserved
 
-    %0011`0101  $35                             reserved
-    %0111`0101  $75                             reserved
-    %1011`0101  $B5                             reserved
-    %1111`0101  $F5                             reserved
+    %0011`0101  $35   UDIV      regVal  reg     Unsigned-divide destination register by source register value
+    %0111`0101  $75   UDIV      immVal  reg     Unsigned-divide destination register by immediate value
+    %1011`0101  $B5   UDIV      regAddr reg     Unsigned-divide destination register by value at address in source register
+    %1111`0101  $F5   UDIV      immAddr reg     Unsigned-divide destination register by value at immediate address
 
-    %0011`0110  $36                             reserved
-    %0111`0110  $76                             reserved
-    %1011`0110  $B6                             reserved
-    %1111`0110  $F6                             reserved
+    %0011`0110  $36   UMOD      regVal  reg     Unsigned remainder of destination register divided by source register value
+    %0111`0110  $76   UMOD      immVal  reg     Unsigned remainder of destination register divided by immediate value
+    %1011`0110  $B6   UMOD      regAddr reg     Unsigned remainder of destination register divided by value at address in source register
+    %1111`0110  $F6   UMOD      immAddr reg     Unsigned remainder of destination register divided by value at immediate address
 
     %0011`0111  $37                             reserved
     %0111`0111  $77                             reserved
@@ -933,8 +937,8 @@ Other syntax, to be described more fully later:
     %0000`0011  $03   ADD       regVal  reg     Add source register value to destination register
     %0000`0100  $04   SUB       regVal  reg     Subtract source register value from destination register
     %0000`0101  $05   MUL       regVal  reg     Multiply destination register by source register value
-    %0000`0110  $06   DIV       regVal  reg     Divide destination register by source register value
-    %0000`0111  $07   MOD       regVal  reg     Modulo destination register by source register value
+    %0000`0110  $06   DIV       regVal  reg     Signed-divide destination register by source register value
+    %0000`0111  $07   MOD       regVal  reg     Signed remainder of destination register divided by source register value
     %0000`1000  $08   AND       regVal  reg     Bitwise AND destination register with source register value
     %0000`1001  $09   OR        regVal  reg     Bitwise OR destination register with source register value
     %0000`1010  $0A   NOR       regVal  reg     Bitwise NOR destination register with source register value
@@ -980,8 +984,8 @@ Other syntax, to be described more fully later:
     %0011`0010  $32   DEC       regVal          Decrement register by 1.
     %0011`0011  $33   NOT       regVal          Bitwise negate value in register, store result in register.
     %0011`0100  $34   SYS       regVal          Execute a system call using the system-call index stored in register (privileged)
-    %0011`0101  $35                             reserved
-    %0011`0110  $36                             reserved
+    %0011`0101  $35   UDIV      regVal  reg     Unsigned-divide destination register by source register value
+    %0011`0110  $36   UMOD      regVal  reg     Unsigned remainder of destination register divided by source register value
     %0011`0111  $37                             reserved
     %0011`1000  $38                             reserved
     %0011`1001  $39                             reserved
@@ -997,8 +1001,8 @@ Other syntax, to be described more fully later:
     %0100`0011  $43   ADD       immVal  reg     Add immediate value to destination register
     %0100`0100  $44   SUB       immVal  reg     Subtract immediate value from destination register
     %0100`0101  $45   MUL       immVal  reg     Multiply destination register by immediate value
-    %0100`0110  $46   DIV       immVal  reg     Divide destination register by immediate value
-    %0100`0111  $47   MOD       immVal  reg     Modulo destination register by immediate value
+    %0100`0110  $46   DIV       immVal  reg     Signed-divide destination register by immediate value
+    %0100`0111  $47   MOD       immVal  reg     Signed remainder of destination register divided by immediate value
     %0100`1000  $48   AND       immVal  reg     Bitwise AND destination register with immediate value
     %0100`1001  $49   OR        immVal  reg     Bitwise OR destination register with immediate value
     %0100`1010  $4A   NOR       immVal  reg     Bitwise NOR destination register with immediate value
@@ -1044,8 +1048,8 @@ Other syntax, to be described more fully later:
     %0111`0010  $72
     %0111`0011  $73
     %0111`0100  $74   SYS       immVal          Execute a system call using the immediate index (privileged)
-    %0111`0101  $75                             reserved
-    %0111`0110  $76                             reserved
+    %0111`0101  $75   UDIV      immVal  reg     Unsigned-divide destination register by immediate value
+    %0111`0110  $76   UMOD      immVal  reg     Unsigned remainder of destination register divided by immediate value
     %0111`0111  $77                             reserved
     %0111`1000  $78                             reserved
     %0111`1001  $79                             reserved
@@ -1061,8 +1065,8 @@ Other syntax, to be described more fully later:
     %1000`0011  $83   ADD       regAddr reg     Add value at address in source register to destination register
     %1000`0100  $84   SUB       regAddr reg     Subtract value at address in source register from destination register
     %1000`0101  $85   MUL       regAddr reg     Multiply destination register by value at address in source register
-    %1000`0110  $86   DIV       regAddr reg     Divide destination register by value at address in source register
-    %1000`0111  $87   MOD       regAddr reg     Modulo destination register by value at address in source register
+    %1000`0110  $86   DIV       regAddr reg     Signed-divide destination register by value at address in source register
+    %1000`0111  $87   MOD       regAddr reg     Signed remainder of destination register divided by value at address in source register
     %1000`1000  $88   AND       regAddr reg     Bitwise AND destination register with value at address in source register
     %1000`1001  $89   OR        regAddr reg     Bitwise OR destination register with value at address in source register
     %1000`1010  $8A   NOR       regAddr reg     Bitwise NOR destination register with value at address in source register
@@ -1108,8 +1112,8 @@ Other syntax, to be described more fully later:
     %1011`0010  $B2
     %1011`0011  $B3
     %1011`0100  $B4
-    %1011`0101  $B5                             reserved
-    %1011`0110  $B6                             reserved
+    %1011`0101  $B5   UDIV      regAddr reg     Unsigned-divide destination register by value at address in source register
+    %1011`0110  $B6   UMOD      regAddr reg     Unsigned remainder of destination register divided by value at address in source register
     %1011`0111  $B7                             reserved
     %1011`1000  $B8                             reserved
     %1011`1001  $B9                             reserved
@@ -1125,8 +1129,8 @@ Other syntax, to be described more fully later:
     %1100`0011  $C3   ADD       immAddr reg     Add value at immediate address to destination register
     %1100`0100  $C4   SUB       immAddr reg     Subtract value at immediate address from destination register
     %1100`0101  $C5   MUL       immAddr reg     Multiply destination register by value at immediate address
-    %1100`0110  $C6   DIV       immAddr reg     Divide destination register by value at immediate address
-    %1100`0111  $C7   MOD       immAddr reg     Modulo destination register by value at immediate address
+    %1100`0110  $C6   DIV       immAddr reg     Signed-divide destination register by value at immediate address
+    %1100`0111  $C7   MOD       immAddr reg     Signed remainder of destination register divided by value at immediate address
     %1100`1000  $C8   AND       immAddr reg     Bitwise AND destination register with value at immediate address
     %1100`1001  $C9   OR        immAddr reg     Bitwise OR destination register with value at immediate address
     %1100`1010  $CA   NOR       immAddr reg     Bitwise NOR destination register with value at immediate address
@@ -1172,8 +1176,8 @@ Other syntax, to be described more fully later:
     %1111`0010  $F2
     %1111`0011  $F3
     %1111`0100  $F4
-    %1111`0101  $F5                             reserved
-    %1111`0110  $F6                             reserved
+    %1111`0101  $F5   UDIV      immAddr reg     Unsigned-divide destination register by value at immediate address
+    %1111`0110  $F6   UMOD      immAddr reg     Unsigned remainder of destination register divided by value at immediate address
     %1111`0111  $F7                             reserved
     %1111`1000  $F8                             reserved
     %1111`1001  $F9                             reserved

@@ -463,6 +463,19 @@ namespace maize {
 			const opcode mod_regAddr_reg		{mod_opcode | opcode_flag_srcAddr};
 			const opcode mod_immAddr_reg		{mod_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
+			// DIV/MOD are signed; UDIV/UMOD are the unsigned variants (card maize-5).
+			const opcode udiv_opcode			{0x35};
+			const opcode udiv_regVal_reg		{udiv_opcode | opcode_flag_srcReg};
+			const opcode udiv_immVal_reg		{udiv_opcode | opcode_flag_srcImm};
+			const opcode udiv_regAddr_reg		{udiv_opcode | opcode_flag_srcAddr};
+			const opcode udiv_immAddr_reg		{udiv_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			const opcode umod_opcode			{0x36};
+			const opcode umod_regVal_reg		{umod_opcode | opcode_flag_srcReg};
+			const opcode umod_immVal_reg		{umod_opcode | opcode_flag_srcImm};
+			const opcode umod_regAddr_reg		{umod_opcode | opcode_flag_srcAddr};
+			const opcode umod_immAddr_reg		{umod_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
 			const opcode and_opcode				{0x08};
 			const opcode and_regVal_reg			{and_opcode | opcode_flag_srcReg};
 			const opcode and_immVal_reg			{and_opcode | opcode_flag_srcImm};
