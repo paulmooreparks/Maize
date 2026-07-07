@@ -860,11 +860,6 @@ bit 7 is interpreted as follows:
 
 ## Immediate Parameter
 
-### Immediate Operation Bit
-
-    %xxxx`0xxx       Read immediate value as operand
-    %xxxx`1xxx       Perform math operation with value (not implemented yet)
-
 ### Immediate Value Bit Field
 
     %xxxx`x000  $x0  instruction reads 1 byte immediate (8 bits)
@@ -872,24 +867,11 @@ bit 7 is interpreted as follows:
     %xxxx`x010  $x2  instruction reads 4-byte immediate (32 bits)
     %xxxx`x011  $x3  instruction reads 8-byte immediate (64 bits)
 
-### Immediate Math Bit Field
-
-    %0000`xxxx  $0x  ADD immediate to previous operand
-    %0001`xxxx  $1x  SUB immediate from previous operand
-    %0010`xxxx  $2x  MUL previous operand by immediate
-    %0011`xxxx  $3x  DIV previous operand by immediate
-    %0100`xxxx  $4x  AND previous operand with immediate
-    %0101`xxxx  $5x  OR previous operand with immediate
-    %0110`xxxx  $6x  XOR previous operand with immediate
-    %0111`xxxx  $7x  NOR previous operand with immediate
-    %1000`xxxx  $8x  NAND previous operand with immediate
-    %1001`xxxx  $9x  SHL previous operand by immediate
-    %1010`xxxx  $Ax  SHR previous operand by immediate
-    %1011`xxxx  $Bx  reserved
-    %1100`xxxx  $Cx  reserved
-    %1101`xxxx  $Dx  reserved
-    %1110`xxxx  $Ex  reserved
-    %1111`xxxx  $Fx  reserved
+Bits 0-2 select the immediate width. Bit 3 and bits 4-7 are reserved
+(must be zero) and carry no operation. A previously documented
+immediate math-operation mode was never implemented and has been
+withdrawn from the encoding; the bits remain reserved for possible
+future use.
 
 
 ## BIOS Interface

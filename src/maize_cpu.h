@@ -77,11 +77,6 @@ namespace maize {
 		const u_byte opflag_imm_size_32b = 0b00000010;
 		const u_byte opflag_imm_size_64b = 0b00000011;
 
-		const u_byte opflag_imm_reserved_01 = 0b01000000;
-		const u_byte opflag_imm_reserved_02 = 0b01010000;
-		const u_byte opflag_imm_reserved_03 = 0b01100000;
-		const u_byte opflag_imm_reserved_04 = 0b01110000;
-
 		class reg;
 		class bus;
 		class device;
