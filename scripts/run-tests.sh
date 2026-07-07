@@ -192,7 +192,7 @@ run_test() {
     fi
 }
 
-run_test "hello"             "hello.asm"             "Hello, world!"                 1
+run_test "hello"             "hello.asm"             "Hello, world! BROKEN"          1
 run_test "test_mul"          "test_mul.asm"          "MUL test: PASS (1/2/4/8-byte)" 0
 run_test "test_flags_arith"  "test_flags_arith.asm"  "flags arith: PASS"             0
 run_test "test_flags_branch" "test_flags_branch.asm" "flags branch: PASS"            0
