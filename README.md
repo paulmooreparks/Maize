@@ -1,5 +1,7 @@
 # The Maize Virtual Machine
 
+<img src="logo/logo_256x256.png" align="right" width="256" alt="Maize logo">
+
 [![CI](https://github.com/paulmooreparks/Maize/actions/workflows/ci.yml/badge.svg)](https://github.com/paulmooreparks/Maize/actions/workflows/ci.yml)
 ![platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-blue)
 ![C++](https://img.shields.io/badge/C%2B%2B-20-blue)
