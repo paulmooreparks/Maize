@@ -230,7 +230,10 @@ async function testProbeContract() {
         let stderr = '';
         p.stderr.on('data', d => { stderr += d; });
         p.on('close', code => resolve({ code, stderr }));
-        p.stdin.end('main:\n    CP $00 R0\n    LD');
+        // Trailing newline matters: it dispatches the bare opcode, which is
+        // the state that crashed. (Without it, the half-typed token is
+        // silently ignored at EOF, mazm's longstanding behavior.)
+        p.stdin.end('main:\n    CP $00 R0\n    LD\n');
     });
     ok(partial.code === 1 && server.parseMazmErrors(partial.stderr).length > 0,
         'probe: bare-opcode partial buffer exits 1 with a parseable diagnostic (no crash)');
