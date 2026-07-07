@@ -45,7 +45,7 @@ $TestRunDir = Join-Path $BuildDir 'test-run'
 #     sides before comparing (src/maize.cpp appends an extra trailing newline
 #     on Linux only; this keeps the same expected table valid on both platforms).
 $Tests = @(
-    [pscustomobject]@{ Name = 'hello';            File = 'hello.asm';             Expected = 'Hello, world!';                 Golden = $true }
+    [pscustomobject]@{ Name = 'hello';            File = 'hello.asm';             Expected = 'Hello, world! BROKEN';          Golden = $true }
     [pscustomobject]@{ Name = 'test_mul';          File = 'test_mul.asm';          Expected = 'MUL test: PASS (1/2/4/8-byte)'; Golden = $false }
     [pscustomobject]@{ Name = 'test_flags_arith';  File = 'test_flags_arith.asm';  Expected = 'flags arith: PASS';             Golden = $false }
     [pscustomobject]@{ Name = 'test_flags_branch'; File = 'test_flags_branch.asm'; Expected = 'flags branch: PASS';           Golden = $false }
