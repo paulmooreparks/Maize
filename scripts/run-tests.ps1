@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     Configures and builds the windows-llvm-mingw-debug preset (or an override given
-    via -Preset), then assembles and runs each of the 9 in-scope tests under asm/,
+    via -Preset), then assembles and runs each of the 11 in-scope tests under asm/,
     comparing captured stdout against the expected output embedded below. Prints a
     per-test PASS/FAIL report plus a summary line.
 
@@ -54,6 +54,8 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_flags_mul8';   File = 'test_flags_mul8.asm';   Expected = 'flags mul8: PASS';              Golden = $false }
     [pscustomobject]@{ Name = 'test_flags_move';   File = 'test_flags_move.asm';   Expected = 'flags move: PASS';              Golden = $false }
     [pscustomobject]@{ Name = 'test_addr64';       File = 'test_addr64.asm';       Expected = 'addr64: PASS';                  Golden = $false }
+    [pscustomobject]@{ Name = 'test_cmptest';       File = 'test_cmptest.asm';       Expected = 'cmptest: PASS';                 Golden = $false }
+    [pscustomobject]@{ Name = 'test_ldimm';         File = 'test_ldimm.asm';         Expected = 'ld imm: PASS';                  Golden = $false }
 )
 
 function Trim-TrailingNewlines([string]$s) {

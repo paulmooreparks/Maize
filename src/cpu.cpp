@@ -676,8 +676,12 @@ namespace maize {
 
             void copy_memaddr_reg(u_word address, size_t size, reg_value &dst, subreg_enum dst_subreg) {
 
+                /* `size` is the width of the immediate ADDRESS operand in the code stream
+                   (op1_imm_size). Read exactly that many bytes, zero-extended: reading a fixed
+                   8 bytes over-reads into the following instruction bytes and computes a garbage
+                   address when the address is encoded in fewer than 8 bytes (card maize-40). */
                 reg src_address;
-                mm.read(address, src_address, subreg_enum::w0);
+                mm.read(address, src_address, size, 0);
 
                 reg src_data;
                 mm.read(src_address.w0, src_data, subreg_enum::w0);
@@ -796,8 +800,10 @@ namespace maize {
 
         void run_alu() {
             u_byte op_size = alu.b2; // Destination size
+            u_byte alu_op = alu.b0 & arithmetic_logic_unit::opflag_code;
+            u_word alu_op2_entry = alu.op2_reg.w0; // preserved to restore for compare/test ops
 
-            switch (alu.b0 & arithmetic_logic_unit::opflag_code) {
+            switch (alu_op) {
                 case instr::add_opcode: {
                     /* Carry (C) is the unsigned carry-out; overflow (V) is the signed-overflow
                        test (same-sign operands, result sign differs). See card maize-1. */
@@ -1620,6 +1626,15 @@ namespace maize {
                     break;
                 }
             }
+
+            /* CMP/CMPIND/TEST/TSTIND set flags only; they must not modify the destination
+               operand (card maize-40). The width branches above wrote the compare/AND result
+               into the op2 scratch, which the dispatch then writes back to the real register.
+               Restore the scratch to its entry value so that writeback is a no-op. */
+            if (alu_op == instr::cmp_opcode || alu_op == instr::cmpind_opcode
+                || alu_op == instr::test_opcode || alu_op == instr::testind_opcode) {
+                alu.op2_reg.w0 = alu_op2_entry;
+            }
         }
 
         /* This is the state machine that implements the machine-code instructions. */
@@ -1669,8 +1684,7 @@ namespace maize {
                     case instr::ld_immAddr_reg: {
                         regs::rp.h0 += 2;
                         u_hword imm_size = op1_imm_size();
-                        u_hword dst_size = op2_subreg_size();
-                        copy_memaddr_reg(regs::rp.h0, dst_size, op2_reg(), op2_subreg_flag());
+                        copy_memaddr_reg(regs::rp.h0, imm_size, op2_reg(), op2_subreg_flag());
                         regs::rp.h0 += imm_size;
                         break;
                     }
@@ -1698,8 +1712,7 @@ namespace maize {
                     case instr::ldz_immAddr_reg: {
                         regs::rp.h0 += 2;
                         u_hword imm_size = op1_imm_size();
-                        u_hword dst_size = op2_subreg_size();
-                        copy_memaddr_reg(regs::rp.h0, dst_size, op2_reg(), op2_subreg_flag());
+                        copy_memaddr_reg(regs::rp.h0, imm_size, op2_reg(), op2_subreg_flag());
                         regs::rp.h0 += imm_size;
                         break;
                     }
