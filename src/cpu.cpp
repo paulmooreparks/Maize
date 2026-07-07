@@ -314,7 +314,7 @@ namespace maize {
                     else {
                         while (count) {
                             retval.push_back(cache[cache_address.b0]);
-                            set_cache_address(++address.h0);
+                            set_cache_address(++address.w0);
                             --count;
                             ++read_count;
                         }
@@ -393,7 +393,7 @@ namespace maize {
                     else {
                         while (count) {
                             retval.push_back(cache[cache_address.b0]);
-                            set_cache_address(++address.h0);
+                            set_cache_address(++address.w0);
                             --count;
                         }
                     }
@@ -680,7 +680,7 @@ namespace maize {
                 mm.read(address, src_address, subreg_enum::w0);
 
                 reg src_data;
-                mm.read(src_address.h0, src_data, subreg_enum::w0);
+                mm.read(src_address.w0, src_data, subreg_enum::w0);
 
                 auto dst_offset = subreg_offset_map[dst_subreg];
                 auto dst_mask = subreg_mask_map[dst_subreg];
