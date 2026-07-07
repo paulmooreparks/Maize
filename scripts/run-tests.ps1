@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     Configures and builds the windows-llvm-mingw-debug preset (or an override given
-    via -Preset), then assembles and runs each of the 16 in-scope tests under asm/,
+    via -Preset), then assembles and runs each of the 17 in-scope tests under asm/,
     comparing captured stdout against the expected output embedded below. Prints a
     per-test PASS/FAIL report plus a summary line.
 
@@ -61,6 +61,7 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_jcc';           File = 'test_jcc.asm';           Expected = 'jcc: PASS';                     Golden = $false }
     [pscustomobject]@{ Name = 'test_memblock';      File = 'test_memblock.asm';      Expected = 'memblock: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_crossblock';    File = 'test_crossblock.asm';    Expected = 'crossblk: PASS';                Golden = $false }
+    [pscustomobject]@{ Name = 'reject_ld_value';    File = 'test_reject_ldval.asm';   Expected = 'reads from a memory address';   Golden = $false; ExpectAsmError = $true }
 )
 
 function Trim-TrailingNewlines([string]$s) {
@@ -168,6 +169,20 @@ function Invoke-Test($test) {
     $mazmLog = [System.IO.Path]::GetTempFileName()
     & $MazmExe $asmPath *> $mazmLog
     $mazmExit = $LASTEXITCODE
+
+    # Negative test (ExpectAsmError): the assembler MUST reject this source with a
+    # diagnostic containing $test.Expected. Passes iff mazm exits nonzero and says so.
+    if ($test.PSObject.Properties['ExpectAsmError'] -and $test.ExpectAsmError) {
+        $mazmOutput = Get-Content -Raw -Path $mazmLog -ErrorAction SilentlyContinue
+        Remove-Item -Force $mazmLog -ErrorAction SilentlyContinue
+        $rejected = ($mazmExit -ne 0) -and ($null -ne $mazmOutput) -and ($mazmOutput -like "*$($test.Expected)*")
+        return [pscustomobject]@{
+            Name     = $test.Name
+            Pass     = $rejected
+            Expected = "assembler rejects with: $($test.Expected)"
+            Actual   = if ($mazmExit -ne 0) { Trim-TrailingNewlines $mazmOutput } else { '(assembled successfully; expected rejection)' }
+        }
+    }
 
     if ($mazmExit -ne 0 -or -not (Test-Path $binPath)) {
         $mazmOutput = Get-Content -Raw -Path $mazmLog -ErrorAction SilentlyContinue

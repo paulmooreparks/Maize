@@ -298,15 +298,34 @@ following the parameters bytes are the immediate value in little-endian format.
 
     $41 $02 $3E $11 $44 $CC $FF
 
-Immediate values may used as pointers into memory. This is represented in assembly by the '@'
-prefix in front of the immediate value.
+Immediate values and register values may be used as pointers into memory, written in assembly
+with a '@' prefix in front of the immediate value or register name. The '@' marks every memory
+access: an operand with '@' is a memory address that gets dereferenced; an operand without '@'
+is a plain value.
 
-Example: Copy the 64-bit value at address $0000,1000 into register R1.
+### CP, LD, and ST: the memory boundary
 
-    CP @$0000`1000 R1
+The three data-movement instructions each name exactly one operation, organized by whether they
+cross the memory boundary:
 
-Register values may be used as pointers into memory by adding a '@' prefix in front of the
-register name.
+* **CP** (copy) moves a value into a register: register-to-register or immediate-to-register.
+  It never touches memory, so its source is never an address. Loading a constant is a CP
+  (`CP $5 R0`), the same way ARM spells it `MOV #5`.
+* **LD** (load) reads from a memory address into a register. Its source is always an address
+  (prefixed with '@').
+* **ST** (store) writes a register or immediate value to a memory address. Its destination is
+  always an address (prefixed with '@').
+
+CPZ and LDZ are the zero/sign-extending forms of CP and LD and follow the same rule. The
+assembler enforces the split: `CP @...` (an address source on a copy) and `LD value` (a
+non-address source on a load) are rejected with a diagnostic, so the mnemonic always tells you
+whether memory is touched. The ALU instructions are separate and, Maize being CISC, may take a
+memory-address operand directly (for example `ADD @R1 R0`); only CP/LD/ST/CPZ/LDZ are held to
+the strict split.
+
+Example: Load the 64-bit value at address $0000`1000 into register R1.
+
+    LD @$0000`1000 R1
 
 Example: Store the value $FF into the byte pointed at by the R0.H0 register:
 
@@ -910,8 +929,9 @@ The same syscall may be made with the SYS instruction, which will execute the sy
 
 ## Assembler Syntax
 
-(This section is incomplete and a bit of a work in progress. Refer to HelloWorld.asm,
-stdlib.asm, and core.asm for practical examples.)
+(This section is incomplete and a bit of a work in progress. For working, tested examples see
+[asm/hello.asm](asm/hello.asm) and the `test_*.asm` programs under [asm/](asm/), all of which
+assemble and run as part of the test suite.)
 
     %00000001   binary
     #123        decimal

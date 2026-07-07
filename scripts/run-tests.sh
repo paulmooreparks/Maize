@@ -3,7 +3,7 @@
 # point; this is what maize-36 invokes).
 #
 # Configures and builds the linux-debug preset (or an override given via
-# --preset), then assembles and runs each of the 16 in-scope tests under asm/,
+# --preset), then assembles and runs each of the 17 in-scope tests under asm/,
 # comparing captured stdout against the expected output embedded below. Prints
 # a per-test PASS/FAIL report plus a summary line. Never prompts for input, so
 # it is safe for non-interactive CI use.
@@ -139,6 +139,7 @@ run_test() {
     file="$2"
     expected="$3"
     golden="$4"
+    expect_asm_error="${5:-0}"
     TOTAL=$((TOTAL + 1))
 
     if [ "$golden" -eq 1 ]; then
@@ -160,6 +161,22 @@ run_test() {
         mazm_exit=0
     else
         mazm_exit=$?
+    fi
+
+    # Negative test: the assembler must reject this source with a diagnostic
+    # containing "$expected". Passes iff mazm exits nonzero and says so.
+    if [ "$expect_asm_error" -eq 1 ]; then
+        actual=$(cat "$mazm_log")
+        rm -f "$mazm_log"
+        if [ "$mazm_exit" -ne 0 ] && printf '%s' "$actual" | grep -qF "$expected"; then
+            echo "[PASS] ${name}"
+        else
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            echo "[FAIL] ${name}"
+            echo "        expected: assembler rejects with: \"${expected}\""
+            echo "        actual:   \"${actual}\""
+        fi
+        return
     fi
 
     if [ "$mazm_exit" -ne 0 ] || [ ! -f "$bin_path" ]; then
@@ -208,6 +225,7 @@ run_test "test_div"          "test_div.asm"          "div: PASS"                
 run_test "test_jcc"          "test_jcc.asm"          "jcc: PASS"                     0
 run_test "test_memblock"     "test_memblock.asm"     "memblock: PASS"                0
 run_test "test_crossblock"   "test_crossblock.asm"   "crossblk: PASS"                0
+run_test "reject_ld_value"   "test_reject_ldval.asm" "reads from a memory address"   0 1
 
 PASS_COUNT=$((TOTAL - FAIL_COUNT))
 echo ""

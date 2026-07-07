@@ -1499,7 +1499,23 @@ namespace {
         bool operand_is_label {false};
         cpu::reg_value operand1_literal {0};
 
-        if (operand1[0] == special_chars::address) {
+        bool operand1_is_address = (operand1[0] == special_chars::address);
+
+        /* Memory-boundary discipline (card maize-43): the data-movement mnemonics each name
+           exactly one thing. CP/CPZ take a value source (register or immediate) and never
+           touch memory; LD/LDZ read from a memory address (source prefixed with '@'). The
+           ALU/CMP/TEST ops keep accepting either form (Maize is CISC), so they are not
+           constrained here. */
+        if ((opcode_str == "CP" || opcode_str == "CPZ") && operand1_is_address) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                opcode_str + " takes a value source (register or immediate); use LD to read from a memory address");
+        }
+        if ((opcode_str == "LD" || opcode_str == "LDZ") && !operand1_is_address) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                opcode_str + " reads from a memory address; prefix the source with '@', or use CP for a value");
+        }
+
+        if (operand1_is_address) {
             opcode |= cpu::opcode_flag_srcAddr;
             operand1 = operand1.substr(1);
         }
@@ -1748,10 +1764,14 @@ namespace {
 
         u_byte operand2_byte {0};
 
-        if (operand2[0] == special_chars::address) {
-            operand2 = operand2.substr(1);
+        /* The destination of ST / CMPIND / TSTIND is a memory address; require the '@'
+           marker so every memory access is explicit (card maize-43). */
+        if (operand2[0] != special_chars::address) {
+            fatal(it->loc_file, it->loc_line,
+                opcode_str + " uses a memory-address destination; prefix the register with '@'");
         }
 
+        operand2 = operand2.substr(1);
         operand2_byte = compile_register(operand2);
 
         current_address += cpu::mm.write_byte(current_address, opcode);
