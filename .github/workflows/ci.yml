@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build and run tests
+        run: scripts/run-tests.sh
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache llvm-mingw toolchain
+        uses: actions/cache@v4
+        with:
+          path: .toolchains/llvm-mingw
+          key: llvm-mingw-${{ hashFiles('scripts/bootstrap-toolchain.ps1') }}
+
+      - name: Bootstrap llvm-mingw toolchain
+        run: scripts/bootstrap-toolchain.ps1
+
+      - name: Ensure ninja is available
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja -y
+          }
+
+      - name: Build and run tests
+        run: scripts/run-tests.ps1
