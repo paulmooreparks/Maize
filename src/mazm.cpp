@@ -293,6 +293,7 @@ namespace {
         { "XOR",    {cpu::instr::xor_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "SHL",    {cpu::instr::shl_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "SHR",    {cpu::instr::shr_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
+        { "SAR",    {cpu::instr::sar_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "CMP",    {cpu::instr::cmp_opcode    , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "TEST",   {cpu::instr::test_opcode   , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "CMPXCHG",{cpu::instr::cmpxchg_opcode, opcode_3param_tokenizer, regimm_regreg_compiler}},

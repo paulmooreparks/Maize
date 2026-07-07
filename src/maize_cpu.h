@@ -542,6 +542,18 @@ namespace maize {
 			const opcode shr_regAddr_reg		{shr_opcode | opcode_flag_srcAddr};
 			const opcode shr_immAddr_reg		{shr_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
+			// Arithmetic (sign-preserving) right shift (card maize-54). Base opcode $2E, from
+			// the spec's surveyed-free set. The spec recommended $3F, but $3F's immAddr form
+			// ($3F | srcImm | srcAddr = $FF) collides with brk_opcode; likewise $21/$23/$25's
+			// immAddr forms hit SETCRY/CLRINT/SWAP and $2A's srcAddr form hits NOP. $2E's four
+			// forms ($2E/$6E/$AE/$EE) are all unused. run_alu switches on
+			// (alu.b0 & opflag_code=$3F), so all four forms collapse to the single sar_opcode case.
+			const opcode sar_opcode				{0x2E};
+			const opcode sar_regVal_reg			{sar_opcode | opcode_flag_srcReg};
+			const opcode sar_immVal_reg			{sar_opcode | opcode_flag_srcImm};
+			const opcode sar_regAddr_reg		{sar_opcode | opcode_flag_srcAddr};
+			const opcode sar_immAddr_reg		{sar_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
 			const opcode cmp_opcode				{0x0F};
 			const opcode cmp_regVal_reg			{cmp_opcode | opcode_flag_srcReg};
 			const opcode cmp_immVal_reg			{cmp_opcode | opcode_flag_srcImm};

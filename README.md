@@ -487,6 +487,7 @@ be set in privileged mode and are unaffected by the arithmetic/logic instruction
     AND, OR, XOR, NAND,      0 (cleared)             result   0 (cleared)             result == 0
       NOR, NOT, TEST, TESTIND
     SHL, SHR                 last bit shifted out    result   see below               result == 0
+    SAR                      last bit shifted out    result   0 (cleared)             result == 0
     SETCRY                   1                       -        -                       -
     CLRCRY                   0                       -        -                       -
 
@@ -512,6 +513,14 @@ Notes:
   count of 1 (SHL: the sign bit changed; SHR: the prior sign bit); a count greater than the operand
   width yields a zero result with C, N, V all cleared and Z set. Out-of-range counts never invoke a
   C++ undefined shift.
+- Shift-count edge cases (SAR): a count of 0 leaves all flags unaffected; a count from 1 to one less
+  than the operand width shifts right with the sign bit replicated into the vacated high bits, C set
+  to the last bit shifted out (bit n-1 of the operand) and V always 0 (an arithmetic shift replicates
+  the sign bit and can never flip it, so signed overflow is impossible); a count equal to or greater
+  than the operand width saturates to the sign fill, all-ones (the width's -1) for a negative operand
+  or 0 for a non-negative one, with C set to the operand's sign bit, N set to the operand's sign, V
+  cleared, and Z set only for a non-negative operand. This diverges from SHR, whose over-width count
+  returns 0. Out-of-range counts never invoke a C++ undefined shift.
 - Data movement and address computation do not affect flags. CP, LD, CPZ, ST, CLR, and
   LEA leave C/N/V/Z unchanged; only the instructions in the table above set flags. This matches
   x86 (MOV), ARM, and RISC-V, and keeps condition codes stable across register shuffling, so a
@@ -738,10 +747,10 @@ bit 7 is interpreted as follows:
     %1010`1101  $AD                             reserved
     %1110`1101  $ED                             reserved
 
-    %0010`1110  $2E                             reserved
-    %0110`1110  $6E                             reserved
-    %1010`1110  $AE                             reserved
-    %1110`1110  $EE                             reserved
+    %0010`1110  $2E   SAR       regVal  reg     Arithmetic-shift value in destination register right by value in source register
+    %0110`1110  $6E   SAR       immVal  reg     Arithmetic-shift value in destination register right by immediate value
+    %1010`1110  $AE   SAR       regAddr reg     Arithmetic-shift value in destination register right by value at address in source register
+    %1110`1110  $EE   SAR       immAddr reg     Arithmetic-shift value in destination register right by value at immediate address
 
     %0011`0101  $35   UDIV      regVal  reg     Unsigned-divide destination register by source register value
     %0111`0101  $75   UDIV      immVal  reg     Unsigned-divide destination register by immediate value
@@ -1160,7 +1169,7 @@ metadata that the linker's hygiene pass already validates.
     %0010`1011  $2B                             reserved
     %0010`1100  $2C                             reserved
     %0010`1101  $2D                             reserved
-    %0010`1110  $2E                             reserved
+    %0010`1110  $2E   SAR       regVal  reg     Arithmetic-shift value in destination register right by value in source register
     %0010`1111  $2F   CMPIND    regVal regAddr  Set flags by subtracting source register value from value at address in destination register
     %0011`0000  $30   TSTIND    regVal regAddr  Set flags by ANDing source register value with value at address in destination register
     %0011`0001  $31   INC       regVal          Increment register by 1.
@@ -1224,7 +1233,7 @@ metadata that the linker's hygiene pass already validates.
     %0110`1011  $6B                             reserved
     %0110`1100  $6C                             reserved
     %0110`1101  $6D                             reserved
-    %0110`1110  $6E                             reserved
+    %0110`1110  $6E   SAR       immVal  reg     Arithmetic-shift value in destination register right by immediate value
     %0110`1111  $6F   CMPIND    immVal regAddr  Set flags by subtracting immediate value from value at address in destination register
     %0111`0000  $70   TSTIND    immVal regAddr  Set flags by ANDing immediate value with value at address in destination register
     %0111`0001  $71
@@ -1288,7 +1297,7 @@ metadata that the linker's hygiene pass already validates.
     %1010`1011  $AB                             reserved
     %1010`1100  $AC                             reserved
     %1010`1101  $AD                             reserved
-    %1010`1110  $AE                             reserved
+    %1010`1110  $AE   SAR       regAddr reg     Arithmetic-shift value in destination register right by value at address in source register
     %1010`1111  $AF
     %1011`0000  $B0
     %1011`0001  $B1
@@ -1352,7 +1361,7 @@ metadata that the linker's hygiene pass already validates.
     %1110`1011  $EB                             reserved
     %1110`1100  $EC                             reserved
     %1110`1101  $ED                             reserved
-    %1110`1110  $EE                             reserved
+    %1110`1110  $EE   SAR       immAddr reg     Arithmetic-shift value in destination register right by value at immediate address
     %1110`1111  $EF
     %1111`0000  $F0
     %1111`0001  $F1

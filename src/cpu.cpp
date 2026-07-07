@@ -1887,6 +1887,129 @@ namespace maize {
                     break;
                 }
 
+                case instr::sar_opcode: {
+                    /* Arithmetic (sign-preserving) right shift (card maize-54). Mirrors SHR but
+                       fills vacated high bits with the operand's sign bit. Flags: C = last bit
+                       shifted out (same formula as SHR); N/Z from the signed result; V = 0 always
+                       (an arithmetic shift replicates the sign bit and can never flip it, so
+                       signed overflow is impossible). n==0 leaves all flags unaffected (maize-31).
+                       n>=bits saturates to the sign fill: -1 (all ones) for a negative operand,
+                       0 for a non-negative one, with C = the operand's sign bit. Never pass an
+                       out-of-range count to C++'s >> (that is undefined behavior); the signed
+                       shift only runs for 1<=n<bits. */
+                    switch (op_size) {
+                        case 1: {
+                            u_byte dst_before = alu.op2_reg.b0;
+                            u_word n = alu.op1_reg.b0;
+                            const u_word bits = 8;
+                            bool sign = (dst_before >> (bits - 1)) & 1;
+                            if (n == 0) {
+                                alu.op2_reg.w0 = dst_before;
+                            }
+                            else if (n < bits) {
+                                u_byte result = u_byte(s_byte(dst_before) >> n);
+                                zero_flag = result == 0;
+                                negative_flag = result & 0x80;
+                                carryout_flag = (dst_before >> (n - 1)) & 1;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = result;
+                            }
+                            else {
+                                u_byte result = sign ? u_byte(0xFF) : u_byte(0);
+                                zero_flag = result == 0;
+                                negative_flag = sign;
+                                carryout_flag = sign;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = result;
+                            }
+                            break;
+                        }
+
+                        case 2: {
+                            u_qword dst_before = alu.op2_reg.q0;
+                            u_word n = alu.op1_reg.q0;
+                            const u_word bits = 16;
+                            bool sign = (dst_before >> (bits - 1)) & 1;
+                            if (n == 0) {
+                                alu.op2_reg.w0 = dst_before;
+                            }
+                            else if (n < bits) {
+                                u_qword result = u_qword(s_qword(dst_before) >> n);
+                                zero_flag = result == 0;
+                                negative_flag = result & 0x8000;
+                                carryout_flag = (dst_before >> (n - 1)) & 1;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = result;
+                            }
+                            else {
+                                u_qword result = sign ? u_qword(0xFFFF) : u_qword(0);
+                                zero_flag = result == 0;
+                                negative_flag = sign;
+                                carryout_flag = sign;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = result;
+                            }
+                            break;
+                        }
+
+                        case 4: {
+                            u_hword dst_before = alu.op2_reg.h0;
+                            u_word n = alu.op1_reg.h0;
+                            const u_word bits = 32;
+                            bool sign = (dst_before >> (bits - 1)) & 1;
+                            if (n == 0) {
+                                alu.op2_reg.w0 = dst_before;
+                            }
+                            else if (n < bits) {
+                                u_hword result = u_hword(s_hword(dst_before) >> n);
+                                zero_flag = result == 0;
+                                negative_flag = result & 0x80000000;
+                                carryout_flag = (dst_before >> (n - 1)) & 1;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = result;
+                            }
+                            else {
+                                u_hword result = sign ? u_hword(0xFFFFFFFF) : u_hword(0);
+                                zero_flag = result == 0;
+                                negative_flag = sign;
+                                carryout_flag = sign;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = result;
+                            }
+                            break;
+                        }
+
+                        case 8: {
+                            u_word dst_before = alu.op2_reg.w0;
+                            u_word n = alu.op1_reg.w0;
+                            const u_word bits = 64;
+                            bool sign = (dst_before >> (bits - 1)) & 1;
+                            if (n == 0) {
+                                alu.op2_reg.w0 = dst_before;
+                            }
+                            else if (n < bits) {
+                                u_word result = u_word(s_word(dst_before) >> n);
+                                zero_flag = result == 0;
+                                negative_flag = result & 0x8000000000000000;
+                                carryout_flag = (dst_before >> (n - 1)) & 1;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = result;
+                            }
+                            else {
+                                u_word result = sign ? u_word(0xFFFFFFFFFFFFFFFF) : u_word(0);
+                                zero_flag = result == 0;
+                                negative_flag = sign;
+                                carryout_flag = sign;
+                                overflow_flag = false;
+                                alu.op2_reg.w0 = result;
+                            }
+                            break;
+                        }
+                    }
+
+                    break;
+                }
+
                 case instr::inc_opcode: {
                     /* INC is ADD with src = 1; C and V follow the ADD family (card maize-1). */
                     switch (op_size) {
@@ -2142,6 +2265,7 @@ namespace maize {
                     case instr::xor_regVal_reg:
                     case instr::shl_regVal_reg:
                     case instr::shr_regVal_reg:
+                    case instr::sar_regVal_reg:
                     case instr::cmp_regVal_reg:
                     case instr::test_regVal_reg: {
                         regs::rp.w0 += 2;
@@ -2173,6 +2297,7 @@ namespace maize {
                     case instr::xor_immVal_reg:
                     case instr::shl_immVal_reg:
                     case instr::shr_immVal_reg:
+                    case instr::sar_immVal_reg:
                     case instr::cmp_immVal_reg:
                     case instr::test_immVal_reg: {
                         regs::rp.w0 += 2;
@@ -2205,6 +2330,7 @@ namespace maize {
                     case instr::xor_regAddr_reg:
                     case instr::shl_regAddr_reg:
                     case instr::shr_regAddr_reg:
+                    case instr::sar_regAddr_reg:
                     case instr::cmp_regAddr_reg:
                     case instr::test_regAddr_reg: {
                         regs::rp.w0 += 2;
@@ -2236,6 +2362,7 @@ namespace maize {
                     case instr::xor_immAddr_reg:
                     case instr::shl_immAddr_reg:
                     case instr::shr_immAddr_reg:
+                    case instr::sar_immAddr_reg:
                     case instr::cmp_immAddr_reg:
                     case instr::test_immAddr_reg: {
                         regs::rp.w0 += 2;

@@ -134,6 +134,7 @@ namespace {
             {"DIV", instr_ns::div_opcode}, {"MOD", instr_ns::mod_opcode}, {"AND", instr_ns::and_opcode},
             {"OR", instr_ns::or_opcode}, {"NOR", instr_ns::nor_opcode}, {"NAND", instr_ns::nand_opcode},
             {"XOR", instr_ns::xor_opcode}, {"SHL", instr_ns::shl_opcode}, {"SHR", instr_ns::shr_opcode},
+            {"SAR", instr_ns::sar_opcode},
             {"CMP", instr_ns::cmp_opcode}, {"TEST", instr_ns::test_opcode}, {"UDIV", instr_ns::udiv_opcode},
             {"UMOD", instr_ns::umod_opcode}, {"ADC", instr_ns::adc_opcode}, {"SBB", instr_ns::sbb_opcode},
         }) {

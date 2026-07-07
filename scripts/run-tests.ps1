@@ -52,6 +52,7 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_flags_branch'; File = 'test_flags_branch.mazm'; Expected = 'flags branch: PASS';           Golden = $false }
     [pscustomobject]@{ Name = 'test_flags_shl';    File = 'test_flags_shl.mazm';    Expected = 'flags shl: PASS';               Golden = $false }
     [pscustomobject]@{ Name = 'test_flags_shr';    File = 'test_flags_shr.mazm';    Expected = 'flags shr: PASS';               Golden = $false }
+    [pscustomobject]@{ Name = 'test_flags_sar';    File = 'test_flags_sar.mazm';    Expected = 'flags sar: PASS';               Golden = $false }
     [pscustomobject]@{ Name = 'test_flags_mul8';   File = 'test_flags_mul8.mazm';   Expected = 'flags mul8: PASS';              Golden = $false }
     [pscustomobject]@{ Name = 'test_flags_move';   File = 'test_flags_move.mazm';   Expected = 'flags move: PASS';              Golden = $false }
     [pscustomobject]@{ Name = 'test_addr64';       File = 'test_addr64.mazm';       Expected = 'addr64: PASS';                  Golden = $false }
