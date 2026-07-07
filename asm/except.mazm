@@ -1,5 +1,5 @@
-INCLUDE "core.asm"
-INCLUDE "stdlib.asm"
+INCLUDE "core.mazm"
+INCLUDE "stdlib.mazm"
 
 LABEL foobar AUTO
 

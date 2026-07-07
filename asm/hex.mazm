@@ -1,4 +1,4 @@
-INCLUDE "core.asm"
+INCLUDE "core.mazm"
 
 ; Startup routine
 ; The CPU starts execution at segment $00000000, address $00001000, 

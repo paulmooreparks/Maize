@@ -45,23 +45,23 @@ $TestRunDir = Join-Path $BuildDir 'test-run'
 #     sides before comparing (src/maize.cpp appends an extra trailing newline
 #     on Linux only; this keeps the same expected table valid on both platforms).
 $Tests = @(
-    [pscustomobject]@{ Name = 'hello';            File = 'hello.asm';             Expected = 'Hello, world!';                 Golden = $true }
-    [pscustomobject]@{ Name = 'test_mul';          File = 'test_mul.asm';          Expected = 'MUL test: PASS (1/2/4/8-byte)'; Golden = $false }
-    [pscustomobject]@{ Name = 'test_flags_arith';  File = 'test_flags_arith.asm';  Expected = 'flags arith: PASS';             Golden = $false }
-    [pscustomobject]@{ Name = 'test_flags_branch'; File = 'test_flags_branch.asm'; Expected = 'flags branch: PASS';           Golden = $false }
-    [pscustomobject]@{ Name = 'test_flags_shl';    File = 'test_flags_shl.asm';    Expected = 'flags shl: PASS';               Golden = $false }
-    [pscustomobject]@{ Name = 'test_flags_shr';    File = 'test_flags_shr.asm';    Expected = 'flags shr: PASS';               Golden = $false }
-    [pscustomobject]@{ Name = 'test_flags_mul8';   File = 'test_flags_mul8.asm';   Expected = 'flags mul8: PASS';              Golden = $false }
-    [pscustomobject]@{ Name = 'test_flags_move';   File = 'test_flags_move.asm';   Expected = 'flags move: PASS';              Golden = $false }
-    [pscustomobject]@{ Name = 'test_addr64';       File = 'test_addr64.asm';       Expected = 'addr64: PASS';                  Golden = $false }
-    [pscustomobject]@{ Name = 'test_cmptest';       File = 'test_cmptest.asm';       Expected = 'cmptest: PASS';                 Golden = $false }
-    [pscustomobject]@{ Name = 'test_ldimm';         File = 'test_ldimm.asm';         Expected = 'ld imm: PASS';                  Golden = $false }
-    [pscustomobject]@{ Name = 'test_stack64';       File = 'test_stack64.asm';       Expected = 'stack64: PASS';                 Golden = $false }
-    [pscustomobject]@{ Name = 'test_div';           File = 'test_div.asm';           Expected = 'div: PASS';                     Golden = $false }
-    [pscustomobject]@{ Name = 'test_jcc';           File = 'test_jcc.asm';           Expected = 'jcc: PASS';                     Golden = $false }
-    [pscustomobject]@{ Name = 'test_memblock';      File = 'test_memblock.asm';      Expected = 'memblock: PASS';                Golden = $false }
-    [pscustomobject]@{ Name = 'test_crossblock';    File = 'test_crossblock.asm';    Expected = 'crossblk: PASS';                Golden = $false }
-    [pscustomobject]@{ Name = 'reject_ld_value';    File = 'test_reject_ldval.asm';   Expected = 'reads from a memory address';   Golden = $false; ExpectAsmError = $true }
+    [pscustomobject]@{ Name = 'hello';            File = 'hello.mazm';             Expected = 'Hello, world!';                 Golden = $true }
+    [pscustomobject]@{ Name = 'test_mul';          File = 'test_mul.mazm';          Expected = 'MUL test: PASS (1/2/4/8-byte)'; Golden = $false }
+    [pscustomobject]@{ Name = 'test_flags_arith';  File = 'test_flags_arith.mazm';  Expected = 'flags arith: PASS';             Golden = $false }
+    [pscustomobject]@{ Name = 'test_flags_branch'; File = 'test_flags_branch.mazm'; Expected = 'flags branch: PASS';           Golden = $false }
+    [pscustomobject]@{ Name = 'test_flags_shl';    File = 'test_flags_shl.mazm';    Expected = 'flags shl: PASS';               Golden = $false }
+    [pscustomobject]@{ Name = 'test_flags_shr';    File = 'test_flags_shr.mazm';    Expected = 'flags shr: PASS';               Golden = $false }
+    [pscustomobject]@{ Name = 'test_flags_mul8';   File = 'test_flags_mul8.mazm';   Expected = 'flags mul8: PASS';              Golden = $false }
+    [pscustomobject]@{ Name = 'test_flags_move';   File = 'test_flags_move.mazm';   Expected = 'flags move: PASS';              Golden = $false }
+    [pscustomobject]@{ Name = 'test_addr64';       File = 'test_addr64.mazm';       Expected = 'addr64: PASS';                  Golden = $false }
+    [pscustomobject]@{ Name = 'test_cmptest';       File = 'test_cmptest.mazm';       Expected = 'cmptest: PASS';                 Golden = $false }
+    [pscustomobject]@{ Name = 'test_ldimm';         File = 'test_ldimm.mazm';         Expected = 'ld imm: PASS';                  Golden = $false }
+    [pscustomobject]@{ Name = 'test_stack64';       File = 'test_stack64.mazm';       Expected = 'stack64: PASS';                 Golden = $false }
+    [pscustomobject]@{ Name = 'test_div';           File = 'test_div.mazm';           Expected = 'div: PASS';                     Golden = $false }
+    [pscustomobject]@{ Name = 'test_jcc';           File = 'test_jcc.mazm';           Expected = 'jcc: PASS';                     Golden = $false }
+    [pscustomobject]@{ Name = 'test_memblock';      File = 'test_memblock.mazm';      Expected = 'memblock: PASS';                Golden = $false }
+    [pscustomobject]@{ Name = 'test_crossblock';    File = 'test_crossblock.mazm';    Expected = 'crossblk: PASS';                Golden = $false }
+    [pscustomobject]@{ Name = 'reject_ld_value';    File = 'test_reject_ldval.mazm';   Expected = 'reads from a memory address';   Golden = $false; ExpectAsmError = $true }
 )
 
 function Trim-TrailingNewlines([string]$s) {
@@ -158,7 +158,7 @@ function Invoke-Test($test) {
         $srcPath = Join-Path $AsmDir $test.File
         if (-not (Test-Path $srcPath)) {
             Write-SetupError "Missing test source file: $srcPath"
-            Write-SetupError "Setup failure: declared test '$($test.Name)' has no corresponding .asm file."
+            Write-SetupError "Setup failure: declared test '$($test.Name)' has no corresponding .mazm file."
             exit 2
         }
         $asmPath = Join-Path $TestRunDir $test.File

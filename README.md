@@ -112,7 +112,7 @@ Uses the system Clang from the Xcode Command Line Tools (xcode-select --install)
 
 ### Smoke test
 
-    mazm asm/hello.asm
+    mazm asm/hello.mazm
     maize asm/hello.bin
 
 Should print "Hello, world!". Every preset's build directory lives under build/<preset-name>/.
@@ -159,8 +159,8 @@ expect too much in the way of application usability... yet! I'm still porting th
 Next, I'll start creating a file-system device. I am currently porting [QBE](https://c9x.me/compile/) to output Maize assembly so that I can
 write Maize binaries with standard C and eventually port Linux to the virtual CPU.
 
-In the short term, I'm implementing a very basic OS over a simple BIOS ([core.asm](https://github.com/paulmooreparks/Maize/blob/master/asm/core.asm)).
-It will provide a basic character-mode [CLI](https://github.com/paulmooreparks/Maize/blob/master/asm/cli.asm) to allow building and running simple
+In the short term, I'm implementing a very basic OS over a simple BIOS ([core.mazm](https://github.com/paulmooreparks/Maize/blob/master/asm/core.mazm)).
+It will provide a basic character-mode [CLI](https://github.com/paulmooreparks/Maize/blob/master/asm/cli.mazm) to allow building and running simple
 Maize programs from within the virtual CPU environment.
 
 So far, this implementation in C++ is MUCH faster and MUCH tighter than the .NET version.
@@ -178,7 +178,7 @@ The near-term road map is as follows:
 
 ## Hello, World!
 
-Here is a simple ["Hello, World!" application](https://github.com/paulmooreparks/Maize/blob/master/asm/hello.asm)
+Here is a simple ["Hello, World!" application](https://github.com/paulmooreparks/Maize/blob/master/asm/hello.mazm)
 written in Maize assembly.
 
     ; **********************************************************************************
@@ -930,7 +930,7 @@ The same syscall may be made with the SYS instruction, which will execute the sy
 ## Assembler Syntax
 
 (This section is incomplete and a bit of a work in progress. For working, tested examples see
-[asm/hello.asm](asm/hello.asm) and the `test_*.asm` programs under [asm/](asm/), all of which
+[asm/hello.mazm](asm/hello.mazm) and the `test_*.mazm` programs under [asm/](asm/), all of which
 assemble and run as part of the test suite.)
 
     %00000001   binary

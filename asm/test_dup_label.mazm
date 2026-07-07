@@ -2,7 +2,7 @@
 ; Duplicate-label regression test for card maize-13.
 ;
 ; This mirrors the historical combined SHL/SHR shape that was split into
-; test_flags_shl.asm and test_flags_shr.asm specifically to sidestep the mazm
+; test_flags_shl.mazm and test_flags_shr.mazm specifically to sidestep the mazm
 ; back-patch defect: two independent blocks that each declared the same label
 ; name (fail:, pass_string:, fail_string:). Before maize-13, a second real
 ; declaration of an already-resolved label silently rewound the emit address and

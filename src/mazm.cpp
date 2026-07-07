@@ -328,7 +328,7 @@ namespace {
 
         /* Stale-binary rule (maize-13, AC9): remove any pre-existing output up
            front, so a failed assembly never leaves a previously-good .bin sitting
-           at the target path looking like a fresh build for the now-broken .asm. */
+           at the target path looking like a fresh build for the now-broken source. */
         std::error_code remove_ec;
         std::filesystem::remove(bin_path, remove_ec);
 

@@ -1,5 +1,5 @@
-INCLUDE "core.asm"
-INCLUDE "stdlib.asm"
+INCLUDE "core.mazm"
+INCLUDE "stdlib.mazm"
 
 ; The CPU starts execution at segment $00000000, address $00001000, 
 ; so we'll put our code there.

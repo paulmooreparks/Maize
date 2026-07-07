@@ -49,7 +49,7 @@ cheap now and expensive after binaries and third-party VMs exist.
   privilege boundary only? One answer, written down.
 
 Exit: all decisions recorded here or in the spec draft; VM implements
-them; hello.asm and core.asm still run.
+them; hello.mazm and core.mazm still run.
 
 ## Milestone 0.5: Stabilization
 
@@ -135,7 +135,7 @@ validated by building a second minimal VM (any language) against it.
 The systems curriculum that justifies the CISC design choices.
 
 - Devices: console (in progress), filesystem, timer; device interrupts.
-- BIOS layer (core.asm or its C successor) over the devices.
+- BIOS layer (core.mazm or its C successor) over the devices.
 - OS with the documented syscall surface (INT $80 subset) and the CLI.
 - The curriculum arc written as documentation: assembly -> syscalls ->
   devices -> OS internals -> write your own VM.

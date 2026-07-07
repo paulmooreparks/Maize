@@ -148,13 +148,13 @@ run_test() {
         src_path="${ASM_DIR}/${file}"
         if [ ! -f "$src_path" ]; then
             echo "Missing test source file: ${src_path}" >&2
-            echo "Setup failure: declared test '${name}' has no corresponding .asm file." >&2
+            echo "Setup failure: declared test '${name}' has no corresponding .mazm file." >&2
             exit 2
         fi
         cp "$src_path" "${TEST_RUN_DIR}/${file}"
         asm_path="${TEST_RUN_DIR}/${file}"
     fi
-    bin_path="${asm_path%.asm}.bin"
+    bin_path="${asm_path%.mazm}.bin"
 
     mazm_log=$(mktemp)
     if "$MAZM_EXE" "$asm_path" >"$mazm_log" 2>&1; then
@@ -209,23 +209,23 @@ run_test() {
     fi
 }
 
-run_test "hello"             "hello.asm"             "Hello, world!"                 1
-run_test "test_mul"          "test_mul.asm"          "MUL test: PASS (1/2/4/8-byte)" 0
-run_test "test_flags_arith"  "test_flags_arith.asm"  "flags arith: PASS"             0
-run_test "test_flags_branch" "test_flags_branch.asm" "flags branch: PASS"            0
-run_test "test_flags_shl"    "test_flags_shl.asm"    "flags shl: PASS"               0
-run_test "test_flags_shr"    "test_flags_shr.asm"    "flags shr: PASS"               0
-run_test "test_flags_mul8"   "test_flags_mul8.asm"   "flags mul8: PASS"              0
-run_test "test_flags_move"   "test_flags_move.asm"   "flags move: PASS"              0
-run_test "test_addr64"       "test_addr64.asm"       "addr64: PASS"                  0
-run_test "test_cmptest"      "test_cmptest.asm"      "cmptest: PASS"                 0
-run_test "test_ldimm"        "test_ldimm.asm"        "ld imm: PASS"                  0
-run_test "test_stack64"      "test_stack64.asm"      "stack64: PASS"                 0
-run_test "test_div"          "test_div.asm"          "div: PASS"                     0
-run_test "test_jcc"          "test_jcc.asm"          "jcc: PASS"                     0
-run_test "test_memblock"     "test_memblock.asm"     "memblock: PASS"                0
-run_test "test_crossblock"   "test_crossblock.asm"   "crossblk: PASS"                0
-run_test "reject_ld_value"   "test_reject_ldval.asm" "reads from a memory address"   0 1
+run_test "hello"             "hello.mazm"             "Hello, world!"                 1
+run_test "test_mul"          "test_mul.mazm"          "MUL test: PASS (1/2/4/8-byte)" 0
+run_test "test_flags_arith"  "test_flags_arith.mazm"  "flags arith: PASS"             0
+run_test "test_flags_branch" "test_flags_branch.mazm" "flags branch: PASS"            0
+run_test "test_flags_shl"    "test_flags_shl.mazm"    "flags shl: PASS"               0
+run_test "test_flags_shr"    "test_flags_shr.mazm"    "flags shr: PASS"               0
+run_test "test_flags_mul8"   "test_flags_mul8.mazm"   "flags mul8: PASS"              0
+run_test "test_flags_move"   "test_flags_move.mazm"   "flags move: PASS"              0
+run_test "test_addr64"       "test_addr64.mazm"       "addr64: PASS"                  0
+run_test "test_cmptest"      "test_cmptest.mazm"      "cmptest: PASS"                 0
+run_test "test_ldimm"        "test_ldimm.mazm"        "ld imm: PASS"                  0
+run_test "test_stack64"      "test_stack64.mazm"      "stack64: PASS"                 0
+run_test "test_div"          "test_div.mazm"          "div: PASS"                     0
+run_test "test_jcc"          "test_jcc.mazm"          "jcc: PASS"                     0
+run_test "test_memblock"     "test_memblock.mazm"     "memblock: PASS"                0
+run_test "test_crossblock"   "test_crossblock.mazm"   "crossblk: PASS"                0
+run_test "reject_ld_value"   "test_reject_ldval.mazm" "reads from a memory address"   0 1
 
 PASS_COUNT=$((TOTAL - FAIL_COUNT))
 echo ""
