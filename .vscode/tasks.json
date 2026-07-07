@@ -1,0 +1,31 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Install mazm to ~/bin",
+            "detail": "Build mazm and copy it to the user bin directory so editors find a stable copy on PATH.",
+            "type": "shell",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "windows": {
+                "command": "powershell",
+                "args": [
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    "${workspaceFolder}/scripts/install-mazm.ps1"
+                ]
+            },
+            "linux": {
+                "command": "${workspaceFolder}/scripts/install-mazm.sh"
+            },
+            "osx": {
+                "command": "${workspaceFolder}/scripts/install-mazm.sh"
+            },
+            "problemMatcher": []
+        }
+    ]
+}
