@@ -66,6 +66,13 @@ ok(noDef === null, 'unit: include cycle terminates (missing symbol returns null)
 const refs = server.findIdentifiers(mainText, 'local_helper');
 ok(refs.length === 2, 'unit: references finds declaration + usage of local_helper');
 
+ok(server.parseMazmErrors('').length === 0, 'unit: parseMazmErrors on empty input');
+ok(server.parseMazmErrors('mazm: a.mazm:3: error: x').length === 1, 'unit: parseMazmErrors single line');
+const multi = server.parseMazmErrors(
+    'mazm: a.mazm:3: error: one\nmazm: b.mazm:7: error: two\nnoise line\nmazm: a.mazm:9: error: three\n');
+ok(multi.length === 3 && multi[0].line === 3 && multi[1].file === 'b.mazm' && multi[2].message === 'three',
+    'unit: parseMazmErrors returns all lines in order, mixed files, noise ignored');
+
 ok(server.classifyProbe(1, 'mazm: mazm-stdin-probe:1: error: unterminated string literal starting at line 1'),
     'unit: classifyProbe accepts exit 1 + marker');
 ok(!server.classifyProbe(0, ''), 'unit: classifyProbe rejects exit 0');
@@ -251,6 +258,41 @@ async function testLiveMode() {
     last = await s.settle(workUri);
     ok(last.diagnostics.length === 1 && last.diagnostics[0].range.start.line === 1,
         'live: rapid burst settles on the final state');
+
+    // Multi-error buffer (maize-50): three squiggles at once, dropping as fixed.
+    const multiFile = path.join(tmpDir, 'multi.mazm');
+    fs.writeFileSync(multiFile, FIXED);
+    const multiUri = pathToFileURL(multiFile).toString();
+    const MULTI3 = 'main:\n    LD a R0\n    LD b R1\n    CALL nowhere\n    RET\n';
+    const MULTI2 = 'main:\n    CP $01 R0\n    LD b R1\n    CALL nowhere\n    RET\n';
+
+    s.open(multiFile, MULTI3);
+    last = await s.settle(multiUri);
+    ok(last.diagnostics.length === 3
+        && last.diagnostics.map(d => d.range.start.line).join(',') === '1,2,3',
+        'multi: three-error buffer publishes three diagnostics on the right lines');
+
+    s.change(multiFile, 2, MULTI2);
+    last = await s.settle(multiUri);
+    ok(last.diagnostics.length === 2, 'multi: fixing one error drops the count to two');
+
+    s.change(multiFile, 3, FIXED);
+    last = await s.settle(multiUri);
+    ok(last.diagnostics.length === 0, 'multi: fixing the rest clears all diagnostics');
+
+    // Mixed buffer + include errors: anchored plus line-mapped in one publish.
+    fs.writeFileSync(path.join(tmpDir, 'bad_inc.mazm'), 'lib:\n    FROB R0\n    RET\n');
+    const mixedFile = path.join(tmpDir, 'mixed.mazm');
+    fs.writeFileSync(mixedFile, FIXED);
+    const mixedUri = pathToFileURL(mixedFile).toString();
+    s.open(mixedFile, 'INCLUDE "bad_inc.mazm"\nmain:\n    LD x R0\n    RET\n');
+    last = await s.settle(mixedUri);
+    const anchored = last.diagnostics.filter(d => d.message.startsWith('in included file'));
+    const mapped = last.diagnostics.filter(d => !d.message.startsWith('in included file'));
+    ok(last.diagnostics.length === 2 && anchored.length === 1
+        && anchored[0].range.start.line === 0
+        && mapped.length === 1 && mapped[0].range.start.line === 2,
+        'multi: mixed buffer+include errors split into anchored and line-mapped diagnostics');
 
     // Symbols on hello.mazm.
     const helloPath = path.resolve(ROOT, '..', '..', 'asm', 'hello.mazm');

@@ -2,7 +2,7 @@
     "name": "maize-mazm",
     "displayName": "Maize Assembly",
     "description": "Syntax highlighting and language server for Maize assembly (.mazm files).",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "publisher": "paulmooreparks",
     "license": "Apache-2.0",
     "icon": "icon.png",

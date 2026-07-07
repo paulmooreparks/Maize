@@ -34,6 +34,20 @@ function parseMazmError(stderr) {
     return { file: m[1], line: parseInt(m[2], 10), message: m[3] };
 }
 
+/* All fatal diagnostic lines, in output order (maize-50: mazm reports every
+   error it can recover past, one line each). */
+function parseMazmErrors(stderr) {
+    const out = [];
+    const re = /^mazm: (.+?):(\d+): error: (.+)$/gm;
+    let m;
+
+    while ((m = re.exec(stderr || '')) !== null) {
+        out.push({ file: m[1], line: parseInt(m[2], 10), message: m[3] });
+    }
+
+    return out;
+}
+
 /* Blank out the comment tail and string bodies of a source line, preserving
    columns, so identifier scans cannot match inside either. */
 function maskLine(line) {
@@ -206,6 +220,7 @@ function classifyProbe(exitCode, stderr) {
 
 module.exports = {
     parseMazmError,
+    parseMazmErrors,
     maskLine,
     indexText,
     findIdentifiers,
@@ -406,46 +421,45 @@ async function validate(doc, isChange) {
             return;
         }
 
-        const parsed = parseMazmError(stderr);
+        const parsed = parseMazmErrors(stderr);
 
-        if (!parsed) {
+        if (parsed.length === 0) {
             // Killed by timeout, crashed, or unrecognized output: nothing to map.
             connection.sendDiagnostics({ uri: doc.uri, diagnostics: [] });
             connection.console.log(`mazm --check produced no parseable diagnostic for ${fsPath}`);
             return;
         }
 
-        let diagnostic;
-
-        if (samePath(parsed.file, fsPath)) {
-            const line = Math.max(0, parsed.line - 1);
-            const lineText = doc.getText({
-                start: { line, character: 0 },
-                end: { line: line + 1, character: 0 },
-            });
-
-            diagnostic = {
-                severity: DiagnosticSeverity.Error,
-                range: {
+        const diagnostics = parsed.map((p) => {
+            if (samePath(p.file, fsPath)) {
+                const line = Math.max(0, p.line - 1);
+                const lineText = doc.getText({
                     start: { line, character: 0 },
-                    end: { line, character: Math.max(1, lineText.replace(/\r?\n$/, '').length) },
-                },
-                message: parsed.message,
-                source: 'mazm',
-            };
-        }
-        else {
+                    end: { line: line + 1, character: 0 },
+                });
+
+                return {
+                    severity: DiagnosticSeverity.Error,
+                    range: {
+                        start: { line, character: 0 },
+                        end: { line, character: Math.max(1, lineText.replace(/\r?\n$/, '').length) },
+                    },
+                    message: p.message,
+                    source: 'mazm',
+                };
+            }
+
             // The error is inside an INCLUDEd file; anchor it at the top of the
             // open document and name the real location in the message.
-            diagnostic = {
+            return {
                 severity: DiagnosticSeverity.Error,
                 range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
-                message: `in included file ${parsed.file}:${parsed.line}: ${parsed.message}`,
+                message: `in included file ${p.file}:${p.line}: ${p.message}`,
                 source: 'mazm',
             };
-        }
+        });
 
-        connection.sendDiagnostics({ uri: doc.uri, diagnostics: [diagnostic] });
+        connection.sendDiagnostics({ uri: doc.uri, diagnostics });
     });
 
     if (child) {

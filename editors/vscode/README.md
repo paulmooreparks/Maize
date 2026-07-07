@@ -12,7 +12,7 @@ Syntax highlighting and a language server for Maize assembly (`.mazm`) source fi
   - **Go to definition** for labels, following `INCLUDE` chains.
   - **Find references** for labels within the current file.
 
-The diagnostics format is mazm's existing fatal line (`mazm: <file>:<line>: error: <msg>`); `--check` runs the full assembly pipeline with no filesystem effects, and `--stdin --base-path <dir> --source-name <path>` checks a piped buffer the same way. This is the intended v1 contract, not a placeholder: a structured format only becomes worthwhile if mazm ever gains multi-error recovery.
+The diagnostics format is mazm's fatal line (`mazm: <file>:<line>: error: <msg>`), one line per error: mazm recovers past each error and reports everything it finds in a single run (capped at 50, then a final "too many errors; stopping" line), so multiple squiggles appear at once and the count drops as you fix them. `--check` runs the full assembly pipeline with no filesystem effects, and `--stdin --base-path <dir> --source-name <path>` checks a piped buffer the same way. Missing includes stay a single fatal diagnostic rather than cascading into derived undefined-label errors.
 
 ## Setup
 

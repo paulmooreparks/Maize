@@ -92,7 +92,9 @@ namespace {
     std::string current_token {};
     maize::u_hword current_address {};
     std::unordered_map<std::string, maize::u_hword> labels {};
-    std::unordered_map<maize::u_hword, std::string> fixups {};
+    /* Ordered by fixup address (maize-50) so undefined-label diagnostics come
+       out in source-reference order, deterministically. */
+    std::map<maize::u_hword, std::string> fixups {};
     std::map<maize::u_word, std::vector<u_byte>> memory_map {};
 
     /* Diagnostic state (maize-13). current_file / current_line track the source
@@ -287,18 +289,80 @@ namespace {
         throw asm_error(os.str());
     }
 
+    /* Environment / I-O failure (maize-50). Deliberately NOT derived from
+       asm_error so it sails past every recovery catch: a missing include must
+       be one diagnostic, not itself plus a cascade of undefined labels. */
+    struct env_error : public std::runtime_error {
+        env_error(std::string const &msg) : std::runtime_error(msg) { }
+    };
+
+    [[noreturn]] void fatal_env(std::string const &file, int line, std::string const &msg) {
+        std::ostringstream os;
+        os << "mazm: " << file << ":" << line << ": error: " << msg;
+        throw env_error(os.str());
+    }
+
+    /* Multi-error collection (maize-50). Every recovered diagnostic flows
+       through record_diag; at the cap it appends a final stopping line and
+       throws error_limit_reached, which no recovery catch intercepts, so
+       collection ends cleanly however deep the INCLUDE recursion is. */
+    struct error_limit_reached { };
+
+    constexpr size_t max_diags {50};
+    std::vector<std::string> diags {};
+
+    void record_diag(std::string const &formatted) {
+        diags.push_back(formatted);
+
+        if (diags.size() >= max_diags) {
+            std::ostringstream os;
+            os << "mazm: " << current_file << ":" << current_line
+               << ": error: too many errors; stopping";
+            diags.push_back(os.str());
+            throw error_limit_reached {};
+        }
+    }
+
+    void flush_diags() {
+        for (auto const &line : diags) {
+            std::cerr << line << std::endl;
+        }
+    }
+
     /* Read one byte without skipping whitespace (the project-wide idiom was
        "fin >> std::noskipws >> c"). Centralized so newline counting happens in
        exactly one place. Only '\n' advances the line counter, so both LF and
        CRLF files count one line per line. */
+    /* True when the last character consumed was a newline (maize-50). The
+       recovery resync cannot trust any frame's local copy of the current
+       character: a tokenizer that throws may already have consumed through
+       the newline in its own frame, leaving the catcher's copy stale. */
+    bool at_line_start {true};
+
     std::istream& read_char(std::istream &fin, char &c) {
         fin >> std::noskipws >> c;
 
-        if (fin && c == '\n') {
-            ++current_line;
+        if (fin) {
+            at_line_start = (c == '\n');
+
+            if (c == '\n') {
+                ++current_line;
+            }
         }
 
         return fin;
+    }
+
+    /* Panic-mode resynchronization (maize-50): discard the partial token and
+       consume the remainder of the current line so tokenization resumes at a
+       clean statement boundary. Reads the stream's own position via
+       at_line_start rather than any caller's stale character copy. */
+    void resync_to_newline(std::istream &fin) {
+        current_token.clear();
+
+        char c {};
+        while (!at_line_start && read_char(fin, c)) {
+        }
     }
 
     /* Skip a leading UTF-8 BOM (EF BB BF) if present. Files without a BOM are
@@ -365,6 +429,13 @@ namespace {
             return;
         }
 
+        if (!diags.empty()) {
+            /* Recovered errors were recorded (maize-50): success is the only
+               state that produces a binary. The up-front stale-.bin removal
+               already ran, per the maize-13 rule. */
+            return;
+        }
+
         /* write here */
         std::cout << "Output to " << bin_path.string() << std::endl;
         std::ofstream bin(bin_path, std::fstream::binary);
@@ -387,27 +458,38 @@ namespace {
         char c {};
 
         while (read_char(fin, c)) {
-            switch (state) {
-            case parser_state::comment:
-                switch (c) {
-                case '\r':
-                case '\n':
-                    state = parser_state::newline;
+            /* Recovery site 1 of 5 (maize-50): a source error anywhere below
+               records its diagnostic, resyncs to the next line, and
+               tokenization continues. env_error and error_limit_reached
+               deliberately pass through. */
+            try {
+                switch (state) {
+                case parser_state::comment:
+                    switch (c) {
+                    case '\r':
+                    case '\n':
+                        state = parser_state::newline;
+                        continue;
+                    }
+                    break;
+
+                case parser_state::keyword:
+                    state = process_keyword(state, fin, tree, c);
+                    continue;
+
+                case parser_state::code_block:
+                    state = parse_code_block(fin, tree, c);
+                    continue;
+
+                default:
+                    state = process_char_stream(state, fin, tree, c);
                     continue;
                 }
-                break;
-
-            case parser_state::keyword:
-                state = process_keyword(state, fin, tree, c);
-                continue;
-
-            case parser_state::code_block:
-                state = parse_code_block(fin, tree, c);
-                continue;
-
-            default:
-                state = process_char_stream(state, fin, tree, c);
-                continue;
+            }
+            catch (const asm_error &e) {
+                record_diag(e.what());
+                resync_to_newline(fin);
+                state = parser_state::newline;
             }
         }
     }
@@ -429,26 +511,40 @@ namespace {
                 throw std::logic_error("keyword not found");
             }
 
-            compiler(sub_tree, key);
+            /* Recovery site 3 of 5 (maize-50): a bad node records and the
+               compile continues with the next node. */
+            try {
+                compiler(sub_tree, key);
+            }
+            catch (const asm_error &e) {
+                record_diag(e.what());
+            }
         }
 
         for (auto &pair : fixups) {
-            auto &label = pair.second;
-            auto value = labels.contains(label)
-                ? labels[label]
-                : std::numeric_limits<u_hword>::max();
+            /* Recovery site 5 of 5 (maize-50): every undefined label reports;
+               nothing is written for an unresolved entry. */
+            try {
+                auto &label = pair.second;
+                auto value = labels.contains(label)
+                    ? labels[label]
+                    : std::numeric_limits<u_hword>::max();
 
-            /* Undefined label (maize-13): a reference that was never declared
-               keeps the max() placeholder. Report it instead of writing the
-               sentinel into the binary. */
-            if (value == std::numeric_limits<u_hword>::max()) {
-                src_loc loc = label_ref_loc.contains(label)
-                    ? label_ref_loc[label]
-                    : src_loc {current_file, 0};
-                fatal(loc.file, loc.line, "undefined label '" + label + "'");
+                /* Undefined label (maize-13): a reference that was never declared
+                   keeps the max() placeholder. Report it instead of writing the
+                   sentinel into the binary. */
+                if (value == std::numeric_limits<u_hword>::max()) {
+                    src_loc loc = label_ref_loc.contains(label)
+                        ? label_ref_loc[label]
+                        : src_loc {current_file, 0};
+                    fatal(loc.file, loc.line, "undefined label '" + label + "'");
+                }
+
+                cpu::mm.write_hword(pair.first, value);
             }
-
-            cpu::mm.write_hword(pair.first, value);
+            catch (const asm_error &e) {
+                record_diag(e.what());
+            }
         }
     }
 
@@ -584,32 +680,43 @@ namespace {
         current_token.clear();
 
         do {
-            switch (state) {
-            case parser_state::comment:
-                switch (c) {
-                case '\r':
-                case '\n':
-                    state = parser_state::newline;
+            /* Recovery site 2 of 5 (maize-50): an error on one instruction
+               under a label resyncs and continues WITHIN the block loop, so
+               the rest of the routine stays attached to its label instead of
+               re-tokenizing as disconnected top-level fragments. */
+            try {
+                switch (state) {
+                case parser_state::comment:
+                    switch (c) {
+                    case '\r':
+                    case '\n':
+                        state = parser_state::newline;
+                        break;
+                    }
+
+                    break;
+
+                case parser_state::keyword:
+                    state = process_keyword(state, fin, sub_tree, c);
+
+                    if (state == parser_state::code_block) {
+                        return state;
+                    }
+
+                    break;
+
+                case parser_state::code_block:
+                    return state;
+
+                default:
+                    state = process_char_stream(state, fin, sub_tree, c);
                     break;
                 }
-
-                break;
-
-            case parser_state::keyword:
-                state = process_keyword(state, fin, sub_tree, c);
-
-                if (state == parser_state::code_block) {
-                    return state;
-                }
-
-                break;
-
-            case parser_state::code_block:
-                return state;
-
-            default:
-                state = process_char_stream(state, fin, sub_tree, c);
-                break;
+            }
+            catch (const asm_error &e) {
+                record_diag(e.what());
+                resync_to_newline(fin);
+                state = parser_state::newline;
             }
 
         } while (read_char(fin, c));
@@ -793,7 +900,10 @@ namespace {
            make tokenize's read loop immediately false, silently assembling as if
            the directive were absent. */
         if (!finclude.is_open()) {
-            fatal(include_from_file, include_from_line,
+            /* env_error, not asm_error (maize-50): a missing include is never
+               recovered, or every symbol it provides cascades into a derived
+               undefined-label diagnostic. */
+            fatal_env(include_from_file, include_from_line,
                 "cannot open include file '" + include_path.string()
                 + "' (included from " + include_from_file + ":"
                 + std::to_string(include_from_line) + ")");
@@ -1360,11 +1470,18 @@ namespace {
         for (auto &sub_tree : tree.value) {
             auto &key = sub_tree.key;
 
-            if (keywords.contains(key)) {
-                keywords[key].compiler(sub_tree, key);
+            /* Recovery site 4 of 5 (maize-50): each instruction in the block
+               gets its own diagnostic instead of aborting the routine. */
+            try {
+                if (keywords.contains(key)) {
+                    keywords[key].compiler(sub_tree, key);
+                }
+                else if (opcodes.contains(key)) {
+                    opcodes[key].compiler(sub_tree, key);
+                }
             }
-            else if (opcodes.contains(key)) {
-                opcodes[key].compiler(sub_tree, key);
+            catch (const asm_error &e) {
+                record_diag(e.what());
             }
         }
     }
@@ -1949,12 +2066,29 @@ int main(int argc, char* argv[]) {
             tokenize(std::cin, tree);
             compile(tree);
         }
+        catch (const error_limit_reached &) {
+            /* record_diag already appended the stopping line; fall through
+               to the flush below. */
+        }
+        catch (const env_error &e) {
+            flush_diags();
+            std::cerr << e.what() << std::endl;
+            return 1;
+        }
         catch (const asm_error &e) {
+            /* Safety net: the recovery sites should have caught this. */
+            flush_diags();
             std::cerr << e.what() << std::endl;
             return 1;
         }
         catch (const std::exception &e) {
+            flush_diags();
             std::cerr << "mazm: error: " << e.what() << std::endl;
+            return 1;
+        }
+
+        if (!diags.empty()) {
+            flush_diags();
             return 1;
         }
 
@@ -1974,8 +2108,19 @@ int main(int argc, char* argv[]) {
 
             assemble(canonical_path.string());
         }
+        catch (const error_limit_reached &) {
+            /* record_diag already appended the stopping line; fall through
+               to the flush below. */
+        }
+        catch (const env_error &e) {
+            flush_diags();
+            std::cerr << e.what() << std::endl;
+            return 1;
+        }
         catch (const asm_error &e) {
-            /* Already formatted as "mazm: <file>:<line>: error: <msg>". */
+            /* Safety net: the recovery sites should have caught this.
+               Already formatted as "mazm: <file>:<line>: error: <msg>". */
+            flush_diags();
             std::cerr << e.what() << std::endl;
             return 1;
         }
@@ -1983,7 +2128,13 @@ int main(int argc, char* argv[]) {
             /* Anything else (e.g. a missing input file makes std::filesystem
                throw): still exit nonzero with a mazm-prefixed message rather than
                an unhandled-exception abort. */
+            flush_diags();
             std::cerr << "mazm: error: " << e.what() << std::endl;
+            return 1;
+        }
+
+        if (!diags.empty()) {
+            flush_diags();
             return 1;
         }
     }
