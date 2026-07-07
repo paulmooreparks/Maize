@@ -114,6 +114,7 @@ fi
 # --- Locate the built executables --------------------------------------------------
 MAIZE_EXE="${BUILD_DIR}/maize"
 MAZM_EXE="${BUILD_DIR}/mazm"
+MZLD_EXE="${BUILD_DIR}/mzld"
 
 if [ ! -x "$MAZM_EXE" ]; then
     echo "Expected built executable not found: ${MAZM_EXE}" >&2
@@ -121,6 +122,10 @@ if [ ! -x "$MAZM_EXE" ]; then
 fi
 if [ ! -x "$MAIZE_EXE" ]; then
     echo "Expected built executable not found: ${MAIZE_EXE}" >&2
+    exit 2
+fi
+if [ ! -x "$MZLD_EXE" ]; then
+    echo "Expected built executable not found: ${MZLD_EXE}" >&2
     exit 2
 fi
 
@@ -230,6 +235,78 @@ run_test "test_adc"          "test_adc.mazm"          "adc: PASS"               
 run_test "test_copywidth"    "test_copywidth.mazm"    "copywidth: PASS"               0
 run_test "reject_ld_value"   "test_reject_ldval.mazm" "reads from a memory address"   0 1
 run_test "reject_ldz"        "test_reject_ldz.mazm"   "unknown keyword or opcode 'LDZ'" 0 1
+
+# --- maize-12: multi-TU assemble -> link -> run --------------------------------------
+# Two separately-assembled objects (link_a defines _start and imports from link_b)
+# are linked into one .mzx executable and run under maize.
+emit_object() {
+    src="$1"
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    "$MAZM_EXE" -c "${TEST_RUN_DIR}/${src}" >/dev/null 2>&1
+}
+
+run_link_run_test() {
+    name="link_multi_tu"
+    expected="Linked!"
+    TOTAL=$((TOTAL + 1))
+    emit_object "link_a.mazm"
+    emit_object "link_b.mazm"
+    log=$(mktemp)
+    if ! "$MZLD_EXE" -o "${TEST_RUN_DIR}/link.mzx" \
+            "${TEST_RUN_DIR}/link_a.mzo" "${TEST_RUN_DIR}/link_b.mzo" >"$log" 2>&1; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (link failed)"
+        cat "$log"
+        rm -f "$log"
+        return
+    fi
+    rm -f "$log"
+    out=$(mktemp)
+    if "$MAIZE_EXE" "${TEST_RUN_DIR}/link.mzx" >"$out" 2>/dev/null; then
+        me=0
+    else
+        me=$?
+    fi
+    actual=$(cat "$out")
+    rm -f "$out"
+    if [ "$me" -eq 0 ] && [ "$actual" = "$expected" ]; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: \"${expected}\""
+        echo "        actual:   \"${actual}\""
+    fi
+}
+
+# name, expected-substring, then mzld object arguments
+run_link_reject_test() {
+    name="$1"
+    expected="$2"
+    shift 2
+    TOTAL=$((TOTAL + 1))
+    log=$(mktemp)
+    if "$MZLD_EXE" -o "${TEST_RUN_DIR}/err.mzx" "$@" >"$log" 2>&1; then
+        ec=0
+    else
+        ec=$?
+    fi
+    actual=$(cat "$log")
+    rm -f "$log"
+    if [ "$ec" -ne 0 ] && printf '%s' "$actual" | grep -qF "$expected"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected reject: \"${expected}\""
+        echo "        actual:          \"${actual}\""
+    fi
+}
+
+run_link_run_test
+run_link_reject_test "link_undefined_symbol" "undefined symbol 'msgB'" "${TEST_RUN_DIR}/link_a.mzo"
+emit_object "link_range.mazm"
+run_link_reject_test "link_range_overflow" "does not fit in 8-bit" "${TEST_RUN_DIR}/link_range.mzo"
 
 PASS_COUNT=$((TOTAL - FAIL_COUNT))
 echo ""

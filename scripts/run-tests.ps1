@@ -140,6 +140,7 @@ if (-not $SkipBuild) {
 # --- Locate the built executables --------------------------------------------------
 $MaizeExe = Join-Path $BuildDir 'maize.exe'
 $MazmExe  = Join-Path $BuildDir 'mazm.exe'
+$MzldExe  = Join-Path $BuildDir 'mzld.exe'
 
 if (-not (Test-Path $MazmExe)) {
     Write-SetupError "Expected built executable not found: $MazmExe"
@@ -147,6 +148,10 @@ if (-not (Test-Path $MazmExe)) {
 }
 if (-not (Test-Path $MaizeExe)) {
     Write-SetupError "Expected built executable not found: $MaizeExe"
+    exit 2
+}
+if (-not (Test-Path $MzldExe)) {
+    Write-SetupError "Expected built executable not found: $MzldExe"
     exit 2
 }
 
@@ -236,6 +241,69 @@ $results = @()
 foreach ($t in $Tests) {
     $results += Invoke-Test $t
 }
+
+# --- maize-12: multi-TU assemble -> link -> run -----------------------------------
+# Assemble two objects with `mazm -c`, link them with mzld into one .mzx, and run
+# it under maize. Also exercises two hard link-error paths.
+function Emit-Object($src) {
+    $srcPath = Join-Path $AsmDir $src
+    $dst = Join-Path $TestRunDir $src
+    Copy-Item -Path $srcPath -Destination $dst -Force
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $MazmExe -c $dst *> $null
+    $ErrorActionPreference = $prevEap
+}
+
+function Invoke-LinkRunTest {
+    Emit-Object 'link_a.mazm'
+    Emit-Object 'link_b.mazm'
+    $aObj = Join-Path $TestRunDir 'link_a.mzo'
+    $bObj = Join-Path $TestRunDir 'link_b.mzo'
+    $mzx  = Join-Path $TestRunDir 'link.mzx'
+
+    $log = [System.IO.Path]::GetTempFileName()
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $MzldExe -o $mzx $aObj $bObj *> $log
+    $linkExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+
+    if ($linkExit -ne 0) {
+        $out = Get-Content -Raw -Path $log -ErrorAction SilentlyContinue
+        Remove-Item -Force $log -ErrorAction SilentlyContinue
+        return [pscustomobject]@{ Name = 'link_multi_tu'; Pass = $false; Expected = 'Linked!'; Actual = (Trim-TrailingNewlines $out) }
+    }
+    Remove-Item -Force $log -ErrorAction SilentlyContinue
+
+    $stdoutFile = [System.IO.Path]::GetTempFileName()
+    & $MaizeExe $mzx > $stdoutFile 2> $null
+    $me = $LASTEXITCODE
+    $actualRaw = Get-Content -Raw -Path $stdoutFile -ErrorAction SilentlyContinue
+    Remove-Item -Force $stdoutFile -ErrorAction SilentlyContinue
+    $actual = Trim-TrailingNewlines $actualRaw
+    return [pscustomobject]@{ Name = 'link_multi_tu'; Pass = (($me -eq 0) -and ($actual -eq 'Linked!')); Expected = 'Linked!'; Actual = $actual }
+}
+
+function Invoke-LinkRejectTest($name, $expected, $objs) {
+    $mzx = Join-Path $TestRunDir 'err.mzx'
+    $mzldArgs = @('-o', $mzx) + $objs
+    $log = [System.IO.Path]::GetTempFileName()
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $MzldExe @mzldArgs *> $log
+    $ec = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    $out = Get-Content -Raw -Path $log -ErrorAction SilentlyContinue
+    Remove-Item -Force $log -ErrorAction SilentlyContinue
+    $rejected = ($ec -ne 0) -and ($null -ne $out) -and ($out -like "*$expected*")
+    return [pscustomobject]@{ Name = $name; Pass = $rejected; Expected = "link rejects with: $expected"; Actual = (Trim-TrailingNewlines $out) }
+}
+
+$results += Invoke-LinkRunTest
+$results += Invoke-LinkRejectTest 'link_undefined_symbol' "undefined symbol 'msgB'" @((Join-Path $TestRunDir 'link_a.mzo'))
+Emit-Object 'link_range.mazm'
+$results += Invoke-LinkRejectTest 'link_range_overflow' 'does not fit in 8-bit' @((Join-Path $TestRunDir 'link_range.mzo'))
 
 $failCount = 0
 foreach ($r in $results) {

@@ -964,6 +964,148 @@ Other syntax, to be described more fully later:
     ADDRESS address | labelName
 
 
+## Object Files, Linking, and Executables
+
+By default `mazm` assembles a single `.mazm` source straight to a flat, header-less
+memory image (a `.bin`) that `maize` loads byte-for-byte at address 0. For programs
+built from more than one translation unit, Maize adds a relocatable **object format**
+(`.mzo`), a **linker** (`mzld`), and a linked **executable format** (`.mzx`). These are
+additive and opt-in: the flat `.bin` path is unchanged.
+
+    mazm -c a.mazm            # assemble a.mazm -> a.mzo (relocatable object)
+    mazm -c b.mazm            # assemble b.mazm -> b.mzo
+    mzld -o prog.mzx a.mzo b.mzo   # link objects -> prog.mzx (runnable)
+    maize prog.mzx            # run the linked executable
+
+All multi-byte fields in both formats are **little-endian**, matching the ISA's
+immediate encoding and the flat-64 memory model. Every offset is a byte offset from
+the start of the file. The layouts below are complete enough to hand-decode a produced
+object or executable with nothing but this section.
+
+### Object-mode assembler directives
+
+In object mode (`-c`) the assembler never resolves a symbolic operand inline: every
+label reference becomes a relocation, and a reference to a label this unit does not
+define is **not** an error (it becomes an undefined, importable symbol). Content is
+partitioned into sections with these directives:
+
+    SECTION CODE | RODATA | DATA | BSS   ; select the section subsequent content lands in
+    GLOBAL name                          ; export `name` (GLOBAL binding); default is LOCAL
+    ZERO n                               ; reserve n uninitialised bytes (only in BSS)
+
+Defaults when no `SECTION` directive has been seen: content lands in CODE. Function
+labels (in CODE) get symbol type FUNC; data labels (in RODATA/DATA/BSS) get OBJECT.
+
+A label reference's relocation width follows the immediate width the operand encodes.
+For a two-operand data move the width is the destination sub-register width, so
+`CP label Rn` materialises a full 64-bit address (`R_MAIZE_ABS64`) and
+`CP label Rn.H0` a 32-bit address (`R_MAIZE_ABS32`). Single-operand control-transfer
+targets (`CALL label`, `JMP label`) use a 32-bit target (`R_MAIZE_ABS32`). (The
+maize-11 QBE backend materialises addresses full-width, i.e. `R_MAIZE_ABS64`; the
+narrow forms are a `mazm` hand-assembly convenience.)
+
+### Object format `.mzo`
+
+    Header (48 bytes)
+      off  size  field
+      0    4     magic          = 'M','Z','O', 0x01   (ASCII "MZO" + format version 1)
+      4    2     flags          (u16, reserved = 0)
+      6    2     section_count  (u16)
+      8    8     shoff          (u64) file offset of the section-header array
+      16   8     symoff         (u64) file offset of the symbol table
+      24   4     symcount       (u32) number of symbol entries
+      28   8     stroff         (u64) file offset of the string table
+      36   4     strsize        (u32) string-table size in bytes
+      40   4     entry_sym      (u32) symtab index of the entry symbol, or 0xFFFFFFFF if none
+      44   4     reserved       (u32 = 0)
+
+    Section header (40 bytes each; section_count of them at shoff)
+      0    4     name_off       (u32) offset into the string table
+      4    1     kind           (u8)  0=NULL 1=CODE 2=RODATA 3=DATA 4=BSS
+      5    1     attrs          (u8)  0x1 EXEC  0x2 READ  0x4 WRITE  0x8 ALLOC  0x10 NOBITS
+      6    1     align          (u8)  required alignment in bytes (power of two; 1 = byte-aligned)
+      7    1     reserved       (u8 = 0)
+      8    8     file_off       (u64) offset of section contents in this file (0 when NOBITS)
+      16   8     size           (u64) in-memory size in bytes
+      24   8     reloc_off      (u64) file offset of this section's relocation array (0 if none)
+      32   8     reloc_count    (u64) number of relocation entries at reloc_off
+
+    Symbol entry (24 bytes each; symcount of them at symoff)
+      0    4     name_off       (u32) offset into the string table
+      4    2     section_index  (u16) defining section index, or 0xFFFF UNDEF, 0xFFF0 ABS
+      6    1     binding        (u8)  0=LOCAL 1=GLOBAL 2=WEAK (WEAK reserved)
+      7    1     type           (u8)  0=NOTYPE 1=FUNC 2=OBJECT 3=SECTION
+      8    8     value          (u64) offset within the defining section (0 for UNDEF)
+      16   8     size           (u64) symbol size in bytes (0 if unknown)
+
+    Relocation entry (24 bytes each; reloc_count of them at a section's reloc_off)
+      0    8     r_offset       (u64) offset within the target section where the fixup applies
+      8    4     r_symbol       (u32) symtab index of the referenced symbol
+      12   1     r_type         (u8)  relocation type (see below)
+      13   3     reserved       (3 bytes = 0)
+      16   8     r_addend       (i64) signed addend added to the symbol value
+
+    String table (strsize bytes at stroff)
+      NUL-separated UTF-8 names; byte 0 is a leading NUL, so name_off = 0 means "".
+
+The canonical attribute set per section kind: CODE = EXEC+READ+ALLOC, RODATA =
+READ+ALLOC, DATA = READ+WRITE+ALLOC, BSS = READ+WRITE+ALLOC+NOBITS. Sections are laid
+out in the fixed order CODE, RODATA, DATA, BSS.
+
+Relocation types are keyed to the immediate-operand width the fixup patches. The
+applier writes `(symbol_value + r_addend)` little-endian into the operand bytes at
+`r_offset`, truncated to the type width, and errors if the value does not fit.
+
+    0  R_MAIZE_NONE    no-op
+    1  R_MAIZE_ABS8    patch 1 immediate byte   (absolute)
+    2  R_MAIZE_ABS16   patch 2 immediate bytes  (absolute)
+    3  R_MAIZE_ABS32   patch 4 immediate bytes  (absolute)   e.g. CP label Rn.H0
+    4  R_MAIZE_ABS64   patch 8 immediate bytes  (absolute)   e.g. CP label Rn (full register)
+    5..15 reserved for R_MAIZE_REL* (PC-relative) and future kinds
+
+### Linker `mzld`
+
+    mzld [-o out.mzx] [-e entry_symbol] in1.mzo [in2.mzo ...]
+      -o   output path (default a.mzx)
+      -e   entry symbol name (default _start)
+
+`mzld` concatenates same-kind sections across objects (preserving input order,
+honouring per-section alignment), lays them out from base address 0 in the order
+CODE, RODATA, DATA, BSS, resolves symbols, applies relocations, resolves the entry
+point, and writes a `.mzx`. It runs a **hygiene pass** whose failures are hard errors:
+a section that is both writable and executable (W+X) is rejected; every relocation
+must land inside its section and its value must fit the relocation width; the entry
+symbol must resolve; and no two segments may overlap in the address space. Undefined
+symbols and duplicate GLOBAL definitions are reported with a diagnostic naming the
+symbol and the objects involved. In v1 the object that defines `_start` is placed
+first, so `_start` lands at the reset vector (address 0).
+
+### Executable format `.mzx`
+
+    Header (24 bytes)
+      0    4     magic       = 'M','Z','X', 0x01
+      4    2     flags       (u16 = 0)
+      6    2     seg_count   (u16)
+      8    8     entry       (u64) absolute entry address
+      16   8     shoff       (u64) file offset of the segment table
+
+    Segment entry (40 bytes each; seg_count of them at shoff)
+      0    1     kind        (u8) 1=CODE 2=RODATA 3=DATA 4=BSS
+      1    1     attrs       (u8) EXEC/READ/WRITE/ALLOC/NOBITS (as in .mzo)
+      2    6     reserved    (6 bytes = 0)
+      8    8     vaddr       (u64) load address
+      16   8     file_off    (u64) offset of contents in this file (0 for NOBITS)
+      24   8     mem_size    (u64) bytes to occupy in memory
+      32   8     file_size   (u64) bytes present in the file (0 for NOBITS)
+
+To load a `.mzx`, `maize` walks the segment table, copies each segment's `file_size`
+bytes to `vaddr`, zero-fills the `mem_size - file_size` (NOBITS) tail, and sets PC to
+`entry`. A file that does not begin with the `.mzx` magic is loaded as a flat image at
+address 0, exactly as before. RO/EXEC enforcement of the segment attributes is deferred
+until the VM has memory-protection hardware; today they are honest, load-bearing
+metadata that the linker's hygiene pass already validates.
+
+
 ## Opcodes Sorted Numerically
 
     Binary      Hex   Mnemonic  Parameters      Description

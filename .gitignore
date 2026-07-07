@@ -53,3 +53,7 @@
 /.toolchains/
 /compile_commands.json
 CMakeUserPresets.json
+
+# maize-12: linker/assembler object + executable artifacts (build products)
+*.mzo
+*.mzx
