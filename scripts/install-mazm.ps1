@@ -86,11 +86,21 @@ if (-not $onPath) {
 # Deliberately-broken stdin probe: proves the installed binary supports the
 # editor's --stdin diagnostics path (exit 1 + marker line), independent of
 # whether any repo .mazm file currently assembles.
-$probeOut = 'STRING "x' | & (Join-Path $InstallDir 'mazm.exe') --check --stdin --base-path $env:TEMP --source-name mazm-install-probe 2>&1 | Out-String
+#
+# The probe WRITES TO STDERR ON PURPOSE. Under Windows PowerShell 5.1,
+# ErrorActionPreference=Stop turns redirected native stderr into a terminating
+# NativeCommandError, so relax it for exactly this pipeline (pwsh 7 is
+# unaffected either way).
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$probeOut = ('STRING "x' | & (Join-Path $InstallDir 'mazm.exe') --check --stdin --base-path $env:TEMP --source-name mazm-install-probe 2>&1 | Out-String)
+$probeExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
 
-if ($LASTEXITCODE -ne 1 -or $probeOut -notmatch 'mazm-install-probe:1: error:') {
-    Write-Error "installed mazm failed the --stdin probe smoke test (exit $LASTEXITCODE)."
+if ($probeExit -ne 1 -or $probeOut -notmatch 'mazm-install-probe:1: error:') {
+    Write-Error "installed mazm failed the --stdin probe smoke test (exit $probeExit)."
     exit 1
 }
 
 Write-Host 'mazm installed and smoke-checked (stdin diagnostics probe passed).'
+exit 0
