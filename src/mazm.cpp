@@ -82,6 +82,13 @@ namespace {
        neither write a .bin nor delete a previously-good one. */
     bool check_only {false};
 
+    /* --stdin mode (maize-49): check a buffer piped over standard input, so an
+       editor can validate unsaved text. Requires --check and --base-path; the
+       diagnostic lines name source_name (--source-name) for buffer errors while
+       INCLUDEd files keep reporting their real paths. */
+    bool stdin_mode {false};
+    std::string source_name {"<stdin>"};
+
     std::string current_token {};
     maize::u_hword current_address {};
     std::unordered_map<std::string, maize::u_hword> labels {};
@@ -135,7 +142,7 @@ namespace {
 
     typedef expression<std::string> token_tree;
 
-    typedef parser_state(*tokenizer_fn)(std::fstream &fin, token_tree &tree, char c);
+    typedef parser_state(*tokenizer_fn)(std::istream &fin, token_tree &tree, char c);
     typedef void (*compiler_fn)(token_tree &tree, std::string &opcode_str);
 
     struct keyword_data {
@@ -160,27 +167,27 @@ namespace {
     };
 
     void assemble(std::string file_path);
-    void tokenize(std::fstream &fin, token_tree &tree);
+    void tokenize(std::istream &fin, token_tree &tree);
     void compile(token_tree &tree);
 
-    literal_state parse_literal(std::fstream &fin, token_tree& tree, char c);
+    literal_state parse_literal(std::istream &fin, token_tree& tree, char c);
 
-    parser_state process_char_stream(parser_state state, std::fstream &fin, token_tree &tree, char c);
+    parser_state process_char_stream(parser_state state, std::istream &fin, token_tree &tree, char c);
 
-    parser_state parse_keyword(std::fstream &fin, token_tree &tree, char c);
-    parser_state parse_code_block(std::fstream &fin, token_tree &tree, char c);
-    parser_state process_keyword(parser_state state, std::fstream &fin, token_tree &tree, char c);
-    parser_state parse_opcode(std::fstream &fin, token_tree &tree, char c);
+    parser_state parse_keyword(std::istream &fin, token_tree &tree, char c);
+    parser_state parse_code_block(std::istream &fin, token_tree &tree, char c);
+    parser_state process_keyword(parser_state state, std::istream &fin, token_tree &tree, char c);
+    parser_state parse_opcode(std::istream &fin, token_tree &tree, char c);
 
-    parser_state address_tokenizer(std::fstream &fin, token_tree &tree, char c);
-    parser_state string_tokenizer(std::fstream &fin, token_tree &tree, char c);
-    parser_state label_tokenizer(std::fstream &fin, token_tree &tree, char c);
-    parser_state data_tokenizer(std::fstream &fin, token_tree &tree, char c);
-    parser_state include_tokenizer(std::fstream &fin, token_tree &tree, char c);
-    parser_state opcode_0param_tokenizer(std::fstream &fin, token_tree &tree, char c);
-    parser_state opcode_1param_tokenizer(std::fstream &fin, token_tree &tree, char c);
-    parser_state opcode_2param_tokenizer(std::fstream &fin, token_tree &tree, char c);
-    parser_state opcode_3param_tokenizer(std::fstream &fin, token_tree &tree, char c);
+    parser_state address_tokenizer(std::istream &fin, token_tree &tree, char c);
+    parser_state string_tokenizer(std::istream &fin, token_tree &tree, char c);
+    parser_state label_tokenizer(std::istream &fin, token_tree &tree, char c);
+    parser_state data_tokenizer(std::istream &fin, token_tree &tree, char c);
+    parser_state include_tokenizer(std::istream &fin, token_tree &tree, char c);
+    parser_state opcode_0param_tokenizer(std::istream &fin, token_tree &tree, char c);
+    parser_state opcode_1param_tokenizer(std::istream &fin, token_tree &tree, char c);
+    parser_state opcode_2param_tokenizer(std::istream &fin, token_tree &tree, char c);
+    parser_state opcode_3param_tokenizer(std::istream &fin, token_tree &tree, char c);
 
     void address_compiler(token_tree &tree, std::string &opcode_str);
     void string_compiler(token_tree &tree, std::string &opcode_str);
@@ -284,7 +291,7 @@ namespace {
        "fin >> std::noskipws >> c"). Centralized so newline counting happens in
        exactly one place. Only '\n' advances the line counter, so both LF and
        CRLF files count one line per line. */
-    std::istream& read_char(std::fstream &fin, char &c) {
+    std::istream& read_char(std::istream &fin, char &c) {
         fin >> std::noskipws >> c;
 
         if (fin && c == '\n') {
@@ -375,7 +382,7 @@ namespace {
         bin.close();
     }
 
-    void tokenize(std::fstream &fin, token_tree &tree) {
+    void tokenize(std::istream &fin, token_tree &tree) {
         parser_state state {parser_state::whitespace};
         char c {};
 
@@ -445,7 +452,7 @@ namespace {
         }
     }
 
-    literal_state parse_literal(std::fstream &fin, token_tree &tree, char c) {
+    literal_state parse_literal(std::istream &fin, token_tree &tree, char c) {
         literal_state state = literal_state::start;
 
         while (c >= 0) {
@@ -497,7 +504,7 @@ namespace {
         return literal_state::end;
     }
 
-    parser_state process_char_stream(parser_state state, std::fstream &fin, token_tree &tree, char c) {
+    parser_state process_char_stream(parser_state state, std::istream &fin, token_tree &tree, char c) {
         if (isspace(static_cast<unsigned char>(c))) {
             return parser_state::whitespace;
         }
@@ -526,7 +533,7 @@ namespace {
         return state;
     }
 
-    parser_state process_keyword(parser_state state, std::fstream &fin, token_tree &tree, char c) {
+    parser_state process_keyword(parser_state state, std::istream &fin, token_tree &tree, char c) {
         /* TODO: Why am I processing this up here instead of in parse_keyword with the rest of the keywords?
         I didn't document this in the C# version, so I have no idea. */
         if (isspace(static_cast<unsigned char>(c))) {
@@ -543,7 +550,7 @@ namespace {
         return process_char_stream(state, fin, tree, c);
     }
 
-    parser_state parse_keyword(std::fstream &fin, token_tree &tree, char c) {
+    parser_state parse_keyword(std::istream &fin, token_tree &tree, char c) {
         std::string keyword = current_token;
         current_token.clear();
 
@@ -570,7 +577,7 @@ namespace {
         return parser_state::whitespace;
     }
 
-    parser_state parse_code_block(std::fstream &fin, token_tree &tree, char c) {
+    parser_state parse_code_block(std::istream &fin, token_tree &tree, char c) {
         parser_state state {parser_state::whitespace};
         token_tree &sub_tree = tree.add("CODE");
         sub_tree.add(current_token);
@@ -610,7 +617,7 @@ namespace {
         return state;
     }
 
-    parser_state parse_opcode(std::fstream &fin, token_tree &tree, char c) {
+    parser_state parse_opcode(std::istream &fin, token_tree &tree, char c) {
         std::string keyword = current_token;
         current_token.clear();
         token_tree &sub_tree = tree.add(keyword);
@@ -622,14 +629,14 @@ namespace {
         return parser_state::whitespace;
     }
 
-    parser_state address_tokenizer(std::fstream& fin, token_tree &tree, char c) {
+    parser_state address_tokenizer(std::istream& fin, token_tree &tree, char c) {
         while (parse_literal(fin, tree, c) != literal_state::end) {
         }
 
         return parser_state::whitespace;
     }
 
-    parser_state label_tokenizer(std::fstream &fin, token_tree &tree, char c) {
+    parser_state label_tokenizer(std::istream &fin, token_tree &tree, char c) {
         label_state state {label_state::start};
 
         while (fin.peek() >= 0) {
@@ -670,7 +677,7 @@ namespace {
         return parser_state::label_declaration;
     }
 
-    parser_state string_tokenizer(std::fstream &fin, token_tree &tree, char c) {
+    parser_state string_tokenizer(std::istream &fin, token_tree &tree, char c) {
         auto state = string_state::start;
         int string_open_line {current_line};
 
@@ -742,7 +749,7 @@ namespace {
         return parser_state::whitespace;
     }
 
-    parser_state data_tokenizer(std::fstream& fin, token_tree &tree, char c) {
+    parser_state data_tokenizer(std::istream& fin, token_tree &tree, char c) {
         while (fin.peek() >= 0) {
             read_char(fin, c);
 
@@ -770,7 +777,7 @@ namespace {
         return parser_state::whitespace;
     }
 
-    parser_state include_tokenizer(std::fstream& fin, token_tree &tree, char c) {
+    parser_state include_tokenizer(std::istream& fin, token_tree &tree, char c) {
         std::string include_from_file {current_file};
         int include_from_line {current_line};
 
@@ -813,11 +820,11 @@ namespace {
         return parser_state::whitespace;
     }
 
-    parser_state opcode_0param_tokenizer(std::fstream &fin, token_tree &tree, char c) {
+    parser_state opcode_0param_tokenizer(std::istream &fin, token_tree &tree, char c) {
         return parser_state::whitespace;
     }
 
-    parser_state opcode_1param_tokenizer(std::fstream &fin, token_tree &tree, char c) {
+    parser_state opcode_1param_tokenizer(std::istream &fin, token_tree &tree, char c) {
         opcode_state state {opcode_state::start};
         int instr_line {current_line};
 
@@ -872,7 +879,7 @@ namespace {
         return parser_state::whitespace;
     }
 
-    parser_state opcode_2param_tokenizer(std::fstream &fin, token_tree &tree, char c) {
+    parser_state opcode_2param_tokenizer(std::istream &fin, token_tree &tree, char c) {
         opcode_state state {opcode_state::start};
         int instr_line {current_line};
 
@@ -942,7 +949,7 @@ namespace {
         return parser_state::whitespace;
     }
 
-    parser_state opcode_3param_tokenizer(std::fstream &fin, token_tree &tree, char c) {
+    parser_state opcode_3param_tokenizer(std::istream &fin, token_tree &tree, char c) {
         opcode_state state {opcode_state::start};
         int instr_line {current_line};
 
@@ -1891,12 +1898,24 @@ int main(int argc, char* argv[]) {
     /* Flags are position-independent; the first non-flag argument is the input
        file. Unrecognized --flags are ignored rather than fatal (maize-46). */
     std::string input_file {};
+    std::string base_path_arg {};
 
+    /* --base-path and --source-name are two-token flags: each consumes the
+       following argv slot as its value (maize-49). */
     for (int i = 1; i < argc; ++i) {
         std::string arg {argv[i]};
 
         if (arg == "--check") {
             check_only = true;
+        }
+        else if (arg == "--stdin") {
+            stdin_mode = true;
+        }
+        else if (arg == "--base-path" && i + 1 < argc) {
+            base_path_arg = argv[++i];
+        }
+        else if (arg == "--source-name" && i + 1 < argc) {
+            source_name = argv[++i];
         }
         else if (arg.rfind("--", 0) == 0) {
             /* ignore unknown flags */
@@ -1906,12 +1925,48 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    if (stdin_mode) {
+        /* Stdin is a check-only surface: there is no input path to derive a
+           .bin target from, and no file directory to resolve INCLUDEs
+           against, so both must be explicit. */
+        if (!check_only) {
+            std::cerr << "mazm: error: --stdin requires --check" << std::endl;
+            return 1;
+        }
+
+        if (base_path_arg.empty()) {
+            std::cerr << "mazm: error: --stdin requires --base-path" << std::endl;
+            return 1;
+        }
+
+        try {
+            base_path = base_path_arg;
+            current_file = source_name;
+            current_line = 1;
+            token_line = 1;
+
+            token_tree tree {source_name};
+            tokenize(std::cin, tree);
+            compile(tree);
+        }
+        catch (const asm_error &e) {
+            std::cerr << e.what() << std::endl;
+            return 1;
+        }
+        catch (const std::exception &e) {
+            std::cerr << "mazm: error: " << e.what() << std::endl;
+            return 1;
+        }
+
+        return 0;
+    }
+
     if (!input_file.empty()) {
         try {
             auto input_path = std::filesystem::path(input_file);
             auto canonical_path = std::filesystem::canonical(input_path).make_preferred();
             auto parent_path = canonical_path.parent_path().make_preferred();
-            base_path = parent_path.string();
+            base_path = base_path_arg.empty() ? parent_path.string() : base_path_arg;
 
             if (!check_only) {
                 std::cout << "Assembling from " << canonical_path.string() << std::endl;

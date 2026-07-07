@@ -1,17 +1,17 @@
-// Scripted verification for the Maize language server (maize-46).
+// Scripted verification for the Maize language server (maize-46 + maize-49).
 //
 // Part 1: unit checks on the pure helpers (require'd, no connection started).
-// Part 2: an end-to-end stdio JSON-RPC session against server.js, driving
-//         diagnostics (broken file -> error; fixed file -> cleared), document
-//         symbols, cross-INCLUDE definition, references, and the include-cycle
-//         guard.
+// Part 2: probe contract against the real mazm binary.
+// Part 3: end-to-end stdio session in LIVE mode (on-type diagnostics, symbols,
+//         definition, references, cycle guard, burst settling).
+// Part 4: end-to-end stdio session against a faithful pre-maize-49 stub,
+//         proving the version-skew fallback to save-time diagnostics.
 //
 // Env: MAZM_PATH must point at a built mazm executable.
 // Run: node tests/lsp.test.js   (from editors/vscode/)
 
 'use strict';
 
-const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -66,193 +66,289 @@ ok(noDef === null, 'unit: include cycle terminates (missing symbol returns null)
 const refs = server.findIdentifiers(mainText, 'local_helper');
 ok(refs.length === 2, 'unit: references finds declaration + usage of local_helper');
 
-/* ---------------- Part 2: stdio E2E ---------------- */
+ok(server.classifyProbe(1, 'mazm: mazm-stdin-probe:1: error: unterminated string literal starting at line 1'),
+    'unit: classifyProbe accepts exit 1 + marker');
+ok(!server.classifyProbe(0, ''), 'unit: classifyProbe rejects exit 0');
+ok(!server.classifyProbe(1, 'mazm: somewhere.mazm:1: error: nope'),
+    'unit: classifyProbe rejects exit 1 without the marker');
+
+/* ---------------- shared LSP session harness ---------------- */
 
 if (!process.env.MAZM_PATH) {
     console.log('SKIP e2e: MAZM_PATH not set');
     process.exit(failures === 0 ? 0 : 1);
 }
 
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mazm-lsp-'));
-const workFile = path.join(tmpDir, 'work.mazm');
+function startSession(env) {
+    const child = spawn(process.execPath, [path.join(ROOT, 'server', 'server.js'), '--stdio'], {
+        cwd: ROOT,
+        env: { ...process.env, MAZM_CHECK_TIMEOUT_MS: '5000', ...env },
+        stdio: ['pipe', 'pipe', 'inherit'],
+    });
+
+    const session = {
+        child,
+        nextId: 1,
+        pendingResponses: new Map(),
+        received: new Map(),   // uri -> [publishDiagnostics params]
+        buffer: Buffer.alloc(0),
+    };
+
+    child.stdout.on('data', (chunk) => {
+        session.buffer = Buffer.concat([session.buffer, chunk]);
+
+        for (;;) {
+            const headerEnd = session.buffer.indexOf('\r\n\r\n');
+            if (headerEnd < 0) { return; }
+
+            const header = session.buffer.slice(0, headerEnd).toString('ascii');
+            const m = /Content-Length: (\d+)/i.exec(header);
+            if (!m) { throw new Error('bad LSP header: ' + header); }
+
+            const length = parseInt(m[1], 10);
+            const start = headerEnd + 4;
+            if (session.buffer.length < start + length) { return; }
+
+            const message = JSON.parse(session.buffer.slice(start, start + length).toString('utf8'));
+            session.buffer = session.buffer.slice(start + length);
+
+            if (message.id !== undefined && session.pendingResponses.has(message.id)) {
+                session.pendingResponses.get(message.id)(message);
+                session.pendingResponses.delete(message.id);
+            }
+            else if (message.method === 'textDocument/publishDiagnostics') {
+                const uri = message.params.uri;
+                if (!session.received.has(uri)) { session.received.set(uri, []); }
+                session.received.get(uri).push(message.params);
+            }
+            // window/showMessage etc.: ignored.
+        }
+    });
+
+    session.send = (message) => {
+        const body = Buffer.from(JSON.stringify(message), 'utf8');
+        child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
+        child.stdin.write(body);
+    };
+
+    session.request = (method, params) => {
+        const id = session.nextId++;
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`timeout waiting for ${method}`)), 15000);
+            session.pendingResponses.set(id, (msg) => { clearTimeout(timer); resolve(msg); });
+            session.send({ jsonrpc: '2.0', id, method, params });
+        });
+    };
+
+    session.notify = (method, params) => session.send({ jsonrpc: '2.0', method, params });
+
+    session.countFor = (uri) => (session.received.get(uri) || []).length;
+
+    /* Wait until no new publish for `uri` arrives for quietMs; return the last
+       params seen (or null). Absorbs duplicate open+debounce validations. */
+    session.settle = (uri, quietMs = 900, maxMs = 15000) => new Promise((resolve, reject) => {
+        const startTime = Date.now();
+        let lastCount = session.countFor(uri);
+        let lastChange = Date.now();
+
+        const poll = setInterval(() => {
+            const count = session.countFor(uri);
+
+            if (count !== lastCount) {
+                lastCount = count;
+                lastChange = Date.now();
+            }
+            else if (count > 0 && Date.now() - lastChange >= quietMs) {
+                clearInterval(poll);
+                const list = session.received.get(uri);
+                resolve(list[list.length - 1]);
+            }
+
+            if (Date.now() - startTime > maxMs) {
+                clearInterval(poll);
+                reject(new Error('settle timeout for ' + uri));
+            }
+        }, 50);
+    });
+
+    session.open = (fsPath, text) => {
+        session.notify('textDocument/didOpen', {
+            textDocument: {
+                uri: pathToFileURL(fsPath).toString(),
+                languageId: 'mazm',
+                version: 1,
+                text: text !== undefined ? text : fs.readFileSync(fsPath, 'utf8'),
+            },
+        });
+    };
+
+    session.change = (fsPath, version, text) => {
+        session.notify('textDocument/didChange', {
+            textDocument: { uri: pathToFileURL(fsPath).toString(), version },
+            contentChanges: [{ text }],
+        });
+    };
+
+    session.stop = () => { session.notify('exit', {}); child.kill(); };
+
+    return session;
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const BROKEN = 'main:\n    LD nolabel R0\n';
 const FIXED = 'main:\n    CP $00 R0\n    HALT\n';
-fs.writeFileSync(workFile, BROKEN);
 
-const child = spawn(process.execPath, [path.join(ROOT, 'server', 'server.js'), '--stdio'], {
-    cwd: ROOT,
-    env: { ...process.env, MAZM_CHECK_TIMEOUT_MS: '5000' },
-    stdio: ['pipe', 'pipe', 'inherit'],
-});
+/* ---------------- Part 2: probe contract vs the real binary ---------------- */
 
-let nextId = 1;
-const pendingResponses = new Map();
-const diagnosticWaiters = [];
-let buffer = Buffer.alloc(0);
-
-child.stdout.on('data', (chunk) => {
-    buffer = Buffer.concat([buffer, chunk]);
-
-    for (;;) {
-        const headerEnd = buffer.indexOf('\r\n\r\n');
-        if (headerEnd < 0) { return; }
-
-        const header = buffer.slice(0, headerEnd).toString('ascii');
-        const m = /Content-Length: (\d+)/i.exec(header);
-        if (!m) { throw new Error('bad LSP header: ' + header); }
-
-        const length = parseInt(m[1], 10);
-        const start = headerEnd + 4;
-        if (buffer.length < start + length) { return; }
-
-        const message = JSON.parse(buffer.slice(start, start + length).toString('utf8'));
-        buffer = buffer.slice(start + length);
-        dispatch(message);
-    }
-});
-
-function dispatch(message) {
-    if (message.id !== undefined && pendingResponses.has(message.id)) {
-        pendingResponses.get(message.id)(message);
-        pendingResponses.delete(message.id);
-    }
-    else if (message.method === 'textDocument/publishDiagnostics') {
-        const waiter = diagnosticWaiters.shift();
-        if (waiter) { waiter(message.params); }
-    }
-    // window/showMessage etc.: ignored.
-}
-
-function send(message) {
-    const body = Buffer.from(JSON.stringify(message), 'utf8');
-    child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
-    child.stdin.write(body);
-}
-
-function request(method, params) {
-    const id = nextId++;
-    return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(`timeout waiting for ${method} response`)), 15000);
-        pendingResponses.set(id, (msg) => { clearTimeout(timer); resolve(msg); });
-        send({ jsonrpc: '2.0', id, method, params });
+async function testProbeContract() {
+    const result = await new Promise((resolve) => {
+        const p = spawn(process.env.MAZM_PATH,
+            ['--check', '--stdin', '--base-path', os.tmpdir(), '--source-name', server.PROBE_SOURCE_NAME]);
+        let stderr = '';
+        p.stderr.on('data', d => { stderr += d; });
+        p.on('close', code => resolve({ code, stderr }));
+        p.stdin.end(server.PROBE_INPUT);
     });
+
+    ok(result.code === 1 && server.classifyProbe(result.code, result.stderr),
+        'probe: real mazm produces exit 1 + mazm-stdin-probe marker');
 }
 
-function notify(method, params) {
-    send({ jsonrpc: '2.0', method, params });
-}
+/* ---------------- Part 3: live-mode e2e ---------------- */
 
-function nextDiagnostics() {
-    return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('timeout waiting for diagnostics')), 15000);
-        diagnosticWaiters.push((params) => { clearTimeout(timer); resolve(params); });
-    });
-}
+async function testLiveMode() {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mazm-lsp-'));
+    const workFile = path.join(tmpDir, 'work.mazm');
+    fs.writeFileSync(workFile, FIXED);   // disk is FIXED the whole test
+    const workUri = pathToFileURL(workFile).toString();
 
-function openDoc(fsPath, text) {
-    notify('textDocument/didOpen', {
-        textDocument: {
-            uri: pathToFileURL(fsPath).toString(),
-            languageId: 'mazm',
-            version: 1,
-            text: text !== undefined ? text : fs.readFileSync(fsPath, 'utf8'),
-        },
-    });
-}
-
-async function main() {
-    const init = await request('initialize', {
-        processId: null,
-        rootUri: null,
-        capabilities: {},
-    });
+    const s = startSession({});
+    const init = await s.request('initialize', { processId: null, rootUri: null, capabilities: {} });
     ok(init.result && init.result.capabilities.definitionProvider === true,
-        'e2e: initialize advertises definitionProvider');
-    notify('initialized', {});
+        'live: initialize advertises definitionProvider');
+    s.notify('initialized', {});
 
-    // Diagnostics: broken file -> one error on line 2 (0-based line 1).
-    const diagPromise = nextDiagnostics();
-    openDoc(workFile);
-    const diag = await diagPromise;
-    ok(diag.diagnostics.length === 1
-        && diag.diagnostics[0].severity === 1
-        && diag.diagnostics[0].range.start.line === 1
-        && diag.diagnostics[0].source === 'mazm',
-        'e2e: broken file publishes one mazm error on the reported line');
+    // Buffer-over-disk: disk is FIXED, buffer is BROKEN. A diagnostic proves
+    // the buffer is what gets checked.
+    s.open(workFile, BROKEN);
+    let last = await s.settle(workUri);
+    ok(last.diagnostics.length === 1
+        && last.diagnostics[0].severity === 1
+        && last.diagnostics[0].range.start.line === 1
+        && last.diagnostics[0].source === 'mazm',
+        'live: broken BUFFER over clean disk publishes the error (buffer wins)');
 
-    // Fix on disk, didSave -> cleared.
-    fs.writeFileSync(workFile, FIXED);
-    notify('textDocument/didChange', {
-        textDocument: { uri: pathToFileURL(workFile).toString(), version: 2 },
-        contentChanges: [{ text: FIXED }],
-    });
-    const clearPromise = nextDiagnostics();
-    notify('textDocument/didSave', {
-        textDocument: { uri: pathToFileURL(workFile).toString() },
-    });
-    const cleared = await clearPromise;
-    ok(cleared.diagnostics.length === 0, 'e2e: fixed + saved file clears diagnostics');
+    // Typing the fix clears it, no save involved.
+    s.change(workFile, 2, FIXED);
+    last = await s.settle(workUri);
+    ok(last.diagnostics.length === 0, 'live: typing the fix clears diagnostics without saving');
+
+    // Rapid burst settles on the final (broken) state with no stale overwrite.
+    s.change(workFile, 3, FIXED);
+    s.change(workFile, 4, BROKEN);
+    s.change(workFile, 5, FIXED);
+    s.change(workFile, 6, BROKEN);
+    last = await s.settle(workUri);
+    ok(last.diagnostics.length === 1 && last.diagnostics[0].range.start.line === 1,
+        'live: rapid burst settles on the final state');
 
     // Symbols on hello.mazm.
     const helloPath = path.resolve(ROOT, '..', '..', 'asm', 'hello.mazm');
-    const helloDiag = nextDiagnostics();
-    openDoc(helloPath);
-    await helloDiag; // hello.mazm is clean; consume its (empty) diagnostics
-    const symbols = await request('textDocument/documentSymbol', {
-        textDocument: { uri: pathToFileURL(helloPath).toString() },
+    const helloUri = pathToFileURL(helloPath).toString();
+    s.open(helloPath);
+    await s.settle(helloUri);
+    const symbols = await s.request('textDocument/documentSymbol', {
+        textDocument: { uri: helloUri },
     });
-    const names = symbols.result.map(s => s.name).sort().join(',');
-    ok(names === 'hw_string,loop_body,loop_condition,loop_exit,main,strlen',
-        'e2e: documentSymbol on hello.mazm returns all six labels');
+    ok(symbols.result.map(sym => sym.name).sort().join(',') === 'hw_string,loop_body,loop_condition,loop_exit,main,strlen',
+        'live: documentSymbol on hello.mazm returns all six labels');
 
-    // Cross-INCLUDE definition from lsp_main.
+    // Cross-INCLUDE definition + references from lsp_main.
     const mainPath = path.join(FIXTURES, 'lsp_main.mazm');
-    const mainDiag = nextDiagnostics();
-    openDoc(mainPath);
-    await mainDiag;
+    const mainUri = pathToFileURL(mainPath).toString();
+    s.open(mainPath);
+    await s.settle(mainUri);
     const lines = fs.readFileSync(mainPath, 'utf8').split(/\r?\n/);
     const callLine = lines.findIndex(l => l.includes('CALL lib_func'));
-    const defResp = await request('textDocument/definition', {
-        textDocument: { uri: pathToFileURL(mainPath).toString() },
+    const defResp = await s.request('textDocument/definition', {
+        textDocument: { uri: mainUri },
         position: { line: callLine, character: lines[callLine].indexOf('lib_func') + 2 },
     });
     ok(defResp.result && defResp.result.uri.endsWith('lsp_lib.mazm'),
-        'e2e: definition of lib_func lands in lsp_lib.mazm');
+        'live: definition of lib_func lands in lsp_lib.mazm');
 
-    // References on local_helper.
     const helperLine = lines.findIndex(l => l.includes('CALL local_helper'));
-    const refResp = await request('textDocument/references', {
-        textDocument: { uri: pathToFileURL(mainPath).toString() },
+    const refResp = await s.request('textDocument/references', {
+        textDocument: { uri: mainUri },
         position: { line: helperLine, character: lines[helperLine].indexOf('local_helper') + 2 },
         context: { includeDeclaration: true },
     });
     ok(refResp.result && refResp.result.length === 2,
-        'e2e: references on local_helper returns declaration + usage');
+        'live: references on local_helper returns declaration + usage');
 
-    // Cycle guard through the request path: definition of a missing symbol in
-    // a cyclic include pair must return null promptly (not hang).
+    // Cycle guard through the request path.
     const cycPath = path.join(FIXTURES, 'cyc_a.mazm');
-    const cycDiag = nextDiagnostics();
-    openDoc(cycPath);
-    await cycDiag; // whatever mazm makes of the cycle, the server must respond
-    const cycLines = fs.readFileSync(cycPath, 'utf8').split(/\r?\n/);
-    const cycLabelLine = cycLines.findIndex(l => l.includes('cyc_a_label:'));
+    const cycUri = pathToFileURL(cycPath).toString();
+    s.open(cycPath);
+    await s.settle(cycUri);
     const started = Date.now();
-    const missing = await request('textDocument/definition', {
-        textDocument: { uri: pathToFileURL(cycPath).toString() },
-        position: { line: cycLabelLine + 1, character: 5 }, // on RET: no label named RET anywhere
+    const missing = await s.request('textDocument/definition', {
+        textDocument: { uri: cycUri },
+        position: { line: 4, character: 5 },   // on RET: no such label anywhere
     });
     ok((missing.result === null || missing.result === undefined) && Date.now() - started < 5000,
-        'e2e: definition across an include cycle terminates with null');
+        'live: definition across an include cycle terminates with null');
 
-    notify('exit', {});
-    child.kill();
-    console.log(failures === 0 ? '\nALL LSP CHECKS PASSED' : `\n${failures} LSP CHECK(S) FAILED`);
-    process.exit(failures === 0 ? 0 : 1);
+    s.stop();
 }
 
-main().catch((e) => {
-    console.error(e);
-    child.kill();
-    process.exit(2);
-});
+/* ---------------- Part 4: version-skew fallback e2e ---------------- */
+
+async function testFallback() {
+    const stub = path.join(FIXTURES, process.platform === 'win32' ? 'old-mazm-stub.cmd' : 'old-mazm-stub.js');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mazm-lsp-fb-'));
+    const workFile = path.join(tmpDir, 'work.mazm');
+    fs.writeFileSync(workFile, BROKEN);   // disk starts BROKEN
+    const workUri = pathToFileURL(workFile).toString();
+
+    const s = startSession({ MAZM_PATH: stub });
+    await s.request('initialize', { processId: null, rootUri: null, capabilities: {} });
+    s.notify('initialized', {});
+
+    // Open: probe fails against the stub (it captures the --base-path dir as
+    // its input and exits 0, no marker) -> fallback -> file-mode check of the
+    // BROKEN disk content.
+    s.open(workFile);
+    let last = await s.settle(workUri);
+    ok(last.diagnostics.length === 1 && last.diagnostics[0].range.start.line === 1,
+        'fallback: save-time diagnostics work against the old-mazm stub');
+
+    // didChange must NOT trigger any validation in fallback mode.
+    const before = s.countFor(workUri);
+    s.change(workFile, 2, FIXED);
+    await sleep(1200);
+    ok(s.countFor(workUri) === before, 'fallback: didChange publishes nothing (no dirty-buffer checking)');
+
+    // Fix on disk + didSave clears.
+    fs.writeFileSync(workFile, FIXED);
+    s.notify('textDocument/didSave', { textDocument: { uri: workUri } });
+    last = await s.settle(workUri);
+    ok(last.diagnostics.length === 0, 'fallback: disk fix + didSave clears diagnostics');
+
+    s.stop();
+}
+
+(async () => {
+    try {
+        await testProbeContract();
+        await testLiveMode();
+        await testFallback();
+    }
+    catch (e) {
+        console.error(e);
+        process.exit(2);
+    }
+
+    console.log(failures === 0 ? '\nALL LSP CHECKS PASSED' : `\n${failures} LSP CHECK(S) FAILED`);
+    process.exit(failures === 0 ? 0 : 1);
+})();

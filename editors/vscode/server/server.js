@@ -9,11 +9,15 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { execFile } = require('child_process');
+const { spawn } = require('child_process');
 const { pathToFileURL, fileURLToPath } = require('url');
 
 const ERROR_LINE = /^mazm: (.+?):(\d+): error: (.+)$/m;
+const PROBE_SOURCE_NAME = 'mazm-stdin-probe';
+const PROBE_INPUT = 'STRING "x\n';
+const PROBE_MARKER = /^mazm: mazm-stdin-probe:1: error:/m;
 const IDENT = /[A-Za-z_][A-Za-z0-9_]*/g;
 const COLON_LABEL = /^(\s*)([A-Za-z_][A-Za-z0-9_]*):/;
 const LABEL_DIRECTIVE = /^(\s*LABEL[ \t]+)([A-Za-z_][A-Za-z0-9_]*)/;
@@ -193,6 +197,13 @@ function findDefinitionAcrossIncludes(filePath, rootText, name) {
     return null;
 }
 
+/* True iff a probe outcome proves --stdin support (maize-49): only exit 1 plus
+   the marker line counts. Any other outcome means an older mazm that ignored
+   the flags, a crash, or a timeout, and the caller must fall back. */
+function classifyProbe(exitCode, stderr) {
+    return exitCode === 1 && PROBE_MARKER.test(stderr || '');
+}
+
 module.exports = {
     parseMazmError,
     maskLine,
@@ -200,6 +211,9 @@ module.exports = {
     findIdentifiers,
     wordAt,
     findDefinitionAcrossIncludes,
+    classifyProbe,
+    PROBE_INPUT,
+    PROBE_SOURCE_NAME,
 };
 
 /* ------------------------------------------------------------------------- */
@@ -227,6 +241,76 @@ let hasConfiguration = false;
 let warnedNoMazm = false;
 
 const CHECK_TIMEOUT_MS = parseInt(process.env.MAZM_CHECK_TIMEOUT_MS || '10000', 10);
+const DEBOUNCE_MS = 300;
+
+/* 'live' (buffer over stdin, on-type) or 'file' (saved state, maize-46
+   behavior). Decided once per session by the version-skew probe. */
+let modePromise = null;
+
+const generations = new Map();    // uri -> latest validation generation
+const inflight = new Map();       // uri -> running mazm child process
+const debounceTimers = new Map(); // uri -> pending didChange timer
+
+/* Spawn mazm, optionally feeding stdin, with a kill-timer. .cmd/.bat targets
+   (wrapper scripts) need shell mode on Windows. cb(err, exitCode, stderr). */
+function spawnMazm(mazmPath, args, inputText, cb) {
+    const useShell = /\.(cmd|bat)$/i.test(mazmPath);
+    let child;
+
+    try {
+        // Shell mode (wrapper scripts) needs explicit quoting or cmd.exe
+        // splits paths containing spaces.
+        child = useShell
+            ? spawn(`"${mazmPath}"`, args.map(a => `"${a}"`), { shell: true, windowsHide: true })
+            : spawn(mazmPath, args, { windowsHide: true });
+    }
+    catch (e) {
+        cb(e, -1, '');
+        return null;
+    }
+
+    let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, CHECK_TIMEOUT_MS);
+
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('error', (e) => {
+        if (!settled) { settled = true; clearTimeout(timer); cb(e, -1, stderr); }
+    });
+    child.on('close', (code) => {
+        if (!settled) { settled = true; clearTimeout(timer); cb(null, code, stderr); }
+    });
+
+    if (inputText !== null) {
+        child.stdin.on('error', () => { /* EPIPE when the child exits first */ });
+        child.stdin.end(inputText);
+    }
+
+    return child;
+}
+
+function ensureMode(mazmPath) {
+    if (!modePromise) {
+        modePromise = new Promise((resolve) => {
+            const args = ['--check', '--stdin', '--base-path', os.tmpdir(), '--source-name', PROBE_SOURCE_NAME];
+
+            spawnMazm(mazmPath, args, PROBE_INPUT, (err, code, stderr) => {
+                if (!err && classifyProbe(code, stderr)) {
+                    resolve('live');
+                    return;
+                }
+
+                connection.console.log(
+                    `mazm --stdin probe failed (${err ? err.code : 'exit ' + code}); falling back to save-time diagnostics`);
+                connection.window.showInformationMessage(
+                    'This mazm build does not support --stdin; diagnostics update on save only. Rebuild mazm for on-type checking.');
+                resolve('file');
+            });
+        });
+    }
+
+    return modePromise;
+}
 
 connection.onInitialize((params) => {
     hasConfiguration = !!(params.capabilities.workspace && params.capabilities.workspace.configuration);
@@ -271,16 +355,43 @@ function samePath(a, b) {
         : ra === rb;
 }
 
-async function validate(doc) {
+async function validate(doc, isChange) {
     if (!doc.uri.startsWith('file:')) {
         return;
     }
 
     const fsPath = fileURLToPath(doc.uri);
     const mazmPath = await getMazmPath();
+    const mode = await ensureMode(mazmPath);
 
-    execFile(mazmPath, ['--check', fsPath], { timeout: CHECK_TIMEOUT_MS }, (error, stdout, stderr) => {
-        if (error && (error.code === 'ENOENT' || error.code === 'EACCES')) {
+    if (mode === 'file' && isChange) {
+        // Fallback mode checks saved state only; a dirty buffer has nothing
+        // on disk worth checking.
+        return;
+    }
+
+    const gen = (generations.get(doc.uri) || 0) + 1;
+    generations.set(doc.uri, gen);
+
+    const prev = inflight.get(doc.uri);
+    if (prev) {
+        try { prev.kill(); } catch { /* already gone */ }
+    }
+
+    const args = mode === 'live'
+        ? ['--check', '--stdin', '--base-path', path.dirname(fsPath), '--source-name', fsPath]
+        : ['--check', fsPath];
+    const input = mode === 'live' ? doc.getText() : null;
+
+    const child = spawnMazm(mazmPath, args, input, (err, code, stderr) => {
+        if (generations.get(doc.uri) !== gen) {
+            // A newer validation superseded this one (typically we killed it).
+            return;
+        }
+
+        inflight.delete(doc.uri);
+
+        if (err && (err.code === 'ENOENT' || err.code === 'EACCES')) {
             if (!warnedNoMazm) {
                 warnedNoMazm = true;
                 connection.window.showWarningMessage(
@@ -290,7 +401,7 @@ async function validate(doc) {
             return;
         }
 
-        if (!error) {
+        if (code === 0) {
             connection.sendDiagnostics({ uri: doc.uri, diagnostics: [] });
             return;
         }
@@ -336,12 +447,47 @@ async function validate(doc) {
 
         connection.sendDiagnostics({ uri: doc.uri, diagnostics: [diagnostic] });
     });
+
+    if (child) {
+        inflight.set(doc.uri, child);
+    }
 }
 
-documents.onDidOpen((e) => { validate(e.document); });
-documents.onDidSave((e) => { validate(e.document); });
+documents.onDidOpen((e) => { validate(e.document, false); });
+documents.onDidSave((e) => { validate(e.document, false); });
+documents.onDidChangeContent((e) => {
+    // Fires on open as well as edits; the debounce plus generation guard makes
+    // the duplicate open-time validation harmless.
+    const uri = e.document.uri;
+    const existing = debounceTimers.get(uri);
+
+    if (existing) {
+        clearTimeout(existing);
+    }
+
+    debounceTimers.set(uri, setTimeout(() => {
+        debounceTimers.delete(uri);
+        validate(e.document, true);
+    }, DEBOUNCE_MS));
+});
 documents.onDidClose((e) => {
-    connection.sendDiagnostics({ uri: e.document.uri, diagnostics: [] });
+    const uri = e.document.uri;
+    const timer = debounceTimers.get(uri);
+
+    if (timer) {
+        clearTimeout(timer);
+        debounceTimers.delete(uri);
+    }
+
+    generations.set(uri, (generations.get(uri) || 0) + 1);
+
+    const child = inflight.get(uri);
+    if (child) {
+        try { child.kill(); } catch { /* already gone */ }
+        inflight.delete(uri);
+    }
+
+    connection.sendDiagnostics({ uri, diagnostics: [] });
 });
 
 connection.onDocumentSymbol((params) => {
