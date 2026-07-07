@@ -101,6 +101,10 @@ function startSession(env) {
         buffer: Buffer.alloc(0),
     };
 
+    // Writes racing a child exit (e.g. during stop()) EPIPE on Windows; that
+    // must not crash the test process.
+    child.stdin.on('error', () => {});
+
     child.stdout.on('data', (chunk) => {
         session.buffer = Buffer.concat([session.buffer, chunk]);
 
@@ -151,9 +155,13 @@ function startSession(env) {
 
     session.countFor = (uri) => (session.received.get(uri) || []).length;
 
-    /* Wait until no new publish for `uri` arrives for quietMs; return the last
-       params seen (or null). Absorbs duplicate open+debounce validations. */
-    session.settle = (uri, quietMs = 900, maxMs = 15000) => new Promise((resolve, reject) => {
+    /* Wait for a publish newer than `afterCount`, then for no further publish
+       during quietMs; return the last params seen. Requiring a NEW publish
+       before the quiet window starts prevents a slow cold spawn from letting
+       the window elapse on the PREVIOUS publish (the settle race that flaked
+       clear-on-type checks under load). Callers capture countFor(uri) before
+       the triggering action and pass it here. */
+    session.settle = (uri, afterCount = 0, quietMs = 900, maxMs = 20000) => new Promise((resolve, reject) => {
         const startTime = Date.now();
         let lastCount = session.countFor(uri);
         let lastChange = Date.now();
@@ -165,7 +173,7 @@ function startSession(env) {
                 lastCount = count;
                 lastChange = Date.now();
             }
-            else if (count > 0 && Date.now() - lastChange >= quietMs) {
+            else if (count > afterCount && Date.now() - lastChange >= quietMs) {
                 clearInterval(poll);
                 const list = session.received.get(uri);
                 resolve(list[list.length - 1]);
@@ -214,6 +222,7 @@ async function testProbeContract() {
         let stderr = '';
         p.stderr.on('data', d => { stderr += d; });
         p.on('close', code => resolve({ code, stderr }));
+        p.stdin.on('error', () => {});
         p.stdin.end(server.PROBE_INPUT);
     });
 
@@ -230,6 +239,7 @@ async function testProbeContract() {
         let stderr = '';
         p.stderr.on('data', d => { stderr += d; });
         p.on('close', code => resolve({ code, stderr }));
+        p.stdin.on('error', () => {});
         // Trailing newline matters: it dispatches the bare opcode, which is
         // the state that crashed. (Without it, the half-typed token is
         // silently ignored at EOF, mazm's longstanding behavior.)
@@ -237,6 +247,20 @@ async function testProbeContract() {
     });
     ok(partial.code === 1 && server.parseMazmErrors(partial.stderr).length > 0,
         'probe: bare-opcode partial buffer exits 1 with a parseable diagnostic (no crash)');
+
+    // Same class, short-child variant: a 2-operand opcode truncated after one
+    // operand exercises the short-children compile path.
+    const shortOp = await new Promise((resolve) => {
+        const p = spawn(process.env.MAZM_PATH,
+            ['--check', '--stdin', '--base-path', os.tmpdir(), '--source-name', 'short.mazm']);
+        let stderr = '';
+        p.stderr.on('data', d => { stderr += d; });
+        p.on('close', code => resolve({ code, stderr }));
+        p.stdin.on('error', () => {});
+        p.stdin.end('main:\n    LD x\n');
+    });
+    ok(shortOp.code === 1 && server.parseMazmErrors(shortOp.stderr).length > 0,
+        'probe: one-of-two-operands truncation exits 1 with a parseable diagnostic (no crash)');
 }
 
 /* ---------------- Part 3: live-mode e2e ---------------- */
@@ -255,8 +279,9 @@ async function testLiveMode() {
 
     // Buffer-over-disk: disk is FIXED, buffer is BROKEN. A diagnostic proves
     // the buffer is what gets checked.
+    let mark = s.countFor(workUri);
     s.open(workFile, BROKEN);
-    let last = await s.settle(workUri);
+    let last = await s.settle(workUri, mark);
     ok(last.diagnostics.length === 1
         && last.diagnostics[0].severity === 1
         && last.diagnostics[0].range.start.line === 1
@@ -264,16 +289,18 @@ async function testLiveMode() {
         'live: broken BUFFER over clean disk publishes the error (buffer wins)');
 
     // Typing the fix clears it, no save involved.
+    mark = s.countFor(workUri);
     s.change(workFile, 2, FIXED);
-    last = await s.settle(workUri);
+    last = await s.settle(workUri, mark);
     ok(last.diagnostics.length === 0, 'live: typing the fix clears diagnostics without saving');
 
     // Rapid burst settles on the final (broken) state with no stale overwrite.
+    mark = s.countFor(workUri);
     s.change(workFile, 3, FIXED);
     s.change(workFile, 4, BROKEN);
     s.change(workFile, 5, FIXED);
     s.change(workFile, 6, BROKEN);
-    last = await s.settle(workUri);
+    last = await s.settle(workUri, mark);
     ok(last.diagnostics.length === 1 && last.diagnostics[0].range.start.line === 1,
         'live: rapid burst settles on the final state');
 
@@ -284,18 +311,21 @@ async function testLiveMode() {
     const MULTI3 = 'main:\n    LD a R0\n    LD b R1\n    CALL nowhere\n    RET\n';
     const MULTI2 = 'main:\n    CP $01 R0\n    LD b R1\n    CALL nowhere\n    RET\n';
 
+    mark = s.countFor(multiUri);
     s.open(multiFile, MULTI3);
-    last = await s.settle(multiUri);
+    last = await s.settle(multiUri, mark);
     ok(last.diagnostics.length === 3
         && last.diagnostics.map(d => d.range.start.line).join(',') === '1,2,3',
         'multi: three-error buffer publishes three diagnostics on the right lines');
 
+    mark = s.countFor(multiUri);
     s.change(multiFile, 2, MULTI2);
-    last = await s.settle(multiUri);
+    last = await s.settle(multiUri, mark);
     ok(last.diagnostics.length === 2, 'multi: fixing one error drops the count to two');
 
+    mark = s.countFor(multiUri);
     s.change(multiFile, 3, FIXED);
-    last = await s.settle(multiUri);
+    last = await s.settle(multiUri, mark);
     ok(last.diagnostics.length === 0, 'multi: fixing the rest clears all diagnostics');
 
     // Mixed buffer + include errors: anchored plus line-mapped in one publish.
@@ -303,8 +333,9 @@ async function testLiveMode() {
     const mixedFile = path.join(tmpDir, 'mixed.mazm');
     fs.writeFileSync(mixedFile, FIXED);
     const mixedUri = pathToFileURL(mixedFile).toString();
+    mark = s.countFor(mixedUri);
     s.open(mixedFile, 'INCLUDE "bad_inc.mazm"\nmain:\n    LD x R0\n    RET\n');
-    last = await s.settle(mixedUri);
+    last = await s.settle(mixedUri, mark);
     const anchored = last.diagnostics.filter(d => d.message.startsWith('in included file'));
     const mapped = last.diagnostics.filter(d => !d.message.startsWith('in included file'));
     ok(last.diagnostics.length === 2 && anchored.length === 1
@@ -315,8 +346,9 @@ async function testLiveMode() {
     // Symbols on hello.mazm.
     const helloPath = path.resolve(ROOT, '..', '..', 'asm', 'hello.mazm');
     const helloUri = pathToFileURL(helloPath).toString();
+    mark = s.countFor(helloUri);
     s.open(helloPath);
-    await s.settle(helloUri);
+    await s.settle(helloUri, mark);
     const symbols = await s.request('textDocument/documentSymbol', {
         textDocument: { uri: helloUri },
     });
@@ -326,8 +358,9 @@ async function testLiveMode() {
     // Cross-INCLUDE definition + references from lsp_main.
     const mainPath = path.join(FIXTURES, 'lsp_main.mazm');
     const mainUri = pathToFileURL(mainPath).toString();
+    mark = s.countFor(mainUri);
     s.open(mainPath);
-    await s.settle(mainUri);
+    await s.settle(mainUri, mark);
     const lines = fs.readFileSync(mainPath, 'utf8').split(/\r?\n/);
     const callLine = lines.findIndex(l => l.includes('CALL lib_func'));
     const defResp = await s.request('textDocument/definition', {
@@ -349,8 +382,9 @@ async function testLiveMode() {
     // Cycle guard through the request path.
     const cycPath = path.join(FIXTURES, 'cyc_a.mazm');
     const cycUri = pathToFileURL(cycPath).toString();
+    mark = s.countFor(cycUri);
     s.open(cycPath);
-    await s.settle(cycUri);
+    await s.settle(cycUri, mark);
     const started = Date.now();
     const missing = await s.request('textDocument/definition', {
         textDocument: { uri: cycUri },
@@ -378,8 +412,9 @@ async function testFallback() {
     // Open: probe fails against the stub (it captures the --base-path dir as
     // its input and exits 0, no marker) -> fallback -> file-mode check of the
     // BROKEN disk content.
+    let mark = s.countFor(workUri);
     s.open(workFile);
-    let last = await s.settle(workUri);
+    let last = await s.settle(workUri, mark);
     ok(last.diagnostics.length === 1 && last.diagnostics[0].range.start.line === 1,
         'fallback: save-time diagnostics work against the old-mazm stub');
 
@@ -390,9 +425,10 @@ async function testFallback() {
     ok(s.countFor(workUri) === before, 'fallback: didChange publishes nothing (no dirty-buffer checking)');
 
     // Fix on disk + didSave clears.
+    mark = s.countFor(workUri);
     fs.writeFileSync(workFile, FIXED);
     s.notify('textDocument/didSave', { textDocument: { uri: workUri } });
-    last = await s.settle(workUri);
+    last = await s.settle(workUri, mark);
     ok(last.diagnostics.length === 0, 'fallback: disk fix + didSave clears diagnostics');
 
     s.stop();
