@@ -2,6 +2,57 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "Assemble current .mazm",
+            "detail": "Run mazm on the active file; errors land in the Problems panel and are click-to-navigate.",
+            "type": "shell",
+            "command": "mazm",
+            "args": [
+                "${file}"
+            ],
+            "group": "build",
+            "presentation": {
+                "clear": true,
+                "reveal": "always"
+            },
+            "problemMatcher": {
+                "owner": "mazm-task",
+                "source": "mazm",
+                "fileLocation": "absolute",
+                "pattern": {
+                    "regexp": "^mazm: (.+?):(\\d+): error: (.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "message": 3
+                }
+            }
+        },
+        {
+            "label": "Check current .mazm (no output file)",
+            "detail": "mazm --check on the active file: same clickable errors, zero filesystem effects (no .bin written, stale .bin kept).",
+            "type": "shell",
+            "command": "mazm",
+            "args": [
+                "--check",
+                "${file}"
+            ],
+            "group": "build",
+            "presentation": {
+                "clear": true,
+                "reveal": "always"
+            },
+            "problemMatcher": {
+                "owner": "mazm-task",
+                "source": "mazm",
+                "fileLocation": "absolute",
+                "pattern": {
+                    "regexp": "^mazm: (.+?):(\\d+): error: (.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "message": 3
+                }
+            }
+        },
+        {
             "label": "Install mazm to ~/bin",
             "detail": "Build mazm and copy it to the user bin directory so editors find a stable copy on PATH.",
             "type": "shell",
