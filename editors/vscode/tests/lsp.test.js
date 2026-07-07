@@ -219,6 +219,21 @@ async function testProbeContract() {
 
     ok(result.code === 1 && server.classifyProbe(result.code, result.stderr),
         'probe: real mazm produces exit 1 + mazm-stdin-probe marker');
+
+    // Regression (maize-50 Ship pushback): a buffer ending in a bare opcode
+    // (the natural mid-typing state) crashed mazm with an access violation
+    // because recovery left the partially-tokenized node for the compiler.
+    // Must be a clean exit-1 with a parseable line, never a crash exit.
+    const partial = await new Promise((resolve) => {
+        const p = spawn(process.env.MAZM_PATH,
+            ['--check', '--stdin', '--base-path', os.tmpdir(), '--source-name', 'partial.mazm']);
+        let stderr = '';
+        p.stderr.on('data', d => { stderr += d; });
+        p.on('close', code => resolve({ code, stderr }));
+        p.stdin.end('main:\n    CP $00 R0\n    LD');
+    });
+    ok(partial.code === 1 && server.parseMazmErrors(partial.stderr).length > 0,
+        'probe: bare-opcode partial buffer exits 1 with a parseable diagnostic (no crash)');
 }
 
 /* ---------------- Part 3: live-mode e2e ---------------- */

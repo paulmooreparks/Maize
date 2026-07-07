@@ -461,7 +461,11 @@ namespace {
             /* Recovery site 1 of 5 (maize-50): a source error anywhere below
                records its diagnostic, resyncs to the next line, and
                tokenization continues. env_error and error_limit_reached
-               deliberately pass through. */
+               deliberately pass through. Nodes added by the failed construct
+               are pruned: a partially-tokenized node reaching its compiler is
+               undefined behavior (missing operand children). */
+            auto nodes_before = tree.value.size();
+
             try {
                 switch (state) {
                 case parser_state::comment:
@@ -488,6 +492,11 @@ namespace {
             }
             catch (const asm_error &e) {
                 record_diag(e.what());
+
+                while (tree.value.size() > nodes_before) {
+                    tree.value.pop_back();
+                }
+
                 resync_to_newline(fin);
                 state = parser_state::newline;
             }
@@ -683,7 +692,10 @@ namespace {
             /* Recovery site 2 of 5 (maize-50): an error on one instruction
                under a label resyncs and continues WITHIN the block loop, so
                the rest of the routine stays attached to its label instead of
-               re-tokenizing as disconnected top-level fragments. */
+               re-tokenizing as disconnected top-level fragments. Partial
+               nodes from the failed instruction are pruned, same as site 1. */
+            auto nodes_before = sub_tree.value.size();
+
             try {
                 switch (state) {
                 case parser_state::comment:
@@ -715,6 +727,11 @@ namespace {
             }
             catch (const asm_error &e) {
                 record_diag(e.what());
+
+                while (sub_tree.value.size() > nodes_before) {
+                    sub_tree.value.pop_back();
+                }
+
                 resync_to_newline(fin);
                 state = parser_state::newline;
             }
