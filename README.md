@@ -1,5 +1,9 @@
 # The Maize Virtual Machine
 
+[![CI](https://github.com/paulmooreparks/Maize/actions/workflows/ci.yml/badge.svg)](https://github.com/paulmooreparks/Maize/actions/workflows/ci.yml)
+![platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-blue)
+![C++](https://img.shields.io/badge/C%2B%2B-20-blue)
+
 This project implements a 64-bit virtual machine called "Maize." This is an outgrowth of my [Tortilla](https://github.com/paulmooreparks/Tortilla)
 project, which began life as an x86 emulator implemented in C# on .NET and then later became a virtual CPU of my own making.
 
