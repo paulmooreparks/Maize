@@ -556,11 +556,12 @@ namespace maize {
 			const opcode lea_regAddr_regreg		{lea_opcode | opcode_flag_srcAddr};
 			const opcode lea_immAddr_regreg		{lea_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
-			const opcode ldz_opcode				{0x13};
-			const opcode cpz_regVal_reg			{ldz_opcode | opcode_flag_srcReg};
-			const opcode cpz_immVal_reg			{ldz_opcode | opcode_flag_srcImm};
-			const opcode ldz_regAddr_reg		{ldz_opcode | opcode_flag_srcAddr};
-			const opcode ldz_immAddr_reg		{ldz_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+			/* CPZ is the zero-extending copy. Its base opcode ($13) keeps the two value forms;
+			   the address forms ($93 / $D3) were LDZ, removed as redundant (card maize-29) and
+			   returned to reserved. */
+			const opcode cpz_opcode				{0x13};
+			const opcode cpz_regVal_reg			{cpz_opcode | opcode_flag_srcReg};
+			const opcode cpz_immVal_reg			{cpz_opcode | opcode_flag_srcImm};
 
 			const opcode out_opcode				{0x14};
 			const opcode out_regVal_imm			{out_opcode | opcode_flag_srcReg};

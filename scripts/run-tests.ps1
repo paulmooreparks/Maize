@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     Configures and builds the windows-llvm-mingw-debug preset (or an override given
-    via -Preset), then assembles and runs each of the 18 in-scope tests under asm/,
+    via -Preset), then assembles and runs each of the 20 in-scope tests under asm/,
     comparing captured stdout against the expected output embedded below. Prints a
     per-test PASS/FAIL report plus a summary line.
 
@@ -62,7 +62,9 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_memblock';      File = 'test_memblock.mazm';      Expected = 'memblock: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_crossblock';    File = 'test_crossblock.mazm';    Expected = 'crossblk: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_adc';           File = 'test_adc.mazm';           Expected = 'adc: PASS';                     Golden = $false }
+    [pscustomobject]@{ Name = 'test_copywidth';     File = 'test_copywidth.mazm';     Expected = 'copywidth: PASS';               Golden = $false }
     [pscustomobject]@{ Name = 'reject_ld_value';    File = 'test_reject_ldval.mazm';   Expected = 'reads from a memory address';   Golden = $false; ExpectAsmError = $true }
+    [pscustomobject]@{ Name = 'reject_ldz';         File = 'test_reject_ldz.mazm';     Expected = "unknown keyword or opcode 'LDZ'"; Golden = $false; ExpectAsmError = $true }
 )
 
 function Trim-TrailingNewlines([string]$s) {

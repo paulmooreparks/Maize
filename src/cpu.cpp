@@ -619,11 +619,37 @@ namespace maize {
             }
 
             void copy_memval_reg(u_word address, size_t size, reg_value &op2_reg, subreg_enum dst_subreg) {
-                auto dst_index = subreg_index_map[dst_subreg];
-                mm.read(address, op2_reg, size, dst_index);
+                /* Read the size-byte immediate, then sign-extend it to the destination
+                   subregister width (card maize-29). A narrow immediate copied into a wider
+                   register fills the upper bytes by sign, matching register-to-register CP
+                   (copy_regval_reg). This unifies every immediate-value site on one rule: CP
+                   immediates, the ALU immediate operands (which previously merged, leaking stale
+                   upper bytes into the operation), and stack/pointer loads. CPZ is the
+                   zero-extending counterpart; an explicit narrower destination subregister is the
+                   partial-write escape hatch. */
+                reg_value src_data;
+                src_data.w0 = 0;
+                mm.read(address, src_data, size, 0);
+                copy_regval_reg(src_data, imm_size_subreg_map[size], op2_reg, dst_subreg);
+            }
+
+            void copy_memval_reg_zext(u_word address, size_t size, reg_value &op2_reg, subreg_enum dst_subreg) {
+                /* Zero-extending immediate value for CPZ (card maize-29): a narrow immediate fills
+                   the destination's upper bytes with zero, the unsigned counterpart to
+                   copy_memval_reg's sign-extension. Keeps CPZ distinct from CP for immediates
+                   (they were indistinguishable while both merged). */
+                reg_value src_data;
+                src_data.w0 = 0;
+                mm.read(address, src_data, size, 0);
+                copy_regval_reg_zext(src_data, imm_size_subreg_map[size], op2_reg, dst_subreg);
             }
 
             void copy_regaddr_reg(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
+                /* LD reads from the address held in the source register. The number of bytes read
+                   is the size of the destination subregister (card maize-29): `LD @Rn R0.B0` reads
+                   one byte, `LD @Rn R0.H0` reads four. The bytes land in the destination field and
+                   the rest of the register is preserved. Reading exactly the destination width
+                   (rather than a fixed 8) avoids over-reading past the intended address. */
                 auto src_offset = subreg_offset_map[src_subreg];
                 auto src_mask = subreg_mask_map[src_subreg];
 
@@ -632,8 +658,9 @@ namespace maize {
 
                 u_word src_address = (static_cast<u_word>(src_mask) & src.w0) >> src_offset;
                 reg src_data;
-                mm.read(src_address, src_data, subreg_enum::w0);
-                
+                src_data.w0 = 0;
+                mm.read(src_address, src_data, subreg_size_map[dst_subreg], 0);
+
                 dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_data.w0 << dst_offset) & static_cast<u_word>(dst_mask);
             }
 
@@ -646,8 +673,12 @@ namespace maize {
                 reg src_address;
                 mm.read(address, src_address, size, 0);
 
+                /* The load width is the destination subregister size, not a fixed 8 (card
+                   maize-29): read exactly as many bytes from the target address as the destination
+                   holds, so `LD @imm R0.B0` reads one byte and the rest of R0 is preserved. */
                 reg src_data;
-                mm.read(src_address.w0, src_data, subreg_enum::w0);
+                src_data.w0 = 0;
+                mm.read(src_address.w0, src_data, subreg_size_map[dst_subreg], 0);
 
                 auto dst_offset = subreg_offset_map[dst_subreg];
                 auto dst_mask = subreg_mask_map[dst_subreg];
@@ -1941,24 +1972,15 @@ namespace maize {
                     case instr::cpz_immVal_reg: {
                         regs::rp.w0 += 2;
                         u_hword imm_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, imm_size, op2_reg(), op2_subreg_flag());
+                        copy_memval_reg_zext(regs::rp.w0, imm_size, op2_reg(), op2_subreg_flag());
                         regs::rp.w0 += imm_size;
                         break;
                     }
 
-                    case instr::ldz_regAddr_reg: {
-                        regs::rp.w0 += 2;
-                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
-                        break;
-                    }
-
-                    case instr::ldz_immAddr_reg: {
-                        regs::rp.w0 += 2;
-                        u_hword imm_size = op1_imm_size();
-                        copy_memaddr_reg(regs::rp.w0, imm_size, op2_reg(), op2_subreg_flag());
-                        regs::rp.w0 += imm_size;
-                        break;
-                    }
+                    /* LDZ (the zero-extending load, opcodes $93 / $D3) was removed as redundant
+                       (card maize-29): LD reads exactly the destination width, so a load never
+                       narrows and has nothing to zero-extend. CPZ remains as the zero-extending
+                       copy; those address-form encodings are now reserved. */
 
                     case instr::st_regVal_regAddr: {
                         regs::rp.w0 += 2;

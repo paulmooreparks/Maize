@@ -318,12 +318,31 @@ cross the memory boundary:
 * **ST** (store) writes a register or immediate value to a memory address. Its destination is
   always an address (prefixed with '@').
 
-CPZ and LDZ are the zero/sign-extending forms of CP and LD and follow the same rule. The
+CPZ is the zero-extending form of CP and follows the same rule. The
 assembler enforces the split: `CP @...` (an address source on a copy) and `LD value` (a
 non-address source on a load) are rejected with a diagnostic, so the mnemonic always tells you
 whether memory is touched. The ALU instructions are separate and, Maize being CISC, may take a
-memory-address operand directly (for example `ADD @R1 R0`); only CP/LD/ST/CPZ/LDZ are held to
+memory-address operand directly (for example `ADD @R1 R0`); only CP/LD/ST/CPZ are held to
 the strict split.
+
+There is no LDZ. A load reads exactly as many bytes as the destination subregister holds (see
+Copy width below), so a load never produces a value narrower than its destination and has
+nothing to zero-extend. To pull an unsigned narrow value from memory into a wider register,
+clear it first: `CLR R0` then `LD @addr R0.B0`.
+
+**Copy width.** CP copies a value that may be narrower than the destination register: it
+sign-extends the source to the destination's full width, and CPZ zero-extends it. `CP $01 R0`
+leaves R0 = 1; `CP $FF R0` leaves R0 = 0xFFFFFFFFFFFFFFFF (the byte 0xFF read as signed -1);
+`CPZ $FF R0` leaves R0 = 0x00000000000000FF. The same rule governs every immediate load,
+including the ALU immediate operands, so `ADD $01 R0` adds exactly 1 rather than carrying stale
+upper bytes into the operation. To write only part of a register and preserve the rest, name the
+destination subregister explicitly: `CP $01 R0.B0` writes just the low byte.
+
+A load takes its width from the destination subregister: `LD @addr R0.B0` reads one byte,
+`LD @addr R0.H0` reads four, and `LD @addr R0` reads all eight. The bytes land in the named field
+and the rest of the register is preserved. Because the count is fixed by the destination, a load
+reads no more than it needs (it never over-reads past the source address) and never has a
+narrower value to extend, which is why there is no zero-extending load.
 
 Example: Load the 64-bit value at address $0000`1000 into register R1.
 
@@ -486,7 +505,7 @@ Notes:
   count of 1 (SHL: the sign bit changed; SHR: the prior sign bit); a count greater than the operand
   width yields a zero result with C, N, V all cleared and Z set. Out-of-range counts never invoke a
   C++ undefined shift.
-- Data movement and address computation do not affect flags. CP, LD, LDZ, CPZ, ST, CLR, and
+- Data movement and address computation do not affect flags. CP, LD, CPZ, ST, CLR, and
   LEA leave C/N/V/Z unchanged; only the instructions in the table above set flags. This matches
   x86 (MOV), ARM, and RISC-V, and keeps condition codes stable across register shuffling, so a
   compare and its dependent branch may be separated by data moves.
@@ -526,8 +545,8 @@ bit 7 is interpreted as follows:
     ----------  ---   --------  ----------      --------------------------------------------------------------------------------------------------------------------------------------
     %0000`0000  $00   HALT                      Halt the clock, thereby stopping execution (privileged)
 
-    %0000`0001  $01   CP        regVal  reg     Copy source register value into destination register
-    %0100`0001  $41   CP        immVal  reg     Copy immediate value into destination register
+    %0000`0001  $01   CP        regVal  reg     Copy source register value into destination register with sign extension
+    %0100`0001  $41   CP        immVal  reg     Copy immediate value into destination register with sign extension
 
     %1000`0001  $81   LD        regAddr reg     Load value at address in source register into destination register
     %1100`0001  $C1   LD        immAddr reg     Load value at immediate address into destination register
@@ -618,8 +637,8 @@ bit 7 is interpreted as follows:
     %0001`0011  $13   CPZ       regVal  reg     Copy source register value into destination register with zero extension
     %0101`0011  $53   CPZ       immVal  reg     Copy immediate value into destination register with zero extension
 
-    %1001`0011  $93   LDZ       regAddr reg     Load value at address in source register into destination register with zero extension
-    %1101`0011  $D3   LDZ       immAddr reg     Load value at immediate address into destination register with zero extension
+    %1001`0011  $93                             reserved
+    %1101`0011  $D3                             reserved
 
     %0001`0100  $14   OUT       regVal  imm     Output value in source register to destination port
     %0101`0100  $54   OUT       immVal  imm     Output immediate value to destination port
@@ -961,7 +980,7 @@ Other syntax, to be described more fully later:
     Binary      Hex   Mnemonic  Parameters      Description
     ----------  ---   --------  ----------      --------------------------------------------------------------------------------------------------------------------------------------
     %0000`0000  $00   HALT                      Halt the clock, thereby stopping execution (privileged)
-    %0000`0001  $01   CP        regVal  reg     Copy source register value into destination register
+    %0000`0001  $01   CP        regVal  reg     Copy source register value into destination register with sign extension
     %0000`0010  $02   ST        regVal  regAddr Store source register value at address in second register
     %0000`0011  $03   ADD       regVal  reg     Add source register value to destination register
     %0000`0100  $04   SUB       regVal  reg     Subtract source register value from destination register
@@ -979,7 +998,7 @@ Other syntax, to be described more fully later:
     %0001`0000  $10   TEST      regVal  reg     Set flags by ANDing source register value with destination register
     %0001`0001  $11   CMPXCHG   regVal  reg     Compare value in operand 2 with value in operand 3. If equal, set zero flag and copy value in operand 1 register into operand 2. Otherwise, clear zero flag and copy value in operand 2 into operand 3.
     %0001`0010  $12   LEA       regVal  reg reg
-    %0001`0011  $13   CPZ       regVal  reg     Copy source register value into destination register with sign extension
+    %0001`0011  $13   CPZ       regVal  reg     Copy source register value into destination register with zero extension
     %0001`0100  $14   OUT       regVal  imm     Output value in source register to destination port
     %0001`0101  $15   LNGJMP    regVal          Jump to the 64-bit address in source register and continue execution (privileged)
     %0001`0110  $16   JMP       regVal          Jump to address in source register and continue execution
@@ -1025,7 +1044,7 @@ Other syntax, to be described more fully later:
     %0011`1110  $3E                             reserved
     %0011`1111  $3F
     %0100`0000  $40
-    %0100`0001  $41   CP        immVal  reg     Copy immediate value into destination register
+    %0100`0001  $41   CP        immVal  reg     Copy immediate value into destination register with sign extension
     %0100`0010  $42   ST        immVal  regAddr Store immediate value at address in destination register
     %0100`0011  $43   ADD       immVal  reg     Add immediate value to destination register
     %0100`0100  $44   SUB       immVal  reg     Subtract immediate value from destination register
@@ -1043,7 +1062,7 @@ Other syntax, to be described more fully later:
     %0101`0000  $50   TEST      immVal  reg     Set flags by ANDing immediate value with destination register
     %0101`0001  $51   CMPXCHG   immVal  reg     Compare value in operand 2 with value in operand 3. If equal, set zero flag and copy value in operand 1 immediate value into operand 2. Otherwise, clear zero flag and copy value in operand 2 into operand 3.
     %0101`0010  $52   LEA       immVal  reg reg Add immediate value in operand 1 to value in operand 2 register and store result in operand 3 register
-    %0101`0011  $53   CPZ       immVal  reg     Copy immediate value into destination register with sign extension
+    %0101`0011  $53   CPZ       immVal  reg     Copy immediate value into destination register with zero extension
     %0101`0100  $54   OUT       immVal  imm     Output immediate value to destination port
     %0101`0101  $55   LNGJMP    immVal          Jump to the immediate 64-bit address and continue execution (privileged)
     %0101`0110  $56   JMP       immVal          Jump to immediate address and continue execution
@@ -1107,7 +1126,7 @@ Other syntax, to be described more fully later:
     %1001`0000  $90   TEST      regAddr reg     Set flags by ANDing value at address in source register with destination register
     %1001`0001  $91   CMPXCHG   regAddr reg     Compare value in operand 2 with value in operand 3. If equal, set zero flag and load value at address in operand 1 register into operand 2. Otherwise, clear zero flag and load value in operand 2 into operand 3.
     %1001`0010  $92   LEA       regAddr reg reg Add value at address in operand 1 register to value in operand 2 register and store result in operand 3 register
-    %1001`0011  $93   LDZ       regAddr reg     Load value at address in source register into destination register with sign extension
+    %1001`0011  $93                             reserved
     %1001`0100  $94   OUT       regAddr imm     Output value at address in source register to destination port
     %1001`0101  $95   LNGJMP    regAddr         Jump to the 64-bit address pointed to by source register and continue execution (privileged)
     %1001`0110  $96   JMP       regAddr         Jump to address pointed to by source register and continue execution
@@ -1171,7 +1190,7 @@ Other syntax, to be described more fully later:
     %1101`0000  $D0   TEST      immAddr reg     Set flags by ANDing value at immediate address with destination register
     %1101`0001  $D1   CMPXCHG   immAddr reg     Compare value in operand 2 with value in operand 3. If equal, set zero flag and load value at address in operand 1 immediate value into operand 2. Otherwise, clear zero flag and load value in operand 2 into operand 3.
     %1101`0010  $D2   LEA       immAddr reg reg Add value at immediate address in operand 1 to value in operand 2 register and store result in operand 3 register
-    %1101`0011  $D3   LDZ       immAddr reg     Load value at immediate address into destination register with sign extension
+    %1101`0011  $D3                             reserved
     %1101`0100  $D4   OUT       immAddr imm     Output value at immediate address to destination port
     %1101`0101  $D5   LNGJMP    immAddr         Jump to the 64-bit address pointed to by immediate value and continue execution (privileged)
     %1101`0110  $D6   JMP       immAddr         Jump to address pointed to by immediate value and continue execution
