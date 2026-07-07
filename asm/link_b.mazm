@@ -1,0 +1,18 @@
+; maize-12: translation unit B of the multi-TU link test.
+; Exports a read-only string (msgB) and a function (getlenB) that unit A
+; (link_a.mazm) imports. msgB lives in RODATA; getlenB lives in CODE.
+
+SECTION RODATA
+
+GLOBAL msgB
+
+msgB:
+    STRING "Linked!"        ; 7 bytes, no terminator; the caller passes the length
+
+SECTION CODE
+
+GLOBAL getlenB
+
+getlenB:
+    CP $07 RV               ; return the length of msgB in RV
+    RET

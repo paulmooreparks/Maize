@@ -7,7 +7,12 @@
 #include <utility>
 #include <stdexcept>
 #include <string>
+#include <map>
+#include <set>
+#include <vector>
+#include <cstdint>
 #include "maize.h"
+#include "maize_obj.h"
 #include <fstream>
 
 using namespace maize;
@@ -96,6 +101,38 @@ namespace {
        out in source-reference order, deterministically. */
     std::map<maize::u_hword, std::string> fixups {};
     std::map<maize::u_word, std::vector<u_byte>> memory_map {};
+
+    /* Object-emission mode (maize-12). When emit_object is set (mazm -c), the
+       assembler emits a relocatable .mzo instead of a resolved flat .bin: every
+       symbolic operand becomes a relocation (never resolved inline), labels
+       become symbols, and content is partitioned into CODE/RODATA/DATA/BSS
+       sections. The flat path is completely untouched, preserving hello.bin. */
+    bool emit_object {false};
+
+    /* A contiguous run of the flat assembly image that belongs to one section
+       kind. SECTION directives close the current span and open a new one; the
+       .mzo writer slices cpu::mm by these spans. */
+    struct sec_span {
+        maize::u_byte kind;
+        maize::u_word start;
+        maize::u_word end;
+    };
+    std::vector<sec_span> obj_spans {};
+    maize::u_byte obj_cur_kind {maize::obj::SEC_CODE};
+    maize::u_word obj_cur_start {0};
+
+    /* One relocation: the flat address of the immediate bytes to patch, the
+       referenced symbol name, and the width-keyed relocation type. */
+    struct obj_reloc_rec {
+        maize::u_word flat_off;
+        std::string symbol;
+        maize::u_byte r_type;
+    };
+    std::vector<obj_reloc_rec> obj_relocs {};
+
+    /* Names exported via the GLOBAL directive (GLOBAL binding); all other
+       defined labels stay LOCAL. */
+    std::set<std::string> obj_exports {};
 
     /* Diagnostic state (maize-13). current_file / current_line track the source
        position of the byte stream; token_line remembers the line a token began on
@@ -205,13 +242,24 @@ namespace {
     void regimm_compiler(token_tree &tree, std::string &opcode_str);
     void regimm_regreg_compiler(token_tree &tree, std::string &opcode_str);
 
+    /* Object-mode directives (maize-12). Registered as keywords in the LABEL /
+       DATA / STRING style; each reads a single operand via the shared
+       one-parameter tokenizer. In flat mode their compilers are no-ops. */
+    void section_compiler(token_tree &tree, std::string &opcode_str);
+    void global_compiler(token_tree &tree, std::string &opcode_str);
+    void zero_compiler(token_tree &tree, std::string &opcode_str);
+    void write_object(std::string const &path);
+
     std::unordered_map<std::string, keyword_data> keywords {
         { "ADDRESS", {address_tokenizer, address_compiler}},
         { "LABEL", {label_tokenizer, label_compiler}},
         { "DATA", {data_tokenizer, data_compiler}},
         { "STRING", {string_tokenizer, string_compiler}},
         { "INCLUDE", {include_tokenizer, nullptr}},
-        { "CODE", {nullptr, code_compiler}}
+        { "CODE", {nullptr, code_compiler}},
+        { "SECTION", {opcode_1param_tokenizer, section_compiler}},
+        { "GLOBAL", {opcode_1param_tokenizer, global_compiler}},
+        { "ZERO", {opcode_1param_tokenizer, zero_compiler}}
     };
 
     std::unordered_map<std::string, opcode_data> opcodes {
@@ -403,15 +451,18 @@ namespace {
     void assemble(std::string file_path) {
         std::filesystem::path asm_path {std::filesystem::canonical(file_path)};
 
-        std::filesystem::path bin_path {asm_path};
-        std::filesystem::path ext {"bin"};
-        bin_path.replace_extension(ext);
+        /* Object mode (maize-12) emits <file>.mzo; the default flat path emits
+           <file>.bin, byte for byte unchanged. */
+        std::filesystem::path out_path {asm_path};
+        out_path.replace_extension(emit_object ? "mzo" : "bin");
+        std::filesystem::path bin_path {out_path};
 
         /* Stale-binary rule (maize-13, AC9): remove any pre-existing output up
-           front, so a failed assembly never leaves a previously-good .bin sitting
-           at the target path looking like a fresh build for the now-broken source.
-           In --check mode nothing is produced, so nothing may be destroyed either:
-           a broken intermediate save must not cost the last-good binary. */
+           front, so a failed assembly never leaves a previously-good artifact
+           sitting at the target path looking like a fresh build for the now-broken
+           source. In --check mode nothing is produced, so nothing may be
+           destroyed either: a broken intermediate save must not cost the last-good
+           binary. */
         if (!check_only) {
             std::error_code remove_ec;
             std::filesystem::remove(bin_path, remove_ec);
@@ -435,6 +486,12 @@ namespace {
             /* Recovered errors were recorded (maize-50): success is the only
                state that produces a binary. The up-front stale-.bin removal
                already ran, per the maize-13 rule. */
+            return;
+        }
+
+        if (emit_object) {
+            std::cout << "Output to " << bin_path.string() << std::endl;
+            write_object(bin_path.string());
             return;
         }
 
@@ -532,7 +589,14 @@ namespace {
             }
         }
 
+        /* Object mode (maize-12) never resolves addresses inline: every symbolic
+           operand is already recorded as a relocation, and undefined labels are
+           legal (they become UNDEF symbols for the linker). Skip the flat
+           inline-fixup pass entirely. */
         for (auto &pair : fixups) {
+            if (emit_object) {
+                break;
+            }
             /* Recovery site 5 of 5 (maize-50): every undefined label reports;
                nothing is written for an unresolved entry. */
             try {
@@ -1620,7 +1684,66 @@ namespace {
         return false;
     }
 
+    /* Width in bytes patched by a register operand's sub-register field. Drives
+       the immediate width (and thus the relocation width) of a label reference
+       whose destination register is that operand (maize-12). */
+    size_t obj_width_from_subreg(u_byte reg_byte) {
+        u_byte sub = reg_byte & cpu::opflag_subreg;
+        if (sub <= cpu::opflag_subreg_b7) {
+            return 1;
+        }
+        if (sub <= cpu::opflag_subreg_q3) {
+            return 2;
+        }
+        if (sub <= cpu::opflag_subreg_h1) {
+            return 4;
+        }
+        return 8;
+    }
+
+    u_byte obj_imm_size_flag(size_t width) {
+        switch (width) {
+            case 1:  return cpu::opflag_imm_size_08b;
+            case 2:  return cpu::opflag_imm_size_16b;
+            case 4:  return cpu::opflag_imm_size_32b;
+            default: return cpu::opflag_imm_size_64b;
+        }
+    }
+
+    /* Ensure a referenced label is present in the symbol universe. An undefined
+       reference is legal in object mode: it stays a max() placeholder, which the
+       .mzo writer records as an UNDEF symbol for the linker to resolve. */
+    void obj_note_ref(std::string const &label) {
+        if (!labels.contains(label)) {
+            labels[label] = std::numeric_limits<u_hword>::max();
+        }
+        if (!label_ref_loc.contains(label)) {
+            label_ref_loc[label] = current_ref_loc;
+        }
+    }
+
+    /* Emit a width-keyed relocation for a label reference and write that many
+       placeholder (zero) bytes; the linker fills them in. */
+    void obj_emit_label_ref(std::string &label, size_t width) {
+        obj_note_ref(label);
+        obj_relocs.push_back({ current_address, label, maize::obj::reloc_for_width(width) });
+        for (size_t i = 0; i < width; ++i) {
+            current_address += cpu::mm.write_byte(current_address, 0);
+        }
+    }
+
     u_hword write_label(u_hword address, std::string &label, cpu::reg_value value) {
+        /* Object mode: record a 32-bit (ABS32) relocation and leave placeholder
+           bytes rather than resolving inline. This is the single choke point for
+           the single-/three-operand label paths (CALL/JMP/PUSH/SYS, LEA, ST);
+           the two-operand CP/LD path picks its own width from the destination
+           sub-register before reaching here (maize-12). */
+        if (emit_object) {
+            obj_note_ref(label);
+            obj_relocs.push_back({ current_address, label, maize::obj::R_MAIZE_ABS32 });
+            return cpu::mm.write_hword(address, 0);
+        }
+
         if (value.h0 == std::numeric_limits<u_hword>::max()) {
             fixups[current_address] = label;
         }
@@ -1701,11 +1824,25 @@ namespace {
 
         u_byte operand2_byte {compile_register(operand2)};
 
+        /* Object mode (maize-12): the label's immediate width follows the
+           destination sub-register (CP <label> Rn -> ABS64, CP <label> Rn.H0 ->
+           ABS32, .B0 -> ABS8). Fix operand1_byte's immediate-size field to match
+           before it is written, then emit a width-keyed relocation. */
+        size_t obj_label_width {0};
+        if (operand_is_label && emit_object) {
+            obj_label_width = obj_width_from_subreg(operand2_byte);
+            operand1_byte = (operand1_byte & ~cpu::opflag_imm_size)
+                | obj_imm_size_flag(obj_label_width);
+        }
+
         current_address += cpu::mm.write_byte(current_address, opcode);
         current_address += cpu::mm.write_byte(current_address, operand1_byte);
         current_address += cpu::mm.write_byte(current_address, operand2_byte);
 
-        if (operand_is_immediate) {
+        if (operand_is_label && emit_object) {
+            obj_emit_label_ref(operand1, obj_label_width);
+        }
+        else if (operand_is_immediate) {
             if (operand_is_label && operand1_literal.h0 == std::numeric_limits<u_hword>::max()) {
                 current_address += write_label(current_address, operand1, operand1_literal);
             }
@@ -1848,6 +1985,15 @@ namespace {
             operand2_byte = compile_literal(operand2, operand2_literal);
         }
 
+        /* Object mode (maize-12): label operands in the three-operand forms are
+           not yet supported; the inline-immediate branch below would bypass
+           relocation emission. Fail loudly rather than corrupt the object. The
+           common LEA idioms use a register or literal offset, not a label. */
+        if (emit_object && (operand1_is_label || operand2_is_label)) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                opcode_str + ": label operands are not supported in object mode yet (maize-12)");
+        }
+
         current_address += cpu::mm.write_byte(current_address, opcode);
         current_address += cpu::mm.write_byte(current_address, operand1_byte);
         current_address += cpu::mm.write_byte(current_address, operand2_byte);
@@ -1933,6 +2079,13 @@ namespace {
         operand2 = operand2.substr(1);
         operand2_byte = compile_register(operand2);
 
+        /* Object mode (maize-12): see the regimm_imm guard. A label source here
+           would be inlined without a relocation. */
+        if (emit_object && operand_is_label) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                opcode_str + ": label operands are not supported in object mode yet (maize-12)");
+        }
+
         current_address += cpu::mm.write_byte(current_address, opcode);
         current_address += cpu::mm.write_byte(current_address, operand1_byte);
         current_address += cpu::mm.write_byte(current_address, operand2_byte);
@@ -1999,6 +2152,14 @@ namespace {
         u_byte operand2_byte {compile_register(operand2)};
         u_byte operand3_byte {compile_register(operand3)};
 
+        /* Object mode (maize-12): a resolved label source would be inlined below
+           without a relocation; fail loudly. LEA's common forms use a register or
+           literal source operand. */
+        if (emit_object && operand_is_label) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                opcode_str + ": label operands are not supported in object mode yet (maize-12)");
+        }
+
         current_address += cpu::mm.write_byte(current_address, opcode);
         current_address += cpu::mm.write_byte(current_address, operand1_byte);
         current_address += cpu::mm.write_byte(current_address, operand2_byte);
@@ -2027,6 +2188,330 @@ namespace {
             current_address += write_label(current_address, operand1, operand1_literal);
         }
     }
+
+    /* ---- object-mode directives (maize-12) ------------------------------- */
+
+    void section_compiler(token_tree &tree, std::string &opcode_str) {
+        if (!emit_object) {
+            /* SECTION is inert in flat mode: the whole image is a single blob. */
+            return;
+        }
+        if (tree.value.empty()) {
+            fatal(current_file, token_line, "SECTION requires a kind (CODE/RODATA/DATA/BSS)");
+        }
+        std::string raw = tree.value.begin()->key;
+        std::string up;
+        std::transform(raw.begin(), raw.end(), std::back_inserter(up), ::toupper);
+
+        u_byte kind;
+        if (up == "CODE" || up == "TEXT" || up == ".TEXT") {
+            kind = maize::obj::SEC_CODE;
+        }
+        else if (up == "RODATA" || up == ".RODATA") {
+            kind = maize::obj::SEC_RODATA;
+        }
+        else if (up == "DATA" || up == ".DATA") {
+            kind = maize::obj::SEC_DATA;
+        }
+        else if (up == "BSS" || up == ".BSS") {
+            kind = maize::obj::SEC_BSS;
+        }
+        else {
+            fatal(current_file, token_line, "unknown section kind '" + raw + "'");
+            return;
+        }
+
+        /* Close the current span at the present address and open the new one. */
+        obj_spans.push_back({ obj_cur_kind, obj_cur_start, current_address });
+        obj_cur_kind = kind;
+        obj_cur_start = current_address;
+    }
+
+    void global_compiler(token_tree &tree, std::string &opcode_str) {
+        if (!emit_object) {
+            return;
+        }
+        if (tree.value.empty()) {
+            fatal(current_file, token_line, "GLOBAL requires a symbol name");
+        }
+        obj_exports.insert(tree.value.begin()->key);
+    }
+
+    void zero_compiler(token_tree &tree, std::string &opcode_str) {
+        if (!emit_object) {
+            return;
+        }
+        if (tree.value.empty()) {
+            fatal(current_file, token_line, "ZERO requires a byte count");
+        }
+        std::string lit = tree.value.begin()->key;
+        cpu::reg_value value {0};
+        compile_literal(lit, value);
+        /* Reserve space with no file bytes (NOBITS): advance the cursor without
+           writing. Only meaningful inside a BSS section. */
+        current_address += static_cast<maize::u_hword>(value.w0);
+    }
+
+    /* Serialize the assembled image as a relocatable .mzo object (maize-12). */
+    void write_object(std::string const &path) {
+        using namespace maize::obj;
+
+        /* Close the final open span. */
+        obj_spans.push_back({ obj_cur_kind, obj_cur_start, current_address });
+
+        /* Slice the flat image into per-kind section content, and remember each
+           span's section-relative base so flat addresses can be mapped to
+           (kind, offset). */
+        struct span_info { u_byte kind; maize::u_word start; maize::u_word end; maize::u_word base; };
+        std::vector<span_info> spans;
+        std::vector<u_byte> sec_data[5];
+        maize::u_word sec_size[5] = {0, 0, 0, 0, 0};
+        maize::u_word cum[5] = {0, 0, 0, 0, 0};
+
+        for (auto const &sp : obj_spans) {
+            if (sp.end < sp.start) {
+                continue;
+            }
+            maize::u_word len = sp.end - sp.start;
+            spans.push_back({ sp.kind, sp.start, sp.end, cum[sp.kind] });
+            if (sp.kind != SEC_BSS) {
+                for (maize::u_word a = sp.start; a < sp.end; ++a) {
+                    sec_data[sp.kind].push_back(cpu::mm.read_byte(a));
+                }
+            }
+            sec_size[sp.kind] += len;
+            cum[sp.kind] += len;
+        }
+
+        /* Fixed section order CODE, RODATA, DATA, BSS; only present kinds emit. */
+        const u_byte order[4] = { SEC_CODE, SEC_RODATA, SEC_DATA, SEC_BSS };
+        int sec_index_of[5];
+        for (int i = 0; i < 5; ++i) {
+            sec_index_of[i] = -1;
+        }
+        std::vector<u_byte> present;
+        for (u_byte k : order) {
+            if (sec_size[k] > 0) {
+                sec_index_of[k] = static_cast<int>(present.size());
+                present.push_back(k);
+            }
+        }
+
+        auto locate = [&](maize::u_word addr, u_byte &kind, maize::u_word &off) -> bool {
+            for (auto const &s : spans) {
+                if (addr >= s.start && addr < s.end) {
+                    kind = s.kind;
+                    off = s.base + (addr - s.start);
+                    return true;
+                }
+            }
+            /* Boundary: a label sitting exactly at a span end belongs to it. */
+            for (auto const &s : spans) {
+                if (s.end > s.start && addr >= s.start && addr <= s.end) {
+                    kind = s.kind;
+                    off = s.base + (addr - s.start);
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        /* String table: index 0 is the empty string. */
+        std::vector<u_byte> strtab;
+        strtab.push_back(0);
+        auto add_str = [&](std::string const &s) -> std::uint32_t {
+            std::uint32_t off = static_cast<std::uint32_t>(strtab.size());
+            for (char ch : s) {
+                strtab.push_back(static_cast<u_byte>(ch));
+            }
+            strtab.push_back(0);
+            return off;
+        };
+
+        /* Section names, in present order. */
+        auto kind_name = [](u_byte k) -> std::string {
+            switch (k) {
+                case SEC_CODE:   return ".text";
+                case SEC_RODATA: return ".rodata";
+                case SEC_DATA:   return ".data";
+                case SEC_BSS:    return ".bss";
+                default:         return "";
+            }
+        };
+        std::vector<std::uint32_t> sec_name_off;
+        for (u_byte k : present) {
+            sec_name_off.push_back(add_str(kind_name(k)));
+        }
+
+        /* Symbols, deterministically ordered by name. */
+        std::vector<std::string> names;
+        for (auto const &kv : labels) {
+            names.push_back(kv.first);
+        }
+        std::sort(names.begin(), names.end());
+
+        struct out_sym {
+            std::uint32_t name_off;
+            std::uint16_t section_index;
+            u_byte binding;
+            u_byte type;
+            std::uint64_t value;
+            std::uint64_t size;
+        };
+        std::vector<out_sym> symbols;
+        std::map<std::string, std::uint32_t> sym_index;
+
+        for (auto const &name : names) {
+            maize::u_hword val = labels[name];
+            out_sym s {};
+            s.name_off = add_str(name);
+            s.size = 0;
+            if (val == std::numeric_limits<maize::u_hword>::max()) {
+                s.section_index = SHN_UNDEF;
+                s.binding = BIND_GLOBAL;
+                s.type = TYPE_NOTYPE;
+                s.value = 0;
+            }
+            else {
+                u_byte kind;
+                maize::u_word off;
+                if (locate(val, kind, off) && sec_index_of[kind] >= 0) {
+                    s.section_index = static_cast<std::uint16_t>(sec_index_of[kind]);
+                    s.value = off;
+                    s.type = (kind == SEC_CODE) ? TYPE_FUNC : TYPE_OBJECT;
+                }
+                else {
+                    /* An absolute constant (e.g. a LABEL directive) that maps to
+                       no section. */
+                    s.section_index = SHN_ABS;
+                    s.value = val;
+                    s.type = TYPE_NOTYPE;
+                }
+                s.binding = obj_exports.count(name) ? BIND_GLOBAL : BIND_LOCAL;
+            }
+            sym_index[name] = static_cast<std::uint32_t>(symbols.size());
+            symbols.push_back(s);
+        }
+
+        /* Relocations, grouped by target section. */
+        struct out_reloc { std::uint64_t r_offset; std::uint32_t r_symbol; u_byte r_type; };
+        std::vector<std::vector<out_reloc>> sec_relocs(present.size());
+        for (auto const &rel : obj_relocs) {
+            u_byte kind;
+            maize::u_word off;
+            if (!locate(rel.flat_off, kind, off) || sec_index_of[kind] < 0) {
+                fatal(current_file, 0, "internal: relocation outside any section");
+            }
+            out_reloc r {};
+            r.r_offset = off;
+            r.r_symbol = sym_index[rel.symbol];
+            r.r_type = rel.r_type;
+            sec_relocs[sec_index_of[kind]].push_back(r);
+        }
+
+        /* Entry symbol. */
+        std::uint32_t entry_sym = ENTRY_NONE;
+        if (sym_index.count("_start")) {
+            entry_sym = sym_index["_start"];
+        }
+
+        /* ---- compute file layout ---- */
+        std::uint64_t off = MZO_HEADER_SIZE;
+        std::uint64_t shoff = off;
+        off += static_cast<std::uint64_t>(present.size()) * SECTION_HDR_SIZE;
+
+        std::vector<std::uint64_t> sec_file_off(present.size(), 0);
+        for (std::size_t i = 0; i < present.size(); ++i) {
+            u_byte k = present[i];
+            if (k != SEC_BSS) {
+                sec_file_off[i] = off;
+                off += sec_data[k].size();
+            }
+        }
+
+        std::vector<std::uint64_t> sec_reloc_off(present.size(), 0);
+        for (std::size_t i = 0; i < present.size(); ++i) {
+            if (!sec_relocs[i].empty()) {
+                sec_reloc_off[i] = off;
+                off += sec_relocs[i].size() * RELOC_SIZE;
+            }
+        }
+
+        std::uint64_t symoff = off;
+        off += symbols.size() * SYMBOL_SIZE;
+        std::uint64_t stroff = off;
+        off += strtab.size();
+
+        /* ---- serialize ---- */
+        std::vector<u_byte> file;
+
+        /* Header (48 bytes). */
+        put_u8(file, MZO_MAGIC0);
+        put_u8(file, MZO_MAGIC1);
+        put_u8(file, MZO_MAGIC2);
+        put_u8(file, MZO_VERSION);
+        put_u16(file, 0);                                        /* flags */
+        put_u16(file, static_cast<std::uint16_t>(present.size()));
+        put_u64(file, shoff);
+        put_u64(file, symoff);
+        put_u32(file, static_cast<std::uint32_t>(symbols.size()));
+        put_u64(file, stroff);
+        put_u32(file, static_cast<std::uint32_t>(strtab.size()));
+        put_u32(file, entry_sym);
+        put_u32(file, 0);                                        /* reserved */
+
+        /* Section headers (40 bytes each). */
+        for (std::size_t i = 0; i < present.size(); ++i) {
+            u_byte k = present[i];
+            put_u32(file, sec_name_off[i]);
+            put_u8(file, k);
+            put_u8(file, default_attrs(k));
+            put_u8(file, 1);                                     /* align */
+            put_u8(file, 0);                                     /* reserved */
+            put_u64(file, (k == SEC_BSS) ? 0 : sec_file_off[i]);
+            put_u64(file, sec_size[k]);
+            put_u64(file, sec_reloc_off[i]);
+            put_u64(file, static_cast<std::uint64_t>(sec_relocs[i].size()));
+        }
+
+        /* Section contents (non-BSS). */
+        for (std::size_t i = 0; i < present.size(); ++i) {
+            u_byte k = present[i];
+            if (k != SEC_BSS) {
+                file.insert(file.end(), sec_data[k].begin(), sec_data[k].end());
+            }
+        }
+
+        /* Relocation arrays. */
+        for (std::size_t i = 0; i < present.size(); ++i) {
+            for (auto const &r : sec_relocs[i]) {
+                put_u64(file, r.r_offset);
+                put_u32(file, r.r_symbol);
+                put_u8(file, r.r_type);
+                put_u8(file, 0);
+                put_u8(file, 0);
+                put_u8(file, 0);
+                put_u64(file, 0);                                /* r_addend */
+            }
+        }
+
+        /* Symbol table. */
+        for (auto const &s : symbols) {
+            put_u32(file, s.name_off);
+            put_u16(file, s.section_index);
+            put_u8(file, s.binding);
+            put_u8(file, s.type);
+            put_u64(file, s.value);
+            put_u64(file, s.size);
+        }
+
+        /* String table. */
+        file.insert(file.end(), strtab.begin(), strtab.end());
+
+        std::ofstream fout(path, std::fstream::binary);
+        fout.write(reinterpret_cast<const char *>(file.data()), file.size());
+        fout.close();
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -2043,6 +2528,9 @@ int main(int argc, char* argv[]) {
 
         if (arg == "--check") {
             check_only = true;
+        }
+        else if (arg == "-c" || arg == "--emit-object") {
+            emit_object = true;
         }
         else if (arg == "--stdin") {
             stdin_mode = true;

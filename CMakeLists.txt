@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 
 add_executable(maize "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp")
 add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp")
+add_executable(mzld "src/mzld.cpp")
 
 find_package(Threads REQUIRED)
 target_link_libraries(maize PRIVATE Threads::Threads)
@@ -13,4 +14,5 @@ target_link_libraries(mazm PRIVATE Threads::Threads)
 if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET maize PROPERTY CXX_STANDARD 20)
   set_property(TARGET mazm PROPERTY CXX_STANDARD 20)
+  set_property(TARGET mzld PROPERTY CXX_STANDARD 20)
 endif()

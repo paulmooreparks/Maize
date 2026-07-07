@@ -1,0 +1,19 @@
+; maize-12: negative link test. References a symbol through a narrow 8-bit
+; (R_MAIZE_ABS8) operand whose resolved address is far above 255, so the linker
+; must reject it with a hard range error rather than silently truncating.
+
+SECTION CODE
+
+GLOBAL _start
+
+_start:
+    CP farsym R0.B0         ; ABS8 relocation to an address that will not fit in 8 bits
+    HALT
+
+SECTION BSS
+
+pad:
+    ZERO $0200              ; reserve 512 bytes so farsym lands well past address 255
+
+farsym:
+    ZERO $01

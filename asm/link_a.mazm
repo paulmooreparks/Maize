@@ -1,0 +1,25 @@
+; maize-12: translation unit A of the multi-TU link test.
+; Defines the entry point _start and calls a function (getlenB) and reads a
+; string (msgB) that are both defined in translation unit B (link_b.mazm). This
+; is the end-to-end proof that separately-assembled objects link and run.
+;
+; Reference widths exercised here:
+;   CP msgB R1     -> full-width 64-bit address load  (R_MAIZE_ABS64)
+;   CALL getlenB   -> 32-bit cross-TU call target      (R_MAIZE_ABS32)
+
+SECTION CODE
+
+GLOBAL _start
+
+_start:
+    CALL main
+    HALT
+
+main:
+    CP msgB R1              ; R1 = full 64-bit address of the external string (ABS64)
+    CALL getlenB            ; RV = length of the string, from unit B (ABS32 call)
+    CP RV R2                ; R2 = byte count for the write
+    CP $01 R0               ; R0 = 1 selects stdout
+    SYS $01                 ; write(R0=stdout, R1=address, R2=length)
+    CP $00 RV               ; main returns 0
+    RET
