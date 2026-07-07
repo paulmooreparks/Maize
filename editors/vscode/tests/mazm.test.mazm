@@ -1,0 +1,61 @@
+; SYNTAX TEST "source.mazm" "Maize assembly grammar"
+
+$0000`0000:
+; <- constant.numeric.hex.mazm
+    CALL main
+;   ^^^^ keyword.other.opcode.mazm
+    HALT
+;   ^^^^ keyword.other.opcode.mazm
+
+hw_string:
+; <- entity.name.label.mazm
+    STRING "Hi\0"
+;   ^^^^^^ keyword.control.directive.mazm
+;          ^^^^^^ string.quoted.double.mazm
+;             ^^ constant.character.escape.mazm
+
+LABEL first_word AUTO
+; <- keyword.control.directive.mazm
+;     ^^^^^^^^^^ entity.name.label.mazm
+;                ^^^^ constant.language.auto.mazm
+
+LABEL _start $00001000
+;            ^^^^^^^^^ constant.numeric.hex.mazm
+
+    DATA $0E
+;   ^^^^ keyword.control.directive.mazm
+;        ^^^ constant.numeric.hex.mazm
+
+main:
+; <- entity.name.label.mazm
+    CP RF.B0 R9.B0
+;   ^^ keyword.other.opcode.mazm
+;      ^^ variable.language.register.mazm
+;         ^^ variable.language.subregister.mazm
+;            ^^ variable.language.register.mazm
+    ld @rt r2
+;   ^^ keyword.other.opcode.mazm
+;      ^ keyword.operator.address.mazm
+;       ^^ variable.language.register.mazm
+;          ^^ variable.language.register.mazm
+    sub $-08 sp
+;   ^^^ keyword.other.opcode.mazm
+;       ^^^^ constant.numeric.hex.mazm
+;            ^^ variable.language.register.mazm
+    CMP #42 R0.H0
+;       ^^^ constant.numeric.decimal.mazm
+;              ^^ variable.language.subregister.mazm
+    TEST %1010,1010 R1
+;        ^^^^^^^^^^ constant.numeric.binary.mazm
+    CP $FFFF`FFFF R3
+;      ^^^^^^^^^^ constant.numeric.hex.mazm
+    jbe main
+;   ^^^ keyword.other.opcode.mazm
+    NOP ; trailing
+;       ^^^^^^^^^^ comment.line.semicolon.mazm
+
+INCLUDE "core.mazm"
+; <- keyword.control.directive.mazm
+;       ^^^^^^^^^^^ string.quoted.double.mazm
+
+    label lowercase_is_not_a_directive $00

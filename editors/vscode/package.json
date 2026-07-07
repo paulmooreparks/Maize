@@ -1,0 +1,41 @@
+{
+    "name": "maize-mazm",
+    "displayName": "Maize Assembly",
+    "description": "Syntax highlighting for Maize assembly (.mazm files).",
+    "version": "0.1.0",
+    "publisher": "paulmooreparks",
+    "license": "Apache-2.0",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/paulmooreparks/Maize",
+        "directory": "editors/vscode"
+    },
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "mazm",
+                "aliases": [
+                    "Maize Assembly",
+                    "mazm"
+                ],
+                "extensions": [
+                    ".mazm"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "mazm",
+                "scopeName": "source.mazm",
+                "path": "./syntaxes/mazm.tmLanguage.json"
+            }
+        ]
+    }
+}

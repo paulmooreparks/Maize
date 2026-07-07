@@ -1,0 +1,98 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Maize Assembly",
+    "scopeName": "source.mazm",
+    "patterns": [
+        { "include": "#comment" },
+        { "include": "#string" },
+        { "include": "#origin-label" },
+        { "include": "#label-declaration" },
+        { "include": "#label-directive-auto" },
+        { "include": "#label-directive" },
+        { "include": "#directive" },
+        { "include": "#opcode" },
+        { "include": "#register" },
+        { "include": "#hex-literal" },
+        { "include": "#dec-literal" },
+        { "include": "#bin-literal" },
+        { "include": "#address-operator" }
+    ],
+    "repository": {
+        "comment": {
+            "match": ";.*$",
+            "name": "comment.line.semicolon.mazm"
+        },
+        "string": {
+            "begin": "\"",
+            "end": "\"|$",
+            "name": "string.quoted.double.mazm",
+            "patterns": [
+                {
+                    "match": "\\\\.",
+                    "name": "constant.character.escape.mazm"
+                }
+            ]
+        },
+        "origin-label": {
+            "match": "^\\s*(\\$[+-]?[0-9A-Fa-f][0-9A-Fa-f`_,]*)(:)",
+            "captures": {
+                "1": { "name": "constant.numeric.hex.mazm" },
+                "2": { "name": "punctuation.separator.label.mazm" }
+            }
+        },
+        "label-declaration": {
+            "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)(:)",
+            "captures": {
+                "1": { "name": "entity.name.label.mazm" },
+                "2": { "name": "punctuation.separator.label.mazm" }
+            }
+        },
+        "label-directive-auto": {
+            "match": "\\b(LABEL)[ \\t]+([A-Za-z_][A-Za-z0-9_]*)[ \\t]+(AUTO)\\b",
+            "captures": {
+                "1": { "name": "keyword.control.directive.mazm" },
+                "2": { "name": "entity.name.label.mazm" },
+                "3": { "name": "constant.language.auto.mazm" }
+            }
+        },
+        "label-directive": {
+            "match": "\\b(LABEL)[ \\t]+([A-Za-z_][A-Za-z0-9_]*)",
+            "captures": {
+                "1": { "name": "keyword.control.directive.mazm" },
+                "2": { "name": "entity.name.label.mazm" }
+            }
+        },
+        "directive": {
+            "match": "\\b(ADDRESS|LABEL|DATA|STRING|INCLUDE|CODE)\\b",
+            "name": "keyword.control.directive.mazm"
+        },
+        "opcode": {
+            "match": "(?i)\\b(CMPXCHG|CMPIND|CMP|TESTIND|TEST|SETINT|SETCRY|CLRINT|CLRCRY|CLR|OUTR|OUT|IRET|INC|INT|IN|LDZ|LD|CP|ST|ADD|SUB|MUL|UDIV|UMOD|DIV|MOD|NAND|AND|NOR|NOT|NOP|XOR|OR|XCHG|SHL|SHR|LEA|DEC|JMP|JNZ|JZ|JLT|JLE|JGT|JGE|JBE|JB|JAE|JA|CALL|PUSH|POP|RET|SYS|HALT|BRK)\\b",
+            "name": "keyword.other.opcode.mazm"
+        },
+        "register": {
+            "match": "(?i)\\b(R[0-9]|RT|RV|RF|RB|RP|RS|SP|BP|PC|FL)(?:(\\.)(B[0-7]|Q[0-3]|H[01]|W0|W))?\\b",
+            "captures": {
+                "1": { "name": "variable.language.register.mazm" },
+                "2": { "name": "punctuation.separator.subregister.mazm" },
+                "3": { "name": "variable.language.subregister.mazm" }
+            }
+        },
+        "hex-literal": {
+            "match": "\\$[+-]?[0-9A-Fa-f][0-9A-Fa-f`_,]*",
+            "name": "constant.numeric.hex.mazm"
+        },
+        "dec-literal": {
+            "match": "#[+-]?[0-9][0-9`_,]*",
+            "name": "constant.numeric.decimal.mazm"
+        },
+        "bin-literal": {
+            "match": "%[+-]?[01][01`_,]*",
+            "name": "constant.numeric.binary.mazm"
+        },
+        "address-operator": {
+            "match": "@",
+            "name": "keyword.operator.address.mazm"
+        }
+    }
+}
