@@ -42,7 +42,7 @@ namespace maize {
 		const u_byte opflag_reg_rt	= 0b10100000;
 		const u_byte opflag_reg_rv	= 0b10110000;
 		const u_byte opflag_reg_rf	= 0b11000000;
-		const u_byte opflag_reg_ri	= 0b11010000;
+		const u_byte opflag_reg_rb	= 0b11010000; // slot $D: base pointer (BP); RI is decoder-internal, not operand-addressable (maize-41)
 		const u_byte opflag_reg_rp	= 0b11100000;
 		const u_byte opflag_reg_rs	= 0b11110000;
 
@@ -681,9 +681,10 @@ namespace maize {
 			extern reg rt;
 			extern reg rv;
 			extern reg rf; // flags register
-			extern reg ri; // instruction register
-			extern reg rp; // program execution register
-			extern reg rs; // stack register
+			extern reg ri; // instruction register (decoder-internal; not operand-addressable, maize-41)
+			extern reg rb; // base pointer register (BP); operand slot $D (maize-41)
+			extern reg rp; // program execution register (PC); full 64-bit (maize-41)
+			extern reg rs; // stack register (SP); full 64-bit (maize-41)
 		}
 
 		extern bus address_bus;

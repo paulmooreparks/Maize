@@ -1354,7 +1354,7 @@ namespace {
         {"RT", cpu::opflag_reg_rt},
         {"RV", cpu::opflag_reg_rv},
         {"RF", cpu::opflag_reg_rf},
-        {"RI", cpu::opflag_reg_ri},
+        {"RB", cpu::opflag_reg_rb},
         {"RP", cpu::opflag_reg_rp},
         {"RS", cpu::opflag_reg_rs}
     };
@@ -1385,16 +1385,13 @@ namespace {
 
         /* Get some special cases out of the way */
         if (reg_str == "SP") {
-            reg_byte = cpu::opflag_reg_rs | cpu::opflag_subreg_h0;
+            reg_byte = cpu::opflag_reg_rs | cpu::opflag_subreg_w0;
         }
         else if (reg_str == "BP") {
-            reg_byte = cpu::opflag_reg_rs | cpu::opflag_subreg_h1;
+            reg_byte = cpu::opflag_reg_rb | cpu::opflag_subreg_w0;
         }
         else if (reg_str == "PC") {
-            reg_byte = cpu::opflag_reg_rp | cpu::opflag_subreg_h0;
-        }
-        else if (reg_str == "CS") {
-            reg_byte = cpu::opflag_reg_rp | cpu::opflag_subreg_h1;
+            reg_byte = cpu::opflag_reg_rp | cpu::opflag_subreg_w0;
         }
         else if (reg_str == "FL") {
             reg_byte = cpu::opflag_reg_rf | cpu::opflag_subreg_h0;
@@ -1437,9 +1434,6 @@ namespace {
             return true;
         }
         else if (reg_str == "PC") {
-            return true;
-        }
-        else if (reg_str == "CS") {
             return true;
         }
         else if (reg_str == "FL") {

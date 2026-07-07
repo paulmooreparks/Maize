@@ -182,7 +182,7 @@ Here is a simple ["Hello, World!" application](https://github.com/paulmooreparks
 written in Maize assembly.
 
     ; **********************************************************************************
-    ; The entry point. Execution begins at segment $00000000, address $00000000
+    ; The entry point. Execution begins at address $00000000.
 
     $0000`0000:             ; The back-tick (`)  is used as a number separator.
                             ; Underscore (_) and comma (,) may also be used as separators.
@@ -199,52 +199,59 @@ written in Maize assembly.
     ; **********************************************************************************
     ; Return the length of a zero-terminated string. Equivalent to the following C code:
     ;
-    ;   int strlen(char const *str) {
-    ;       int len = 0;
+    ;   size_t strlen(char const *str) {
+    ;       size_t len = 0;
     ;       while (str[len]) {
     ;           ++len;
     ;       }
     ;       return len;
     ;   }
     ;
+    ; Maize uses a flat 64-bit address space, so pointers and the stack pointer are full
+    ; 64-bit values; addresses live in whole registers, not H0 sub-registers.
+    ;
     ; Parameters:
-    ;   R0.H0: Address of string
+    ;   R0: Address of string
     ; Return:
     ;   RV: Length of string
 
     strlen:
-        PUSH BP                 ; Save the base pointer
-        CP SP BP                ; Copy the stack pointer to the base pointer
-        SUB $04 SP              ; Make room for a 32-bit (4-byte) counter on the stack
-        LEA $-04 BP RT.H0       ; Load the address of the counter's stack location into RT.H0
-        ST $00 @RT.H0           ; Set the counter to zero.
+        PUSH BP                 ; Save the caller's base pointer
+        CP SP BP                ; Establish this frame: BP = SP
+        SUB $08 SP              ; Reserve an 8-byte local slot for the counter
+        LEA $-08 BP RT          ; RT = address of the counter (BP - 8), a full 64-bit address
+        CLR R2                  ; counter = 0
+        ST R2 @RT               ; Store the counter to its stack slot
     loop_condition:
-	    LEA @RT.H0 R0.H0 R1.H0  ; Add the counter value to the address and put the result into H.H0.
-        LD @R1.H0 R1.B4         ; Load the character value at the address in R1.H0 into R1.B4.
-        CMP $00 R1.B4           ; Data movement does not set flags; test the byte explicitly.
-	    JZ loop_exit            ; Jump out of the loop when the terminating NUL is reached.
+        LD @RT R2               ; Load the counter
+        LEA R2 R0 R1            ; R1 = string address + counter
+        LD @R1 R3.B0            ; R3.B0 = the character at that address
+        CMP $00 R3.B0           ; Data movement does not set flags; test the byte explicitly.
+        JZ loop_exit            ; Jump out of the loop when the terminating NUL is reached.
     loop_body:
-        LD @RT.H0 RT.H1         ; Load the counter value at the address in RT.H0 into RT.H1
-	    INC RT.H1               ; Add 1 to the temporary
-        ST RT.H1 @RT.H0         ; Store the new value back into the counter's address
-	    JMP loop_condition      ; ...and continue the loop.
+        LD @RT R2               ; Load the counter
+        INC R2                  ; ...add one...
+        ST R2 @RT               ; ...and store it back.
+        JMP loop_condition      ; Continue the loop.
     loop_exit:
-	    LD @RT.H0 RV            ; Load the (sign-extended) counter value into RV, the return register.
-        CP BP SP                ; Restore the stack
-        POP BP                  ; Restore the base pointer
-	    RET                     ; Pop return address from stack and place into PC.
+        LD @RT RV               ; Return the counter in RV.
+        CP BP SP                ; Tear down the frame: SP = BP
+        POP BP                  ; Restore the caller's base pointer
+        RET                     ; Pop the return address from the stack into PC.
 
     ; **********************************************************************************
     ; The main function
 
     main:
-        CP hw_string R0.H0      ; Copy the address of the message string into R0.H0
-        CALL strlen             ; Call strlen function to get the string length
+        CLR R0
+        CP hw_string R0.H0      ; Copy the address of the message string into R0
+        CALL strlen             ; Call strlen to get the string length (into RV)
         CP $01 R0               ; $01 in R0 indicates output to stdout
-        CP hw_string R1.H0      ; R1.H0 holds address of message to output
+        CLR R1
+        CP hw_string R1.H0      ; R1 holds the address of the message to output
         CP RV R2                ; Put the string length into R2
-        SYS $01                 ; Call output function implemented in Maize VM
-        CP $0 RV                ; Set return value for main
+        SYS $01                 ; Call the output function implemented in the Maize VM
+        CP $00 RV               ; Set the return value for main
         RET                     ; Leave main
 
 ## Instruction Description
@@ -329,9 +336,9 @@ Registers are 64-bits wide (a "word") and are each divided into smaller sub-regi
     RV  Return-value register
 
     RF  Flag register
-    RI  Instruction register
-    RP  Program execution register
-    RS  Stack register
+    RB  Base-pointer register
+    RP  Program-counter register
+    RS  Stack-pointer register
 
 
 ### Sub-registers
@@ -377,27 +384,29 @@ The value stored in register R0 could then be represented as follows:
 
 ### Special-purpose Registers
 
-There are six special-purpose registers.
+Maize uses a flat 64-bit address space, so pointers, the program counter, and the stack
+pointers are all full 64-bit values. There is no segmentation of the address space; segments,
+where mentioned, are only a privilege/protection concept.
 
-    RT Temporary register. This is used as temporary storage in a function.
+    RT Temporary register. Used as temporary storage within a function.
 
     RV Return-value register. Return values from functions are placed into this register.
 
-    RF Flags register. FL is an alias for RF.H0, which contains a bit field of individual flags.
-       Flags in RF.H1 may only be set in privileged mode.
+    RF Flags register. FL is an alias for RF.H0, which contains the arithmetic/logic status
+       flags. Flags in RF.H1 may only be set in privileged mode.
 
-    RI Instruction register, set by the instruction decoder as instructions and parameters are
-       read from memory. This register can only be set by the decoder.
+    RB Base-pointer register: the frame (base) pointer for the current function's stack frame,
+       a full 64-bit address. BP is an alias for RB.
 
-    RP Program execution register, which is the pointer to the next instruction to be decoded
-       and executed. This is further sub-divided into RP.H1, which is the current code segment,
-       and RP.H0, which is the effective program counter within the current segment. RP.H1 may
-       only be written to in privileged mode. PC is an alias for RP.H0.
+    RP Program-counter register: the full 64-bit address of the next instruction to be decoded
+       and executed. PC is an alias for RP.
 
-    RS Stack register, which is the location within the current segment at which the stack
-       starts (growing downward in memory). This is further sub-divided into RS.H1, which is
-       the base pointer, and RS.H0, which is the current stack pointer. SP is an alias for RS.H0,
-       and BP is an alias for RS.H1.
+    RS Stack-pointer register: the full 64-bit address of the top of the stack, which grows
+       downward in memory. SP is an alias for RS.
+
+There is also an instruction register, RI, which the decoder sets as it reads each instruction
+and its parameters from memory. RI can only be set by the decoder and is not addressable as an
+instruction operand.
 
 ### Flags
 
@@ -452,12 +461,11 @@ Notes:
 
 ## Execution
 
-The CPU starts in privileged mode, and the program counter is initially set to segment $00000000,
-address $00000000. When in privileged mode, the privilege flag is set, and instructions marked
-as privileged may be executed. When the privilege flag is cleared, instruction execution and
-memory access are limited to the current segment, and certain flags, registers, and instructions
-are inaccessible. Program execution may return to privileged mode via hardware interrupts or via
-software-generated (INT instruction) interrupts.
+The CPU starts in privileged mode, and the program counter (PC) is initially set to address
+$0000`0000`0000`0000. When in privileged mode, the privilege flag is set, and instructions marked
+as privileged may be executed. When the privilege flag is cleared, certain flags, registers, and
+instructions are inaccessible. Program execution may return to privileged mode via hardware
+interrupts or via software-generated (INT instruction) interrupts.
 
 
 ## Opcode Bytes
@@ -586,10 +594,10 @@ bit 7 is interpreted as follows:
     %1001`0100  $94   OUT       regAddr imm     Output value at address in source register to destination port
     %1101`0100  $D4   OUT       immAddr imm     Output value at immediate address to destination port
 
-    %0001`0101  $15   LNGJMP    regVal          Jump to segment and address in source register and continue execution (privileged)
-    %0101`0101  $55   LNGJMP    immVal          Jump to immediate segment and address and continue execution (privileged)
-    %1001`0101  $95   LNGJMP    regAddr         Jump to segment and address pointed to by source register and continue execution (privileged)
-    %1101`0101  $D5   LNGJMP    immAddr         Jump to segment and address pointed to by immediate value and continue execution (privileged)
+    %0001`0101  $15   LNGJMP    regVal          Jump to the 64-bit address in source register and continue execution (privileged)
+    %0101`0101  $55   LNGJMP    immVal          Jump to the immediate 64-bit address and continue execution (privileged)
+    %1001`0101  $95   LNGJMP    regAddr         Jump to the 64-bit address pointed to by source register and continue execution (privileged)
+    %1101`0101  $D5   LNGJMP    immAddr         Jump to the 64-bit address pointed to by immediate value and continue execution (privileged)
 
     %0001`0110  $16   JMP       regVal          Jump to address in source register and continue execution
     %0101`0110  $56   JMP       immVal          Jump to immediate address and continue execution
@@ -626,10 +634,10 @@ bit 7 is interpreted as follows:
     %1001`1100  $9C   JA        regAddr         If Carry flag is clear and Zero flag is clear, jump to address pointed to by source register and continue execution
     %1101`1100  $DC   JA        immAddr         If Carry flag is clear and Zero flag is clear, jump to address pointed to by immediate value and continue execution
 
-    %0001`1101  $1D   CALL      regVal          Push PC.H0 to stack, jump to address in source register and continue execution until RET is executed
-    %0101`1101  $5D   CALL      immVal          Push PC.H0 to stack, jump to immediate address and continue execution until RET is executed
-    %1001`1101  $9D   CALL      regAddr         Push PC.H0 to stack, jump to address pointed to by source register and continue execution until RET is executed
-    %1101`1101  $DD   CALL      immAddr         Push PC.H0 to stack, jump to address pointed to by immediate value and continue execution until RET is executed
+    %0001`1101  $1D   CALL      regVal          Push the return address to the stack, jump to address in source register and continue execution until RET is executed
+    %0101`1101  $5D   CALL      immVal          Push the return address to the stack, jump to immediate address and continue execution until RET is executed
+    %1001`1101  $9D   CALL      regAddr         Push the return address to the stack, jump to address pointed to by source register and continue execution until RET is executed
+    %1101`1101  $DD   CALL      immAddr         Push the return address to the stack, jump to address pointed to by immediate value and continue execution until RET is executed
 
     %0001`1110  $1E   OUTR      regVal  reg     Output value in source register to port in destination register
     %0101`1110  $5E   OUTR      immVal  reg     Output immediate value to port in destination register
@@ -641,19 +649,19 @@ bit 7 is interpreted as follows:
     %1001`1111  $9F   IN        regAddr reg     Read value from port at address in source register into destination register
     %1101`1111  $DF   IN        immAddr reg     Read value from port at immediate address into destination register
 
-    %0010`0000  $20   PUSH      regVal          Copy register value into memory at location in RS.H0, decrement RS.H0 by size of register
-    %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at location in RS.H0, decrement RS.H0 by size of immediate value
+    %0010`0000  $20   PUSH      regVal          Copy register value into memory at the stack pointer (SP), decrement SP by size of register
+    %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at the stack pointer (SP), decrement SP by size of immediate value
 
     %0010`0010  $22   CLR       regVal          Set register to zero (0).
 
     %0010`0100  $24   INT       regVal          Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
     %0110`0100  $64   INT       immVal          Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
 
-    %0010`0110  $26   POP       regVal          Increment SP.H0 by size of register, copy value at SP.H0 into register
+    %0010`0110  $26   POP       regVal          Increment SP by size of register, copy value at SP into register
 
-    %0010`0111  $27   RET                       Pop PC.H0 from stack and continue execution at that address. Used to return from CALL.
+    %0010`0111  $27   RET                       Pop the return address from the stack and continue execution at that address. Used to return from CALL.
 
-    %0010`1000  $28   IRET                      Pop FL and PC from stack and continue execution at segment/address in PC. Used to return from interrupt (privileged).
+    %0010`1000  $28   IRET                      Pop FL and PC from the stack and continue execution at the address in PC. Used to return from interrupt (privileged).
 
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
 
@@ -776,9 +784,9 @@ bit 7 is interpreted as follows:
     %1010`xxxx  $A   RT register
     %1011`xxxx  $B   RV register
     %1100`xxxx  $C   RF register (flags)
-    %1101`xxxx  $D   RI register (instruction)
-    %1110`xxxx  $E   RP register (program segment / counter)
-    %1111`xxxx  $F   RS register (stack pointers)
+    %1101`xxxx  $D   RB register (base pointer)
+    %1110`xxxx  $E   RP register (program counter)
+    %1111`xxxx  $F   RS register (stack pointer)
 
 ### Sub-register bit field
 
@@ -862,9 +870,9 @@ For example:
 
     ; Call C function "void random_os_function(int32_t a, const char *b, size_t c, int32_t* d)"
     CP $0000`1234 R0            ; int32_t a
-    CP R9.H0 R1                 ; const char* b, assuming the pointer is in R9.H0
+    CP R9 R1                    ; const char* b (a full 64-bit pointer), assuming it is in R9
     CP $0000`00FF R2            ; size_t c
-    CP R8.H1 R3                 ; int32_t* d, assuming the pointer is in R8.H1
+    CP R8 R3                    ; int32_t* d (a full 64-bit pointer), assuming it is in R8
     CALL random_os_function
 
 Return values will placed into the RV register. For example:
@@ -940,7 +948,7 @@ Other syntax, to be described more fully later:
     %0001`0010  $12   LEA       regVal  reg reg
     %0001`0011  $13   CPZ       regVal  reg     Copy source register value into destination register with sign extension
     %0001`0100  $14   OUT       regVal  imm     Output value in source register to destination port
-    %0001`0101  $15   LNGJMP    regVal          Jump to segment and address in source register and continue execution (privileged)
+    %0001`0101  $15   LNGJMP    regVal          Jump to the 64-bit address in source register and continue execution (privileged)
     %0001`0110  $16   JMP       regVal          Jump to address in source register and continue execution
     %0001`0111  $17   JZ        regVal          If Zero flag is set, jump to address in source register and continue execution
     %0001`1000  $18   JNZ       regVal          If Zero flag is not set, jump to address in source register and continue execution
@@ -948,18 +956,18 @@ Other syntax, to be described more fully later:
     %0001`1010  $1A   JB        reg             If Carry flag is set, jump to address in source register and continue execution
     %0001`1011  $1B   JGT       regVal          If Zero flag is clear and Negative flag is equal to Overflow flag, jump to address in source register and continue execution
     %0001`1100  $1C   JA        regVal          If Carry flag is clear and Zero flag is clear, jump to address in source register and continue execution
-    %0001`1101  $1D   CALL      regVal          Push PC.H0 to stack, jump to address in source register and continue execution until RET is executed
+    %0001`1101  $1D   CALL      regVal          Push the return address to the stack, jump to address in source register and continue execution until RET is executed
     %0001`1110  $1E   OUTR      regVal  reg     Output value in source register to port in destination register
     %0001`1111  $1F   IN        regVal  reg     Read value from port in source register into destination register
-    %0010`0000  $20   PUSH      regVal          Copy register value into memory at location in RS.H0, decrement RS.H0 by size of register
+    %0010`0000  $20   PUSH      regVal          Copy register value into memory at the stack pointer (SP), decrement SP by size of register
     %0010`0001  $21
     %0010`0010  $22   CLR       regVal          Set register to zero (0).
     %0010`0011  $23
     %0010`0100  $24   INT       regVal          Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
     %0010`0101  $25
-    %0010`0110  $26   POP       regVal          Increment SP.H0 by size of register, copy value at SP.H0 into register
-    %0010`0111  $27   RET                       Pop PC.H0 from stack and continue execution at that address. Used to return from CALL.
-    %0010`1000  $28   IRET                      Pop FL and PC from stack and continue execution at segment/address in PC. Used to return from interrupt (privileged).
+    %0010`0110  $26   POP       regVal          Increment SP by size of register, copy value at SP into register
+    %0010`0111  $27   RET                       Pop the return address from the stack and continue execution at that address. Used to return from CALL.
+    %0010`1000  $28   IRET                      Pop FL and PC from the stack and continue execution at the address in PC. Used to return from interrupt (privileged).
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
     %0010`1010  $2A
     %0010`1011  $2B                             reserved
@@ -1004,7 +1012,7 @@ Other syntax, to be described more fully later:
     %0101`0010  $52   LEA       immVal  reg reg Add immediate value in operand 1 to value in operand 2 register and store result in operand 3 register
     %0101`0011  $53   CPZ       immVal  reg     Copy immediate value into destination register with sign extension
     %0101`0100  $54   OUT       immVal  imm     Output immediate value to destination port
-    %0101`0101  $55   LNGJMP    immVal          Jump to immediate segment and address and continue execution (privileged)
+    %0101`0101  $55   LNGJMP    immVal          Jump to the immediate 64-bit address and continue execution (privileged)
     %0101`0110  $56   JMP       immVal          Jump to immediate address and continue execution
     %0101`0111  $57   JZ        immVal          If Zero flag is set, jump to immediate address and continue execution
     %0101`1000  $58   JNZ       immVal          If Zero flag is not set, jump to immediate address and continue execution
@@ -1012,10 +1020,10 @@ Other syntax, to be described more fully later:
     %0101`1010  $5A   JB        imm             If Carry flag is set, jump to immediate address and continue execution
     %0101`1011  $5B   JGT       immVal          If Zero flag is clear and Negative flag is equal to Overflow flag, jump to immediate address and continue execution
     %0101`1100  $5C   JA        immVal          If Carry flag is clear and Zero flag is clear, jump to immediate address and continue execution
-    %0101`1101  $5D   CALL      immVal          Push PC.H0 to stack, jump to immediate address and continue execution until RET is executed
+    %0101`1101  $5D   CALL      immVal          Push the return address to the stack, jump to immediate address and continue execution until RET is executed
     %0101`1110  $5E   OUTR      immVal  reg     Output immediate value to port in destination register
     %0101`1111  $5F   IN        immVal  reg     Read value from port in immediate value into destination register
-    %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at location in RS.H0, decrement RS.H0 by size of immediate value
+    %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at the stack pointer (SP), decrement SP by size of immediate value
     %0110`0001  $61
     %0110`0010  $62
     %0110`0011  $63
@@ -1068,7 +1076,7 @@ Other syntax, to be described more fully later:
     %1001`0010  $92   LEA       regAddr reg reg Add value at address in operand 1 register to value in operand 2 register and store result in operand 3 register
     %1001`0011  $93   LDZ       regAddr reg     Load value at address in source register into destination register with sign extension
     %1001`0100  $94   OUT       regAddr imm     Output value at address in source register to destination port
-    %1001`0101  $95   LNGJMP    regAddr         Jump to segment and address pointed to by source register and continue execution (privileged)
+    %1001`0101  $95   LNGJMP    regAddr         Jump to the 64-bit address pointed to by source register and continue execution (privileged)
     %1001`0110  $96   JMP       regAddr         Jump to address pointed to by source register and continue execution
     %1001`0111  $97   JZ        regAddr         If Zero flag is set, jump to address pointed to by source register and continue execution
     %1001`1000  $98   JNZ       regAddr         If Zero flag is not set, jump to address pointed to by source register and continue execution
@@ -1076,7 +1084,7 @@ Other syntax, to be described more fully later:
     %1001`1010  $9A   JB        regAddr         If Carry flag is set, jump to address pointed to by source register and continue execution
     %1001`1011  $9B   JGT       regAddr         If Zero flag is clear and Negative flag is equal to Overflow flag, jump to address pointed to by source register and continue execution
     %1001`1100  $9C   JA        regAddr         If Carry flag is clear and Zero flag is clear, jump to address pointed to by source register and continue execution
-    %1001`1101  $9D   CALL      regAddr         Push PC.H0 to stack, jump to address pointed to by source register and continue execution until RET is executed
+    %1001`1101  $9D   CALL      regAddr         Push the return address to the stack, jump to address pointed to by source register and continue execution until RET is executed
     %1001`1110  $9E   OUTR      regAddr reg     Output value at address in source register to port in destination register
     %1001`1111  $9F   IN        regAddr reg     Read value from port at address in source register into destination register
     %1010`0000  $A0
@@ -1132,7 +1140,7 @@ Other syntax, to be described more fully later:
     %1101`0010  $D2   LEA       immAddr reg reg Add value at immediate address in operand 1 to value in operand 2 register and store result in operand 3 register
     %1101`0011  $D3   LDZ       immAddr reg     Load value at immediate address into destination register with sign extension
     %1101`0100  $D4   OUT       immAddr imm     Output value at immediate address to destination port
-    %1101`0101  $D5   LNGJMP    immAddr         Jump to segment and address pointed to by immediate value and continue execution (privileged)
+    %1101`0101  $D5   LNGJMP    immAddr         Jump to the 64-bit address pointed to by immediate value and continue execution (privileged)
     %1101`0110  $D6   JMP       immAddr         Jump to address pointed to by immediate value and continue execution
     %1101`0111  $D7   JZ        immAddr         If Zero flag is set, jump to address pointed to by immediate value and continue execution
     %1101`1000  $D8   JNZ       immAddr         If Zero flag is not set, jump to address pointed to by immediate value and continue execution
@@ -1140,7 +1148,7 @@ Other syntax, to be described more fully later:
     %1101`1010  $DA   JB        immAddr         If Carry flag is set, jump to address pointed to by immediate value and continue execution
     %1101`1011  $DB   JGT       immAddr         If Zero flag is clear and Negative flag is equal to Overflow flag, jump to address pointed to by immediate value and continue execution
     %1101`1100  $DC   JA        immAddr         If Carry flag is clear and Zero flag is clear, jump to address pointed to by immediate value and continue execution
-    %1101`1101  $DD   CALL      immAddr         Push PC.H0 to stack, jump to address pointed to by immediate value and continue execution until RET is executed
+    %1101`1101  $DD   CALL      immAddr         Push the return address to the stack, jump to address pointed to by immediate value and continue execution until RET is executed
     %1101`1110  $DE   OUTR      immAddr reg     Output value at immediate address to port in destination register
     %1101`1111  $DF   IN        immAddr reg     Read value from port at immediate address into destination register
     %1110`0000  $E0   XCHG      reg     reg     Atomically exchange the values in two registers

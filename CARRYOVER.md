@@ -34,7 +34,7 @@ Manual smoke test: `mazm asm/hello.asm` then `maize asm/hello.bin` prints "Hello
 - This dev host has cmake 4.3.4 (installed at `C:\Program Files\CMake\bin`, not always on the shell PATH) and ninja 1.13.2. The runner locates cmake robustly.
 - WSL Ubuntu-22.04 has cmake and g++ but no ninja and no passwordless sudo, so the `linux-debug` CMake preset is not runnable there; build Linux directly with `g++ -std=c++20 -o /tmp/maize src/maize.cpp src/cpu.cpp src/sys.cpp` (mazm links the same three plus mazm.cpp). CI covers the real Linux preset run.
 - WSL exit-code artifact: chaining `cmd; echo $?` inside a single `wsl.exe bash -lc '...'` from Windows misreports the exit code as 0. Capture exit codes in the outer shell or a script file.
-- `asm/hello.bin` is committed and is the byte-identical baseline (md5 `04e09a107df2577cbeee3e53ce8b64a5`). Any ISA-visible change must keep it identical unless the change is meant to alter output. (Rebaselined for maize-4, which added an explicit `CMP` to strlen; program output is unchanged.)
+- `asm/hello.bin` is committed and is the byte-identical baseline (md5 `9633f915dc75786f693b53d1a228f4c6`). Any ISA-visible change must keep it identical unless the change is meant to alter output. (Rebaselined for maize-41, the flat-64 code/stack change: hello.asm now uses full-width registers and 8-byte returns; program output is unchanged.)
 
 ## What is next
 
