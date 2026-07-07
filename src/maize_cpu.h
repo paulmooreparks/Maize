@@ -407,6 +407,7 @@ namespace maize {
 			u_byte* cache {nullptr};
 
 			size_t set_cache_address(u_word address);
+			u_hword write_bytes(u_word address, u_word value, size_t count);
 		};
 
 		class arithmetic_logic_unit : public reg {

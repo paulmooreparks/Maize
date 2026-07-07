@@ -4,9 +4,6 @@
 ; CMP src dst computes (dst - src); the branch immediately follows so nothing disturbs the
 ; flags. Each complement is checked taken (at equality, the point of the <= / >= forms) and
 ; not-taken. JGE/JLE are signed (N vs V); JBE/JAE are unsigned (C, Z).
-;
-; NOTE: kept under 256 bytes on purpose. Programs that cross a 256-byte memory block fail
-; today (a VM bug tracked separately), so this test cannot yet be larger.
 ; **********************************************************************************
 
 $0000`0000:

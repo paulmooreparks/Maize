@@ -204,92 +204,54 @@ namespace maize {
             return sizeof(u_byte);
         }
 
+        // Block-aware little-endian byte-store loop shared by every multi-byte
+        // write helper. It mirrors the read family (see read() below): when the
+        // whole store fits in the currently cached block it stays in a fast
+        // in-block loop; when it straddles a 256-byte block boundary it re-resolves
+        // the cache block via set_cache_address(++address) on every byte so the
+        // remaining bytes land in the NEXT block instead of wrapping 0xFF -> 0x00
+        // back into the same block. (maize-42)
+        u_hword memory_module::write_bytes(u_word address, u_word value, size_t count) {
+            size_t written {0};
+
+            do {
+                size_t rem {set_cache_address(address)};
+                size_t idx {cache_address.b0};
+
+                if (rem >= count) {
+                    while (count && idx <= 0xFF) {
+                        cache[idx] = value & 0xff;
+                        value >>= 0x08;
+                        ++idx;
+                        --count;
+                        ++written;
+                    }
+                }
+                else {
+                    while (count) {
+                        cache[cache_address.b0] = value & 0xff;
+                        value >>= 0x08;
+                        set_cache_address(++address);
+                        --count;
+                        ++written;
+                    }
+                }
+
+            } while (count);
+
+            return written;
+        }
+
         u_hword memory_module::write_qword(reg_value address, u_qword value) {
-            u_byte b {0};
-            set_cache_address(address);
-
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            value >>= 0x08;
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            return sizeof(u_qword);
+            return write_bytes(address.w0, value, sizeof(u_qword));
         }
 
         u_hword memory_module::write_hword(reg_value address, u_hword value) {
-            u_byte b {0};
-            set_cache_address(address);
-
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            value >>= 0x08;
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            value >>= 0x08;
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            value >>= 0x08;
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            return sizeof(u_hword);
+            return write_bytes(address.w0, value, sizeof(u_hword));
         }
 
         u_hword memory_module::write_word(reg_value address, u_word value) {
-            u_byte b {0};
-            set_cache_address(address);
-
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            value >>= 0x08;
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            value >>= 0x08;
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            value >>= 0x08;
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            value >>= 0x08;
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            value >>= 0x08;
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            value >>= 0x08;
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            value >>= 0x08;
-            b = value & 0xff;
-            cache[cache_address.b0] = b;
-            ++cache_address.b0;
-
-            return sizeof(u_word);
+            return write_bytes(address.w0, value, sizeof(u_word));
         }
 
         size_t memory_module::read(reg_value address, u_hword count, std::vector<u_byte> &retval) {
