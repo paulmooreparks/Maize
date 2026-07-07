@@ -35,7 +35,6 @@ Manual smoke test: `mazm asm/hello.asm` then `maize asm/hello.bin` prints "Hello
 - WSL Ubuntu-22.04 has cmake and g++ but no ninja and no passwordless sudo, so the `linux-debug` CMake preset is not runnable there; build Linux directly with `g++ -std=c++20 -o /tmp/maize src/maize.cpp src/cpu.cpp src/sys.cpp` (mazm links the same three plus mazm.cpp). CI covers the real Linux preset run.
 - WSL exit-code artifact: chaining `cmd; echo $?` inside a single `wsl.exe bash -lc '...'` from Windows misreports the exit code as 0. Capture exit codes in the outer shell or a script file.
 - `asm/hello.bin` is committed and is the byte-identical baseline (md5 `ad818f96bde3c15769f8350fc24d247c`). Any ISA-visible change must keep it identical unless the change is meant to alter output.
-- No LICENSE file exists yet. A public repo with no license defaults to all-rights-reserved, which works against the "reimplement your own VM" goal; worth adding one (Apache-2.0 matches the sibling projects).
 
 ## What is next
 
