@@ -1,0 +1,102 @@
+; maize-14: mzdis round-trip fixture (AC6478, AC6483).
+;
+; Code-only, SECTION-clean (no SECTION directive at all -> everything lands in
+; the default CODE region), no embedded DATA/STRING -- exactly the shape the
+; spec's "Known limitation" section calls for so a purely linear sweep is exact
+; by construction. Every instruction here uses a literal target/operand (never
+; a label) so the assembled bytes are self-contained and don't depend on
+; forward-reference resolution; nothing here is meant to actually run.
+;
+; Deliberately hits every addressing-mode family (regVal/immVal/regAddr/
+; immAddr) and every operand-count shape (0/1/2/3, OUT's two-immediate shape,
+; OUTR/IN's fixed-register-port shape, XCHG's fixed-two-register shape) named
+; in AC6483. scripts/run-tests.ps1's mzdis_roundtrip test assembles this,
+; disassembles the result with mzdis, reassembles mzdis's own output text, and
+; diffs the two .bin files byte-for-byte.
+
+; ---- 0-operand ----
+HALT
+NOP
+SETCRY
+CLRCRY
+SETINT
+CLRINT
+RET
+IRET
+
+; ---- 1-operand, plain register (CLR/INC/DEC/NOT/POP) ----
+CLR R0
+INC R1
+DEC R2
+NOT R3
+POP R4
+
+; ---- 1-operand, SrcFlagged, all four addressing modes (PUSH) ----
+PUSH R5
+PUSH $12
+PUSH $1234
+
+; ---- 1-operand, SrcFlagged, all four addressing modes (JMP family) ----
+JMP R0
+JMP $1234`5678
+JMP @R1
+JMP @$2000`0000
+
+; ---- 2-operand, SrcFlagged + FixedReg, all four addressing modes (ALU family) ----
+ADD R1 R0
+ADD $05 R0
+ADD @R1 R0
+ADD @$3000`0000 R0
+
+; ---- 2-operand, SrcFlagged + dereferenced FixedReg (ST/CMPIND/TSTIND) ----
+ST R2 @R0
+ST $05 @R0
+CMPIND R1 @R0
+CMPIND $01 @R0
+TSTIND R1 @R0
+TSTIND $01 @R0
+
+; ---- CP / LD: same base opcode, mnemonic split by the srcAddr bit ----
+CP $1234 R0
+CP R1 R0
+LD @R0 R2
+LD @$5000`0000 R2
+
+; ---- CPZ (regVal / immVal only, no address forms) ----
+CPZ R1 R0
+CPZ $05 R0
+
+; ---- 3-operand, SrcFlagged + FixedReg + FixedReg (LEA/CMPXCHG/MULW/UMULW) ----
+LEA R2 R0 R1
+LEA $08 R0 R1
+LEA @R2 R0 R1
+LEA @$6000`0000 R0 R1
+CMPXCHG R1 R2 R3
+MULW R1 R2 R3
+UMULW $02 R2 R3
+
+; ---- OUT: SrcFlagged (op1) + PortImm (op2, always immediate) ----
+; regVal and immVal only here: mazm's regimm_imm_compiler (OUT's compiler,
+; src/mazm.cpp:1942) never checks operand1 for a leading '@', so out_regAddr_imm
+; ($94) / out_immAddr_imm ($D4) are encodable (present in mzdis's decode table,
+; matching README/maize_cpu.h) but are currently unreachable from mazm's own
+; assembler syntax -- a pre-existing mazm gap unrelated to this card's scope,
+; not something to route around here. regVal/immVal/regAddr/immAddr coverage
+; for AC6483 comes from the ADD/CP-LD/JMP families above instead.
+OUT R0 $0001
+OUT $05 $0001
+
+; ---- OUTR / IN: SrcFlagged + fixed register port ----
+OUTR R0 R1
+IN R1 R0
+
+; ---- XCHG: fixed two-register shape ----
+XCHG R0 R1
+
+; ---- INT / SYS (SrcFlagged only, 2 rows) ----
+INT R0
+INT $01
+SYS R0
+SYS $01
+
+HALT

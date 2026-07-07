@@ -1,0 +1,12 @@
+; maize-14: source for the mzdis truncated-tail fixture (AC6482).
+;
+; scripts/run-tests.ps1's mzdis_truncated test assembles this, then copies a
+; truncated PREFIX of the resulting .bin (chopping off the last 2 bytes of the
+; final CP immVal instruction's 4-byte immediate) to build the actual test
+; input -- byte-level truncation isn't expressible in .mazm source, so the
+; harness does it directly on the assembled bytes. HALT then two harmless
+; instructions decode cleanly; the final CP is where the tail gets cut.
+
+HALT
+CLR R0
+CP $12345678 R0

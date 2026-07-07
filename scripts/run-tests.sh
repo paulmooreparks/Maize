@@ -115,6 +115,7 @@ fi
 MAIZE_EXE="${BUILD_DIR}/maize"
 MAZM_EXE="${BUILD_DIR}/mazm"
 MZLD_EXE="${BUILD_DIR}/mzld"
+MZDIS_EXE="${BUILD_DIR}/mzdis"
 
 if [ ! -x "$MAZM_EXE" ]; then
     echo "Expected built executable not found: ${MAZM_EXE}" >&2
@@ -126,6 +127,10 @@ if [ ! -x "$MAIZE_EXE" ]; then
 fi
 if [ ! -x "$MZLD_EXE" ]; then
     echo "Expected built executable not found: ${MZLD_EXE}" >&2
+    exit 2
+fi
+if [ ! -x "$MZDIS_EXE" ]; then
+    echo "Expected built executable not found: ${MZDIS_EXE}" >&2
     exit 2
 fi
 
@@ -313,6 +318,206 @@ run_link_run_test
 run_link_reject_test "link_undefined_symbol" "undefined symbol 'msgB'" "${TEST_RUN_DIR}/link_a.mzo"
 emit_object "link_range.mazm"
 run_link_reject_test "link_range_overflow" "does not fit in 8-bit" "${TEST_RUN_DIR}/link_range.mzo"
+
+# --- maize-14: mzdis disassembler ---------------------------------------------------
+# Round trip (AC6477/AC6478/AC6483): assemble a code-only, SECTION-clean fixture that
+# hits every addressing-mode family and operand-count shape, disassemble it, reassemble
+# mzdis's own output text, and diff the resulting .bin against the original byte-for-
+# byte -- the strongest test the spec names.
+run_mzdis_roundtrip_test() {
+    name="mzdis_roundtrip"
+    TOTAL=$((TOTAL + 1))
+    asm_path="${TEST_RUN_DIR}/test_mzdis_roundtrip.mazm"
+    cp "${ASM_DIR}/test_mzdis_roundtrip.mazm" "$asm_path"
+    bin_path="${asm_path%.mazm}.bin"
+
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: fixture assembles cleanly"
+        echo "        actual:   mazm failed to produce a .bin"
+        return
+    fi
+
+    dis_path="${TEST_RUN_DIR}/test_mzdis_roundtrip.dis.mazm"
+    if ! "$MZDIS_EXE" -o "$dis_path" "$bin_path"; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: mzdis exits 0 with clean decode"
+        echo "        actual:   mzdis exited nonzero"
+        return
+    fi
+    if grep -qiE 'unknown opcode|malformed|TRUNCATED' "$dis_path"; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: no unknown/malformed/truncated lines"
+        echo "        actual:   decode diagnostic found in a code-only fixture"
+        return
+    fi
+
+    reasm_bin="${dis_path%.mazm}.bin"
+    if ! "$MAZM_EXE" "$dis_path" >/dev/null 2>&1 || [ ! -f "$reasm_bin" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: mzdis's own output reassembles cleanly"
+        echo "        actual:   mazm failed to reassemble mzdis output"
+        return
+    fi
+
+    if cmp -s "$bin_path" "$reasm_bin"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: reassembled .bin byte-identical to original"
+        echo "        actual:   content differs"
+    fi
+}
+
+# Reserved-opcode resync (AC6481): two reserved bytes decode as DB $XX / unknown
+# opcode, advancing exactly one byte each, and decoding resumes correctly afterward.
+run_mzdis_reserved_test() {
+    name="mzdis_reserved_resync"
+    TOTAL=$((TOTAL + 1))
+    asm_path="${TEST_RUN_DIR}/test_mzdis_reserved.mazm"
+    cp "${ASM_DIR}/test_mzdis_reserved.mazm" "$asm_path"
+    bin_path="${asm_path%.mazm}.bin"
+
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: fixture assembles cleanly"
+        echo "        actual:   mazm failed to produce a .bin"
+        return
+    fi
+
+    out_file="${TEST_RUN_DIR}/test_mzdis_reserved.out"
+    "$MZDIS_EXE" "$bin_path" >"$out_file"
+    dis_exit=$?
+
+    if [ "$dis_exit" -eq 0 ] \
+        && grep -qE 'DB \$21.*unknown opcode' "$out_file" \
+        && grep -qE 'DB \$93.*unknown opcode' "$out_file" \
+        && grep -qE '^\s+NOP\b' "$out_file" \
+        && ! grep -qi 'TRUNCATED' "$out_file"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: DB \$21/\$93 unknown-opcode lines, NOP decodes correctly after, exit 0"
+        echo "        actual:   exit ${dis_exit}; see ${out_file}"
+    fi
+}
+
+# Truncated tail (AC6482): chop the assembled fixture mid-immediate so the final
+# instruction's declared bytes run past EOF. mzdis must still emit everything decoded
+# before the cut, a trailing "; TRUNCATED ..." line, and exit 1.
+run_mzdis_truncated_test() {
+    name="mzdis_truncated_tail"
+    TOTAL=$((TOTAL + 1))
+    asm_path="${TEST_RUN_DIR}/test_mzdis_truncate_src.mazm"
+    cp "${ASM_DIR}/test_mzdis_truncate_src.mazm" "$asm_path"
+    bin_path="${asm_path%.mazm}.bin"
+
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: fixture assembles cleanly"
+        echo "        actual:   mazm failed to produce a .bin"
+        return
+    fi
+
+    # HALT(1) + CLR R0(2) + CP \$12345678 R0 (opcode+param+4-byte imm = 6) = 9 real
+    # bytes; keep only the first 8, cutting the immediate 2 bytes short.
+    trunc_path="${TEST_RUN_DIR}/test_mzdis_truncate.bin"
+    dd if="$bin_path" of="$trunc_path" bs=1 count=8 >/dev/null 2>&1
+
+    out_file="${TEST_RUN_DIR}/test_mzdis_truncate.out"
+    "$MZDIS_EXE" "$trunc_path" >"$out_file"
+    dis_exit=$?
+
+    if [ "$dis_exit" -eq 1 ] \
+        && grep -qE '^\s+HALT\b' "$out_file" \
+        && grep -qE '^\s+CLR R0\b' "$out_file" \
+        && grep -qi 'TRUNCATED' "$out_file"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: partial output (HALT, CLR R0) + TRUNCATED diagnostic, exit 1"
+        echo "        actual:   exit ${dis_exit}; see ${out_file}"
+    fi
+}
+
+# .mzo rejection (AC6480): exit 1, a diagnostic naming the file, and no stdout output.
+run_mzdis_mzo_reject_test() {
+    name="mzdis_mzo_reject"
+    TOTAL=$((TOTAL + 1))
+    mzo_path="${TEST_RUN_DIR}/link_a.mzo"
+    if [ ! -f "$mzo_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: link_a.mzo present from the link tests"
+        echo "        actual:   missing (link tests must run first)"
+        return
+    fi
+
+    out_file="${TEST_RUN_DIR}/test_mzdis_mzo.out"
+    err_file="${TEST_RUN_DIR}/test_mzdis_mzo.err"
+    "$MZDIS_EXE" "$mzo_path" >"$out_file" 2>"$err_file"
+    dis_exit=$?
+
+    if [ "$dis_exit" -eq 1 ] \
+        && [ ! -s "$out_file" ] \
+        && grep -qF '.mzo relocatable object' "$err_file" \
+        && grep -qF "$(basename "$mzo_path")" "$err_file"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: exit 1, no stdout, stderr names the .mzo file"
+        echo "        actual:   exit ${dis_exit}; see ${out_file} / ${err_file}"
+    fi
+}
+
+# .mzx segment routing (AC6479): CODE decodes as instructions at vaddr (with an ENTRY
+# annotation), RODATA renders as DATA lines, never passed through the instruction
+# decoder.
+run_mzdis_mzx_test() {
+    name="mzdis_mzx_segments"
+    TOTAL=$((TOTAL + 1))
+    mzx_path="${TEST_RUN_DIR}/link.mzx"
+    if [ ! -f "$mzx_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: link.mzx present from the link tests"
+        echo "        actual:   missing (link tests must run first)"
+        return
+    fi
+
+    out_file="${TEST_RUN_DIR}/test_mzdis_mzx.out"
+    "$MZDIS_EXE" "$mzx_path" >"$out_file"
+    dis_exit=$?
+
+    if [ "$dis_exit" -eq 0 ] \
+        && grep -qE '^\s+CALL\b.*ENTRY' "$out_file" \
+        && grep -qE '^\s+RET\b' "$out_file" \
+        && grep -q 'RODATA' "$out_file" \
+        && grep -qF 'DATA $4C $69 $6E $6B $65 $64 $21' "$out_file"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: CODE decoded with ENTRY annotation, RODATA rendered as DATA \$4C ... (\"Linked!\")"
+        echo "        actual:   exit ${dis_exit}; see ${out_file}"
+    fi
+}
+
+run_mzdis_roundtrip_test
+run_mzdis_reserved_test
+run_mzdis_truncated_test
+run_mzdis_mzo_reject_test
+run_mzdis_mzx_test
 
 PASS_COUNT=$((TOTAL - FAIL_COUNT))
 echo ""

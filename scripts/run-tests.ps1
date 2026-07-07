@@ -147,6 +147,7 @@ if (-not $SkipBuild) {
 $MaizeExe = Join-Path $BuildDir 'maize.exe'
 $MazmExe  = Join-Path $BuildDir 'mazm.exe'
 $MzldExe  = Join-Path $BuildDir 'mzld.exe'
+$MzdisExe = Join-Path $BuildDir 'mzdis.exe'
 
 if (-not (Test-Path $MazmExe)) {
     Write-SetupError "Expected built executable not found: $MazmExe"
@@ -158,6 +159,10 @@ if (-not (Test-Path $MaizeExe)) {
 }
 if (-not (Test-Path $MzldExe)) {
     Write-SetupError "Expected built executable not found: $MzldExe"
+    exit 2
+}
+if (-not (Test-Path $MzdisExe)) {
+    Write-SetupError "Expected built executable not found: $MzdisExe"
     exit 2
 }
 
@@ -310,6 +315,158 @@ $results += Invoke-LinkRunTest
 $results += Invoke-LinkRejectTest 'link_undefined_symbol' "undefined symbol 'msgB'" @((Join-Path $TestRunDir 'link_a.mzo'))
 Emit-Object 'link_range.mazm'
 $results += Invoke-LinkRejectTest 'link_range_overflow' 'does not fit in 8-bit' @((Join-Path $TestRunDir 'link_range.mzo'))
+
+# --- maize-14: mzdis disassembler ---------------------------------------------------
+# Round trip (AC6477/AC6478/AC6483): assemble a code-only, SECTION-clean fixture that
+# hits every addressing-mode family and operand-count shape, disassemble it, reassemble
+# mzdis's own output text, and diff the resulting .bin against the original byte-for-
+# byte -- the strongest test the spec names.
+function Invoke-MzdisRoundtripTest {
+    $name = 'mzdis_roundtrip'
+    $srcPath = Join-Path $AsmDir 'test_mzdis_roundtrip.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_mzdis_roundtrip.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'bin')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to produce a .bin' }
+    }
+
+    $disPath = Join-Path $TestRunDir 'test_mzdis_roundtrip.dis.mazm'
+    & $MzdisExe -o $disPath $binPath
+    $disExit = $LASTEXITCODE
+    if ($disExit -ne 0 -or -not (Test-Path $disPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'mzdis exits 0 with clean decode'; Actual = "mzdis exit $disExit" }
+    }
+    $disText = Get-Content -Raw -Path $disPath
+    if ($disText -match '(?i)unknown opcode|malformed|TRUNCATED') {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'no unknown/malformed/truncated lines'; Actual = 'decode diagnostic found in a code-only fixture' }
+    }
+
+    $reasmBin = [System.IO.Path]::ChangeExtension($disPath, 'bin')
+    & $MazmExe $disPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $reasmBin)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = "mzdis's own output reassembles cleanly"; Actual = 'mazm failed to reassemble mzdis output' }
+    }
+
+    $origBytes = [System.IO.File]::ReadAllBytes($binPath)
+    $reasmBytes = [System.IO.File]::ReadAllBytes($reasmBin)
+    $identical = ($origBytes.Length -eq $reasmBytes.Length) -and (-not (Compare-Object $origBytes $reasmBytes))
+    return [pscustomobject]@{ Name = $name; Pass = $identical; Expected = 'reassembled .bin byte-identical to original'; Actual = if ($identical) { 'byte-identical' } else { "length $($origBytes.Length) vs $($reasmBytes.Length), or content differs" } }
+}
+
+# Reserved-opcode resync (AC6481): two reserved bytes decode as DB $XX / unknown
+# opcode, advancing exactly one byte each, and decoding resumes correctly afterward.
+function Invoke-MzdisReservedTest {
+    $name = 'mzdis_reserved_resync'
+    $srcPath = Join-Path $AsmDir 'test_mzdis_reserved.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_mzdis_reserved.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'bin')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to produce a .bin' }
+    }
+
+    $stdoutFile = Join-Path $TestRunDir 'test_mzdis_reserved.out'
+    & $MzdisExe $binPath > $stdoutFile
+    $disExit = $LASTEXITCODE
+    $text = Get-Content -Raw -Path $stdoutFile
+
+    # Reserved-byte resyncs alone must NOT force exit 1 (spec: "Exit codes").
+    $pass = ($disExit -eq 0) `
+        -and ($text -match [regex]::Escape('DB $21') + '.*unknown opcode') `
+        -and ($text -match [regex]::Escape('DB $93') + '.*unknown opcode') `
+        -and ($text -match '(?m)^\s+NOP\b') `
+        -and ($text -notmatch '(?i)TRUNCATED')
+    return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = 'DB $21/$93 unknown-opcode lines, NOP decodes correctly after, exit 0'; Actual = if ($pass) { 'as expected' } else { "exit $disExit; see $stdoutFile" } }
+}
+
+# Truncated tail (AC6482): chop the assembled fixture mid-immediate so the final
+# instruction's declared bytes run past EOF. mzdis must still emit everything decoded
+# before the cut, a trailing "; TRUNCATED ..." line, and exit 1.
+function Invoke-MzdisTruncatedTest {
+    $name = 'mzdis_truncated_tail'
+    $srcPath = Join-Path $AsmDir 'test_mzdis_truncate_src.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_mzdis_truncate_src.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'bin')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to produce a .bin' }
+    }
+
+    # HALT(1) + CLR R0(2) + CP $12345678 R0 (opcode+param+4-byte imm = 6) = 9 real
+    # bytes; keep only the first 8, cutting the immediate 2 bytes short.
+    $allBytes = [System.IO.File]::ReadAllBytes($binPath)
+    $truncPath = Join-Path $TestRunDir 'test_mzdis_truncate.bin'
+    [System.IO.File]::WriteAllBytes($truncPath, $allBytes[0..7])
+
+    $stdoutFile = Join-Path $TestRunDir 'test_mzdis_truncate.out'
+    & $MzdisExe $truncPath > $stdoutFile
+    $disExit = $LASTEXITCODE
+    $text = Get-Content -Raw -Path $stdoutFile
+
+    $pass = ($disExit -eq 1) `
+        -and ($text -match '(?m)^\s+HALT\b') `
+        -and ($text -match '(?m)^\s+CLR R0\b') `
+        -and ($text -match '(?i)TRUNCATED')
+    return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = 'partial output (HALT, CLR R0) + TRUNCATED diagnostic, exit 1'; Actual = if ($pass) { 'as expected' } else { "exit $disExit; see $stdoutFile" } }
+}
+
+# .mzo rejection (AC6480): exit 1, a diagnostic naming the file, and no stdout output.
+function Invoke-MzdisMzoRejectTest {
+    $name = 'mzdis_mzo_reject'
+    $mzoPath = Join-Path $TestRunDir 'link_a.mzo'
+    if (-not (Test-Path $mzoPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'link_a.mzo present from the link tests'; Actual = 'missing (link tests must run first)' }
+    }
+
+    $stdoutFile = Join-Path $TestRunDir 'test_mzdis_mzo.out'
+    $stderrFile = Join-Path $TestRunDir 'test_mzdis_mzo.err'
+    & $MzdisExe $mzoPath > $stdoutFile 2> $stderrFile
+    $disExit = $LASTEXITCODE
+    $stdoutText = Get-Content -Raw -Path $stdoutFile -ErrorAction SilentlyContinue
+    $stderrText = Get-Content -Raw -Path $stderrFile -ErrorAction SilentlyContinue
+
+    $pass = ($disExit -eq 1) `
+        -and ([string]::IsNullOrEmpty($stdoutText)) `
+        -and ($stderrText -like '*.mzo relocatable object*') `
+        -and ($stderrText -like "*$([System.IO.Path]::GetFileName($mzoPath))*")
+    return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = 'exit 1, no stdout, stderr names the .mzo file'; Actual = if ($pass) { 'as expected' } else { "exit $disExit; stdout=`"$stdoutText`"; stderr=`"$stderrText`"" } }
+}
+
+# .mzx segment routing (AC6479): CODE decodes as instructions at vaddr (with an ENTRY
+# annotation), RODATA renders as DATA lines, never passed through the instruction
+# decoder.
+function Invoke-MzdisMzxTest {
+    $name = 'mzdis_mzx_segments'
+    $mzxPath = Join-Path $TestRunDir 'link.mzx'
+    if (-not (Test-Path $mzxPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'link.mzx present from the link tests'; Actual = 'missing (link tests must run first)' }
+    }
+
+    $stdoutFile = Join-Path $TestRunDir 'test_mzdis_mzx.out'
+    & $MzdisExe $mzxPath > $stdoutFile
+    $disExit = $LASTEXITCODE
+    $text = Get-Content -Raw -Path $stdoutFile
+
+    $pass = ($disExit -eq 0) `
+        -and ($text -match '(?m)^\s+CALL\b.*ENTRY') `
+        -and ($text -match '(?m)^\s+RET\b') `
+        -and ($text -match 'RODATA') `
+        -and ($text -match [regex]::Escape('DATA $4C $69 $6E $6B $65 $64 $21'))
+    return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = 'CODE decoded with ENTRY annotation, RODATA rendered as DATA $4C ... ("Linked!")'; Actual = if ($pass) { 'as expected' } else { "exit $disExit; see $stdoutFile" } }
+}
+
+$results += Invoke-MzdisRoundtripTest
+$results += Invoke-MzdisReservedTest
+$results += Invoke-MzdisTruncatedTest
+$results += Invoke-MzdisMzoRejectTest
+$results += Invoke-MzdisMzxTest
 
 $failCount = 0
 foreach ($r in $results) {
