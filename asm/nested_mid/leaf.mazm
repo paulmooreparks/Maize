@@ -1,0 +1,20 @@
+; **********************************************************************************
+; Leaf fixture for card maize-37 AC5 (nested-INCLUDE base-path semantics, decision
+; 6507). Reachable ONLY via INCLUDE "leaf.mazm" from nested_mid/middle.mazm's own
+; directory -- there is no asm/leaf.mazm -- so this file proves each INCLUDE
+; resolves against the directory of the file that contains it, not the single
+; top-level global base_path.
+; **********************************************************************************
+
+$0000`0000:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1
+    CP $15 R2               ; 21 bytes
+    SYS $01
+    HALT
+
+pass_string:
+    STRING "nested include: PASS\n\0"

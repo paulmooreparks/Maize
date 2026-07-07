@@ -1,0 +1,11 @@
+; **********************************************************************************
+; Negative test for card maize-37: CLR's operand is grammar-mandated to be a
+; register (reg_compiler), but the compiler used to call compile_register
+; unconditionally with no is_register guard, so a garbage register name like R99
+; silently compiled to register 0 with zero diagnostics. mazm must now reject it.
+; The test harness treats this file as ExpectAsmError: it passes when assembly fails.
+; **********************************************************************************
+
+$0000`0000:
+    CLR R99
+    HALT

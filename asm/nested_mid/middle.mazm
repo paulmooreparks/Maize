@@ -1,0 +1,8 @@
+; **********************************************************************************
+; Middle fixture for card maize-37 AC5. Sits in the same directory as leaf.mazm and
+; INCLUDEs it by a bare relative name; per-frame base-path resolution (decision
+; 6507) must resolve that INCLUDE against THIS file's own directory (nested_mid/),
+; not the top-level asm/ directory that test_nested_include.mazm lives in.
+; **********************************************************************************
+
+INCLUDE "leaf.mazm"

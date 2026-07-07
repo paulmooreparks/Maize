@@ -1,0 +1,12 @@
+; **********************************************************************************
+; Negative test for card maize-37, cross-ref maize-52: label_tokenizer used to fall
+; out of its EOF loop with only the name child added when EOF arrived right after
+; the name was flushed into label_state::value, handing label_compiler a 1-child
+; node that crashed dereferencing past tree.value.end(). mazm must now reject the
+; truncation with a clean diagnostic instead.
+; The test harness treats this file as ExpectAsmError: it passes when assembly fails.
+; This file intentionally ends immediately after the label's name: EOF must land
+; there, with no value token at all, for the truncation to actually reproduce.
+; **********************************************************************************
+
+LABEL truncated_label

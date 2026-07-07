@@ -1,0 +1,10 @@
+; **********************************************************************************
+; Positive regression test for card maize-37 AC5 (nested-INCLUDE base-path
+; semantics, decision 6507): INCLUDEs nested_mid/middle.mazm, which itself
+; INCLUDEs leaf.mazm by a bare relative name. leaf.mazm exists ONLY at
+; asm/nested_mid/leaf.mazm -- there is no asm/leaf.mazm -- so this only
+; assembles cleanly if each INCLUDE resolves relative to the file that
+; contains it (per-frame base path), not a single top-level global base_path.
+; **********************************************************************************
+
+INCLUDE "nested_mid/middle.mazm"

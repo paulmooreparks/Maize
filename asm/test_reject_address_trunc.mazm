@@ -1,0 +1,13 @@
+; **********************************************************************************
+; Negative test for card maize-37, cross-ref maize-52: address_tokenizer's shared
+; parse_literal helper used to silently drop a trailing unterminated value at EOF
+; and return zero children, handing address_compiler an empty node that crashed
+; dereferencing tree.value.begin() past end(). A bare ADDRESS keyword with no
+; operand at all before EOF reproduces the same shape. mazm must now reject the
+; truncation with a clean diagnostic instead.
+; The test harness treats this file as ExpectAsmError: it passes when assembly fails.
+; This file intentionally has no operand at all: EOF must land immediately after
+; the ADDRESS keyword for the truncation to actually reproduce.
+; **********************************************************************************
+
+ADDRESS

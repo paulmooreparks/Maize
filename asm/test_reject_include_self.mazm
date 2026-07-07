@@ -1,0 +1,8 @@
+; **********************************************************************************
+; Negative test for card maize-37: a file that INCLUDEs itself must be rejected
+; with a circular-INCLUDE diagnostic instead of recursing through tokenize() with
+; no bound until the process stack-overflows.
+; The test harness treats this file as ExpectAsmError: it passes when assembly fails.
+; **********************************************************************************
+
+INCLUDE "test_reject_include_self.mazm"

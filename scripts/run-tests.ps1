@@ -72,6 +72,12 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_brk';           File = 'test_brk.mazm';           Expected = 'brk: PASS';                     Golden = $false }
     [pscustomobject]@{ Name = 'test_lngjmp';        File = 'test_lngjmp.mazm';        Expected = 'lngjmp: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_tstind';        File = 'test_tstind.mazm';        Expected = 'tstind: PASS';                  Golden = $false }
+    [pscustomobject]@{ Name = 'reject_bad_register'; File = 'test_reject_badreg.mazm';     Expected = "unknown register 'R99'";      Golden = $false; ExpectAsmError = $true }
+    [pscustomobject]@{ Name = 'reject_bad_literal';  File = 'test_reject_badliteral.mazm'; Expected = 'malformed hex literal';       Golden = $false; ExpectAsmError = $true }
+    [pscustomobject]@{ Name = 'reject_include_self'; File = 'test_reject_include_self.mazm'; Expected = 'circular INCLUDE';          Golden = $false; ExpectAsmError = $true }
+    [pscustomobject]@{ Name = 'reject_label_trunc';  File = 'test_reject_label_trunc.mazm'; Expected = 'unexpected end of file';     Golden = $false; ExpectAsmError = $true }
+    [pscustomobject]@{ Name = 'reject_address_trunc'; File = 'test_reject_address_trunc.mazm'; Expected = 'unexpected end of file';  Golden = $false; ExpectAsmError = $true }
+    [pscustomobject]@{ Name = 'nested_include';      File = 'test_nested_include.mazm';    Expected = 'nested include: PASS';        Golden = $true }
 )
 
 function Trim-TrailingNewlines([string]$s) {

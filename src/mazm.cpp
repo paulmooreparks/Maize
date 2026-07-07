@@ -82,6 +82,16 @@ namespace {
 
     std::string base_path {};
 
+    /* Circular-INCLUDE detection (maize-37). Canonical (resolved, symlink-free)
+       paths of every INCLUDE frame currently open, innermost last. A path
+       already on this chain being reopened is a self-include or a mutual
+       A-INCLUDEs-B / B-INCLUDEs-A cycle; without this guard, include_tokenizer
+       recurses through tokenize() with no bound until the process stack
+       overflows. The top-level file (assemble()'s own argument) seeds the
+       chain so a top-level self-include is caught at the same depth as any
+       other frame, not one level later. */
+    std::vector<std::string> include_chain {};
+
     /* --check mode (maize-46): run the full tokenize+compile pipeline with zero
        filesystem effects. Editors probe assembly validity on save; a probe must
        neither write a .bin nor delete a previously-good one. */
@@ -475,6 +485,13 @@ namespace {
         token_line = 1;
         skip_bom(fin);
 
+        /* Circular INCLUDE detection (maize-37): seed the chain with the
+           top-level file itself, so a top-level self-include (INCLUDE'ing the
+           very file being assembled) is caught by include_tokenizer at the
+           same depth as any other frame's self-include, not one level later. */
+        include_chain.clear();
+        include_chain.push_back(asm_path.string());
+
         token_tree tree {file_path};
         tokenize(fin, tree);
         compile(tree);
@@ -670,7 +687,26 @@ namespace {
                 break;
             }
 
-            read_char(fin, c);
+            /* EOF/read-failure guard (maize-37, cross-ref maize-52): the loop
+               used to keep going on read_char's return value being ignored,
+               trusting the (unmodified-on-failure) char c to eventually go
+               negative on its own -- it doesn't, for a stream that has already
+               produced at least one character. Check the stream state directly. */
+            if (!read_char(fin, c)) {
+                break;
+            }
+        }
+
+        /* EOF reached (maize-37, cross-ref maize-52): flush a trailing token
+           that was never terminated by whitespace instead of silently dropping
+           it. address_tokenizer (ADDRESS's shared literal parser) and
+           label_tokenizer's value branch (LABEL) both fed a short/empty node to
+           their compiler otherwise, crashing on a dereference past
+           tree.value.end(). Mirrors the EOF-flush pattern already used by
+           opcode_1/2/3param_tokenizer. */
+        if (!current_token.empty()) {
+            tree.add(current_token);
+            current_token.clear();
         }
 
         return literal_state::end;
@@ -821,7 +857,20 @@ namespace {
     }
 
     parser_state address_tokenizer(std::istream& fin, token_tree &tree, char c) {
+        int instr_line {current_line};
+
         while (parse_literal(fin, tree, c) != literal_state::end) {
+        }
+
+        /* Bare ADDRESS at EOF (maize-37, cross-ref maize-52): parse_literal now
+           flushes any trailing token it managed to accumulate, but a keyword
+           with no operand at all (EOF arrives before any non-whitespace
+           character) still leaves a 0-child node. address_compiler
+           unconditionally dereferences tree.value.begin(); reject the
+           truncation here instead of handing it a node to crash on. */
+        if (tree.value.empty()) {
+            fatal(current_file, instr_line,
+                "unexpected end of file: 'ADDRESS' expects a value, got none");
         }
 
         return parser_state::whitespace;
@@ -829,6 +878,7 @@ namespace {
 
     parser_state label_tokenizer(std::istream &fin, token_tree &tree, char c) {
         label_state state {label_state::start};
+        int instr_line {current_line};
 
         while (fin.peek() >= 0) {
             read_char(fin, c);
@@ -863,6 +913,25 @@ namespace {
 
                 break;
             }
+        }
+
+        /* EOF reached (maize-37, cross-ref maize-52): flush a trailing name or
+           value that was never terminated by whitespace (mirrors
+           opcode_1/2/3param_tokenizer's EOF-flush pattern), then reject a
+           truncated LABEL that never accumulated both a name and a value
+           instead of handing label_compiler a short node to crash on. A
+           1-child node here is the exact "LABEL x" (name flushed, EOF before
+           any value char) crash shape; a 0-child node is "LABEL" with no name
+           token flushed either. */
+        if (!current_token.empty()) {
+            tree.add(current_token);
+            current_token.clear();
+        }
+
+        if (tree.value.size() < 2) {
+            fatal(current_file, instr_line,
+                "unexpected end of file: 'LABEL' expects a name and a value, got "
+                + std::to_string(tree.value.size()));
         }
 
         return parser_state::label_declaration;
@@ -993,6 +1062,41 @@ namespace {
                 + std::to_string(include_from_line) + ")");
         }
 
+        /* Circular INCLUDE detection (maize-37): canonicalize so the same file
+           reached via different relative spellings still matches the chain. A
+           path already open anywhere on the chain (self-include, or a mutual
+           A-INCLUDEs-B / B-INCLUDEs-A cycle) would otherwise recurse through
+           tokenize() with no bound until the process stack-overflows. The
+           stream is already known-open above, so canonical() resolving
+           against a real file should not itself fail; fall back to the
+           unresolved path on the (defensive) error_code branch rather than
+           throwing out of a diagnostic path. */
+        std::error_code canon_ec;
+        std::filesystem::path resolved_path =
+            std::filesystem::canonical(include_path, canon_ec);
+        std::string resolved = canon_ec ? include_path.string() : resolved_path.string();
+
+        if (std::find(include_chain.begin(), include_chain.end(), resolved) != include_chain.end()) {
+            fatal_env(include_from_file, include_from_line,
+                "circular INCLUDE of '" + resolved + "'");
+        }
+
+        include_chain.push_back(resolved);
+
+        /* Nested-INCLUDE base path (maize-37, decision): each INCLUDE's
+           relative path resolves against the directory of the file that
+           contains that INCLUDE directive, not a single top-level global.
+           Push/pop base_path around the recursive tokenize() call below so a
+           deeper frame's own INCLUDEs see its containing directory, then
+           restore the caller's base_path on the way back out. The single
+           top-level frame (direct assembly, or --stdin's explicit
+           --base-path) is unaffected: it never nests, so there's exactly one
+           frame doing the resolving either way. */
+        std::string saved_base_path {base_path};
+        if (!canon_ec && resolved_path.has_parent_path()) {
+            base_path = resolved_path.parent_path().string();
+        }
+
         /* Line tracking spans INCLUDE'd files independently: the included file
            reports its own name and its own 1-based line numbers. */
         std::string saved_file {current_file};
@@ -1010,6 +1114,9 @@ namespace {
         current_file = saved_file;
         current_line = saved_line;
         token_line = saved_token_line;
+        base_path = saved_base_path;
+
+        include_chain.pop_back();
 
         return parser_state::whitespace;
     }
@@ -1241,35 +1348,83 @@ namespace {
                 // nothing
             }
             else {
-                std::cerr << "Error" << std::endl;
-                return -1;
+                /* Malformed binary literal (maize-37): a non-0/1 character used to
+                   print a bare "Error" straight to std::cerr, with no file/line, no
+                   "mazm:" prefix, and no fatal()/record_diag involvement at all --
+                   then return a garbage static_cast<uint64_t>(-1) sentinel that got
+                   silently truncated into the compiled value. Route through fatal
+                   like every other diagnostic instead. */
+                fatal(current_ref_loc.file, current_ref_loc.line,
+                    "malformed binary literal '" + str + "'");
             }
         }
 
         return tmp;
     }
 
+    /* Group-separator strip (maize-37). ',' and '`' are digit-group separators
+       (see hello.mazm's own "$0000`0000: ; the back-tick is used as a number
+       separator" comment) that opcode_1/2/3param_tokenizer and parse_literal
+       already discard character-by-character while accumulating an operand or
+       a LABEL/ADDRESS value token. A CODE block's own header token (e.g.
+       "$0000`0000:") is instead accumulated by process_char_stream, which does
+       NOT discard them, so convert_label_string sees the raw separators. Strip
+       them here so the new fail-bit/eof() validation below doesn't reject
+       legitimate grouped literals as malformed. */
+    std::string strip_group_separators(std::string const &str) {
+        std::string out;
+        out.reserve(str.size());
+
+        for (char ch : str) {
+            if (ch != ',' && ch != '`') {
+                out.push_back(ch);
+            }
+        }
+
+        return out;
+    }
 
     maize::u_hword convert_label_string(std::string const &value) {
         maize::u_hword hvalue {0};
-        char type = value[0];
+        char type = value.empty() ? '\0' : value[0];
 
         std::stringstream cvt;
 
         if (type == special_chars::hex) {
-            cvt << std::hex << value.substr(1);
+            cvt << std::hex << strip_group_separators(value.substr(1));
             cvt >> hvalue;
+
+            /* Malformed literal (maize-37): stringstream extraction used to run
+               unchecked -- a token like "$ZZ" silently stored whatever partial
+               value operator>> left behind (often 0). Reject a failed extraction
+               and reject trailing garbage that didn't parse (e.g. "$12x4"). */
+            if (cvt.fail() || !cvt.eof()) {
+                fatal(current_ref_loc.file, current_ref_loc.line,
+                    "malformed hex literal '" + value + "'");
+            }
         }
         else if (type == special_chars::dec) {
-            cvt << std::dec << value.substr(1);
+            cvt << std::dec << strip_group_separators(value.substr(1));
             cvt >> hvalue;
+
+            if (cvt.fail() || !cvt.eof()) {
+                fatal(current_ref_loc.file, current_ref_loc.line,
+                    "malformed decimal literal '" + value + "'");
+            }
         }
         else if (type == special_chars::bin) {
-            std::string tmp = value.substr(1);
+            std::string tmp = strip_group_separators(value.substr(1));
             hvalue = static_cast<u_hword>(bin_cvt(tmp));
         }
         else {
-            hvalue = std::numeric_limits<u_hword>::max();
+            /* Unrecognized LABEL/ADDRESS value prefix (maize-37): this used to
+               silently return the max() undefined-label sentinel with no
+               diagnostic at all -- a typo'd prefix (or e.g. "AUTO", see
+               README.md's now-corrected LABEL syntax note) compiled clean and
+               only surfaced later as a confusing "undefined label" error.
+               Name the bad token directly instead. */
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                "malformed LABEL/ADDRESS value '" + value + "'");
         }
 
         return hvalue;
@@ -1290,6 +1445,16 @@ namespace {
         std::stringstream cvt;
         cvt << std::hex << literal;
         cvt >> value.w0;
+
+        /* Malformed literal (maize-37): see convert_label_string for the same
+           unchecked-extraction issue this mirrors. Overlong literals still fall
+           through to the pre-existing "Invalid literal format" throw below,
+           unchanged (out of scope for this card). */
+        if (cvt.fail() || !cvt.eof()) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                "malformed hex literal '" + literal + "'");
+        }
+
         u_byte type_byte = cpu::opflag_imm_size_64b;
 
         if (len <= 2) {
@@ -1315,6 +1480,18 @@ namespace {
         std::stringstream cvt;
         cvt << std::dec << literal;
         cvt >> value.w0;
+
+        /* Malformed literal (maize-37): a token like "12x4" used to silently
+           extract "12" and drop the trailing "x4" with no diagnostic, since
+           partial extraction doesn't set failbit on its own -- checking eof()
+           too catches unconsumed trailing garbage. Overlong-value handling
+           (the "Invalid literal format" throw below) is unchanged, out of
+           scope for this card. */
+        if (cvt.fail() || !cvt.eof()) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                "malformed decimal literal '" + literal + "'");
+        }
+
         u_byte type_byte = cpu::opflag_imm_size_64b;
 
         if (value.w0 <= std::numeric_limits<u_byte>::max()) {
@@ -1336,6 +1513,10 @@ namespace {
         return type_byte;
     }
 
+    /* Malformed literal (maize-37): validation for a non-0/1 character lives in
+       bin_cvt itself (called below), which now raises the fatal diagnostic
+       directly instead of printing a bare std::cerr line and returning a
+       garbage sentinel. */
     u_byte compile_bin_literal(std::string &literal, cpu::reg_value &value) {
         auto len = literal.length();
         std::string tmp = literal;
@@ -1402,6 +1583,7 @@ namespace {
         auto label = label_node.key;
         ++it;
         auto value = it->key;
+        current_ref_loc = { it->loc_file, it->loc_line };
 
         /* Duplicate label declaration (maize-13): a second real declaration used
            to silently overwrite the resolved address. Reject it, citing both
@@ -1420,15 +1602,27 @@ namespace {
     }
 
     void address_compiler(token_tree &tree, std::string &opcode_str) {
-        auto data_string {tree.value.begin()->key};
+        auto &value_node = *tree.value.begin();
+        auto data_string {value_node.key};
+        current_ref_loc = { value_node.loc_file, value_node.loc_line };
         u_hword data = 0;
 
-        if (is_label(data_string)) {
-            cpu::reg_value value = labels[data_string];
-        }
-        else {
+        /* ADDRESS accepts either a numeric literal or a label name (README:
+           "ADDRESS address | labelName"). convert_label_string only
+           understands $/#/%-prefixed numeric literals; route a label-name
+           token around it entirely (maize-37) instead of shape-testing via
+           is_label (which only reports whether the label happens to be
+           already declared) so a genuinely malformed numeric literal still
+           gets the new diagnostic while a bare label-name token -- forward-
+           declared or not -- never reaches convert_label_string's
+           unrecognized-prefix path at all. The label-name branch itself is
+           unchanged, pre-existing behavior; out of scope for this card. */
+        if (is_literal(data_string)) {
             data = convert_label_string(data_string);
             current_address += cpu::mm.write_hword(current_address, data);
+        }
+        else if (is_label(data_string)) {
+            cpu::reg_value value = labels[data_string];
         }
     }
 
@@ -1504,6 +1698,7 @@ namespace {
         for (auto &sub_tree : tree.value) {
             cpu::reg_value value;
             auto literal = sub_tree.key;
+            current_ref_loc = { sub_tree.loc_file, sub_tree.loc_line };
             auto type_byte = compile_literal(literal, value);
 
             if ((type_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
@@ -1525,7 +1720,20 @@ namespace {
     void code_compiler(token_tree &tree, std::string &opcode_str) {
         auto &label_node = *tree.value.begin();
         auto label {label_node.key};
-        auto address = convert_label_string(label);
+        current_ref_loc = { label_node.loc_file, label_node.loc_line };
+
+        /* A CODE block header is either a numeric start address ("$0000`0000:")
+           or a named label ("main:") -- see hello.mazm for both forms in active
+           use. convert_label_string only understands $/#/%-prefixed numeric
+           literals; a bare name is the intentional signal (via the max()
+           sentinel below) that this block's address is "here", resolved from
+           current_address just below. Route the name case around
+           convert_label_string entirely (maize-37) so a plain label like
+           "main" never reaches its unrecognized-prefix diagnostic, which is
+           meant for a genuinely malformed *numeric* literal. */
+        auto address = is_literal(label)
+            ? convert_label_string(label)
+            : std::numeric_limits<u_hword>::max();
 
         if (address == std::numeric_limits<u_hword>::max()) {
             /* Duplicate label declaration (maize-13): the old code read the
@@ -1685,6 +1893,21 @@ namespace {
         return false;
     }
 
+    /* Unrecognized register name (maize-37): several call sites are
+       grammar-mandated to receive a register operand (not "could be a register
+       or an immediate/label", which is guarded by is_register at the call
+       site already) and used to call compile_register unconditionally --
+       compile_register silently falls back to register 0 for a name it
+       doesn't recognize, with no diagnostic. Guard those sites through here
+       instead of calling compile_register directly. */
+    u_byte compile_register_checked(std::string &reg, std::string const &file, int line) {
+        if (!is_register(reg)) {
+            fatal(file, line, "unknown register '" + reg + "'");
+        }
+
+        return compile_register(reg);
+    }
+
     /* Width in bytes patched by a register operand's sub-register field. Drives
        the immediate width (and thus the relocation width) of a label reference
        whose destination register is that operand (maize-12). */
@@ -1823,7 +2046,7 @@ namespace {
             }
         }
 
-        u_byte operand2_byte {compile_register(operand2)};
+        u_byte operand2_byte {compile_register_checked(operand2, it->loc_file, it->loc_line)};
 
         /* Object mode (maize-12): the label's immediate width follows the
            destination sub-register (CP <label> Rn -> ABS64, CP <label> Rn.H0 ->
@@ -1934,7 +2157,7 @@ namespace {
         auto it {tree.value.begin()};
         current_ref_loc = { it->loc_file, it->loc_line };
         auto operand1 {it->key};
-        u_byte operand1_byte {compile_register(operand1)};
+        u_byte operand1_byte {compile_register_checked(operand1, it->loc_file, it->loc_line)};
         current_address += cpu::mm.write_byte(current_address, opcode);
         current_address += cpu::mm.write_byte(current_address, operand1_byte);
     }
@@ -2078,7 +2301,7 @@ namespace {
         }
 
         operand2 = operand2.substr(1);
-        operand2_byte = compile_register(operand2);
+        operand2_byte = compile_register_checked(operand2, it->loc_file, it->loc_line);
 
         /* Object mode (maize-12): see the regimm_imm guard. A label source here
            would be inlined without a relocation. */
@@ -2116,6 +2339,7 @@ namespace {
         current_ref_loc = { it->loc_file, it->loc_line };
         auto operand1 {it->key};
         ++it;
+        auto operand2_it {it};
         auto operand2 {it->key};
         ++it;
         auto operand3 {it->key};
@@ -2150,8 +2374,8 @@ namespace {
             }
         }
 
-        u_byte operand2_byte {compile_register(operand2)};
-        u_byte operand3_byte {compile_register(operand3)};
+        u_byte operand2_byte {compile_register_checked(operand2, operand2_it->loc_file, operand2_it->loc_line)};
+        u_byte operand3_byte {compile_register_checked(operand3, it->loc_file, it->loc_line)};
 
         /* Object mode (maize-12): a resolved label source would be inlined below
            without a relocation; fail loudly. LEA's common forms use a register or
@@ -2245,7 +2469,9 @@ namespace {
         if (tree.value.empty()) {
             fatal(current_file, token_line, "ZERO requires a byte count");
         }
-        std::string lit = tree.value.begin()->key;
+        auto &lit_node = *tree.value.begin();
+        std::string lit = lit_node.key;
+        current_ref_loc = { lit_node.loc_file, lit_node.loc_line };
         cpu::reg_value value {0};
         compile_literal(lit, value);
         /* Reserve space with no file bytes (NOBITS): advance the cursor without

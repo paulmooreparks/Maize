@@ -955,7 +955,11 @@ assemble and run as part of the test suite.)
 
 Other syntax, to be described more fully later:
 
-    LABEL labelName labelData | AUTO
+    LABEL labelName labelData
+
+(`LABEL name AUTO` is not implemented; `AUTO` has no auto-assignment semantics
+anywhere in the assembler today, so it is not valid syntax here. `labelData` must
+be an explicit `$`/`#`/`%`-prefixed literal.)
 
     DATA dataValue [dataValue] [dataValue] [...]
 

@@ -1,0 +1,11 @@
+; **********************************************************************************
+; Negative test for card maize-37: compile_hex_literal used to extract via
+; std::stringstream without checking the fail bit, so a malformed hex token like
+; $ZZ silently stored whatever partial value operator>> left behind (often 0) with
+; no diagnostic. mazm must now reject it.
+; The test harness treats this file as ExpectAsmError: it passes when assembly fails.
+; **********************************************************************************
+
+$0000`0000:
+    CP $ZZ R0
+    HALT
