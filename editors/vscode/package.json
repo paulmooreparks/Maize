@@ -1,21 +1,23 @@
 {
     "name": "maize-mazm",
     "displayName": "Maize Assembly",
-    "description": "Syntax highlighting for Maize assembly (.mazm files).",
-    "version": "0.1.1",
+    "description": "Syntax highlighting and language server for Maize assembly (.mazm files).",
+    "version": "0.2.0",
     "publisher": "paulmooreparks",
     "license": "Apache-2.0",
+    "icon": "icon.png",
     "repository": {
         "type": "git",
         "url": "https://github.com/paulmooreparks/Maize",
         "directory": "editors/vscode"
     },
     "engines": {
-        "vscode": "^1.75.0"
+        "vscode": "^1.82.0"
     },
     "categories": [
         "Programming Languages"
     ],
+    "main": "./client/extension.js",
     "contributes": {
         "languages": [
             {
@@ -27,7 +29,11 @@
                 "extensions": [
                     ".mazm"
                 ],
-                "configuration": "./language-configuration.json"
+                "configuration": "./language-configuration.json",
+                "icon": {
+                    "light": "./mazm-file-icon.png",
+                    "dark": "./mazm-file-icon.png"
+                }
             }
         ],
         "grammars": [
@@ -36,6 +42,21 @@
                 "scopeName": "source.mazm",
                 "path": "./syntaxes/mazm.tmLanguage.json"
             }
-        ]
+        ],
+        "configuration": {
+            "title": "Maize Assembly",
+            "properties": {
+                "maize.mazm.path": {
+                    "type": "string",
+                    "default": "mazm",
+                    "description": "Path to the mazm assembler executable used for --check diagnostics. Defaults to 'mazm' on PATH; point this at your build output (e.g. build/windows-llvm-mingw-debug/mazm.exe)."
+                }
+            }
+        }
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1",
+        "vscode-languageserver": "^9.0.1",
+        "vscode-languageserver-textdocument": "^1.0.12"
     }
 }

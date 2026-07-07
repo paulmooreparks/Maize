@@ -1,0 +1,12 @@
+; LSP fixture: symbols, in-file references, cross-INCLUDE definition.
+INCLUDE "lsp_lib.mazm"
+
+$0000`0000:
+entry:
+    CALL lib_func
+    CALL local_helper
+    JMP entry
+
+local_helper:
+    NOP
+    RET

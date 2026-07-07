@@ -1,0 +1,9 @@
+; LSP fixture library: included by lsp_main.mazm.
+
+LABEL lib_data AUTO
+
+lib_func:
+    RET
+
+lib_data:
+    DATA $00

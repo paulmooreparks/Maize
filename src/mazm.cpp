@@ -76,6 +76,12 @@ namespace {
     };
 
     std::string base_path {};
+
+    /* --check mode (maize-46): run the full tokenize+compile pipeline with zero
+       filesystem effects. Editors probe assembly validity on save; a probe must
+       neither write a .bin nor delete a previously-good one. */
+    bool check_only {false};
+
     std::string current_token {};
     maize::u_hword current_address {};
     std::unordered_map<std::string, maize::u_hword> labels {};
@@ -330,9 +336,13 @@ namespace {
 
         /* Stale-binary rule (maize-13, AC9): remove any pre-existing output up
            front, so a failed assembly never leaves a previously-good .bin sitting
-           at the target path looking like a fresh build for the now-broken source. */
-        std::error_code remove_ec;
-        std::filesystem::remove(bin_path, remove_ec);
+           at the target path looking like a fresh build for the now-broken source.
+           In --check mode nothing is produced, so nothing may be destroyed either:
+           a broken intermediate save must not cost the last-good binary. */
+        if (!check_only) {
+            std::error_code remove_ec;
+            std::filesystem::remove(bin_path, remove_ec);
+        }
 
         std::fstream fin(file_path, std::fstream::in);
         current_file = file_path;
@@ -343,6 +353,10 @@ namespace {
         token_tree tree {file_path};
         tokenize(fin, tree);
         compile(tree);
+
+        if (check_only) {
+            return;
+        }
 
         /* write here */
         std::cout << "Output to " << bin_path.string() << std::endl;
@@ -1874,15 +1888,34 @@ namespace {
 
 int main(int argc, char* argv[]) {
 
-    if (argc > 1) {
+    /* Flags are position-independent; the first non-flag argument is the input
+       file. Unrecognized --flags are ignored rather than fatal (maize-46). */
+    std::string input_file {};
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg {argv[i]};
+
+        if (arg == "--check") {
+            check_only = true;
+        }
+        else if (arg.rfind("--", 0) == 0) {
+            /* ignore unknown flags */
+        }
+        else if (input_file.empty()) {
+            input_file = arg;
+        }
+    }
+
+    if (!input_file.empty()) {
         try {
-            std::string input_file {argv[1]};
             auto input_path = std::filesystem::path(input_file);
             auto canonical_path = std::filesystem::canonical(input_path).make_preferred();
             auto parent_path = canonical_path.parent_path().make_preferred();
             base_path = parent_path.string();
 
-            std::cout << "Assembling from " << canonical_path.string() << std::endl;
+            if (!check_only) {
+                std::cout << "Assembling from " << canonical_path.string() << std::endl;
+            }
 
             assemble(canonical_path.string());
         }
