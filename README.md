@@ -221,7 +221,8 @@ written in Maize assembly.
     loop_condition:
 	    LEA @RT.H0 R0.H0 R1.H0  ; Add the counter value to the address and put the result into H.H0.
         LD @R1.H0 R1.B4         ; Load the character value at the address in R1.H0 into R1.B4.
-	    JZ loop_exit            ; LD sets the zero flag if the value copied to R1.B4 is zero.
+        CMP $00 R1.B4           ; Data movement does not set flags; test the byte explicitly.
+	    JZ loop_exit            ; Jump out of the loop when the terminating NUL is reached.
     loop_body:
         LD @RT.H0 RT.H1         ; Load the counter value at the address in RT.H0 into RT.H1
 	    INC RT.H1               ; Add 1 to the temporary
@@ -444,7 +445,10 @@ Notes:
   count of 1 (SHL: the sign bit changed; SHR: the prior sign bit); a count greater than the operand
   width yields a zero result with C, N, V all cleared and Z set. Out-of-range counts never invoke a
   C++ undefined shift.
-- Flags-on-load (whether LD/CP affect flags) is specified separately and is not part of this table.
+- Data movement and address computation do not affect flags. CP, LD, LDZ, CPZ, ST, CLR, and
+  LEA leave C/N/V/Z unchanged; only the instructions in the table above set flags. This matches
+  x86 (MOV), ARM, and RISC-V, and keeps condition codes stable across register shuffling, so a
+  compare and its dependent branch may be separated by data moves.
 
 ## Execution
 

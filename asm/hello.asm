@@ -38,7 +38,8 @@ strlen:
 loop_condition:
 	LEA @RT.H0 R0.H0 R1.H0  ; Add the counter value to the address and put the result into H.H0.
     LD @R1.H0 R1.B4         ; Load the character value at the address in R1.H0 into R1.B4.
-	JZ loop_exit            ; LD sets the zero flag if the value copied to R1.B4 is zero.
+    CMP $00 R1.B4           ; Data movement does not set flags; test the byte explicitly.
+	JZ loop_exit            ; Jump out of the loop when the terminating NUL is reached.
 loop_body:
     LD @RT.H0 RT.H1         ; Load the counter value at the address in RT.H0 into RT.H1
 	INC RT.H1               ; Add 1 to the temporary

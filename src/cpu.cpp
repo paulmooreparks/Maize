@@ -604,7 +604,6 @@ namespace maize {
                 auto dst_mask = subreg_mask_map[dst_subreg];
 
                 u_word src_value = 0;
-                zero_flag = true;
                 dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask);
             }
 
@@ -621,31 +620,27 @@ namespace maize {
                 return src_value == dst_value;
             }
 
-            /* TODO: Maybe I should update flags in all the copy functions... */
-            /*
-                zero_flag = src_value == 0;
-                negative_flag = src_value & (negative_bit_for_size);
-                overflow_flag = src_value < dst_value;
-            */
+            /* Data-movement primitives (copy / load / store) are flag-neutral: they never write
+               C/N/V/Z. Only the ALU ops and the explicit CMP/TEST/CMPIND/TSTIND/SETCRY/CLRCRY
+               set flags (card maize-4). copy_regval_reg still sign-extends the source, using a
+               local rather than the negative flag. */
 
             void copy_regval_reg(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
                 auto src_offset = subreg_offset_map[src_subreg];
                 auto src_mask = subreg_mask_map[src_subreg];
-                
+
                 auto dst_offset = subreg_offset_map[dst_subreg];
                 auto dst_mask = subreg_mask_map[dst_subreg];
 
                 u_word src_value = (src.w0 & static_cast<u_word>(src_mask)) >> src_offset;
 
-                negative_flag = (src_value & subreg_sign_bit[static_cast<int>(src_subreg)]) != 0;
+                bool negative = (src_value & subreg_sign_bit[static_cast<int>(src_subreg)]) != 0;
 
-                if (negative_flag) {
+                if (negative) {
                     src_value |= subreg_neg_bits[static_cast<int>(src_subreg)];
                 }
 
                 dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask);
-                zero_flag = ((src_value << dst_offset) & static_cast<u_word>(dst_mask)) == 0;
-                // overflow_flag = src_value > max value for size;
             }
 
             void copy_regval_reg_zext(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
@@ -658,9 +653,6 @@ namespace maize {
                 u_word src_value = (src.w0 & static_cast<u_word>(src_mask)) >> src_offset;
 
                 dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask);
-                zero_flag = ((src_value << dst_offset) & static_cast<u_word>(dst_mask)) == 0;
-                negative_flag = (dst.w0 & subreg_sign_bit[static_cast<int>(dst_subreg)]) != 0;
-                // overflow_flag = src_value > max value for size;
             }
 
             void copy_memval_reg(u_word address, size_t size, reg_value &op2_reg, subreg_enum dst_subreg) {
@@ -680,9 +672,6 @@ namespace maize {
                 mm.read(src_address, src_data, subreg_enum::w0);
                 
                 dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_data.w0 << dst_offset) & static_cast<u_word>(dst_mask);
-                zero_flag = ((src_data.w0 << dst_offset) & static_cast<u_word>(dst_mask)) == 0;
-                negative_flag = (dst.w0 & subreg_sign_bit[static_cast<int>(dst_subreg)]) != 0;
-                // overflow_flag = dst_value > max value for size;
             }
 
             void copy_memaddr_reg(u_word address, size_t size, reg_value &dst, subreg_enum dst_subreg) {
@@ -698,9 +687,6 @@ namespace maize {
 
                 dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_data.w0 << dst_offset) & static_cast<u_word>(dst_mask);
 
-                zero_flag = ((src_data.w0 << dst_offset) & static_cast<u_word>(dst_mask)) == 0;
-                negative_flag = (dst.w0 & subreg_sign_bit[static_cast<int>(dst_subreg)]) != 0;
-                // overflow_flag = dst_value > max value for size;
             }
 
             void copy_regval_regaddr(reg_value const &src, subreg_enum src_subreg, reg_value const &dst, subreg_enum dst_subreg) {
@@ -714,9 +700,6 @@ namespace maize {
                 reg_value src_data;
                 src_data.w0 = static_cast<s_word>((src.w0 & static_cast<u_word>(src_mask)) >> src_offset);
                 u_word dst_address = (dst.w0 & static_cast<u_word>(dst_mask)) >> dst_offset;
-
-                zero_flag = src_data == 0;
-                negative_flag = (src_data.w0 & subreg_sign_bit[static_cast<int>(src_subreg)]) != 0;
 
                 switch (size) {
                     case 1: {
@@ -751,9 +734,6 @@ namespace maize {
                 reg_value src_data;
                 mm.read(address, src_data, size, 0);
                 u_word dst_address = (dst.w0 & static_cast<u_word>(dst_mask)) >> dst_offset;
-
-                zero_flag = src_data == 0;
-                negative_flag = (src_data.w0 & subreg_sign_bit[static_cast<int>(subreg_enum::w0)]) != 0;
 
                 switch (size) {
                     case 1: {
@@ -1759,17 +1739,9 @@ namespace maize {
                         alu.b1 = op1_subreg_size();
                         alu.b2 = op2_subreg_size();
                         run_alu();
-                        /* Preserve the ALU's per-width N flag. The value writeback below goes through
-                           copy_regval_reg with a w0 (64-bit) source subreg, which recomputes
-                           negative_flag from bit 63 and would clobber the correct sub-word sign that
-                           the signed branches (JLT/JGT) consume (card maize-1). C and V are untouched
-                           by the copy, and Z is recomputed at the destination width, so only N needs
-                           to be restored. */
-                        {
-                            bool alu_negative = negative_flag;
-                            copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                            negative_flag = alu_negative;
-                        }
+                        /* The value writeback is flag-neutral (card maize-4), so the ALU's
+                           per-width C/N/V/Z stand as computed. */
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
                         break;
                     }
 
@@ -1796,13 +1768,8 @@ namespace maize {
                         alu.b2 = op2_subreg_size();
                         run_alu();
                         regs::rp.h0 += src_size;
-                        /* Preserve the ALU's per-width N flag across the value writeback; see the
-                           regVal_reg case above for the full rationale (card maize-1). */
-                        {
-                            bool alu_negative = negative_flag;
-                            copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                            negative_flag = alu_negative;
-                        }
+                        /* Value writeback is flag-neutral (card maize-4); the ALU's flags stand. */
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
                         break;
                     }
 
@@ -1827,17 +1794,9 @@ namespace maize {
                         alu.b1 = op1_subreg_size();
                         alu.b2 = op2_subreg_size();
                         run_alu();
-                        /* Preserve the ALU's per-width N flag. The value writeback below goes through
-                           copy_regval_reg with a w0 (64-bit) source subreg, which recomputes
-                           negative_flag from bit 63 and would clobber the correct sub-word sign that
-                           the signed branches (JLT/JGT) consume (card maize-1). C and V are untouched
-                           by the copy, and Z is recomputed at the destination width, so only N needs
-                           to be restored. */
-                        {
-                            bool alu_negative = negative_flag;
-                            copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                            negative_flag = alu_negative;
-                        }
+                        /* The value writeback is flag-neutral (card maize-4), so the ALU's
+                           per-width C/N/V/Z stand as computed. */
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
                         break;
                     }
 
@@ -1864,13 +1823,8 @@ namespace maize {
                         alu.b2 = op2_subreg_size();
                         run_alu();
                         regs::rp.h0 += src_size;
-                        /* Preserve the ALU's per-width N flag across the value writeback; see the
-                           regVal_reg case above for the full rationale (card maize-1). */
-                        {
-                            bool alu_negative = negative_flag;
-                            copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                            negative_flag = alu_negative;
-                        }
+                        /* Value writeback is flag-neutral (card maize-4); the ALU's flags stand. */
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
                         break;
                     }
 
@@ -1883,13 +1837,8 @@ namespace maize {
                         alu.b1 = op1_subreg_size();
                         alu.b2 = op1_subreg_size();
                         run_alu();
-                        /* Preserve the ALU's per-width N flag across the value writeback; see the
-                           regVal_reg case above for the full rationale (card maize-1). */
-                        {
-                            bool alu_negative = negative_flag;
-                            copy_regval_reg(alu.op2_reg, subreg_enum::w0, op1_reg(), op1_subreg_flag());
-                            negative_flag = alu_negative;
-                        }
+                        /* Value writeback is flag-neutral (card maize-4); the ALU's flags stand. */
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op1_reg(), op1_subreg_flag());
                         break;
                     }
 
@@ -1993,7 +1942,12 @@ namespace maize {
                         alu.b0 = instr::add_regVal_reg;
                         alu.b1 = op1_subreg_size();
                         alu.b2 = op2_subreg_size();
+                        /* LEA computes an effective address and must not disturb the flags
+                           (card maize-4). The add runs through the ALU, so snapshot and restore
+                           FL (RF.H0) around it. */
+                        u_hword saved_fl = regs::rf.h0;
                         run_alu();
+                        regs::rf.h0 = saved_fl;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
                         break;
                     }
@@ -2006,7 +1960,10 @@ namespace maize {
                         alu.b0 = instr::add_regVal_reg;
                         alu.b1 = src_size;
                         alu.b2 = op2_subreg_size();
+                        /* LEA is flag-neutral (card maize-4); preserve FL across the ALU add. */
+                        u_hword saved_fl = regs::rf.h0;
                         run_alu();
+                        regs::rf.h0 = saved_fl;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
                         break;
                     }
@@ -2019,7 +1976,10 @@ namespace maize {
                         alu.b0 = instr::add_immVal_reg;
                         alu.b1 = src_size;
                         alu.b2 = op2_subreg_size();
+                        /* LEA is flag-neutral (card maize-4); preserve FL across the ALU add. */
+                        u_hword saved_fl = regs::rf.h0;
                         run_alu();
+                        regs::rf.h0 = saved_fl;
                         regs::rp.h0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
                         break;
@@ -2033,7 +1993,10 @@ namespace maize {
                         alu.b0 = instr::add_immAddr_reg;
                         alu.b1 = src_size;
                         alu.b2 = op2_subreg_size();
+                        /* LEA is flag-neutral (card maize-4); preserve FL across the ALU add. */
+                        u_hword saved_fl = regs::rf.h0;
                         run_alu();
+                        regs::rf.h0 = saved_fl;
                         regs::rp.h0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
                         break;
