@@ -170,8 +170,20 @@ function Invoke-Test($test) {
     $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'bin')
 
     $mazmLog = [System.IO.Path]::GetTempFileName()
+    # mazm.exe writes its rejection diagnostic to stderr on purpose for the
+    # negative (ExpectAsmError) tests. Under Windows PowerShell 5.1,
+    # ErrorActionPreference = Stop turns that redirected native stderr write into
+    # a terminating NativeCommandError even though the *> redirect still captures
+    # it fine (escalation happens on the error-record pipeline, independent of
+    # where the redirected content lands); pwsh 7 is unaffected either way.
+    # Relax it for exactly this invocation, then restore immediately and keep
+    # relying on $LASTEXITCODE plus the captured $mazmLog content, unchanged, for
+    # pass/fail (see scripts/install-mazm.ps1:90-98 for the same idiom).
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & $MazmExe $asmPath *> $mazmLog
     $mazmExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
 
     # Negative test (ExpectAsmError): the assembler MUST reject this source with a
     # diagnostic containing $test.Expected. Passes iff mazm exits nonzero and says so.
