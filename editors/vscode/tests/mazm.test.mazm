@@ -51,6 +51,14 @@ main:
 ;      ^^^^^^^^^^ constant.numeric.hex.mazm
     jbe main
 ;   ^^^ keyword.other.opcode.mazm
+    ADC R1 R0
+;   ^^^ keyword.other.opcode.mazm
+    sbb $01 r2
+;   ^^^ keyword.other.opcode.mazm
+    ADD R1 R0
+;   ^^^ keyword.other.opcode.mazm
+    sub $01 r2
+;   ^^^ keyword.other.opcode.mazm
     NOP ; trailing
 ;       ^^^^^^^^^^ comment.line.semicolon.mazm
 
