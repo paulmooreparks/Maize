@@ -602,6 +602,32 @@ namespace maize {
 			const opcode ja_regAddr				{ja_opcode | opcode_flag_srcAddr};
 			const opcode ja_immAddr				{ja_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
+			// Branch complements (card maize-8): JGE (>=s) = !JLT, JLE (<=s) = !JGT,
+			// JBE (<=u) = !JA, JAE (>=u) = !JB.
+			const opcode jge_opcode				{0x37};
+			const opcode jge_regVal				{jge_opcode | opcode_flag_srcReg};
+			const opcode jge_immVal				{jge_opcode | opcode_flag_srcImm};
+			const opcode jge_regAddr			{jge_opcode | opcode_flag_srcAddr};
+			const opcode jge_immAddr			{jge_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			const opcode jle_opcode				{0x38};
+			const opcode jle_regVal				{jle_opcode | opcode_flag_srcReg};
+			const opcode jle_immVal				{jle_opcode | opcode_flag_srcImm};
+			const opcode jle_regAddr			{jle_opcode | opcode_flag_srcAddr};
+			const opcode jle_immAddr			{jle_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			const opcode jbe_opcode				{0x39};
+			const opcode jbe_regVal				{jbe_opcode | opcode_flag_srcReg};
+			const opcode jbe_immVal				{jbe_opcode | opcode_flag_srcImm};
+			const opcode jbe_regAddr			{jbe_opcode | opcode_flag_srcAddr};
+			const opcode jbe_immAddr			{jbe_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			const opcode jae_opcode				{0x3A};
+			const opcode jae_regVal				{jae_opcode | opcode_flag_srcReg};
+			const opcode jae_immVal				{jae_opcode | opcode_flag_srcImm};
+			const opcode jae_regAddr			{jae_opcode | opcode_flag_srcAddr};
+			const opcode jae_immAddr			{jae_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
 			const opcode call_opcode			{0x1D};
 			const opcode call_regVal			{call_opcode | opcode_flag_srcReg};
 			const opcode call_immVal			{call_opcode | opcode_flag_srcImm};

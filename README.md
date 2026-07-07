@@ -426,8 +426,9 @@ C (unsigned carry/borrow) and V (signed overflow) are distinct flags. C uses the
 convention: after a SUB or CMP, C is set when the destination was unsigned-less-than the source
 (a borrow occurred), which is what makes JB ("below") and JA ("above") the correct unsigned
 comparisons directly off a CMP. V uses the standard signed-overflow test and drives the signed
-comparisons JLT ("less than") and JGT ("greater than"). See the conditional-branch opcode table
-below (JZ/JNZ/JLT/JGT/JB/JA) for the exact branch conditions.
+comparisons JLT ("less than") and JGT ("greater than"). Each signed/unsigned comparison also has
+a complement: JGE/JLE (signed >=, <=) and JAE/JBE (unsigned >=, <=). See the conditional-branch
+opcode table below (JZ/JNZ/JLT/JGT/JGE/JLE/JB/JA/JBE/JAE) for the exact branch conditions.
 
 `RF.H1` holds the privilege, interrupt-enabled, interrupt-set, and running flags, which may only
 be set in privileged mode and are unaffected by the arithmetic/logic instructions.
@@ -699,25 +700,25 @@ bit 7 is interpreted as follows:
     %1011`0110  $B6   UMOD      regAddr reg     Unsigned remainder of destination register divided by value at address in source register
     %1111`0110  $F6   UMOD      immAddr reg     Unsigned remainder of destination register divided by value at immediate address
 
-    %0011`0111  $37                             reserved
-    %0111`0111  $77                             reserved
-    %1011`0111  $B7                             reserved
-    %1111`0111  $F7                             reserved
+    %0011`0111  $37   JGE       regVal          If Negative flag equals Overflow flag (signed >=), jump to address in source register and continue execution
+    %0111`0111  $77   JGE       immVal          If Negative flag equals Overflow flag (signed >=), jump to immediate address and continue execution
+    %1011`0111  $B7   JGE       regAddr         If Negative flag equals Overflow flag (signed >=), jump to address pointed to by source register and continue execution
+    %1111`0111  $F7   JGE       immAddr         If Negative flag equals Overflow flag (signed >=), jump to address pointed to by immediate value and continue execution
 
-    %0011`1000  $38                             reserved
-    %0111`1000  $78                             reserved
-    %1011`1000  $B8                             reserved
-    %1111`1000  $F8                             reserved
+    %0011`1000  $38   JLE       regVal          If Zero flag is set or Negative flag does not equal Overflow flag (signed <=), jump to address in source register and continue execution
+    %0111`1000  $78   JLE       immVal          If Zero flag is set or Negative flag does not equal Overflow flag (signed <=), jump to immediate address and continue execution
+    %1011`1000  $B8   JLE       regAddr         If Zero flag is set or Negative flag does not equal Overflow flag (signed <=), jump to address pointed to by source register and continue execution
+    %1111`1000  $F8   JLE       immAddr         If Zero flag is set or Negative flag does not equal Overflow flag (signed <=), jump to address pointed to by immediate value and continue execution
 
-    %0011`1001  $39                             reserved
-    %0111`1001  $79                             reserved
-    %1011`1001  $B9                             reserved
-    %1111`1001  $F9                             reserved
+    %0011`1001  $39   JBE       regVal          If Carry flag is set or Zero flag is set (unsigned <=), jump to address in source register and continue execution
+    %0111`1001  $79   JBE       immVal          If Carry flag is set or Zero flag is set (unsigned <=), jump to immediate address and continue execution
+    %1011`1001  $B9   JBE       regAddr         If Carry flag is set or Zero flag is set (unsigned <=), jump to address pointed to by source register and continue execution
+    %1111`1001  $F9   JBE       immAddr         If Carry flag is set or Zero flag is set (unsigned <=), jump to address pointed to by immediate value and continue execution
 
-    %0011`1010  $3A                             reserved
-    %0111`1010  $7A                             reserved
-    %1011`1010  $BA                             reserved
-    %1111`1010  $FA                             reserved
+    %0011`1010  $3A   JAE       regVal          If Carry flag is clear (unsigned >=), jump to address in source register and continue execution
+    %0111`1010  $7A   JAE       immVal          If Carry flag is clear (unsigned >=), jump to immediate address and continue execution
+    %1011`1010  $BA   JAE       regAddr         If Carry flag is clear (unsigned >=), jump to address pointed to by source register and continue execution
+    %1111`1010  $FA   JAE       immAddr         If Carry flag is clear (unsigned >=), jump to address pointed to by immediate value and continue execution
 
     %0011`1011  $3B                             reserved
     %0111`1011  $7B                             reserved
@@ -986,10 +987,10 @@ Other syntax, to be described more fully later:
     %0011`0100  $34   SYS       regVal          Execute a system call using the system-call index stored in register (privileged)
     %0011`0101  $35   UDIV      regVal  reg     Unsigned-divide destination register by source register value
     %0011`0110  $36   UMOD      regVal  reg     Unsigned remainder of destination register divided by source register value
-    %0011`0111  $37                             reserved
-    %0011`1000  $38                             reserved
-    %0011`1001  $39                             reserved
-    %0011`1010  $3A                             reserved
+    %0011`0111  $37   JGE       regVal          If Negative flag equals Overflow flag (signed >=), jump to address in source register and continue execution
+    %0011`1000  $38   JLE       regVal          If Zero flag is set or Negative flag does not equal Overflow flag (signed <=), jump to address in source register and continue execution
+    %0011`1001  $39   JBE       regVal          If Carry flag is set or Zero flag is set (unsigned <=), jump to address in source register and continue execution
+    %0011`1010  $3A   JAE       regVal          If Carry flag is clear (unsigned >=), jump to address in source register and continue execution
     %0011`1011  $3B                             reserved
     %0011`1100  $3C                             reserved
     %0011`1101  $3D                             reserved
@@ -1050,10 +1051,10 @@ Other syntax, to be described more fully later:
     %0111`0100  $74   SYS       immVal          Execute a system call using the immediate index (privileged)
     %0111`0101  $75   UDIV      immVal  reg     Unsigned-divide destination register by immediate value
     %0111`0110  $76   UMOD      immVal  reg     Unsigned remainder of destination register divided by immediate value
-    %0111`0111  $77                             reserved
-    %0111`1000  $78                             reserved
-    %0111`1001  $79                             reserved
-    %0111`1010  $7A                             reserved
+    %0111`0111  $77   JGE       immVal          If Negative flag equals Overflow flag (signed >=), jump to immediate address and continue execution
+    %0111`1000  $78   JLE       immVal          If Zero flag is set or Negative flag does not equal Overflow flag (signed <=), jump to immediate address and continue execution
+    %0111`1001  $79   JBE       immVal          If Carry flag is set or Zero flag is set (unsigned <=), jump to immediate address and continue execution
+    %0111`1010  $7A   JAE       immVal          If Carry flag is clear (unsigned >=), jump to immediate address and continue execution
     %0111`1011  $7B                             reserved
     %0111`1100  $7C                             reserved
     %0111`1101  $7D                             reserved
@@ -1114,10 +1115,10 @@ Other syntax, to be described more fully later:
     %1011`0100  $B4
     %1011`0101  $B5   UDIV      regAddr reg     Unsigned-divide destination register by value at address in source register
     %1011`0110  $B6   UMOD      regAddr reg     Unsigned remainder of destination register divided by value at address in source register
-    %1011`0111  $B7                             reserved
-    %1011`1000  $B8                             reserved
-    %1011`1001  $B9                             reserved
-    %1011`1010  $BA                             reserved
+    %1011`0111  $B7   JGE       regAddr         If Negative flag equals Overflow flag (signed >=), jump to address pointed to by source register and continue execution
+    %1011`1000  $B8   JLE       regAddr         If Zero flag is set or Negative flag does not equal Overflow flag (signed <=), jump to address pointed to by source register and continue execution
+    %1011`1001  $B9   JBE       regAddr         If Carry flag is set or Zero flag is set (unsigned <=), jump to address pointed to by source register and continue execution
+    %1011`1010  $BA   JAE       regAddr         If Carry flag is clear (unsigned >=), jump to address pointed to by source register and continue execution
     %1011`1011  $BB                             reserved
     %1011`1100  $BC                             reserved
     %1011`1101  $BD                             reserved
@@ -1178,10 +1179,10 @@ Other syntax, to be described more fully later:
     %1111`0100  $F4
     %1111`0101  $F5   UDIV      immAddr reg     Unsigned-divide destination register by value at immediate address
     %1111`0110  $F6   UMOD      immAddr reg     Unsigned remainder of destination register divided by value at immediate address
-    %1111`0111  $F7                             reserved
-    %1111`1000  $F8                             reserved
-    %1111`1001  $F9                             reserved
-    %1111`1010  $FA                             reserved
+    %1111`0111  $F7   JGE       immAddr         If Negative flag equals Overflow flag (signed >=), jump to address pointed to by immediate value and continue execution
+    %1111`1000  $F8   JLE       immAddr         If Zero flag is set or Negative flag does not equal Overflow flag (signed <=), jump to address pointed to by immediate value and continue execution
+    %1111`1001  $F9   JBE       immAddr         If Carry flag is set or Zero flag is set (unsigned <=), jump to address pointed to by immediate value and continue execution
+    %1111`1010  $FA   JAE       immAddr         If Carry flag is clear (unsigned >=), jump to address pointed to by immediate value and continue execution
     %1111`1011  $FB                             reserved
     %1111`1100  $FC                             reserved
     %1111`1101  $FD                             reserved

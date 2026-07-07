@@ -2653,6 +2653,218 @@ namespace maize {
                         break;
                     }
 
+                    /* Signed greater-or-equal: N == V (complement of JLT; card maize-8). */
+                    case instr::jge_regVal: {
+                        regs::rp.w0 += 1;
+
+                        if ((bool)negative_flag == (bool)overflow_flag) {
+                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        }
+
+                        break;
+                    }
+
+                    case instr::jge_immVal: {
+                        regs::rp.w0 += 1;
+
+                        if ((bool)negative_flag == (bool)overflow_flag) {
+                            jump_to_immediate();
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.w0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jge_regAddr: {
+                        regs::rp.w0 += 1;
+
+                        if ((bool)negative_flag == (bool)overflow_flag) {
+                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.w0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jge_immAddr: {
+                        regs::rp.w0 += 1;
+
+                        if ((bool)negative_flag == (bool)overflow_flag) {
+                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.w0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    /* Signed less-or-equal: Zero set or N != V (complement of JGT; card maize-8). */
+                    case instr::jle_regVal: {
+                        regs::rp.w0 += 1;
+
+                        if (zero_flag || ((bool)negative_flag != (bool)overflow_flag)) {
+                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        }
+
+                        break;
+                    }
+
+                    case instr::jle_immVal: {
+                        regs::rp.w0 += 1;
+
+                        if (zero_flag || ((bool)negative_flag != (bool)overflow_flag)) {
+                            jump_to_immediate();
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.w0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jle_regAddr: {
+                        regs::rp.w0 += 1;
+
+                        if (zero_flag || ((bool)negative_flag != (bool)overflow_flag)) {
+                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.w0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jle_immAddr: {
+                        regs::rp.w0 += 1;
+
+                        if (zero_flag || ((bool)negative_flag != (bool)overflow_flag)) {
+                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.w0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    /* Unsigned below-or-equal: Carry set or Zero set (complement of JA; card maize-8). */
+                    case instr::jbe_regVal: {
+                        regs::rp.w0 += 1;
+
+                        if (carryout_flag || zero_flag) {
+                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        }
+
+                        break;
+                    }
+
+                    case instr::jbe_immVal: {
+                        regs::rp.w0 += 1;
+
+                        if (carryout_flag || zero_flag) {
+                            jump_to_immediate();
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.w0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jbe_regAddr: {
+                        regs::rp.w0 += 1;
+
+                        if (carryout_flag || zero_flag) {
+                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.w0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jbe_immAddr: {
+                        regs::rp.w0 += 1;
+
+                        if (carryout_flag || zero_flag) {
+                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.w0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    /* Unsigned above-or-equal: Carry clear (complement of JB; card maize-8). */
+                    case instr::jae_regVal: {
+                        regs::rp.w0 += 1;
+
+                        if (!carryout_flag) {
+                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        }
+
+                        break;
+                    }
+
+                    case instr::jae_immVal: {
+                        regs::rp.w0 += 1;
+
+                        if (!carryout_flag) {
+                            jump_to_immediate();
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.w0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jae_regAddr: {
+                        regs::rp.w0 += 1;
+
+                        if (!carryout_flag) {
+                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.w0 += src_size;
+                        }
+
+                        break;
+                    }
+
+                    case instr::jae_immAddr: {
+                        regs::rp.w0 += 1;
+
+                        if (!carryout_flag) {
+                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
+                        }
+                        else {
+                            u_byte src_size = op1_imm_size();
+                            regs::rp.w0 += src_size;
+                        }
+
+                        break;
+                    }
+
                     /* No-operand carry manipulation (card maize-1). */
                     case instr::setcry_opcode: {
                         carryout_flag = true;
