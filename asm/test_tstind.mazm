@@ -1,0 +1,47 @@
+; **********************************************************************************
+; Regression test for card maize-10: TSTIND (post-rename from TESTIND, Decision
+; D6466). Dispatch was already complete (cpu.cpp, testind_opcode); this closes the
+; pre-existing zero-coverage gap noted in the card's Class C audit finding.
+; **********************************************************************************
+
+$0000`0000:
+    CP $2000 R0              ; scratch address
+
+    CP $0F R1.B0
+    ST R1.B0 @R0             ; mem[$2000] = $0F
+
+    ; ---- TSTIND regVal regAddr ----
+    CP $33 R2.B0
+    TSTIND R2.B0 @R0         ; flags = $33 & $0F = $03 -> Z clear
+    JZ fail
+
+    ; ---- TSTIND immVal regAddr ----
+    TSTIND $00 @R0            ; flags = $00 & $0F = 0 -> Z set
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1
+    CP $0D R2               ; 13 bytes
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $0D R2               ; 13 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "tstind: PASS\n\0"
+
+fail_string:
+    STRING "tstind: FAIL\n\0"

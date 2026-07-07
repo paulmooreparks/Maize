@@ -1,0 +1,47 @@
+; **********************************************************************************
+; Regression test for card maize-10: SETINT / CLRINT dispatch.
+;
+; Decision D6461: SETINT/CLRINT are a pure set/clear of interrupt_enabled_flag
+; (bit_interrupt_enabled, RF.B4 bit $02), mirroring SETCRY/CLRCRY exactly. This test
+; sets the flag, reads it back via RF, clears it, and reads it back again.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- SETINT: interrupt_enabled_flag must read back set ----
+    SETINT
+    CP RF.B4 R9.B4
+    TEST $02 R9.B4
+    JZ fail                 ; AND==0 would mean the bit never got set
+
+    ; ---- CLRINT: interrupt_enabled_flag must read back clear ----
+    CLRINT
+    CP RF.B4 R9.B4
+    TEST $02 R9.B4
+    JNZ fail                ; AND!=0 would mean the bit is still set
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1
+    CP $0D R2               ; 13 bytes
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $0D R2               ; 13 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "setint: PASS\n\0"
+
+fail_string:
+    STRING "setint: FAIL\n\0"

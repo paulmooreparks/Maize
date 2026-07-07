@@ -1,0 +1,65 @@
+; **********************************************************************************
+; Regression test for card maize-10: CALL indirect (regAddr and immAddr forms).
+;
+; CALL regAddr jumps through the address held in a register; CALL immAddr jumps
+; through the address held at a literal address. Both must push a correct return
+; address and resume correctly at RET (Decision D6463: combines call_regVal/
+; call_immVal's return-address-push sequence with jmp_regAddr/jmp_immAddr's target
+; resolution).
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- build the pointer cells the indirect forms will dereference ----
+    CP callee1 R2
+    CP $3000 R3
+    ST R2 @R3               ; mem[$3000] = address of callee1
+
+    CP callee2 R4
+    CP $3008 R5
+    ST R4 @R5               ; mem[$3008] = address of callee2
+
+    ; ---- CALL regAddr: R6 holds the address of the pointer cell ----
+    CP $3000 R6
+    CALL @R6                ; dereference R6 -> jump to callee1
+    CMP $01 R9.B0
+    JNZ fail
+
+    ; ---- CALL immAddr: literal address of the pointer cell ----
+    CALL @$3008              ; dereference mem[$3008] -> jump to callee2
+    CMP $02 R9.B0
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1
+    CP $0F R2               ; 15 bytes
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $0F R2               ; 15 bytes
+    SYS $01
+    HALT
+
+callee1:
+    CP $01 R9.B0
+    RET
+
+callee2:
+    CP $02 R9.B0
+    RET
+
+; **********************************************************************************
+pass_string:
+    STRING "call ind: PASS\n\0"
+
+fail_string:
+    STRING "call ind: FAIL\n\0"

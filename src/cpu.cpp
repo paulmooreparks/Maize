@@ -2549,6 +2549,91 @@ namespace maize {
                         break;
                     }
 
+                    /* OUTR/IN (card maize-10, Decision D6464): mirror OUT's four-case pattern
+                       against the same devices[] port table, but the port is a register
+                       operand (op2 for OUTR, op1 for IN) rather than an immediate literal.
+                       The port id is always the register's/temp's .q0 field, matching OUT's
+                       own immediate-port convention of using only the low 16 bits regardless
+                       of the encoded field width. IN's copy direction is device-to-register,
+                       the mirror image of OUT's register-to-device direction. */
+                    case instr::outr_regVal_reg: {
+                        regs::rp.w0 += 2;
+                        device *pdst_dev = devices[op2_reg().q0];
+                        device &dst_dev = *(pdst_dev);
+                        copy_regval_reg(op1_reg(), op1_subreg_flag(), dst_dev, subreg_enum::w0);
+                        break;
+                    }
+
+                    case instr::outr_immVal_imm: {
+                        regs::rp.w0 += 2;
+                        u_byte src_size = op1_imm_size();
+                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
+                        regs::rp.w0 += src_size;
+                        device *pdst_dev = devices[op2_reg().q0];
+                        device &dst_dev = *(pdst_dev);
+                        copy_regval_reg(operand1, subreg_enum::w0, dst_dev, subreg_enum::w0);
+                        break;
+                    }
+
+                    case instr::outr_regAddr_imm: {
+                        regs::rp.w0 += 2;
+                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), operand1, subreg_enum::w0);
+                        device *pdst_dev = devices[op2_reg().q0];
+                        device &dst_dev = *(pdst_dev);
+                        copy_regval_reg(operand1, subreg_enum::w0, dst_dev, subreg_enum::w0);
+                        break;
+                    }
+
+                    case instr::outr_immAddr_imm: {
+                        regs::rp.w0 += 2;
+                        u_byte src_size = op1_imm_size();
+                        copy_memaddr_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
+                        regs::rp.w0 += src_size;
+                        device *pdst_dev = devices[op2_reg().q0];
+                        device &dst_dev = *(pdst_dev);
+                        copy_regval_reg(operand1, subreg_enum::w0, dst_dev, subreg_enum::w0);
+                        break;
+                    }
+
+                    case instr::in_regVal_imm: {
+                        regs::rp.w0 += 2;
+                        device *psrc_dev = devices[op1_reg().q0];
+                        device &src_dev = *(psrc_dev);
+                        copy_regval_reg(src_dev, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        break;
+                    }
+
+                    case instr::in_immVal_imm: {
+                        regs::rp.w0 += 2;
+                        u_byte src_size = op1_imm_size();
+                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
+                        regs::rp.w0 += src_size;
+                        device *psrc_dev = devices[operand1.q0];
+                        device &src_dev = *(psrc_dev);
+                        copy_regval_reg(src_dev, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        break;
+                    }
+
+                    case instr::in_regAddr_imm: {
+                        regs::rp.w0 += 2;
+                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), operand1, subreg_enum::w0);
+                        device *psrc_dev = devices[operand1.q0];
+                        device &src_dev = *(psrc_dev);
+                        copy_regval_reg(src_dev, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        break;
+                    }
+
+                    case instr::in_immAddr_imm: {
+                        regs::rp.w0 += 2;
+                        u_byte src_size = op1_imm_size();
+                        copy_memaddr_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
+                        regs::rp.w0 += src_size;
+                        device *psrc_dev = devices[operand1.q0];
+                        device &src_dev = *(psrc_dev);
+                        copy_regval_reg(src_dev, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        break;
+                    }
+
                     case instr::sys_immVal: {
                         regs::rp.w0 += 1;
                         u_byte src_size = op1_imm_size();
@@ -2612,6 +2697,34 @@ namespace maize {
                         break;
                     }
 
+                    /* CALL indirect (card maize-10, Decision D6463): combines the
+                       return-address-push sequence above with the target-resolution logic
+                       already in jmp_regAddr/jmp_immAddr (below). */
+                    case instr::call_regAddr: {
+                        regs::rp.w0 += 1;                                          // past the register param -> return address
+                        regs::rs.w0 -= subreg_size_map[subreg_enum::w0];           // 8-byte return slot
+                        copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
+                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        break;
+                    }
+
+                    case instr::call_immAddr: {
+                        /* Read the address-literal at its encoded width, advance PC past it
+                           (that's the return address), push the return address, then
+                           double-dereference to the actual jump target. */
+                        regs::rp.w0 += 1;                                          // past the param byte
+                        u_byte src_size = op1_imm_size();
+                        reg addr_literal;
+                        mm.read(regs::rp.w0, addr_literal, src_size, 0);
+                        regs::rp.w0 += src_size;                                   // PC now at the return address
+                        regs::rs.w0 -= subreg_size_map[subreg_enum::w0];           // 8-byte return slot
+                        copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
+                        reg target;
+                        mm.read(addr_literal.w0, target, subreg_size_map[subreg_enum::w0], 0);
+                        regs::rp.w0 = target.w0;
+                        break;
+                    }
+
                     case instr::ret_opcode: {
                         /* Pop the full 64-bit return address (maize-41). */
                         u_byte src_size = subreg_size_map[subreg_enum::w0];
@@ -2626,6 +2739,37 @@ namespace maize {
                         regs::rs.w0 += src_size;
                         copy_memval_reg(regs::rs.w0, src_size, regs::rp, subreg_enum::w0);
                         regs::rs.w0 += src_size;
+                        break;
+                    }
+
+                    /* LNGJMP (card maize-10, Decision D6462): mirrors jmp_* below, except the
+                       regVal/regAddr forms always operate at full 64-bit width (subreg_enum::w0)
+                       regardless of the encoded operand's sub-register selection, diverging
+                       intentionally from JMP's variable-width handling. immVal/immAddr are
+                       unchanged from JMP's own forms: the target they write is already fixed at
+                       full width (regs::rp), only the immediate literal's *encoded* size varies,
+                       which is a distinct mechanism from register sub-register selection. */
+                    case instr::lngjmp_regVal: {
+                        regs::rp.w0 += 1;
+                        copy_regval_reg_zext(op1_reg(), subreg_enum::w0, regs::rp, subreg_enum::w0);
+                        break;
+                    }
+
+                    case instr::lngjmp_immVal: {
+                        regs::rp.w0 += 1;
+                        jump_to_immediate();
+                        break;
+                    }
+
+                    case instr::lngjmp_regAddr: {
+                        regs::rp.w0 += 1;
+                        copy_regaddr_reg(op1_reg(), subreg_enum::w0, regs::rp, subreg_enum::w0);
+                        break;
+                    }
+
+                    case instr::lngjmp_immAddr: {
+                        regs::rp.w0 += 1;
+                        copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
                         break;
                     }
 
@@ -3188,10 +3332,47 @@ namespace maize {
                         break;
                     }
 
+                    /* No-operand interrupt-enable manipulation (card maize-10, Decision D6461):
+                       pure set/clear of interrupt_enabled_flag, mirroring setcry_opcode/
+                       clrcry_opcode above exactly. No interrupt-vector-table or delivery work
+                       included (Open Question O1). */
+                    case instr::setint_opcode: {
+                        interrupt_enabled_flag = true;
+                        break;
+                    }
+
+                    case instr::clrint_opcode: {
+                        interrupt_enabled_flag = false;
+                        break;
+                    }
+
                     case instr::nop_opcode: {
                         /* Do nothing. */
                         break;
                     }
+
+                    /* BRK (card maize-10, Decision D6460): dispatches as a no-op, mirroring
+                       nop_opcode above. No debugger front-end exists yet to give "trigger a
+                       debug break" observable meaning; this keeps the encoding stable and
+                       non-crashing for future debugger work without inventing throwaway
+                       semantics now. */
+                    case instr::brk_opcode: {
+                        /* Do nothing. */
+                        break;
+                    }
+
+                    /* INT ($24/$64), DUP ($E4), and SWAP ($E5) intentionally have no dispatch
+                       case here (card maize-10). This is not an oversight:
+                       - INT needs a defined interrupt-vector-table format (location, entry
+                         width, index bounds-checking) before it can be safely dispatched;
+                         closing it without that design would just move the crash from "unknown
+                         opcode" to undefined behavior at an arbitrary handler address
+                         (Open Question O1).
+                       - DUP/SWAP carry no operand encoding, so dispatch has no way to know how
+                         many bytes of "the top value" to duplicate/swap; the operand width is a
+                         genuine, currently-undecided ISA-semantic gap (Open Question O2).
+                       Both fall through to the default "unknown opcode" case below until their
+                       open questions resolve. */
 
                     default: {
                         std::stringstream err {};

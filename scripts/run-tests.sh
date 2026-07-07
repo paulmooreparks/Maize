@@ -235,6 +235,12 @@ run_test "test_adc"          "test_adc.mazm"          "adc: PASS"               
 run_test "test_copywidth"    "test_copywidth.mazm"    "copywidth: PASS"               0
 run_test "reject_ld_value"   "test_reject_ldval.mazm" "reads from a memory address"   0 1
 run_test "reject_ldz"        "test_reject_ldz.mazm"   "unknown keyword or opcode 'LDZ'" 0 1
+run_test "test_call_ind"     "test_call_ind.mazm"     "call ind: PASS"                0
+run_test "test_setint"       "test_setint.mazm"       "setint: PASS"                  0
+run_test "test_outr_in"      "test_outr_in.mazm"      "outr/in: PASS"                 0
+run_test "test_brk"          "test_brk.mazm"          "brk: PASS"                     0
+run_test "test_lngjmp"       "test_lngjmp.mazm"       "lngjmp: PASS"                  0
+run_test "test_tstind"       "test_tstind.mazm"       "tstind: PASS"                  0
 
 # --- maize-12: multi-TU assemble -> link -> run --------------------------------------
 # Two separately-assembled objects (link_a defines _start and imports from link_b)

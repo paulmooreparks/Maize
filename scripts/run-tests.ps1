@@ -66,6 +66,12 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_copywidth';     File = 'test_copywidth.mazm';     Expected = 'copywidth: PASS';               Golden = $false }
     [pscustomobject]@{ Name = 'reject_ld_value';    File = 'test_reject_ldval.mazm';   Expected = 'reads from a memory address';   Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'reject_ldz';         File = 'test_reject_ldz.mazm';     Expected = "unknown keyword or opcode 'LDZ'"; Golden = $false; ExpectAsmError = $true }
+    [pscustomobject]@{ Name = 'test_call_ind';      File = 'test_call_ind.mazm';      Expected = 'call ind: PASS';                Golden = $false }
+    [pscustomobject]@{ Name = 'test_setint';        File = 'test_setint.mazm';        Expected = 'setint: PASS';                  Golden = $false }
+    [pscustomobject]@{ Name = 'test_outr_in';       File = 'test_outr_in.mazm';       Expected = 'outr/in: PASS';                 Golden = $false }
+    [pscustomobject]@{ Name = 'test_brk';           File = 'test_brk.mazm';           Expected = 'brk: PASS';                     Golden = $false }
+    [pscustomobject]@{ Name = 'test_lngjmp';        File = 'test_lngjmp.mazm';        Expected = 'lngjmp: PASS';                  Golden = $false }
+    [pscustomobject]@{ Name = 'test_tstind';        File = 'test_tstind.mazm';        Expected = 'tstind: PASS';                  Golden = $false }
 )
 
 function Trim-TrailingNewlines([string]$s) {

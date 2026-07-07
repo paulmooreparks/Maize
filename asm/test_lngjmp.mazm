@@ -1,0 +1,79 @@
+; **********************************************************************************
+; Regression test for card maize-10: LNGJMP dispatch (all 4 addressing forms).
+;
+; LNGJMP always targets the full 64-bit width regardless of any sub-register
+; selection (Decision D6462), diverging from JMP. Each addressing form jumps to a
+; distinct same-segment checkpoint label; reaching a checkpoint out of order, or
+; falling through a LNGJMP into the following JMP fail, proves dispatch is broken.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- build the pointer cells used by the regAddr / immAddr forms ----
+    CP cp3 R2
+    CP $4000 R3
+    ST R2 @R3                ; mem[$4000] = address of cp3
+
+    CP cp4 R4
+    CP $4008 R5
+    ST R4 @R5                ; mem[$4008] = address of cp4
+
+    ; ---- LNGJMP regVal ----
+    CP cp1 R0
+    LNGJMP R0
+    JMP fail
+cp1:
+    CP $01 R9.B0
+    CMP $01 R9.B0
+    JNZ fail
+
+    ; ---- LNGJMP immVal ----
+    LNGJMP cp2
+    JMP fail
+cp2:
+    CP $02 R9.B0
+    CMP $02 R9.B0
+    JNZ fail
+
+    ; ---- LNGJMP regAddr ----
+    CP $4000 R6
+    LNGJMP @R6
+    JMP fail
+cp3:
+    CP $03 R9.B0
+    CMP $03 R9.B0
+    JNZ fail
+
+    ; ---- LNGJMP immAddr ----
+    LNGJMP @$4008
+    JMP fail
+cp4:
+    CP $04 R9.B0
+    CMP $04 R9.B0
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1
+    CP $0D R2               ; 13 bytes
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $0D R2               ; 13 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "lngjmp: PASS\n\0"
+
+fail_string:
+    STRING "lngjmp: FAIL\n\0"

@@ -84,6 +84,13 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+	/* card maize-10, Decision D6465: a single always-registered loopback test device,
+	   solely so OUT/OUTR/IN have a real port to exercise in regression tests. Bare
+	   `device` instance with no specialized behavior (src/maize_cpu.h class device).
+	   Port 1 is the fixed test port; asm/test_outr_in.mazm targets it directly. */
+	cpu::device loopback_test_device;
+	cpu::add_device(1, loopback_test_device);
+
 	sys::init();
 	cpu::run();
 #ifdef __linux__
