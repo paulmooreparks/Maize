@@ -252,6 +252,7 @@ run_test "reject_include_self"  "test_reject_include_self.mazm"  "circular INCLU
 run_test "reject_label_trunc"   "test_reject_label_trunc.mazm"   "unexpected end of file" 0 1
 run_test "reject_address_trunc" "test_reject_address_trunc.mazm" "unexpected end of file" 0 1
 run_test "nested_include"       "test_nested_include.mazm"       "nested include: PASS"   1
+run_test "address_fwdlabel"     "test_address_fwdlabel.mazm"     "address fwd-ref: PASS"  0
 
 # --- maize-12: multi-TU assemble -> link -> run --------------------------------------
 # Two separately-assembled objects (link_a defines _start and imports from link_b)

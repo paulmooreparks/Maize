@@ -1,0 +1,62 @@
+; **********************************************************************************
+; Regression test for card maize-37's code-review push-back (comment 1712).
+; address_compiler's label-name branch (ADDRESS labelName) used to read
+; labels[data_string] into a local that was immediately discarded: zero bytes
+; written, current_address never advanced, exit 0, zero diagnostics. A forward
+; reference (the label declared LATER in the file, as below) silently vanished
+; from the compiled image, misaligning every address after it. Pre-existing
+; behavior at least wrote a correctly-sized (if garbage-content) placeholder and
+; advanced the cursor; the regression dropped both.
+;
+; An ExpectAsmError-style fixture cannot catch this: both the old broken
+; behavior and the fix exit 0 with no diagnostic. This fixture instead reads
+; back the hword ADDRESS actually wrote (via a label so no hard-coded address
+; is needed) and compares it against 'handler''s real resolved address,
+; computed independently through the already-proven CP <label> fixup path.
+; The pre-fix code writes nothing to addr_slot (current_address never even
+; reaches this dead-code region correctly, and addr_slot's hword stays
+; whatever memory held by default), so R0.H0 never matches R1.H0 and this
+; fails loud against the regression. The ADDRESS statement's own reserved
+; slot sits after both HALT-terminated branches (dead code, never executed
+; as instructions) so a correct 4-byte reservation there cannot corrupt the
+; reachable instruction stream either way.
+; **********************************************************************************
+
+$0000`0000:
+    LD @addr_slot R0.H0    ; read back the hword ADDRESS wrote at addr_slot
+    CP handler R1.H0        ; independently compute handler's real address
+    CMP R0.H0 R1.H0
+    JNZ fail
+
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1
+    CP $16 R2                ; 22 bytes
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $16 R2                ; 22 bytes
+    SYS $01
+    HALT
+
+; ---- dead code below: never reached at runtime, both branches above HALT ----
+addr_slot:
+    ADDRESS handler          ; forward reference: 'handler' is declared below
+
+handler:
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "address fwd-ref: PASS\n\0"
+
+fail_string:
+    STRING "address fwd-ref: FAIL\n\0"

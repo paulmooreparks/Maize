@@ -78,6 +78,7 @@ $Tests = @(
     [pscustomobject]@{ Name = 'reject_label_trunc';  File = 'test_reject_label_trunc.mazm'; Expected = 'unexpected end of file';     Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'reject_address_trunc'; File = 'test_reject_address_trunc.mazm'; Expected = 'unexpected end of file';  Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'nested_include';      File = 'test_nested_include.mazm';    Expected = 'nested include: PASS';        Golden = $true }
+    [pscustomobject]@{ Name = 'address_fwdlabel';    File = 'test_address_fwdlabel.mazm';  Expected = 'address fwd-ref: PASS';       Golden = $false }
 )
 
 function Trim-TrailingNewlines([string]$s) {

@@ -1601,6 +1601,13 @@ namespace {
         label_decl_loc[label] = { label_node.loc_file, label_node.loc_line };
     }
 
+    /* Forward declarations: add_label/write_label are defined later in this
+       file (used by the regimm_* compilers) but address_compiler (maize-37
+       fix) needs to route ADDRESS-by-label through the same fixup machinery
+       they implement. */
+    u_byte add_label(std::string &label, cpu::reg_value &value);
+    u_hword write_label(u_hword address, std::string &label, cpu::reg_value value);
+
     void address_compiler(token_tree &tree, std::string &opcode_str) {
         auto &value_node = *tree.value.begin();
         auto data_string {value_node.key};
@@ -1610,19 +1617,45 @@ namespace {
         /* ADDRESS accepts either a numeric literal or a label name (README:
            "ADDRESS address | labelName"). convert_label_string only
            understands $/#/%-prefixed numeric literals; route a label-name
-           token around it entirely (maize-37) instead of shape-testing via
-           is_label (which only reports whether the label happens to be
-           already declared) so a genuinely malformed numeric literal still
-           gets the new diagnostic while a bare label-name token -- forward-
-           declared or not -- never reaches convert_label_string's
-           unrecognized-prefix path at all. The label-name branch itself is
-           unchanged, pre-existing behavior; out of scope for this card. */
+           token around it entirely instead of shape-testing via is_label
+           (which only reports whether the label happens to be already
+           declared) so a genuinely malformed numeric literal still gets the
+           new diagnostic while a bare label-name token -- forward-declared
+           or not -- never reaches convert_label_string's unrecognized-prefix
+           path at all.
+
+           maize-37 code-review fix: the label-name branch used to read
+           labels[data_string] into a local that was immediately discarded --
+           zero bytes written, current_address never advanced, no diagnostic.
+           A forward-referenced label (not yet declared at this point in the
+           file) silently vanished, misaligning every subsequent address.
+           Route through the SAME add_label/compile_label + write_label
+           fixup machinery every other label-operand call site already uses
+           (see regimm_reg_compiler etc.): compile_label reads the existing
+           labels[] entry (real address, or the max() forward-reference
+           placeholder) for an already-known name; add_label registers a
+           fresh max() placeholder + reference-site for a name not seen yet.
+           Either way, write_label reserves the correctly-sized placeholder
+           immediately, advances current_address, and -- only when the value
+           is still the max() sentinel -- records a fixup that the end-of-
+           compile fixup pass patches once every label is known. Backward
+           and forward references both resolve through this one path; no
+           special-casing which came first. */
         if (is_literal(data_string)) {
             data = convert_label_string(data_string);
             current_address += cpu::mm.write_hword(current_address, data);
         }
-        else if (is_label(data_string)) {
-            cpu::reg_value value = labels[data_string];
+        else {
+            cpu::reg_value value {0};
+
+            if (is_label(data_string)) {
+                compile_label(data_string, value);
+            }
+            else {
+                add_label(data_string, value);
+            }
+
+            current_address += write_label(current_address, data_string, value);
         }
     }
 
