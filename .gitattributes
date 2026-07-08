@@ -1,0 +1,37 @@
+# Line-ending normalization (maize-62).
+#
+# Force LF on checkout for text sources regardless of the platform's
+# core.autocrlf setting. The windows-latest GitHub Actions runner checks out
+# with core.autocrlf=true; without this file, C sources arrive with CRLF.
+# cproc is a strict C11 front-end and does not treat a bare CR as whitespace,
+# so a stray CR (e.g. right after a block comment's closing */) is parsed as a
+# token at file scope and the C hello-world pipeline fails. The mazm assembler
+# and the shell/build tooling likewise assume LF. Pinning eol=lf here makes a
+# fresh checkout parse cleanly on every platform.
+
+# C sources fed to cproc MUST be LF.
+*.c    text eol=lf
+*.h    text eol=lf
+
+# Assembler / toolchain text inputs and IL.
+*.mazm text eol=lf
+*.ssa  text eol=lf
+*.asm  text eol=lf
+
+# Build, CI, and test scripting.
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.ps1  text eol=lf
+
+# Fixtures compared byte-for-byte against captured stdout.
+*.expected text eol=lf
+
+# Documentation / config text.
+*.md   text eol=lf
+*.txt  text eol=lf
+*.json text eol=lf
+
+# Binary assets must never be line-ending-normalized (keeps asm/*.bin and any
+# other binaries byte-identical across checkouts).
+*.bin  binary

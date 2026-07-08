@@ -102,13 +102,20 @@ run_ctest() {
         return
     fi
 
+    lfsrc="${WORK_DIR}/${name}.lf.c"
     ssa="${WORK_DIR}/${name}.ssa"
     norm="${WORK_DIR}/${name}.norm.ssa"
     body="${WORK_DIR}/${name}.body.mazm"
     full="${WORK_DIR}/${name}.mazm"
     bin="${WORK_DIR}/${name}.bin"
 
-    if ! "$CPROC_QBE" < "$src" > "$ssa" 2>"${WORK_DIR}/${name}.cproc.log"; then
+    # Defense in depth for CRLF checkouts (belt-and-suspenders with .gitattributes
+    # eol=lf): cproc is strict C11 and treats a bare CR as a stray token, so strip
+    # any CR bytes before feeding the source to the front-end. A clean LF checkout
+    # makes this a no-op. (maize-62)
+    tr -d '\r' < "$src" > "$lfsrc"
+
+    if ! "$CPROC_QBE" < "$lfsrc" > "$ssa" 2>"${WORK_DIR}/${name}.cproc.log"; then
         echo "[FAIL] ${name}: cproc-qbe failed"; cat "${WORK_DIR}/${name}.cproc.log" >&2
         FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
@@ -129,13 +136,17 @@ run_ctest() {
     # in src/maize.cpp and handled the same way by run-tests). So: exact cmp, else
     # accept iff the two agree once trailing newlines are stripped.
     out="${WORK_DIR}/${name}.out"
+    exp="${WORK_DIR}/${name}.exp"
     "$MAIZE" "$bin" > "$out" 2>/dev/null || true
-    if cmp -s "$out" "$expfile" \
-    || { [ "$(cat "$out")" = "$(cat "$expfile")" ]; }; then
+    # Strip CR from the fixture too, so a CRLF checkout of *.expected can't
+    # cause a spurious mismatch (defense in depth with .gitattributes). (maize-62)
+    tr -d '\r' < "$expfile" > "$exp"
+    if cmp -s "$out" "$exp" \
+    || { [ "$(cat "$out")" = "$(cat "$exp")" ]; }; then
         echo "[PASS] ${name}"
     else
         echo "[FAIL] ${name}"
-        echo "        expected: \"$(cat "$expfile")\""
+        echo "        expected: \"$(cat "$exp")\""
         echo "        actual:   \"$(cat "$out")\""
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
