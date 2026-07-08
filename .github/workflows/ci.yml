@@ -11,9 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build C toolchain (cproc + qbe)
+        run: scripts/build-toolchain.sh
 
       - name: Build and run tests
         run: scripts/run-tests.sh
@@ -22,6 +27,21 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up MSYS2 (POSIX build env for cproc + qbe)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: false
+          install: >-
+            gcc
+            make
+
+      - name: Build C toolchain (cproc + qbe)
+        shell: msys2 {0}
+        run: scripts/build-toolchain.sh
 
       - name: Cache llvm-mingw toolchain
         uses: actions/cache@v4
