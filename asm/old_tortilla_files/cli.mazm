@@ -1,3 +1,4 @@
+; NOT A MAIZE FILE! This is a hold-over from Tortilla and has not been updated to Maize yet. It is here for reference only.
 INCLUDE "core.mazm"
 INCLUDE "stdlib.mazm"
 
@@ -40,7 +41,7 @@ _start:
    CLR A
    LD $0B A.B1
    LD $01 A.B3
-   LD @color_2 A.B2 
+   LD @color_2 A.B2
    INT $10
 
    ; Write second word
@@ -56,9 +57,9 @@ _start:
 
    ; Move cursor
    CLR A
-   LD $02 A.B1   
-   LD $00 A.B6   
-   LD $02 A.B7   
+   LD $02 A.B1
+   LD $00 A.B6
+   LD $02 A.B7
    INT $10
 
    ; Write message
@@ -67,13 +68,13 @@ _start:
 
    ; Move cursor
    CLR A
-   LD $02 A.B1   
-   LD $00 A.B6   
-   LD $04 A.B7   
+   LD $02 A.B1
+   LD $00 A.B6
+   LD $04 A.B7
    INT $10
 
    ; Write prompt
-   LD prompt G 
+   LD prompt G
    CALL stdlib_puts
 
    ; We're done doing setup, so go halt the CPU and wait for interrupts
@@ -87,7 +88,7 @@ color_1:
 color_2:
    DATA $0B ; Cyan
 
-first_word: 
+first_word:
    STRING "Maize \0"
 
 second_word:

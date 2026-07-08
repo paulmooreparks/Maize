@@ -1,3 +1,4 @@
+; NOT A MAIZE FILE! This is a hold-over from Tortilla and has not been updated to Maize yet. It is here for reference only.
 ; This file contains the code for the kernel
 
 LABEL core_os_core                     AUTO
@@ -54,133 +55,133 @@ LABEL core_os_print_newline            AUTO
 
 $00000000:
    ADDRESS core_os_exception_handler_00   ; INT 00 divide by zero
-   ADDRESS core_os_exception_handler_01   ; INT 01 
-   ADDRESS core_os_exception_handler_02   ; INT 02 
-   ADDRESS core_os_exception_handler_03   ; INT 03 
+   ADDRESS core_os_exception_handler_01   ; INT 01
+   ADDRESS core_os_exception_handler_02   ; INT 02
+   ADDRESS core_os_exception_handler_03   ; INT 03
    ADDRESS core_os_exception_handler_04   ; INT 04
-   ADDRESS core_os_exception_handler_05   ; INT 05 
+   ADDRESS core_os_exception_handler_05   ; INT 05
    ADDRESS core_os_exception_handler_06   ; INT 06 invalid opcode
-   ADDRESS core_os_exception_handler_07   ; INT 07 
-   ADDRESS core_os_exception_handler_08   ; INT 08 
-   ADDRESS core_os_exception_handler_09   ; INT 09 
-   ADDRESS core_os_exception_handler_0A   ; INT 0A 
-   ADDRESS core_os_exception_handler_0B   ; INT 0B 
-   ADDRESS core_os_exception_handler_0C   ; INT 0C 
-   ADDRESS core_os_exception_handler_0D   ; INT 0D 
-   ADDRESS core_os_exception_handler_0E   ; INT 0E 
-   ADDRESS core_os_exception_handler_0F   ; INT 0F 
+   ADDRESS core_os_exception_handler_07   ; INT 07
+   ADDRESS core_os_exception_handler_08   ; INT 08
+   ADDRESS core_os_exception_handler_09   ; INT 09
+   ADDRESS core_os_exception_handler_0A   ; INT 0A
+   ADDRESS core_os_exception_handler_0B   ; INT 0B
+   ADDRESS core_os_exception_handler_0C   ; INT 0C
+   ADDRESS core_os_exception_handler_0D   ; INT 0D
+   ADDRESS core_os_exception_handler_0E   ; INT 0E
+   ADDRESS core_os_exception_handler_0F   ; INT 0F
    ADDRESS core_bios_10                   ; INT 10 Classic BIOS
-   ADDRESS $0000`0000                     ; INT 11 
-   ADDRESS $0000`0000                     ; INT 12 
-   ADDRESS $0000`0000                     ; INT 13 
-   ADDRESS $0000`0000                     ; INT 14 
-   ADDRESS $0000`0000                     ; INT 15 
+   ADDRESS $0000`0000                     ; INT 11
+   ADDRESS $0000`0000                     ; INT 12
+   ADDRESS $0000`0000                     ; INT 13
+   ADDRESS $0000`0000                     ; INT 14
+   ADDRESS $0000`0000                     ; INT 15
    ADDRESS core_bios_16                   ; INT 16 Classic BIOS
-   ADDRESS $0000`0000                     ; INT 17 
-   ADDRESS $0000`0000                     ; INT 18 
-   ADDRESS $0000`0000                     ; INT 19 
-   ADDRESS $0000`0000                     ; INT 1A 
-   ADDRESS $0000`0000                     ; INT 1B 
-   ADDRESS $0000`0000                     ; INT 1C 
-   ADDRESS $0000`0000                     ; INT 1D 
-   ADDRESS $0000`0000                     ; INT 1E 
-   ADDRESS $0000`0000                     ; INT 1F 
-   ADDRESS $0000`0000                     ; INT 20 
-   ADDRESS core_os_key_input              ; INT 21 
-   ADDRESS $0000`0000                     ; INT 22 
-   ADDRESS $0000`0000                     ; INT 23 
-   ADDRESS $0000`0000                     ; INT 24 
-   ADDRESS $0000`0000                     ; INT 25 
-   ADDRESS $0000`0000                     ; INT 26 
-   ADDRESS $0000`0000                     ; INT 27 
-   ADDRESS $0000`0000                     ; INT 28 
-   ADDRESS $0000`0000                     ; INT 29 
-   ADDRESS $0000`0000                     ; INT 2A 
-   ADDRESS $0000`0000                     ; INT 2B 
-   ADDRESS $0000`0000                     ; INT 2C 
-   ADDRESS $0000`0000                     ; INT 2D 
-   ADDRESS $0000`0000                     ; INT 2E 
-   ADDRESS $0000`0000                     ; INT 2F 
-   ADDRESS $0000`0000                     ; INT 30 
-   ADDRESS $0000`0000                     ; INT 31 
-   ADDRESS $0000`0000                     ; INT 32 
-   ADDRESS $0000`0000                     ; INT 33 
-   ADDRESS $0000`0000                     ; INT 34 
-   ADDRESS $0000`0000                     ; INT 35 
-   ADDRESS $0000`0000                     ; INT 36 
-   ADDRESS $0000`0000                     ; INT 37 
-   ADDRESS $0000`0000                     ; INT 38 
-   ADDRESS $0000`0000                     ; INT 39 
-   ADDRESS $0000`0000                     ; INT 3A 
-   ADDRESS $0000`0000                     ; INT 3B 
-   ADDRESS $0000`0000                     ; INT 3C 
-   ADDRESS $0000`0000                     ; INT 3D 
-   ADDRESS $0000`0000                     ; INT 3E 
-   ADDRESS $0000`0000                     ; INT 3F 
-   ADDRESS core_os_core                   ; INT 40 
-   ADDRESS $0000`0000                     ; INT 41 
-   ADDRESS $0000`0000                     ; INT 42 
-   ADDRESS $0000`0000                     ; INT 43 
-   ADDRESS $0000`0000                     ; INT 44 
-   ADDRESS $0000`0000                     ; INT 45 
-   ADDRESS $0000`0000                     ; INT 46 
-   ADDRESS $0000`0000                     ; INT 47 
-   ADDRESS $0000`0000                     ; INT 48 
-   ADDRESS $0000`0000                     ; INT 49 
-   ADDRESS $0000`0000                     ; INT 4A 
-   ADDRESS $0000`0000                     ; INT 4B 
-   ADDRESS $0000`0000                     ; INT 4C 
-   ADDRESS $0000`0000                     ; INT 4D 
-   ADDRESS $0000`0000                     ; INT 4E 
-   ADDRESS $0000`0000                     ; INT 4F 
-   ADDRESS $0000`0000                     ; INT 50 
-   ADDRESS $0000`0000                     ; INT 51 
-   ADDRESS $0000`0000                     ; INT 52 
-   ADDRESS $0000`0000                     ; INT 53 
-   ADDRESS $0000`0000                     ; INT 54 
-   ADDRESS $0000`0000                     ; INT 55 
-   ADDRESS $0000`0000                     ; INT 56 
-   ADDRESS $0000`0000                     ; INT 57 
-   ADDRESS $0000`0000                     ; INT 58 
-   ADDRESS $0000`0000                     ; INT 59 
-   ADDRESS $0000`0000                     ; INT 5A 
-   ADDRESS $0000`0000                     ; INT 5B 
-   ADDRESS $0000`0000                     ; INT 5C 
-   ADDRESS $0000`0000                     ; INT 5D 
-   ADDRESS $0000`0000                     ; INT 5E 
-   ADDRESS $0000`0000                     ; INT 5F 
-   ADDRESS $0000`0000                     ; INT 60 
-   ADDRESS $0000`0000                     ; INT 61 
-   ADDRESS $0000`0000                     ; INT 62 
-   ADDRESS $0000`0000                     ; INT 63 
-   ADDRESS $0000`0000                     ; INT 64 
-   ADDRESS $0000`0000                     ; INT 65 
-   ADDRESS $0000`0000                     ; INT 66 
-   ADDRESS $0000`0000                     ; INT 67 
-   ADDRESS $0000`0000                     ; INT 68 
-   ADDRESS $0000`0000                     ; INT 69 
-   ADDRESS $0000`0000                     ; INT 6A 
-   ADDRESS $0000`0000                     ; INT 6B 
-   ADDRESS $0000`0000                     ; INT 6C 
-   ADDRESS $0000`0000                     ; INT 6D 
-   ADDRESS $0000`0000                     ; INT 6E 
-   ADDRESS $0000`0000                     ; INT 6F 
-   ADDRESS $0000`0000                     ; INT 70 
-   ADDRESS $0000`0000                     ; INT 71 
-   ADDRESS $0000`0000                     ; INT 72 
-   ADDRESS $0000`0000                     ; INT 73 
-   ADDRESS $0000`0000                     ; INT 74 
-   ADDRESS $0000`0000                     ; INT 75 
-   ADDRESS $0000`0000                     ; INT 76 
-   ADDRESS $0000`0000                     ; INT 77 
-   ADDRESS $0000`0000                     ; INT 78 
-   ADDRESS $0000`0000                     ; INT 79 
-   ADDRESS $0000`0000                     ; INT 7A 
-   ADDRESS $0000`0000                     ; INT 7B 
-   ADDRESS $0000`0000                     ; INT 7C 
-   ADDRESS $0000`0000                     ; INT 7D 
-   ADDRESS $0000`0000                     ; INT 7E 
-   ADDRESS $0000`0000                     ; INT 7F 
+   ADDRESS $0000`0000                     ; INT 17
+   ADDRESS $0000`0000                     ; INT 18
+   ADDRESS $0000`0000                     ; INT 19
+   ADDRESS $0000`0000                     ; INT 1A
+   ADDRESS $0000`0000                     ; INT 1B
+   ADDRESS $0000`0000                     ; INT 1C
+   ADDRESS $0000`0000                     ; INT 1D
+   ADDRESS $0000`0000                     ; INT 1E
+   ADDRESS $0000`0000                     ; INT 1F
+   ADDRESS $0000`0000                     ; INT 20
+   ADDRESS core_os_key_input              ; INT 21
+   ADDRESS $0000`0000                     ; INT 22
+   ADDRESS $0000`0000                     ; INT 23
+   ADDRESS $0000`0000                     ; INT 24
+   ADDRESS $0000`0000                     ; INT 25
+   ADDRESS $0000`0000                     ; INT 26
+   ADDRESS $0000`0000                     ; INT 27
+   ADDRESS $0000`0000                     ; INT 28
+   ADDRESS $0000`0000                     ; INT 29
+   ADDRESS $0000`0000                     ; INT 2A
+   ADDRESS $0000`0000                     ; INT 2B
+   ADDRESS $0000`0000                     ; INT 2C
+   ADDRESS $0000`0000                     ; INT 2D
+   ADDRESS $0000`0000                     ; INT 2E
+   ADDRESS $0000`0000                     ; INT 2F
+   ADDRESS $0000`0000                     ; INT 30
+   ADDRESS $0000`0000                     ; INT 31
+   ADDRESS $0000`0000                     ; INT 32
+   ADDRESS $0000`0000                     ; INT 33
+   ADDRESS $0000`0000                     ; INT 34
+   ADDRESS $0000`0000                     ; INT 35
+   ADDRESS $0000`0000                     ; INT 36
+   ADDRESS $0000`0000                     ; INT 37
+   ADDRESS $0000`0000                     ; INT 38
+   ADDRESS $0000`0000                     ; INT 39
+   ADDRESS $0000`0000                     ; INT 3A
+   ADDRESS $0000`0000                     ; INT 3B
+   ADDRESS $0000`0000                     ; INT 3C
+   ADDRESS $0000`0000                     ; INT 3D
+   ADDRESS $0000`0000                     ; INT 3E
+   ADDRESS $0000`0000                     ; INT 3F
+   ADDRESS core_os_core                   ; INT 40
+   ADDRESS $0000`0000                     ; INT 41
+   ADDRESS $0000`0000                     ; INT 42
+   ADDRESS $0000`0000                     ; INT 43
+   ADDRESS $0000`0000                     ; INT 44
+   ADDRESS $0000`0000                     ; INT 45
+   ADDRESS $0000`0000                     ; INT 46
+   ADDRESS $0000`0000                     ; INT 47
+   ADDRESS $0000`0000                     ; INT 48
+   ADDRESS $0000`0000                     ; INT 49
+   ADDRESS $0000`0000                     ; INT 4A
+   ADDRESS $0000`0000                     ; INT 4B
+   ADDRESS $0000`0000                     ; INT 4C
+   ADDRESS $0000`0000                     ; INT 4D
+   ADDRESS $0000`0000                     ; INT 4E
+   ADDRESS $0000`0000                     ; INT 4F
+   ADDRESS $0000`0000                     ; INT 50
+   ADDRESS $0000`0000                     ; INT 51
+   ADDRESS $0000`0000                     ; INT 52
+   ADDRESS $0000`0000                     ; INT 53
+   ADDRESS $0000`0000                     ; INT 54
+   ADDRESS $0000`0000                     ; INT 55
+   ADDRESS $0000`0000                     ; INT 56
+   ADDRESS $0000`0000                     ; INT 57
+   ADDRESS $0000`0000                     ; INT 58
+   ADDRESS $0000`0000                     ; INT 59
+   ADDRESS $0000`0000                     ; INT 5A
+   ADDRESS $0000`0000                     ; INT 5B
+   ADDRESS $0000`0000                     ; INT 5C
+   ADDRESS $0000`0000                     ; INT 5D
+   ADDRESS $0000`0000                     ; INT 5E
+   ADDRESS $0000`0000                     ; INT 5F
+   ADDRESS $0000`0000                     ; INT 60
+   ADDRESS $0000`0000                     ; INT 61
+   ADDRESS $0000`0000                     ; INT 62
+   ADDRESS $0000`0000                     ; INT 63
+   ADDRESS $0000`0000                     ; INT 64
+   ADDRESS $0000`0000                     ; INT 65
+   ADDRESS $0000`0000                     ; INT 66
+   ADDRESS $0000`0000                     ; INT 67
+   ADDRESS $0000`0000                     ; INT 68
+   ADDRESS $0000`0000                     ; INT 69
+   ADDRESS $0000`0000                     ; INT 6A
+   ADDRESS $0000`0000                     ; INT 6B
+   ADDRESS $0000`0000                     ; INT 6C
+   ADDRESS $0000`0000                     ; INT 6D
+   ADDRESS $0000`0000                     ; INT 6E
+   ADDRESS $0000`0000                     ; INT 6F
+   ADDRESS $0000`0000                     ; INT 70
+   ADDRESS $0000`0000                     ; INT 71
+   ADDRESS $0000`0000                     ; INT 72
+   ADDRESS $0000`0000                     ; INT 73
+   ADDRESS $0000`0000                     ; INT 74
+   ADDRESS $0000`0000                     ; INT 75
+   ADDRESS $0000`0000                     ; INT 76
+   ADDRESS $0000`0000                     ; INT 77
+   ADDRESS $0000`0000                     ; INT 78
+   ADDRESS $0000`0000                     ; INT 79
+   ADDRESS $0000`0000                     ; INT 7A
+   ADDRESS $0000`0000                     ; INT 7B
+   ADDRESS $0000`0000                     ; INT 7C
+   ADDRESS $0000`0000                     ; INT 7D
+   ADDRESS $0000`0000                     ; INT 7E
+   ADDRESS $0000`0000                     ; INT 7F
    ADDRESS core_syscall                   ; INT 80
 
 
@@ -191,20 +192,20 @@ $00000000:
 LABEL core_bios_10_jump_table             AUTO
 LABEL core_bios_10_nop                    AUTO
 LABEL core_bios_10_clear_screen           AUTO
-LABEL core_bios_10_set_video_mode         AUTO    
-LABEL core_bios_10_set_cursor_shape       AUTO    
-LABEL core_bios_10_set_cursor_pos         AUTO    
-LABEL core_bios_10_get_cursor_pos         AUTO    
-LABEL core_bios_10_scroll_up              AUTO    
-LABEL core_bios_10_scroll_down            AUTO    
-LABEL core_bios_10_read_char_and_attr     AUTO 
-LABEL core_bios_10_write_char_and_attr    AUTO 
+LABEL core_bios_10_set_video_mode         AUTO
+LABEL core_bios_10_set_cursor_shape       AUTO
+LABEL core_bios_10_set_cursor_pos         AUTO
+LABEL core_bios_10_get_cursor_pos         AUTO
+LABEL core_bios_10_scroll_up              AUTO
+LABEL core_bios_10_scroll_down            AUTO
+LABEL core_bios_10_read_char_and_attr     AUTO
+LABEL core_bios_10_write_char_and_attr    AUTO
 LABEL core_bios_10_write_char             AUTO
 LABEL core_bios_10_set_color              AUTO
 
 
 ;******************************************************************************
-; This is the entry point for all BIOS $10 calls. It indexes into the jump 
+; This is the entry point for all BIOS $10 calls. It indexes into the jump
 ; table using the BIOS opcode and forwards the call to the correct function.
 
 core_bios_10:
@@ -213,7 +214,7 @@ core_bios_10:
    LD A.B1 B.H0  ; The opcode is in A.B1, so copy it over to B.H0 so we can operate on it.
    MUL $04 B.H0  ; Multiply the opcode by 4 to find its offset in the jump table.
    LD core_bios_10_jump_table B.H1
-   ADD B.H0 B.H1  ; Add the jump table start address and the calculated offset, and we 
+   ADD B.H0 B.H1  ; Add the jump table start address and the calculated offset, and we
                   ; get the pointer to the operation's implementing function.
    CALL @B.H1
    POP B
@@ -243,15 +244,15 @@ core_bios_10_set_video_mode:
    RET
 
 
-core_bios_10_set_cursor_shape:       
+core_bios_10_set_cursor_shape:
    OUT A $7F
    RET
-         
 
-core_bios_10_set_cursor_pos:         
+
+core_bios_10_set_cursor_pos:
    OUT A $7F
    RET
-         
+
 
 core_bios_10_get_cursor_pos:
    PUSH B
@@ -259,27 +260,27 @@ core_bios_10_get_cursor_pos:
    IN $7F B
    POP B
    RET
-         
 
-core_bios_10_nop:                    
+
+core_bios_10_nop:
    RET
-         
 
-core_bios_10_scroll_up:              
+
+core_bios_10_scroll_up:
    OUT A $7F
    RET
-         
 
-core_bios_10_scroll_down:            
+
+core_bios_10_scroll_down:
    OUT A $7F
    RET
-         
 
-core_bios_10_read_char_and_attr:     
+
+core_bios_10_read_char_and_attr:
    RET
-         
 
-core_bios_10_write_char_and_attr:    
+
+core_bios_10_write_char_and_attr:
    OUT A $7F
    RET
 
@@ -353,9 +354,9 @@ core_bios_16_jump_table:
    ADDRESS core_bios_16_nop                  ; AH = $12
 
 
-core_bios_16_nop:                    
+core_bios_16_nop:
    RET
-         
+
 
 core_bios_16_get_keystroke:
    PUSH B
@@ -419,8 +420,8 @@ core_os_shut_down:
 
 
 ;******************************************************************************
-; The idle routine is executed when the OS isn't doing any work. HALT stops the 
-; clock, and any interrupt will wake the CPU, jump to the interrupt handler, 
+; The idle routine is executed when the OS isn't doing any work. HALT stops the
+; clock, and any interrupt will wake the CPU, jump to the interrupt handler,
 ; and return to the JMP instruction, which goes right back to HALT.
 
 LABEL core_os_idle_halt AUTO
@@ -472,15 +473,15 @@ core_os_putchar:
    PUSH J
    PUSH G.B0
 
-   ; Now S.H0 points at that character on the stack, so copy that address to 
+   ; Now S.H0 points at that character on the stack, so copy that address to
    ; H.H0, which is the output pointer (const char *).
    LD S.H0 H.H0
-   
+
    ; Delegate output to the sys_write call.
    LD $01 G ; STDOUT file descriptor
    LD $01 J ; Number of characters to write, starting at @H.H0
    CALL core_sys_write
-   
+
    POP A.B0
    POP J
    POP H
@@ -798,7 +799,7 @@ core_syscall_jump_table:
 
 
 ;******************************************************************************
-; Placeholder for system calls that haven't been implemented yet, but for which 
+; Placeholder for system calls that haven't been implemented yet, but for which
 ; I want to reserve a place.
 
 core_sys_nop:
@@ -814,12 +815,12 @@ core_sys_read:
 
 ;******************************************************************************
 ; sys_write system call
-; 
+;
 ; PARAMETERS
 ; G unsigned int fd
 ; H const char *buf
 ; J size_t count
-; 
+;
 ; RETURN
 ; A size_t number of bytes written
 
@@ -1000,7 +1001,7 @@ core_os_hex_print_low_nybble:
 ;******************************************************************************
 ; The output functions index into this string to perform the output
 
-core_os_hex_string: 
+core_os_hex_string:
    STRING "0123456789ABCDEF"
 
 
@@ -1035,7 +1036,7 @@ core_os_print_reg:
 
 
 ;******************************************************************************
-; 
+;
 
 LABEL core_os_exception_label          AUTO
 LABEL core_os_exception_segment_label  AUTO
