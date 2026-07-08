@@ -194,6 +194,22 @@ namespace {
 
 } /* anonymous namespace */
 
+static void print_usage(std::ostream &out) {
+	out <<
+		"usage: mzld [options] <input.mzo> [<input.mzo> ...]\n"
+		"\n"
+		"Maize linker. Links one or more relocatable .mzo objects into a single\n"
+		"linked .mzx executable, resolving symbols and applying relocations. On\n"
+		"error no output is produced.\n"
+		"\n"
+		"options:\n"
+		"  -o <out.mzx>   output path for the linked executable (default: a.mzx)\n"
+		"  -e <entry>     entry-point symbol name (default: _start)\n"
+		"  -h, --help     show this help and exit\n"
+		"\n"
+		"At least one input .mzo object is required.\n";
+}
+
 int main(int argc, char *argv[]) {
 	std::string out_path = "a.mzx";
 	std::string entry_name = "_start";
@@ -201,7 +217,11 @@ int main(int argc, char *argv[]) {
 
 	for (int i = 1; i < argc; ++i) {
 		std::string arg = argv[i];
-		if (arg == "-o" && i + 1 < argc) {
+		if (arg == "-h" || arg == "--help") {
+			print_usage(std::cout);
+			return 0;
+		}
+		else if (arg == "-o" && i + 1 < argc) {
 			out_path = argv[++i];
 		}
 		else if (arg == "-e" && i + 1 < argc) {
@@ -216,7 +236,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (inputs.empty()) {
-		std::cerr << "usage: mzld [-o out.mzx] [-e entry] in1.mzo [in2.mzo ...]" << std::endl;
+		print_usage(std::cerr);
 		return 1;
 	}
 
