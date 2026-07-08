@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build mazm and mzld and install stable copies into ~/bin (Linux/WSL/macOS).
+# Build the Maize toolchain (maize, mazm, mzld, mzdis) and install stable copies into ~/bin (Linux/WSL/macOS).
 # Counterpart of install-mazm.ps1; wired to the default build task via
 # .vscode/tasks.json. Never prompts.
 
@@ -22,11 +22,11 @@ if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
     cmake --preset "$PRESET"
 fi
 
-echo "Building mazm and mzld ($PRESET)..."
-cmake --build "$BUILD_DIR" --target mazm mzld
+echo "Building maize, mazm, mzld, mzdis ($PRESET)..."
+cmake --build "$BUILD_DIR" --target maize mazm mzld mzdis
 
 mkdir -p "$INSTALL_DIR"
-for tool in mazm mzld; do
+for tool in maize mazm mzld mzdis; do
     cp "$BUILD_DIR/$tool" "$INSTALL_DIR/$tool"
     echo "Installed $BUILD_DIR/$tool -> $INSTALL_DIR/$tool"
 done
@@ -59,4 +59,4 @@ if [ "$ld_rc" -ne 1 ] || ! printf '%s' "$ld_out" | grep -q 'usage: mzld'; then
     exit 1
 fi
 
-echo "mazm and mzld installed and smoke-checked."
+echo "maize, mazm, mzld, mzdis installed and smoke-checked."

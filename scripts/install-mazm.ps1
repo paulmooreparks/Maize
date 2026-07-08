@@ -1,11 +1,11 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Build mazm and mzld and install stable copies into ~\bin (Windows).
+    Build the Maize toolchain (maize, mazm, mzld, mzdis) and install stable copies into ~\bin (Windows).
 
 .DESCRIPTION
-    Configures the CMake preset if needed, builds the mazm and mzld targets,
-    and copies mazm.exe and mzld.exe to the install directory (default:
+    Configures the CMake preset if needed, builds the maize/mazm/mzld/mzdis
+    targets, and copies each built .exe to the install directory (default:
     $HOME\bin). If the install directory is not on the user PATH it is
     appended, so editors and shells find the tools without per-workspace
     configuration. Wired to the default build task (Ctrl+Shift+B) via
@@ -55,8 +55,8 @@ if (-not (Test-Path (Join-Path $BuildDir 'CMakeCache.txt'))) {
     }
 }
 
-Write-Host "Building mazm and mzld ($Preset)..."
-& $Cmake --build $BuildDir --target mazm mzld
+Write-Host "Building maize, mazm, mzld, mzdis ($Preset)..."
+& $Cmake --build $BuildDir --target maize mazm mzld mzdis
 if ($LASTEXITCODE -ne 0) {
     Write-Error "cmake build failed (exit $LASTEXITCODE)."
     exit 2
@@ -64,7 +64,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # --- Install ----------------------------------------------------------------------
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
-foreach ($tool in 'mazm', 'mzld') {
+foreach ($tool in 'maize', 'mazm', 'mzld', 'mzdis') {
     $builtExe = Join-Path $BuildDir "$tool.exe"
     if (-not (Test-Path $builtExe)) {
         Write-Error "build reported success but $builtExe does not exist."
@@ -117,5 +117,5 @@ if ($ldExit -ne 1 -or $ldOut -notmatch 'usage: mzld') {
     exit 1
 }
 
-Write-Host 'mazm and mzld installed and smoke-checked.'
+Write-Host 'maize, mazm, mzld, mzdis installed and smoke-checked.'
 exit 0
