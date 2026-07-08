@@ -1,0 +1,36 @@
+#!/bin/sh
+# Refresh the C cross-toolchain so `maize-cc` reflects the current tree. Invoked
+# by the install-mazm scripts (VS Code Ctrl+Shift+B) so building the native tools
+# also keeps the whole C environment current. Three steps:
+#
+#   1. initialize the cproc/qbe submodules (no-op once present)
+#   2. build the linux-debug mazm + maize that maize-cc drives (on Windows the
+#      native install built the .exe set, not these; on Linux this is a fast
+#      no-op because install-mazm.sh already built them under the same preset)
+#   3. build cproc + qbe with the Maize target (scripts/build-toolchain.sh)
+#
+# POSIX sh: runs natively on Linux/macOS and under WSL on Windows. cproc/qbe are
+# POSIX-only (posix_spawn / POSIX-only configure triples; see
+# toolchain/VENDORING.md), which is why this is a shell script and, on Windows,
+# is driven through WSL rather than native llvm-mingw.
+#
+# Exit codes: 0 on success; non-zero if any step fails (the install scripts treat
+# a failure here as a non-fatal warning, since the native tools are already in).
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
+
+echo "=== initializing C toolchain submodules (if needed) ==="
+git -C "${REPO_ROOT}" submodule update --init --recursive
+
+echo "=== building linux-debug mazm + maize (maize-cc backend) ==="
+if [ ! -f "${REPO_ROOT}/build/linux-debug/CMakeCache.txt" ]; then
+    ( cd "${REPO_ROOT}" && cmake --preset linux-debug )
+fi
+cmake --build "${REPO_ROOT}/build/linux-debug" --target mazm maize
+
+echo "=== building cproc + qbe (Maize target) ==="
+"${SCRIPT_DIR}/build-toolchain.sh"
+
+echo "C cross-toolchain refresh OK (cproc + qbe + linux-debug mazm/maize)."

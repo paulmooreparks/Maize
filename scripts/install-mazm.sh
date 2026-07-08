@@ -59,4 +59,16 @@ if [ "$ld_rc" -ne 1 ] || ! printf '%s' "$ld_out" | grep -q 'usage: mzld'; then
     exit 1
 fi
 
+# --- C cross-toolchain refresh (cproc/qbe + Maize target) -------------------------
+# Keeps `maize-cc` current after every build. Non-fatal: the native tools above are
+# installed and smoke-checked, so a toolchain hiccup (e.g. no network for the
+# submodule fetch) only warns rather than failing the build task.
+set +e
+"$SCRIPT_DIR/refresh-c-toolchain.sh"
+tc_rc=$?
+set -e
+if [ "$tc_rc" -ne 0 ]; then
+    echo "warning: C cross-toolchain refresh failed (exit $tc_rc); native tools are installed. Retry with scripts/refresh-c-toolchain.sh." >&2
+fi
+
 echo "maize, mazm, mzld, mzdis installed and smoke-checked."

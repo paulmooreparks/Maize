@@ -54,7 +54,7 @@
         },
         {
             "label": "Install maize + mazm + mzld + mzdis to ~/bin",
-            "detail": "Build maize, mazm, mzld, and mzdis and copy them to the user bin directory so editors find stable copies on PATH.",
+            "detail": "Build maize, mazm, mzld, and mzdis and copy them to the user bin directory so editors find stable copies on PATH, then refresh the C cross-toolchain (cproc/qbe + Maize target) so maize-cc stays current. On Windows the toolchain refresh runs under WSL.",
             "type": "shell",
             "group": {
                 "kind": "build",

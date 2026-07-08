@@ -117,5 +117,34 @@ if ($ldExit -ne 1 -or $ldOut -notmatch 'usage: mzld') {
     exit 1
 }
 
+# --- C cross-toolchain refresh (cproc/qbe + linux-debug mazm/maize for maize-cc) ---
+# cproc/qbe are POSIX-only (they cannot be built as native Windows PE binaries;
+# see toolchain/VENDORING.md), so this runs under WSL. Non-fatal: the native tools
+# above are already installed and smoke-checked, so a missing WSL or a toolchain
+# hiccup only warns. WSL writes build output to stderr; under Windows PowerShell
+# 5.1 with ErrorActionPreference=Stop that would become a terminating
+# NativeCommandError, so relax it for exactly this call (pwsh 7 is unaffected).
+$wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
+if (-not $wsl) {
+    Write-Warning 'WSL not found; skipping C cross-toolchain (cproc/qbe) refresh. maize-cc will use any previously built toolchain.'
+}
+else {
+    Write-Host 'Refreshing C cross-toolchain (cproc/qbe + linux-debug mazm/maize) under WSL...'
+    # Forward-slash the path first: passing a backslash Windows path straight to
+    # wsl.exe strips the separators (C:\a\b -> C:ab). wslpath accepts forward slashes.
+    $wslRepo = (& wsl.exe wslpath ("$RepoRoot" -replace '\\', '/')).Trim()
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & wsl.exe -e bash -lc "'$wslRepo/scripts/refresh-c-toolchain.sh'"
+    $tcExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($tcExit -ne 0) {
+        Write-Warning "C cross-toolchain refresh failed (exit $tcExit). Native tools are installed; retry with 'wsl bash scripts/refresh-c-toolchain.sh'."
+    }
+    else {
+        Write-Host 'C cross-toolchain refreshed (cproc + qbe + Maize target).'
+    }
+}
+
 Write-Host 'maize, mazm, mzld, mzdis installed and smoke-checked.'
 exit 0
