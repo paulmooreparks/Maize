@@ -591,6 +591,11 @@ Special-purpose Registers):
   arithmetic/logic flags (RF.H0) are clear with interrupts disabled. This lets crt0 CALL into the
   program with a usable stack from the very first instruction.
 
+Control flow: JMP targets the full 64-bit width; any sub-register selection on the operand is
+ignored, and the assembler rejects a JMP operand that carries a sub-register suffix. Conditional
+branches (Jcc) take an immediate target only, and encode the condition in the two high opcode bits
+using the same condition scheme as the SETcc family.
+
 
 ## Opcode Bytes
 
@@ -718,26 +723,16 @@ bit 7 is interpreted as follows:
     %1001`0100  $94   OUT       regAddr imm     Output value at address in source register to destination port
     %1101`0100  $D4   OUT       immAddr imm     Output value at immediate address to destination port
 
-    %0001`0101  $15                             reserved (was LNGJMP; removed, card maize-64 -- JMP is now always full-width)
+    %0001`0101  $15                             reserved
     %0101`0101  $55                             reserved
     %1001`0101  $95                             reserved
     %1101`0101  $D5                             reserved
 
-    ; JMP (card maize-64) always targets the full 64-bit width: the register forms
-    ; read the whole register regardless of any sub-register selection, and mazm
-    ; rejects a JMP operand carrying a sub-register suffix.
-    %0001`0110  $16   JMP       regVal          Jump to the full 64-bit address in source register (any sub-register selection is ignored) and continue execution
+    %0001`0110  $16   JMP       regVal          Jump to address in source register and continue execution
     %0101`0110  $56   JMP       immVal          Jump to immediate address and continue execution
-    %1001`0110  $96   JMP       regAddr         Jump to the full 64-bit address pointed to by source register and continue execution
+    %1001`0110  $96   JMP       regAddr         Jump to address pointed to by source register and continue execution
     %1101`0110  $D6   JMP       immAddr         Jump to address pointed to by immediate value and continue execution
 
-    ; Conditional branches (Jcc), card maize-64: IMMEDIATE target only. The two high
-    ; opcode bits select the condition ROW and the base slot ($17/$18/$19) the COLUMN;
-    ; together (row*3 + col) they index ONE predicate table shared with SETcc (below).
-    ; A conditional-indirect branch synthesizes as an inverted Jcc over JMP reg. The
-    ; row-11 col-1/col-2 encodings ($D8/$D9) are UNALLOCATED spares; claimants:
-    ; integer-overflow (JO/JNO) and IEEE unordered-compare. Freed slots $1A/$1B/$1C
-    ; (old JB/JGT/JA) and $37/$38/$39/$3A (old JGE/JLE/JBE/JAE) are reserved.
     %0001`0111  $17   JZ        immVal          If Zero flag is set, jump to the immediate address
     %0101`0111  $57   JB        immVal          If Carry flag is set (unsigned <), jump to the immediate address
     %1001`0111  $97   JGE       immVal          If Negative flag equals Overflow flag (signed >=), jump to the immediate address
@@ -746,18 +741,18 @@ bit 7 is interpreted as follows:
     %0001`1000  $18   JNZ       immVal          If Zero flag is clear, jump to the immediate address
     %0101`1000  $58   JGT       immVal          If Zero flag is clear and Negative flag equals Overflow flag (signed >), jump to the immediate address
     %1001`1000  $98   JLE       immVal          If Zero flag is set or Negative flag differs from Overflow flag (signed <=), jump to the immediate address
-    %1101`1000  $D8                             reserved (UNALLOCATED spare condition encoding)
+    %1101`1000  $D8                             reserved
 
     %0001`1001  $19   JLT       immVal          If Negative flag differs from Overflow flag (signed <), jump to the immediate address
     %0101`1001  $59   JA        immVal          If Carry flag is clear and Zero flag is clear (unsigned >), jump to the immediate address
     %1001`1001  $99   JBE       immVal          If Carry flag is set or Zero flag is set (unsigned <=), jump to the immediate address
-    %1101`1001  $D9                             reserved (UNALLOCATED spare condition encoding)
+    %1101`1001  $D9                             reserved
 
-    %0001`1010  $1A                             reserved (was JB; card maize-64)
+    %0001`1010  $1A                             reserved
 
-    %0001`1011  $1B                             reserved (was JGT; card maize-64)
+    %0001`1011  $1B                             reserved
 
-    %0001`1100  $1C                             reserved (was JA; card maize-64)
+    %0001`1100  $1C                             reserved
 
     %0001`1101  $1D   CALL      regVal          Push the return address to the stack, jump to address in source register and continue execution until RET is executed
     %0101`1101  $5D   CALL      immVal          Push the return address to the stack, jump to immediate address and continue execution until RET is executed
@@ -777,32 +772,25 @@ bit 7 is interpreted as follows:
     %0010`0000  $20   PUSH      regVal          Copy register value into memory at the stack pointer (SP), decrement SP by size of register
     %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at the stack pointer (SP), decrement SP by size of immediate value
 
-    %0010`0010  $22                             reserved (was CLR; moved to $32, card maize-64)
+    %0010`0010  $22                             reserved
 
     %0010`0100  $24   INT       regVal          Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
     %0110`0100  $64   INT       immVal          Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
 
-    %0010`0110  $26                             reserved (was POP; moved to $72, card maize-64)
+    %0010`0110  $26                             reserved
 
-    ; Zero-operand family (card maize-64): both mode bits are dead, so four instructions
-    ; share a base slot via the two high bits. HALT stays pinned at $00 (a zeroed word
-    ; halts). Slot $27 holds RET/IRET/NOP/BRK; slot $29 holds SETINT/CLRINT/SETCRY/CLRCRY.
     %0010`0111  $27   RET                       Pop the return address from the stack and continue execution at that address. Used to return from CALL.
     %0110`0111  $67   IRET                      Pop FL and PC from the stack and continue execution at the address in PC. Used to return from interrupt (privileged).
     %1010`0111  $A7   NOP                       No operation. Used as an instruction placeholder.
-    %1110`0111  $E7   BRK                       Trigger a debug break
+    %1110`0111  $E7                             reserved
 
-    %0010`1000  $28                             reserved (was IRET; moved to $67, card maize-64)
+    %0010`1000  $28                             reserved
 
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
     %0110`1001  $69   CLRINT                    Clear the Interrupt flag, thereby disabling hardware interrupts (privileged)
     %1010`1001  $A9   SETCRY                    Set the Carry flag
     %1110`1001  $E9   CLRCRY                    Clear the Carry flag
 
-    ; SETcc (cards maize-55 / maize-64) materializes a condition as 0/1 in one register.
-    ; It uses the SAME condition scheme as Jcc: the two high opcode bits select the row,
-    ; the base slot ($2B/$2C/$2D) the column, indexing one shared predicate table (so the
-    ; flag formulas have a single source of truth). $EC/$ED are the row-11 spares.
     %0010`1011  $2B   SETZ      regVal          Set destination register to 1 if Zero flag is set, else 0 (reads flags; flag-neutral)
     %0110`1011  $6B   SETB      regVal          Set destination register to 1 if Carry flag is set (unsigned <), else 0 (reads flags; flag-neutral)
     %1010`1011  $AB   SETGE     regVal          Set destination register to 1 if Negative flag equals Overflow flag (signed >=), else 0 (reads flags; flag-neutral)
@@ -833,16 +821,13 @@ bit 7 is interpreted as follows:
     %1011`0110  $B6   UMOD      regAddr reg     Unsigned remainder of destination register divided by value at address in source register
     %1111`0110  $F6   UMOD      immAddr reg     Unsigned remainder of destination register divided by value at immediate address
 
-    ; $37/$38/$39/$3A held JGE/JLE/JBE/JAE before card maize-64; those conditions now
-    ; live in the condition-encoded Jcc slots ($97/$98/$99/$D7), so these bases are
-    ; reserved along with all of their mode-bit rows.
-    %0011`0111  $37                             reserved (was JGE; card maize-64)
+    %0011`0111  $37                             reserved
 
-    %0011`1000  $38                             reserved (was JLE; card maize-64)
+    %0011`1000  $38                             reserved
 
-    %0011`1001  $39                             reserved (was JBE; card maize-64)
+    %0011`1001  $39                             reserved
 
-    %0011`1010  $3A                             reserved (was JAE; card maize-64)
+    %0011`1010  $3A                             reserved
 
     %0011`1011  $3B   ADC       regVal  reg     Add source register value plus Carry to destination register
     %0111`1011  $7B   ADC       immVal  reg     Add immediate value plus Carry to destination register
@@ -870,9 +855,6 @@ bit 7 is interpreted as follows:
     %0011`0000  $30   TSTIND    regVal regAddr  Set flags by ANDing source register value with value at address in destination register
     %0111`0000  $70   TSTIND    immVal regAddr  Set flags by ANDing immediate value with value at address in destination register
 
-    ; Unary register-only family (card maize-64): one register operand, both mode bits
-    ; otherwise dead, so ops share a base slot via the two high bits. Slot $31 holds the
-    ; ALU micro-ops INC/DEC/NOT/NEG; slot $32 holds CLR/POP ($B2/$F2 reserved).
     %0011`0001  $31   INC       regVal          Increment register by 1.
     %0111`0001  $71   DEC       regVal          Decrement register by 1.
     %1011`0001  $B1   NOT       regVal          Bitwise negate (one's complement) value in register, store result in register.
@@ -881,26 +863,26 @@ bit 7 is interpreted as follows:
     %0011`0010  $32   CLR       regVal          Set register to zero (0).
     %0111`0010  $72   POP       regVal          Increment SP by size of register, copy value at SP into register
 
-    %0011`0011  $33                             reserved (was NOT; moved to $B1, card maize-64)
+    %0011`0011  $33                             reserved
 
     %0011`0100  $34   SYS       regVal          Execute a system call using the system-call index stored in register (privileged)
     %0111`0100  $74   SYS       immVal          Execute a system call using the immediate index (privileged)
 
-    %1010`1010  $AA                             reserved (was NOP; moved to $A7, card maize-64)
+    %1010`1010  $AA                             reserved
 
     %1110`0000  $E0   XCHG      reg     reg     Atomically exchange the values in two registers
 
-    %1110`0001  $E1                             reserved (was SETCRY; moved to $A9, card maize-64)
+    %1110`0001  $E1                             reserved
 
-    %1110`0010  $E2                             reserved (was CLRCRY; moved to $E9, card maize-64)
+    %1110`0010  $E2                             reserved
 
-    %1110`0011  $E3                             reserved (was CLRINT; moved to $69, card maize-64)
+    %1110`0011  $E3                             reserved
 
-    %1110`0100  $E4                             reserved (was DUP; removed, card maize-64)
+    %1110`0100  $E4                             reserved
 
-    %1110`0101  $E5                             reserved (was SWAP; removed, card maize-64)
+    %1110`0101  $E5                             reserved
 
-    %1111`1111  $FF                             reserved (was BRK; moved to $E7, card maize-64)
+    %1111`1111  $FF   BRK                       Trigger a debug break
 
 
 ## Register Parameter
@@ -1091,7 +1073,7 @@ For a two-operand data move the width is the destination sub-register width, so
 `CP label Rn` materialises a full 64-bit address (`R_MAIZE_ABS64`) and
 `CP label Rn.H0` a 32-bit address (`R_MAIZE_ABS32`). Single-operand control-transfer
 targets (`CALL label`, `JMP label`) use a 32-bit target (`R_MAIZE_ABS32`). (The
-maize-11 QBE backend materialises addresses full-width, i.e. `R_MAIZE_ABS64`; the
+The QBE backend materialises addresses full-width, i.e. `R_MAIZE_ABS64`; the
 narrow forms are a `mazm` hand-assembly convenience.)
 
 ### Object format `.mzo`
@@ -1221,26 +1203,26 @@ metadata that the linker's hygiene pass already validates.
     %0001`0010  $12   LEA       regVal  reg reg
     %0001`0011  $13   CPZ       regVal  reg     Copy source register value into destination register with zero extension
     %0001`0100  $14   OUT       regVal  imm     Output value in source register to destination port
-    %0001`0101  $15                             reserved (was LNGJMP; removed, card maize-64)
-    %0001`0110  $16   JMP       regVal          Jump to the full 64-bit address in source register (any sub-register selection is ignored) and continue execution
+    %0001`0101  $15                             reserved
+    %0001`0110  $16   JMP       regVal          Jump to address in source register and continue execution
     %0001`0111  $17   JZ        immVal          If Zero flag is set, jump to the immediate address
     %0001`1000  $18   JNZ       immVal          If Zero flag is clear, jump to the immediate address
     %0001`1001  $19   JLT       immVal          If Negative flag differs from Overflow flag (signed <), jump to the immediate address
-    %0001`1010  $1A                             reserved (was JB; card maize-64)
-    %0001`1011  $1B                             reserved (was JGT; card maize-64)
-    %0001`1100  $1C                             reserved (was JA; card maize-64)
+    %0001`1010  $1A                             reserved
+    %0001`1011  $1B                             reserved
+    %0001`1100  $1C                             reserved
     %0001`1101  $1D   CALL      regVal          Push the return address to the stack, jump to address in source register and continue execution until RET is executed
     %0001`1110  $1E   OUTR      regVal  reg     Output value in source register to port in destination register
     %0001`1111  $1F   IN        regVal  reg     Read value from port in source register into destination register
     %0010`0000  $20   PUSH      regVal          Copy register value into memory at the stack pointer (SP), decrement SP by size of register
     %0010`0001  $21
-    %0010`0010  $22                             reserved (was CLR; moved to $32, card maize-64)
+    %0010`0010  $22                             reserved
     %0010`0011  $23
     %0010`0100  $24   INT       regVal          Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
     %0010`0101  $25
-    %0010`0110  $26                             reserved (was POP; moved to $72, card maize-64)
+    %0010`0110  $26                             reserved
     %0010`0111  $27   RET                       Pop the return address from the stack and continue execution at that address. Used to return from CALL.
-    %0010`1000  $28                             reserved (was IRET; moved to $67, card maize-64)
+    %0010`1000  $28                             reserved
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
     %0010`1010  $2A
     %0010`1011  $2B   SETZ      regVal          Set destination register to 1 if Zero flag is set, else 0 (reads flags; flag-neutral)
@@ -1251,14 +1233,14 @@ metadata that the linker's hygiene pass already validates.
     %0011`0000  $30   TSTIND    regVal regAddr  Set flags by ANDing source register value with value at address in destination register
     %0011`0001  $31   INC       regVal          Increment register by 1.
     %0011`0010  $32   CLR       regVal          Set register to zero (0).
-    %0011`0011  $33                             reserved (was NOT; moved to $B1, card maize-64)
+    %0011`0011  $33                             reserved
     %0011`0100  $34   SYS       regVal          Execute a system call using the system-call index stored in register (privileged)
     %0011`0101  $35   UDIV      regVal  reg     Unsigned-divide destination register by source register value
     %0011`0110  $36   UMOD      regVal  reg     Unsigned remainder of destination register divided by source register value
-    %0011`0111  $37                             reserved (was JGE; card maize-64)
-    %0011`1000  $38                             reserved (was JLE; card maize-64)
-    %0011`1001  $39                             reserved (was JBE; card maize-64)
-    %0011`1010  $3A                             reserved (was JAE; card maize-64)
+    %0011`0111  $37                             reserved
+    %0011`1000  $38                             reserved
+    %0011`1001  $39                             reserved
+    %0011`1010  $3A                             reserved
     %0011`1011  $3B   ADC       regVal  reg     Add source register value plus Carry to destination register
     %0011`1100  $3C   SBB       regVal  reg     Subtract source register value plus Carry (borrow) from destination register
     %0011`1101  $3D   MULW      regVal  reg reg Signed wide multiply: full product of operand 2 by source register value; low half to operand 2, high half to operand 3
@@ -1285,14 +1267,14 @@ metadata that the linker's hygiene pass already validates.
     %0101`0010  $52   LEA       immVal  reg reg Add immediate value in operand 1 to value in operand 2 register and store result in operand 3 register
     %0101`0011  $53   CPZ       immVal  reg     Copy immediate value into destination register with zero extension
     %0101`0100  $54   OUT       immVal  imm     Output immediate value to destination port
-    %0101`0101  $55                             reserved (was LNGJMP; removed, card maize-64)
+    %0101`0101  $55                             reserved
     %0101`0110  $56   JMP       immVal          Jump to immediate address and continue execution
     %0101`0111  $57   JB        immVal          If Carry flag is set (unsigned <), jump to the immediate address
     %0101`1000  $58   JGT       immVal          If Zero flag is clear and Negative flag equals Overflow flag (signed >), jump to the immediate address
     %0101`1001  $59   JA        immVal          If Carry flag is clear and Zero flag is clear (unsigned >), jump to the immediate address
-    %0101`1010  $5A                             reserved (was JB; card maize-64)
-    %0101`1011  $5B                             reserved (was JGT; card maize-64)
-    %0101`1100  $5C                             reserved (was JA; card maize-64)
+    %0101`1010  $5A                             reserved
+    %0101`1011  $5B                             reserved
+    %0101`1100  $5C                             reserved
     %0101`1101  $5D   CALL      immVal          Push the return address to the stack, jump to immediate address and continue execution until RET is executed
     %0101`1110  $5E   OUTR      immVal  reg     Output immediate value to port in destination register
     %0101`1111  $5F   IN        immVal  reg     Read value from port in immediate value into destination register
@@ -1319,10 +1301,10 @@ metadata that the linker's hygiene pass already validates.
     %0111`0100  $74   SYS       immVal          Execute a system call using the immediate index (privileged)
     %0111`0101  $75   UDIV      immVal  reg     Unsigned-divide destination register by immediate value
     %0111`0110  $76   UMOD      immVal  reg     Unsigned remainder of destination register divided by immediate value
-    %0111`0111  $77                             reserved (was JGE; card maize-64)
-    %0111`1000  $78                             reserved (was JLE; card maize-64)
-    %0111`1001  $79                             reserved (was JBE; card maize-64)
-    %0111`1010  $7A                             reserved (was JAE; card maize-64)
+    %0111`0111  $77                             reserved
+    %0111`1000  $78                             reserved
+    %0111`1001  $79                             reserved
+    %0111`1010  $7A                             reserved
     %0111`1011  $7B   ADC       immVal  reg     Add immediate value plus Carry to destination register
     %0111`1100  $7C   SBB       immVal  reg     Subtract immediate value plus Carry (borrow) from destination register
     %0111`1101  $7D   MULW      immVal  reg reg Signed wide multiply: full product of operand 2 by immediate value; low half to operand 2, high half to operand 3
@@ -1349,14 +1331,14 @@ metadata that the linker's hygiene pass already validates.
     %1001`0010  $92   LEA       regAddr reg reg Add value at address in operand 1 register to value in operand 2 register and store result in operand 3 register
     %1001`0011  $93                             reserved
     %1001`0100  $94   OUT       regAddr imm     Output value at address in source register to destination port
-    %1001`0101  $95                             reserved (was LNGJMP; removed, card maize-64)
-    %1001`0110  $96   JMP       regAddr         Jump to the full 64-bit address pointed to by source register and continue execution
+    %1001`0101  $95                             reserved
+    %1001`0110  $96   JMP       regAddr         Jump to address pointed to by source register and continue execution
     %1001`0111  $97   JGE       immVal          If Negative flag equals Overflow flag (signed >=), jump to the immediate address
     %1001`1000  $98   JLE       immVal          If Zero flag is set or Negative flag differs from Overflow flag (signed <=), jump to the immediate address
     %1001`1001  $99   JBE       immVal          If Carry flag is set or Zero flag is set (unsigned <=), jump to the immediate address
-    %1001`1010  $9A                             reserved (was JB; card maize-64)
-    %1001`1011  $9B                             reserved (was JGT; card maize-64)
-    %1001`1100  $9C                             reserved (was JA; card maize-64)
+    %1001`1010  $9A                             reserved
+    %1001`1011  $9B                             reserved
+    %1001`1100  $9C                             reserved
     %1001`1101  $9D   CALL      regAddr         Push the return address to the stack, jump to address pointed to by source register and continue execution until RET is executed
     %1001`1110  $9E   OUTR      regAddr reg     Output value at address in source register to port in destination register
     %1001`1111  $9F   IN        regAddr reg     Read value from port at address in source register into destination register
@@ -1370,7 +1352,7 @@ metadata that the linker's hygiene pass already validates.
     %1010`0111  $A7   NOP                       No operation. Used as an instruction placeholder.
     %1010`1000  $A8
     %1010`1001  $A9   SETCRY                    Set the Carry flag
-    %1010`1010  $AA                             reserved (was NOP; moved to $A7, card maize-64)
+    %1010`1010  $AA                             reserved
     %1010`1011  $AB   SETGE     regVal          Set destination register to 1 if Negative flag equals Overflow flag (signed >=), else 0 (reads flags; flag-neutral)
     %1010`1100  $AC   SETLE     regVal          Set destination register to 1 if Zero flag is set or Negative flag differs from Overflow flag (signed <=), else 0 (reads flags; flag-neutral)
     %1010`1101  $AD   SETBE     regVal          Set destination register to 1 if Carry flag is set or Zero flag is set (unsigned <=), else 0 (reads flags; flag-neutral)
@@ -1383,10 +1365,10 @@ metadata that the linker's hygiene pass already validates.
     %1011`0100  $B4
     %1011`0101  $B5   UDIV      regAddr reg     Unsigned-divide destination register by value at address in source register
     %1011`0110  $B6   UMOD      regAddr reg     Unsigned remainder of destination register divided by value at address in source register
-    %1011`0111  $B7                             reserved (was JGE; card maize-64)
-    %1011`1000  $B8                             reserved (was JLE; card maize-64)
-    %1011`1001  $B9                             reserved (was JBE; card maize-64)
-    %1011`1010  $BA                             reserved (was JAE; card maize-64)
+    %1011`0111  $B7                             reserved
+    %1011`1000  $B8                             reserved
+    %1011`1001  $B9                             reserved
+    %1011`1010  $BA                             reserved
     %1011`1011  $BB   ADC       regAddr reg     Add value at address in source register plus Carry to destination register
     %1011`1100  $BC   SBB       regAddr reg     Subtract value at address in source register plus Carry (borrow) from destination register
     %1011`1101  $BD   MULW      regAddr reg reg Signed wide multiply: full product of operand 2 by value at address in source register; low half to operand 2, high half to operand 3
@@ -1413,25 +1395,25 @@ metadata that the linker's hygiene pass already validates.
     %1101`0010  $D2   LEA       immAddr reg reg Add value at immediate address in operand 1 to value in operand 2 register and store result in operand 3 register
     %1101`0011  $D3                             reserved
     %1101`0100  $D4   OUT       immAddr imm     Output value at immediate address to destination port
-    %1101`0101  $D5                             reserved (was LNGJMP; removed, card maize-64)
+    %1101`0101  $D5                             reserved
     %1101`0110  $D6   JMP       immAddr         Jump to address pointed to by immediate value and continue execution
     %1101`0111  $D7   JAE       immVal          If Carry flag is clear (unsigned >=), jump to the immediate address
-    %1101`1000  $D8                             reserved (UNALLOCATED spare condition encoding; claimants: JO/JNO, IEEE unordered)
-    %1101`1001  $D9                             reserved (UNALLOCATED spare condition encoding; claimants: JO/JNO, IEEE unordered)
-    %1101`1010  $DA                             reserved (was JB; card maize-64)
-    %1101`1011  $DB                             reserved (was JGT; card maize-64)
-    %1101`1100  $DC                             reserved (was JA; card maize-64)
+    %1101`1000  $D8                             reserved
+    %1101`1001  $D9                             reserved
+    %1101`1010  $DA                             reserved
+    %1101`1011  $DB                             reserved
+    %1101`1100  $DC                             reserved
     %1101`1101  $DD   CALL      immAddr         Push the return address to the stack, jump to address pointed to by immediate value and continue execution until RET is executed
     %1101`1110  $DE   OUTR      immAddr reg     Output value at immediate address to port in destination register
     %1101`1111  $DF   IN        immAddr reg     Read value from port at immediate address into destination register
     %1110`0000  $E0   XCHG      reg     reg     Atomically exchange the values in two registers
-    %1110`0001  $E1                             reserved (was SETCRY; moved to $A9, card maize-64)
-    %1110`0010  $E2                             reserved (was CLRCRY; moved to $E9, card maize-64)
-    %1110`0011  $E3                             reserved (was CLRINT; moved to $69, card maize-64)
-    %1110`0100  $E4                             reserved (was DUP; removed, card maize-64)
-    %1110`0101  $E5                             reserved (was SWAP; removed, card maize-64)
+    %1110`0001  $E1                             reserved
+    %1110`0010  $E2                             reserved
+    %1110`0011  $E3                             reserved
+    %1110`0100  $E4                             reserved
+    %1110`0101  $E5                             reserved
     %1110`0110  $E6
-    %1110`0111  $E7   BRK                       Trigger a debug break
+    %1110`0111  $E7                             reserved
     %1110`1000  $E8
     %1110`1001  $E9   CLRCRY                    Clear the Carry flag
     %1110`1010  $EA
@@ -1447,15 +1429,15 @@ metadata that the linker's hygiene pass already validates.
     %1111`0100  $F4
     %1111`0101  $F5   UDIV      immAddr reg     Unsigned-divide destination register by value at immediate address
     %1111`0110  $F6   UMOD      immAddr reg     Unsigned remainder of destination register divided by value at immediate address
-    %1111`0111  $F7                             reserved (was JGE; card maize-64)
-    %1111`1000  $F8                             reserved (was JLE; card maize-64)
-    %1111`1001  $F9                             reserved (was JBE; card maize-64)
-    %1111`1010  $FA                             reserved (was JAE; card maize-64)
+    %1111`0111  $F7                             reserved
+    %1111`1000  $F8                             reserved
+    %1111`1001  $F9                             reserved
+    %1111`1010  $FA                             reserved
     %1111`1011  $FB   ADC       immAddr reg     Add value at immediate address plus Carry to destination register
     %1111`1100  $FC   SBB       immAddr reg     Subtract value at immediate address plus Carry (borrow) from destination register
     %1111`1101  $FD   MULW      immAddr reg reg Signed wide multiply: full product of operand 2 by value at immediate address; low half to operand 2, high half to operand 3
     %1111`1110  $FE   UMULW     immAddr reg reg Unsigned wide multiply: full product of operand 2 by value at immediate address; low half to operand 2, high half to operand 3
-    %1111`1111  $FF                             reserved (was BRK; moved to $E7, card maize-64)
+    %1111`1111  $FF   BRK                       Trigger a debug break
 
 ## License
 
