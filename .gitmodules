@@ -1,0 +1,6 @@
+[submodule "toolchain/cproc"]
+	path = toolchain/cproc
+	url = https://github.com/michaelforney/cproc
+[submodule "toolchain/qbe"]
+	path = toolchain/qbe
+	url = https://github.com/michaelforney/qbe
