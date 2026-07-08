@@ -1,14 +1,15 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Build mazm and install a stable copy into ~\bin (Windows).
+    Build mazm and mzld and install stable copies into ~\bin (Windows).
 
 .DESCRIPTION
-    Configures the CMake preset if needed, builds the mazm target, and copies
-    mazm.exe to the install directory (default: $HOME\bin). If the install
-    directory is not on the user PATH it is appended, so editors and shells
-    find `mazm` without per-workspace configuration. Wired to the default
-    build task (Ctrl+Shift+B) via .vscode/tasks.json.
+    Configures the CMake preset if needed, builds the mazm and mzld targets,
+    and copies mazm.exe and mzld.exe to the install directory (default:
+    $HOME\bin). If the install directory is not on the user PATH it is
+    appended, so editors and shells find the tools without per-workspace
+    configuration. Wired to the default build task (Ctrl+Shift+B) via
+    .vscode/tasks.json.
 
     Never prompts; safe for non-interactive use.
 
@@ -54,23 +55,24 @@ if (-not (Test-Path (Join-Path $BuildDir 'CMakeCache.txt'))) {
     }
 }
 
-Write-Host "Building mazm ($Preset)..."
-& $Cmake --build $BuildDir --target mazm
+Write-Host "Building mazm and mzld ($Preset)..."
+& $Cmake --build $BuildDir --target mazm mzld
 if ($LASTEXITCODE -ne 0) {
     Write-Error "cmake build failed (exit $LASTEXITCODE)."
     exit 2
 }
 
-$BuiltExe = Join-Path $BuildDir 'mazm.exe'
-if (-not (Test-Path $BuiltExe)) {
-    Write-Error "build reported success but $BuiltExe does not exist."
-    exit 2
-}
-
 # --- Install ----------------------------------------------------------------------
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
-Copy-Item $BuiltExe (Join-Path $InstallDir 'mazm.exe') -Force
-Write-Host "Installed $BuiltExe -> $(Join-Path $InstallDir 'mazm.exe')"
+foreach ($tool in 'mazm', 'mzld') {
+    $builtExe = Join-Path $BuildDir "$tool.exe"
+    if (-not (Test-Path $builtExe)) {
+        Write-Error "build reported success but $builtExe does not exist."
+        exit 2
+    }
+    Copy-Item $builtExe (Join-Path $InstallDir "$tool.exe") -Force
+    Write-Host "Installed $builtExe -> $(Join-Path $InstallDir "$tool.exe")"
+}
 
 # --- Ensure the install dir is on the user PATH -----------------------------------
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -102,5 +104,18 @@ if ($probeExit -ne 1 -or $probeOut -notmatch 'mazm-install-probe:1: error:') {
     exit 1
 }
 
-Write-Host 'mazm installed and smoke-checked (stdin diagnostics probe passed).'
+# mzld smoke: no inputs prints the usage line to stderr and exits 1. Same
+# stderr-under-5.1 caveat as above, so the same relaxed-EAP pipeline.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$ldOut = (& (Join-Path $InstallDir 'mzld.exe') 2>&1 | Out-String)
+$ldExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+
+if ($ldExit -ne 1 -or $ldOut -notmatch 'usage: mzld') {
+    Write-Error "installed mzld failed the usage smoke test (exit $ldExit)."
+    exit 1
+}
+
+Write-Host 'mazm and mzld installed and smoke-checked.'
 exit 0

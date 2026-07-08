@@ -53,8 +53,8 @@
             }
         },
         {
-            "label": "Install mazm to ~/bin",
-            "detail": "Build mazm and copy it to the user bin directory so editors find a stable copy on PATH.",
+            "label": "Install mazm + mzld to ~/bin",
+            "detail": "Build mazm and mzld and copy them to the user bin directory so editors find stable copies on PATH.",
             "type": "shell",
             "group": {
                 "kind": "build",

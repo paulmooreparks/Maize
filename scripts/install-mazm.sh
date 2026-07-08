@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build mazm and install a stable copy into ~/bin (Linux/WSL/macOS).
+# Build mazm and mzld and install stable copies into ~/bin (Linux/WSL/macOS).
 # Counterpart of install-mazm.ps1; wired to the default build task via
 # .vscode/tasks.json. Never prompts.
 
@@ -22,12 +22,14 @@ if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
     cmake --preset "$PRESET"
 fi
 
-echo "Building mazm ($PRESET)..."
-cmake --build "$BUILD_DIR" --target mazm
+echo "Building mazm and mzld ($PRESET)..."
+cmake --build "$BUILD_DIR" --target mazm mzld
 
 mkdir -p "$INSTALL_DIR"
-cp "$BUILD_DIR/mazm" "$INSTALL_DIR/mazm"
-echo "Installed $BUILD_DIR/mazm -> $INSTALL_DIR/mazm"
+for tool in mazm mzld; do
+    cp "$BUILD_DIR/$tool" "$INSTALL_DIR/$tool"
+    echo "Installed $BUILD_DIR/$tool -> $INSTALL_DIR/$tool"
+done
 
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
@@ -46,4 +48,15 @@ if [ "$probe_rc" -ne 1 ] || ! printf '%s' "$probe_out" | grep -q 'mazm-install-p
     exit 1
 fi
 
-echo "mazm installed and smoke-checked (stdin diagnostics probe passed)."
+# mzld smoke: no inputs prints the usage line to stderr and exits 1.
+set +e
+ld_out=$("$INSTALL_DIR/mzld" 2>&1)
+ld_rc=$?
+set -e
+
+if [ "$ld_rc" -ne 1 ] || ! printf '%s' "$ld_out" | grep -q 'usage: mzld'; then
+    echo "error: installed mzld failed the usage smoke test (exit $ld_rc)" >&2
+    exit 1
+fi
+
+echo "mazm and mzld installed and smoke-checked."
