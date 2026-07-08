@@ -14,11 +14,11 @@ namespace maize {
             }
         }
 
-        u_word read(u_word fd, void* buf, u_hword count) {
+        u_word read(u_word fd, void* buf, u_word count) {
             return ::read(fd, buf, count);
         }
 
-        u_word write(u_word fd, const void* buf, u_hword count) {
+        u_word write(u_word fd, const void* buf, u_word count) {
             return ::write(fd, buf, count);
         }
 #elif _WIN32
@@ -202,15 +202,40 @@ namespace maize {
             }
         }
 
-        u_word read(u_word fd, void* buf, u_hword count) {
-            if (fd == 0) {
-                DWORD bytes_read {0};
+        // ReadFile/WriteFile take a 32-bit DWORD length, so a 64-bit count above
+        // 0xFFFFFFFF cannot be passed in one call. Chunk the transfer in <=DWORD
+        // slices (capped at chunk_max) and accumulate the total transferred so the
+        // full 64-bit count is honored rather than silently truncated at the WinAPI
+        // boundary. fd 0/1/2 stdio never short-transfers at these sizes.
+        namespace {
+            constexpr u_word chunk_max {0x7FFFFFFF};
+        }
 
-                if (!ReadFile(hStdin, buf, count, &bytes_read, nullptr)) {
-                    return (u_word)-1;
+        u_word read(u_word fd, void* buf, u_word count) {
+            if (fd == 0) {
+                u_byte* cursor {reinterpret_cast<u_byte*>(buf)};
+                u_word total_read {0};
+
+                while (count > 0) {
+                    DWORD this_chunk {static_cast<DWORD>(count < chunk_max ? count : chunk_max)};
+                    DWORD bytes_read {0};
+
+                    if (!ReadFile(hStdin, cursor, this_chunk, &bytes_read, nullptr)) {
+                        return (u_word)-1;
+                    }
+
+                    total_read += bytes_read;
+
+                    if (bytes_read < this_chunk) {
+                        // Short read (end of input); stop rather than spin.
+                        break;
+                    }
+
+                    cursor += bytes_read;
+                    count -= bytes_read;
                 }
 
-                return bytes_read;
+                return total_read;
             }
 
             if (fd == 1 || fd == 2) {
@@ -220,7 +245,7 @@ namespace maize {
             return -1;
         }
 
-        u_word write(u_word fd, const void* buf, u_hword count) {
+        u_word write(u_word fd, const void* buf, u_word count) {
             if (fd == 0) {
                 return (u_word)-1;
             }
@@ -232,13 +257,29 @@ namespace maize {
                     hStdHandle = hStderr;
                 }
 
-                DWORD bytes_written {0};
+                u_byte const* cursor {reinterpret_cast<u_byte const*>(buf)};
+                u_word total_written {0};
 
-                if (!WriteFile(hStdHandle, buf, count, &bytes_written, nullptr)) {
-                    return (u_word)-1;
+                while (count > 0) {
+                    DWORD this_chunk {static_cast<DWORD>(count < chunk_max ? count : chunk_max)};
+                    DWORD bytes_written {0};
+
+                    if (!WriteFile(hStdHandle, cursor, this_chunk, &bytes_written, nullptr)) {
+                        return (u_word)-1;
+                    }
+
+                    total_written += bytes_written;
+
+                    if (bytes_written < this_chunk) {
+                        // Short write; stop rather than spin.
+                        break;
+                    }
+
+                    cursor += bytes_written;
+                    count -= bytes_written;
                 }
 
-                return bytes_written;
+                return total_written;
             }
 
             return static_cast<u_word>(-1);
@@ -265,8 +306,7 @@ namespace maize {
                 case 0x0000U: {
                     u_word fd {regs::r0.w0};
                     u_word address {regs::r1.w0};
-                    u_hword count {regs::r2.h0};
-                    size_t s = count;
+                    u_word count {regs::r2.w0};
 
                     std::vector<u_byte> buf;
                     buf.resize(count);
@@ -284,7 +324,7 @@ namespace maize {
                 case 0x0001U: {
                     u_word fd {regs::r0.w0};
                     u_word address {regs::r1.w0};
-                    u_hword count {regs::r2.h0};
+                    u_word count {regs::r2.w0};
 
                     std::vector<u_byte> str = mm.read(address, count);
                     u_byte const* buf {&str[0]};

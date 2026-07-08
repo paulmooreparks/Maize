@@ -335,7 +335,7 @@ namespace maize {
             return read_count;
         }
 
-        std::vector<u_byte> memory_module::read(reg_value address, u_hword count) {
+        std::vector<u_byte> memory_module::read(reg_value address, u_word count) {
             std::vector<u_byte> retval;
 
             if (count) {

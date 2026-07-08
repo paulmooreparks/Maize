@@ -971,6 +971,14 @@ The same syscall may be made with the SYS instruction, which will execute the sy
     SUB hello_world R2      ; string length in register J
     SYS $01                 ; call sys_write
 
+For `sys_read` and `sys_write` the byte-count / size_t argument in R2 is read as a full
+64-bit value (the whole register, `R2.w0`), consistent with the flat 64-bit memory model.
+A transfer is not narrowed to 16 or 32 bits: any count up to 2^64 - 1 is honored. Because
+conforming programs compute the length into R2 with full-register operations (the `CP` /
+`SUB` above target the whole register, leaving the upper bits zero), this is transparent to
+existing code. The SYS / INT encoding, the syscall-number-in-R9 convention, and the address
+arguments (fd in R0, buffer address in R1) are unchanged.
+
 
 ## Assembler Syntax
 

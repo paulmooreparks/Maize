@@ -237,6 +237,7 @@ run_test "test_div"          "test_div.mazm"          "div: PASS"               
 run_test "test_jcc"          "test_jcc.mazm"          "jcc: PASS"                     0
 run_test "test_setcc"        "test_setcc.mazm"        "setcc: PASS"                   0
 run_test "test_memblock"     "test_memblock.mazm"     "memblock: PASS"                0
+run_test "test_widecount"    "test_widecount.mazm"    "widecount: PASS"               0
 run_test "test_crossblock"   "test_crossblock.mazm"   "crossblk: PASS"                0
 run_test "test_adc"          "test_adc.mazm"          "adc: PASS"                     0
 run_test "test_copywidth"    "test_copywidth.mazm"    "copywidth: PASS"               0

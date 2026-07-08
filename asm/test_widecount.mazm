@@ -1,0 +1,63 @@
+; **********************************************************************************
+; Regression test for card maize-56: widen the syscall byte-count argument to 64-bit.
+;
+; sys_write (SYS $01) reads the transfer byte count from R2. Before this fix the count
+; was read as a sub-register and narrowed on several hops of the count path (the R2
+; read, the syscall::write parameter, and the 2-arg memory_module::read overload).
+; This test issues a single sys_write whose count (0x20000 = 131072) is well over
+; 65535, and requires the syscall to report the full count transferred back in RV.
+; If any narrowing remained on the count path the returned value would not match the
+; requested count and the test would FAIL.
+;
+; The 131072-byte payload is directed at STDERR (fd 2), which travels the identical
+; widened backend path as STDOUT (fd 1) but is discarded by the test harness. That
+; lets the harness exact-match the single-line PASS/FAIL verdict this program prints
+; on STDOUT. The real proof of the widening is the "RV == requested count" check
+; below, per the card spec's test strategy: structural widening plus a feasible-size
+; regression guard. It does NOT exercise the 4 GiB boundary (a genuine >4 GiB transfer
+; is impractical for CI), so it passes both before and after the fix; it exists to
+; catch any future regression that reintroduces a narrowing on the common path.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- issue a >65535-byte sys_write and capture the transferred count ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $02 R0                 ; fd 2 (STDERR): same backend path as STDOUT
+    CP $0010`0000 R1.H0       ; buffer address (auto-zeroed VM memory, at 1 MiB)
+    CP $0002`0000 R2.H0       ; count = 131072 bytes (0x20000), well over 65535
+    SYS $01                   ; sys_write; RV = bytes actually transferred
+
+    ; ---- require the full 64-bit count to come back in RV ----
+    CLR R3
+    CP $0002`0000 R3.H0       ; expected count = 131072
+    CMP R3 RV                 ; RV must equal the requested count
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $10 R2                 ; 16 bytes ("widecount: PASS\n")
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $10 R2                 ; 16 bytes ("widecount: FAIL\n")
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "widecount: PASS\n\0"
+
+fail_string:
+    STRING "widecount: FAIL\n\0"

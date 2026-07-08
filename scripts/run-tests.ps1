@@ -63,6 +63,7 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_jcc';           File = 'test_jcc.mazm';           Expected = 'jcc: PASS';                     Golden = $false }
     [pscustomobject]@{ Name = 'test_setcc';         File = 'test_setcc.mazm';         Expected = 'setcc: PASS';                   Golden = $false }
     [pscustomobject]@{ Name = 'test_memblock';      File = 'test_memblock.mazm';      Expected = 'memblock: PASS';                Golden = $false }
+    [pscustomobject]@{ Name = 'test_widecount';     File = 'test_widecount.mazm';     Expected = 'widecount: PASS';               Golden = $false }
     [pscustomobject]@{ Name = 'test_crossblock';    File = 'test_crossblock.mazm';    Expected = 'crossblk: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_adc';           File = 'test_adc.mazm';           Expected = 'adc: PASS';                     Golden = $false }
     [pscustomobject]@{ Name = 'test_copywidth';     File = 'test_copywidth.mazm';     Expected = 'copywidth: PASS';               Golden = $false }
@@ -241,8 +242,18 @@ function Invoke-Test($test) {
     # array-of-lines capture (& $exe args), which can normalize line endings.
     $stdoutFile = [System.IO.Path]::GetTempFileName()
     $stderrFile = [System.IO.Path]::GetTempFileName()
+    # A program that legitimately writes to stderr (e.g. test_widecount routes its
+    # large payload there so the harness can still exact-match the stdout verdict)
+    # would, under Windows PowerShell 5.1 with ErrorActionPreference = Stop, turn the
+    # redirected native stderr write into a terminating NativeCommandError even though
+    # the 2> redirect captures it fine. Relax it for exactly this invocation, then
+    # restore, and keep relying on $LASTEXITCODE plus the captured stdout (same idiom
+    # as the mazm call above and scripts/install-mazm.ps1:90-98).
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & $MaizeExe $binPath > $stdoutFile 2> $stderrFile
     $maizeExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
     $actualRaw = Get-Content -Raw -Path $stdoutFile -ErrorAction SilentlyContinue
     Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
 

@@ -381,7 +381,7 @@ namespace maize {
 			size_t read(reg_value const &address, reg_value &reg, size_t count, size_t dst_idx);
 			size_t read(u_word address, reg_value &reg, size_t count, size_t dst_idx);
 			size_t read(reg_value address, u_hword count, std::vector<u_byte> &retval);
-			std::vector<u_byte> read(reg_value address, u_hword count);
+			std::vector<u_byte> read(reg_value address, u_word count);
 			u_byte read_byte(u_word address);
 			u_word last_block() const;
 			

@@ -23,8 +23,8 @@ namespace maize {
 	} // namespace sys
 
 	namespace syscall {
-		u_word read(u_word fd, void* buf, u_hword count);
-		u_word write(u_word fd, const void *buf, u_hword count);
+		u_word read(u_word fd, void* buf, u_word count);
+		u_word write(u_word fd, const void *buf, u_word count);
 	}
 
 } // namespace maize
