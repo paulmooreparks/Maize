@@ -1,0 +1,69 @@
+; **********************************************************************************
+; Regression test for card maize-64: NEG (two's-complement negate).
+;
+; NEG R = 0 - R across widths, with SUB-family flags: Z when the operand is 0,
+; C (borrow) whenever the operand is non-zero, N from the result sign. SETcc (which
+; is flag-neutral) is used to observe NEG's carry directly; CMP re-checks the value.
+; Each assertion branches to the single fail path on a mismatch; reaching the end
+; prints PASS.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- byte: 0 - 5 = -5 = $FB ----
+    CP $05 R0.B0
+    NEG R0.B0
+    CMP $FB R0.B0
+    JNZ fail
+
+    ; ---- NEG is its own inverse: back to 5 ----
+    NEG R0.B0
+    CMP $05 R0.B0
+    JNZ fail
+
+    ; ---- NEG of a non-zero value sets carry (borrow) ----
+    CP $01 R0.B0
+    NEG R0.B0
+    SETB R1.B0              ; capture NEG's carry (flag-neutral)
+    CMP $01 R1.B0
+    JNZ fail
+
+    ; ---- NEG of zero is zero, carry clear ----
+    CLR R0
+    NEG R0.B0
+    SETB R1.B0             ; carry must be clear
+    CMP $00 R1.B0
+    JNZ fail
+    CMP $00 R0.B0          ; value must still be 0
+    JNZ fail
+
+    ; ---- hword width: 0 - 5 = $FFFFFFFB ----
+    CP $0000`0005 R2.H0
+    NEG R2.H0
+    CMP $FFFF`FFFB R2.H0
+    JNZ fail
+
+    ; ---- full 64-bit width: 0 - 1 = all ones ----
+    CP $01 R3
+    NEG R3
+    CMP $FFFF`FFFF`FFFF`FFFF R3
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $0A R2
+    SYS $01
+    HALT
+
+fail:
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $0A R2
+    SYS $01
+    HALT
+
+pass_string:
+    STRING "neg: PASS\n\0"
+
+fail_string:
+    STRING "neg: FAIL\n\0"

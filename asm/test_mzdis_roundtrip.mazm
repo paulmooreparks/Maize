@@ -24,12 +24,25 @@ CLRINT
 RET
 IRET
 
-; ---- 1-operand, plain register (CLR/INC/DEC/NOT/POP) ----
+; ---- 1-operand, plain register (CLR/INC/DEC/NOT/NEG/POP) ----
 CLR R0
 INC R1
 DEC R2
 NOT R3
+NEG R3
 POP R4
+
+; ---- Jcc: immediate target only, all ten conditions (maize-64) ----
+JZ $1234`5678
+JNZ $12
+JLT $1234
+JB $12
+JGT $12
+JA $12
+JGE $12
+JLE $12
+JBE $12
+JAE $12
 
 ; ---- 1-operand, SrcFlagged, all four addressing modes (PUSH) ----
 PUSH R5

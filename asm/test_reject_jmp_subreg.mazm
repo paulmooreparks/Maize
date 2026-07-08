@@ -1,0 +1,5 @@
+; Negative test (card maize-64): JMP targets the full 64-bit width; a sub-register
+; operand suffix must be rejected with a diagnostic.
+$0000`0000:
+    JMP R0.H0
+    HALT

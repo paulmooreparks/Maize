@@ -1,0 +1,140 @@
+; **********************************************************************************
+; Regression test for card maize-64: all ten Jcc conditions, taken and not-taken.
+;
+; Jcc is restricted to an immediate (label) target. CMP src dst computes (dst - src);
+; the branch immediately follows so nothing disturbs the flags. Each condition is
+; checked once where it must be taken (branch to a continue label; a fall-through hits
+; JMP fail) and once where it must NOT be taken (Jcc fail must fall through). The
+; predicate table is shared with SETcc, so this doubles as a cross-check of that table.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- JZ: taken ----
+    CP $05 R0.B0
+    CMP $05 R0.B0
+    JZ jz_t
+    JMP fail
+jz_t:
+    ; ---- JZ: not taken ----
+    CP $05 R0.B0
+    CMP $03 R0.B0
+    JZ fail
+
+    ; ---- JNZ: taken ----
+    CP $05 R0.B0
+    CMP $03 R0.B0
+    JNZ jnz_t
+    JMP fail
+jnz_t:
+    ; ---- JNZ: not taken ----
+    CP $05 R0.B0
+    CMP $05 R0.B0
+    JNZ fail
+
+    ; ---- JLT: taken ----
+    CP $03 R0.B0
+    CMP $05 R0.B0
+    JLT jlt_t
+    JMP fail
+jlt_t:
+    ; ---- JLT: not taken ----
+    CP $05 R0.B0
+    CMP $03 R0.B0
+    JLT fail
+
+    ; ---- JGT: taken ----
+    CP $05 R0.B0
+    CMP $03 R0.B0
+    JGT jgt_t
+    JMP fail
+jgt_t:
+    ; ---- JGT: not taken ----
+    CP $05 R0.B0
+    CMP $05 R0.B0
+    JGT fail
+
+    ; ---- JB: taken ----
+    CP $03 R0.B0
+    CMP $05 R0.B0
+    JB jb_t
+    JMP fail
+jb_t:
+    ; ---- JB: not taken ----
+    CP $05 R0.B0
+    CMP $03 R0.B0
+    JB fail
+
+    ; ---- JA: taken ----
+    CP $05 R0.B0
+    CMP $03 R0.B0
+    JA ja_t
+    JMP fail
+ja_t:
+    ; ---- JA: not taken ----
+    CP $05 R0.B0
+    CMP $05 R0.B0
+    JA fail
+
+    ; ---- JGE: taken ----
+    CP $05 R0.B0
+    CMP $05 R0.B0
+    JGE jge_t
+    JMP fail
+jge_t:
+    ; ---- JGE: not taken ----
+    CP $03 R0.B0
+    CMP $05 R0.B0
+    JGE fail
+
+    ; ---- JLE: taken ----
+    CP $05 R0.B0
+    CMP $05 R0.B0
+    JLE jle_t
+    JMP fail
+jle_t:
+    ; ---- JLE: not taken ----
+    CP $05 R0.B0
+    CMP $03 R0.B0
+    JLE fail
+
+    ; ---- JBE: taken ----
+    CP $05 R0.B0
+    CMP $05 R0.B0
+    JBE jbe_t
+    JMP fail
+jbe_t:
+    ; ---- JBE: not taken ----
+    CP $05 R0.B0
+    CMP $03 R0.B0
+    JBE fail
+
+    ; ---- JAE: taken ----
+    CP $05 R0.B0
+    CMP $05 R0.B0
+    JAE jae_t
+    JMP fail
+jae_t:
+    ; ---- JAE: not taken ----
+    CP $03 R0.B0
+    CMP $05 R0.B0
+    JAE fail
+
+    ; ---- all checks passed ----
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $0E R2
+    SYS $01
+    HALT
+
+fail:
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $0E R2
+    SYS $01
+    HALT
+
+pass_string:
+    STRING "jcc-all: PASS\n\0"
+
+fail_string:
+    STRING "jcc-all: FAIL\n\0"

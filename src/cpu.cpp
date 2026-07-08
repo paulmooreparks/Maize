@@ -710,6 +710,49 @@ namespace maize {
                 regs::rp.w0 = target.w0;
             }
 
+            /* Shared condition machinery (card maize-64). The two high opcode bits
+               select the condition "row" and the base slot selects the "column";
+               decode_condition folds them into a single index that eval_condition
+               maps to a flag predicate. This ONE predicate table drives BOTH Jcc
+               and SETcc, so the flag formulas have a single source of truth (no
+               copy-pasted per-condition expressions in the dispatch cases). */
+            u_byte decode_condition(u_byte base) {
+                u_byte row = (regs::ri.b0 & opcode_flag) >> 6;
+                u_byte col = static_cast<u_byte>((regs::ri.b0 & 0x3F) - base);
+                return static_cast<u_byte>(row * 3 + col);
+            }
+
+            bool eval_condition(u_byte cond) {
+                switch (cond) {
+                    case 0: return (bool)zero_flag;                                             // Z
+                    case 1: return !zero_flag;                                                  // NZ
+                    case 2: return (bool)negative_flag != (bool)overflow_flag;                  // LT
+                    case 3: return (bool)carryout_flag;                                         // B  (unsigned <)
+                    case 4: return !zero_flag && ((bool)negative_flag == (bool)overflow_flag);  // GT
+                    case 5: return !carryout_flag && !zero_flag;                                // A  (unsigned >)
+                    case 6: return (bool)negative_flag == (bool)overflow_flag;                  // GE
+                    case 7: return zero_flag || ((bool)negative_flag != (bool)overflow_flag);   // LE
+                    case 8: return carryout_flag || zero_flag;                                  // BE (unsigned <=)
+                    case 9: return !carryout_flag;                                              // AE (unsigned >=)
+                    default: {
+                        std::stringstream err {};
+                        err << "unallocated condition encoding: " << std::hex << static_cast<unsigned>(regs::ri.b0);
+                        throw std::logic_error(err.str());
+                    }
+                }
+            }
+
+            /* ALU micro-op selectors for the packed unary family (card maize-64).
+               The packed unary instruction bytes share their low-6 bits ($31 for
+               INC/DEC/NOT/NEG, $32 for CLR/POP), so run_alu (which dispatches on
+               alu.b0 & opflag_code) cannot decode them off the raw opcode. tick()
+               translates the condition-style row bits to one of these low-6-unique
+               selectors before calling run_alu. */
+            const u_byte alu_uop_inc {0x31};
+            const u_byte alu_uop_dec {0x32};
+            const u_byte alu_uop_not {0x33};
+            const u_byte alu_uop_neg {0x2A};
+
             void copy_regval_regaddr(reg_value const &src, subreg_enum src_subreg, reg_value const &dst, subreg_enum dst_subreg) {
                 auto src_offset = subreg_offset_map[src_subreg];
                 auto src_mask = subreg_mask_map[src_subreg];
@@ -2022,7 +2065,7 @@ namespace maize {
                     break;
                 }
 
-                case instr::inc_opcode: {
+                case alu_uop_inc: {
                     /* INC is ADD with src = 1; C and V follow the ADD family (card maize-1). */
                     switch (op_size) {
                         case 1: {
@@ -2073,7 +2116,7 @@ namespace maize {
                     break;
                 }
 
-                case instr::dec_opcode: {
+                case alu_uop_dec: {
                     /* DEC is SUB with src = 1; C and V follow the SUB family (card maize-1). */
                     switch (op_size) {
                         case 1: {
@@ -2124,7 +2167,7 @@ namespace maize {
                     break;
                 }
 
-                case instr::not_opcode: {
+                case alu_uop_not: {
                     overflow_flag = 0;
                     carryout_flag = 0;
 
@@ -2164,6 +2207,60 @@ namespace maize {
 
                     break;
                 }
+
+                case alu_uop_neg: {
+                    /* NEG is SUB with dst = 0, src = operand: result = 0 - x (card
+                       maize-64). C/N/V/Z follow the SUB family with a zero minuend, so
+                       C (borrow) is set whenever x != 0, and V is set only when x is the
+                       width's INT_MIN (the one value -x cannot represent). */
+                    switch (op_size) {
+                        case 1: {
+                            u_byte x = alu.op2_reg.b0;
+                            u_byte result = static_cast<u_byte>(u_byte(0) - x);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80;
+                            carryout_flag = result != 0;
+                            overflow_flag = (x & result) & 0x80;
+                            alu.op2_reg.w0 = result;
+                            break;
+                        }
+
+                        case 2: {
+                            u_qword x = alu.op2_reg.q0;
+                            u_qword result = static_cast<u_qword>(u_qword(0) - x);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000;
+                            carryout_flag = result != 0;
+                            overflow_flag = (x & result) & 0x8000;
+                            alu.op2_reg.w0 = result;
+                            break;
+                        }
+
+                        case 4: {
+                            u_hword x = alu.op2_reg.h0;
+                            u_hword result = static_cast<u_hword>(u_hword(0) - x);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x80000000;
+                            carryout_flag = result != 0;
+                            overflow_flag = (x & result) & 0x80000000;
+                            alu.op2_reg.w0 = result;
+                            break;
+                        }
+
+                        case 8: {
+                            u_word x = alu.op2_reg.w0;
+                            u_word result = static_cast<u_word>(u_word(0) - x);
+                            zero_flag = result == 0;
+                            negative_flag = result & 0x8000000000000000;
+                            carryout_flag = result != 0;
+                            overflow_flag = (x & result) & 0x8000000000000000;
+                            alu.op2_reg.w0 = result;
+                            break;
+                        }
+                    }
+
+                    break;
+                }
             }
 
             /* CMP/CMPIND/TEST/TSTIND set flags only; they must not modify the destination
@@ -2194,74 +2291,31 @@ namespace maize {
                         break;
                     }
 
-                    case instr::clr_regVal: {
+                    case instr::clr_opcode: {
                         regs::rp.w0 += 1;
                         clr_reg(op1_reg(), op1_subreg_flag());
                         break;
                     }
 
-                    /* SETcc (card maize-55): materialize a flag condition as a 0/1
-                       value in the single register operand. Each predicate below is
-                       copied verbatim from the matching Jcc case body so SETcc and
-                       Jcc can never disagree for the same flag state. Flag-neutral:
-                       RF is read but never written. */
-                    case instr::setz_opcode: {
-                        regs::rp.w0 += 1;
-                        set_reg(op1_reg(), op1_subreg_flag(), (bool)zero_flag);
-                        break;
-                    }
-
-                    case instr::setnz_opcode: {
-                        regs::rp.w0 += 1;
-                        set_reg(op1_reg(), op1_subreg_flag(), !zero_flag);
-                        break;
-                    }
-
-                    case instr::setlt_opcode: {
-                        regs::rp.w0 += 1;
-                        set_reg(op1_reg(), op1_subreg_flag(), (bool)negative_flag != (bool)overflow_flag);
-                        break;
-                    }
-
-                    case instr::setge_opcode: {
-                        regs::rp.w0 += 1;
-                        set_reg(op1_reg(), op1_subreg_flag(), (bool)negative_flag == (bool)overflow_flag);
-                        break;
-                    }
-
-                    case instr::setgt_opcode: {
-                        regs::rp.w0 += 1;
-                        set_reg(op1_reg(), op1_subreg_flag(), !zero_flag && ((bool)negative_flag == (bool)overflow_flag));
-                        break;
-                    }
-
-                    case instr::setle_opcode: {
-                        regs::rp.w0 += 1;
-                        set_reg(op1_reg(), op1_subreg_flag(), zero_flag || ((bool)negative_flag != (bool)overflow_flag));
-                        break;
-                    }
-
-                    case instr::setb_opcode: {
-                        regs::rp.w0 += 1;
-                        set_reg(op1_reg(), op1_subreg_flag(), (bool)carryout_flag);
-                        break;
-                    }
-
+                    /* SETcc (cards maize-55 / maize-64): materialize a flag condition
+                       as a 0/1 value in the single register operand. The condition is
+                       decoded from the opcode's row/column bits and evaluated by the
+                       shared eval_condition predicate table, the SAME table Jcc uses,
+                       so the two families can never disagree. Flag-neutral: RF is read
+                       but never written. */
+                    case instr::setz_opcode:
+                    case instr::setnz_opcode:
+                    case instr::setlt_opcode:
+                    case instr::setb_opcode:
+                    case instr::setgt_opcode:
+                    case instr::seta_opcode:
+                    case instr::setge_opcode:
+                    case instr::setle_opcode:
+                    case instr::setbe_opcode:
                     case instr::setae_opcode: {
                         regs::rp.w0 += 1;
-                        set_reg(op1_reg(), op1_subreg_flag(), !carryout_flag);
-                        break;
-                    }
-
-                    case instr::seta_opcode: {
-                        regs::rp.w0 += 1;
-                        set_reg(op1_reg(), op1_subreg_flag(), !carryout_flag && !zero_flag);
-                        break;
-                    }
-
-                    case instr::setbe_opcode: {
-                        regs::rp.w0 += 1;
-                        set_reg(op1_reg(), op1_subreg_flag(), carryout_flag || zero_flag);
+                        set_reg(op1_reg(), op1_subreg_flag(),
+                            eval_condition(decode_condition(instr::setcc_base)));
                         break;
                     }
 
@@ -2456,12 +2510,19 @@ namespace maize {
                         break;
                     }
 
-                    case instr::inc_regVal:
-                    case instr::dec_regVal:
-                    case instr::not_regVal: {
+                    /* Packed unary ALU family (card maize-64): INC ($31) / DEC ($71) /
+                       NOT ($B1) / NEG ($F1) share base slot $31, distinguished by the
+                       condition-style row bits. run_alu dispatches on alu.b0 & opflag_code,
+                       so translate the row to a low-6-unique micro-op selector first. */
+                    case instr::inc_opcode:
+                    case instr::dec_opcode:
+                    case instr::not_opcode:
+                    case instr::neg_opcode: {
                         regs::rp.w0 += 1;
+                        static const u_byte uop_sel[4] {alu_uop_inc, alu_uop_dec, alu_uop_not, alu_uop_neg};
+                        u_byte row = (regs::ri.b0 & opcode_flag) >> 6;
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), alu.op2_reg, subreg_enum::w0);
-                        alu.b0 = regs::ri.b0;
+                        alu.b0 = uop_sel[row];
                         alu.b1 = op1_subreg_size();
                         alu.b2 = op1_subreg_size();
                         run_alu();
@@ -2853,7 +2914,7 @@ namespace maize {
                         break;
                     }
 
-                    case instr::pop_regVal: {
+                    case instr::pop_opcode: {
                         regs::rp.w0 += 1;
                         auto src_size = op1_subreg_size();
                         copy_memval_reg(regs::rs.w0, src_size, op1_reg(), op1_subreg_flag());
@@ -2946,40 +3007,13 @@ namespace maize {
                         break;
                     }
 
-                    /* LNGJMP (card maize-10, Decision D6462): mirrors jmp_* below, except the
-                       regVal/regAddr forms always operate at full 64-bit width (subreg_enum::w0)
-                       regardless of the encoded operand's sub-register selection, diverging
-                       intentionally from JMP's variable-width handling. immVal/immAddr are
-                       unchanged from JMP's own forms: the target they write is already fixed at
-                       full width (regs::rp), only the immediate literal's *encoded* size varies,
-                       which is a distinct mechanism from register sub-register selection. */
-                    case instr::lngjmp_regVal: {
-                        regs::rp.w0 += 1;
-                        copy_regval_reg_zext(op1_reg(), subreg_enum::w0, regs::rp, subreg_enum::w0);
-                        break;
-                    }
-
-                    case instr::lngjmp_immVal: {
-                        regs::rp.w0 += 1;
-                        jump_to_immediate();
-                        break;
-                    }
-
-                    case instr::lngjmp_regAddr: {
-                        regs::rp.w0 += 1;
-                        copy_regaddr_reg(op1_reg(), subreg_enum::w0, regs::rp, subreg_enum::w0);
-                        break;
-                    }
-
-                    case instr::lngjmp_immAddr: {
-                        regs::rp.w0 += 1;
-                        copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
-                        break;
-                    }
-
+                    /* JMP (card maize-64): always targets the full 64-bit width. The
+                       register forms read the whole register (subreg_enum::w0) regardless
+                       of any encoded sub-register selection, folding in the full-width role
+                       LNGJMP used to play; LNGJMP is removed. */
                     case instr::jmp_regVal: {
                         regs::rp.w0 += 1;
-                        copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        copy_regval_reg_zext(op1_reg(), subreg_enum::w0, regs::rp, subreg_enum::w0);
                         break;
                     }
 
@@ -2991,7 +3025,7 @@ namespace maize {
 
                     case instr::jmp_regAddr: {
                         regs::rp.w0 += 1;
-                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        copy_regaddr_reg(op1_reg(), subreg_enum::w0, regs::rp, subreg_enum::w0);
                         break;
                     }
 
@@ -3001,527 +3035,29 @@ namespace maize {
                         break;
                     }
 
-                    case instr::jz_regVal: {
-                        regs::rp.w0 += 1;
-
-                        if (cpu::zero_flag) {
-                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-
-                        break;
-                    }
-
-                    case instr::jz_immVal: {
-                        regs::rp.w0 += 1;
-
-                        if (cpu::zero_flag) {
+                    /* Conditional branches (Jcc), card maize-64: IMMEDIATE target only. The
+                       ten conditions share three base slots ($17/$18/$19); the condition is
+                       decoded from the opcode's row/column bits and evaluated by the shared
+                       eval_condition table (the SAME predicate table SETcc uses). On a taken
+                       branch the immediate target is loaded into PC; otherwise PC steps over
+                       the immediate. */
+                    case instr::jz_opcode:
+                    case instr::jnz_opcode:
+                    case instr::jlt_opcode:
+                    case instr::jb_opcode:
+                    case instr::jgt_opcode:
+                    case instr::ja_opcode:
+                    case instr::jge_opcode:
+                    case instr::jle_opcode:
+                    case instr::jbe_opcode:
+                    case instr::jae_opcode: {
+                        regs::rp.w0 += 1;   // past the operand-descriptor (immediate-size) byte
+                        if (eval_condition(decode_condition(instr::jcc_base))) {
                             jump_to_immediate();
                         }
                         else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
+                            regs::rp.w0 += op1_imm_size();
                         }
-
-                        break;
-                    }
-
-                    case instr::jz_regAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (cpu::zero_flag) {
-                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-                        break;
-                    }
-
-                    case instr::jz_immAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (cpu::zero_flag) {
-                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-                        break;
-                    }
-
-                    case instr::jnz_regVal: {
-                        regs::rp.w0 += 1;
-
-                        if (!cpu::zero_flag) {
-                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-
-                        break;
-                    }
-
-                    case instr::jnz_immVal: {
-                        regs::rp.w0 += 1;
-
-                        if (!cpu::zero_flag) {
-                            jump_to_immediate();
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jnz_regAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (!cpu::zero_flag) {
-                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-                        break;
-                    }
-
-                    case instr::jnz_immAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (!cpu::zero_flag) {
-                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-                        break;
-                    }
-
-                    /* Signed less-than: N != V (card maize-1). */
-                    case instr::jlt_regVal: {
-                        regs::rp.w0 += 1;
-
-                        if ((bool)negative_flag != (bool)overflow_flag) {
-                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-
-                        break;
-                    }
-
-                    case instr::jlt_immVal: {
-                        regs::rp.w0 += 1;
-
-                        if ((bool)negative_flag != (bool)overflow_flag) {
-                            jump_to_immediate();
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jlt_regAddr: {
-                        regs::rp.w0 += 1;
-
-                        if ((bool)negative_flag != (bool)overflow_flag) {
-                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jlt_immAddr: {
-                        regs::rp.w0 += 1;
-
-                        if ((bool)negative_flag != (bool)overflow_flag) {
-                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    /* Signed greater-than: Zero clear and N == V (card maize-1). */
-                    case instr::jgt_regVal: {
-                        regs::rp.w0 += 1;
-
-                        if (!zero_flag && ((bool)negative_flag == (bool)overflow_flag)) {
-                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-
-                        break;
-                    }
-
-                    case instr::jgt_immVal: {
-                        regs::rp.w0 += 1;
-
-                        if (!zero_flag && ((bool)negative_flag == (bool)overflow_flag)) {
-                            jump_to_immediate();
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jgt_regAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (!zero_flag && ((bool)negative_flag == (bool)overflow_flag)) {
-                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jgt_immAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (!zero_flag && ((bool)negative_flag == (bool)overflow_flag)) {
-                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    /* Unsigned below: Carry set (card maize-1). */
-                    case instr::jb_regVal: {
-                        regs::rp.w0 += 1;
-
-                        if (carryout_flag) {
-                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-
-                        break;
-                    }
-
-                    case instr::jb_immVal: {
-                        regs::rp.w0 += 1;
-
-                        if (carryout_flag) {
-                            jump_to_immediate();
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jb_regAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (carryout_flag) {
-                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jb_immAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (carryout_flag) {
-                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    /* Unsigned above: Carry clear and Zero clear (card maize-1). */
-                    case instr::ja_regVal: {
-                        regs::rp.w0 += 1;
-
-                        if (!carryout_flag && !zero_flag) {
-                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-
-                        break;
-                    }
-
-                    case instr::ja_immVal: {
-                        regs::rp.w0 += 1;
-
-                        if (!carryout_flag && !zero_flag) {
-                            jump_to_immediate();
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::ja_regAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (!carryout_flag && !zero_flag) {
-                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::ja_immAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (!carryout_flag && !zero_flag) {
-                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    /* Signed greater-or-equal: N == V (complement of JLT; card maize-8). */
-                    case instr::jge_regVal: {
-                        regs::rp.w0 += 1;
-
-                        if ((bool)negative_flag == (bool)overflow_flag) {
-                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-
-                        break;
-                    }
-
-                    case instr::jge_immVal: {
-                        regs::rp.w0 += 1;
-
-                        if ((bool)negative_flag == (bool)overflow_flag) {
-                            jump_to_immediate();
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jge_regAddr: {
-                        regs::rp.w0 += 1;
-
-                        if ((bool)negative_flag == (bool)overflow_flag) {
-                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jge_immAddr: {
-                        regs::rp.w0 += 1;
-
-                        if ((bool)negative_flag == (bool)overflow_flag) {
-                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    /* Signed less-or-equal: Zero set or N != V (complement of JGT; card maize-8). */
-                    case instr::jle_regVal: {
-                        regs::rp.w0 += 1;
-
-                        if (zero_flag || ((bool)negative_flag != (bool)overflow_flag)) {
-                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-
-                        break;
-                    }
-
-                    case instr::jle_immVal: {
-                        regs::rp.w0 += 1;
-
-                        if (zero_flag || ((bool)negative_flag != (bool)overflow_flag)) {
-                            jump_to_immediate();
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jle_regAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (zero_flag || ((bool)negative_flag != (bool)overflow_flag)) {
-                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jle_immAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (zero_flag || ((bool)negative_flag != (bool)overflow_flag)) {
-                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    /* Unsigned below-or-equal: Carry set or Zero set (complement of JA; card maize-8). */
-                    case instr::jbe_regVal: {
-                        regs::rp.w0 += 1;
-
-                        if (carryout_flag || zero_flag) {
-                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-
-                        break;
-                    }
-
-                    case instr::jbe_immVal: {
-                        regs::rp.w0 += 1;
-
-                        if (carryout_flag || zero_flag) {
-                            jump_to_immediate();
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jbe_regAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (carryout_flag || zero_flag) {
-                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jbe_immAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (carryout_flag || zero_flag) {
-                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    /* Unsigned above-or-equal: Carry clear (complement of JB; card maize-8). */
-                    case instr::jae_regVal: {
-                        regs::rp.w0 += 1;
-
-                        if (!carryout_flag) {
-                            copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-
-                        break;
-                    }
-
-                    case instr::jae_immVal: {
-                        regs::rp.w0 += 1;
-
-                        if (!carryout_flag) {
-                            jump_to_immediate();
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jae_regAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (!carryout_flag) {
-                            copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
-                        break;
-                    }
-
-                    case instr::jae_immAddr: {
-                        regs::rp.w0 += 1;
-
-                        if (!carryout_flag) {
-                            copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
-                        }
-                        else {
-                            u_byte src_size = op1_imm_size();
-                            regs::rp.w0 += src_size;
-                        }
-
                         break;
                     }
 
@@ -3565,18 +3101,15 @@ namespace maize {
                         break;
                     }
 
-                    /* INT ($24/$64), DUP ($E4), and SWAP ($E5) intentionally have no dispatch
-                       case here (card maize-10). This is not an oversight:
-                       - INT needs a defined interrupt-vector-table format (location, entry
-                         width, index bounds-checking) before it can be safely dispatched;
-                         closing it without that design would just move the crash from "unknown
-                         opcode" to undefined behavior at an arbitrary handler address
-                         (Open Question O1).
-                       - DUP/SWAP carry no operand encoding, so dispatch has no way to know how
-                         many bytes of "the top value" to duplicate/swap; the operand width is a
-                         genuine, currently-undecided ISA-semantic gap (Open Question O2).
-                       Both fall through to the default "unknown opcode" case below until their
-                       open questions resolve. */
+                    /* INT ($24/$64) intentionally has no dispatch case here (card maize-10):
+                       it needs a defined interrupt-vector-table format (location, entry width,
+                       index bounds-checking) before it can be safely dispatched; closing it
+                       without that design would just move the crash from "unknown opcode" to
+                       undefined behavior at an arbitrary handler address (Open Question O1). It
+                       falls through to the default "unknown opcode" case below until then.
+
+                       DUP/SWAP were header-only encoding ghosts and are removed entirely
+                       (card maize-64). */
 
                     default: {
                         std::stringstream err {};

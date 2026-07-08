@@ -591,95 +591,61 @@ namespace maize {
 			const opcode out_regAddr_imm		{out_opcode | opcode_flag_srcAddr};
 			const opcode out_immAddr_imm		{out_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
-			const opcode lngjmp_opcode			{0x15};
-			const opcode lngjmp_regVal			{lngjmp_opcode | opcode_flag_srcReg};
-			const opcode lngjmp_immVal			{lngjmp_opcode | opcode_flag_srcImm};
-			const opcode lngjmp_regAddr			{lngjmp_opcode | opcode_flag_srcAddr};
-			const opcode lngjmp_immAddr			{lngjmp_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+			/* JMP (base slot $16) keeps all four operand forms. In the flat-64 model a
+			   control-flow target is always a full 64-bit address, so JMP now targets the
+			   full width regardless of any operand sub-register selection (the divergent
+			   full-width-forcing role LNGJMP used to play is folded in here). LNGJMP is
+			   removed and base slot $15 is freed (card maize-64). */
+			const opcode jmp_opcode {0x16};
+			const opcode jmp_regVal {jmp_opcode | opcode_flag_srcReg};
+			const opcode jmp_immVal {jmp_opcode | opcode_flag_srcImm};
+			const opcode jmp_regAddr {jmp_opcode | opcode_flag_srcAddr};
+			const opcode jmp_immAddr {jmp_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
-			const opcode jmp_opcode				{0x16};
-			const opcode jmp_regVal				{jmp_opcode | opcode_flag_srcReg};
-			const opcode jmp_immVal				{jmp_opcode | opcode_flag_srcImm};
-			const opcode jmp_regAddr			{jmp_opcode | opcode_flag_srcAddr};
-			const opcode jmp_immAddr			{jmp_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+			/* Condition family (cards maize-55 / maize-64): the two high opcode bits select
+			   the condition "row" and the base slot selects the "column". Together
+			   (row * 3 + col) they index ONE predicate table (cpu.cpp's eval_condition)
+			   shared by both SETcc and Jcc, so the flag formulas have a single source of
+			   truth. Condition order:
+			     0 Z   1 NZ  2 LT | 3 B   4 GT  5 A | 6 GE  7 LE  8 BE | 9 AE
+			   Row 11 columns 1 and 2 are the two UNALLOCATED spare encodings per family
+			   (Jcc $D8/$D9, SETcc $EC/$ED); recorded claimants: integer-overflow JO/JNO +
+			   SETO/SETNO, and IEEE unordered-compare. */
+			const u_byte cond_row_0 {0b00000000};
+			const u_byte cond_row_1 {0b01000000};
+			const u_byte cond_row_2 {0b10000000};
+			const u_byte cond_row_3 {0b11000000};
 
-			const opcode jz_opcode				{0x17};
-			const opcode jz_regVal				{jz_opcode | opcode_flag_srcReg};
-			const opcode jz_immVal				{jz_opcode | opcode_flag_srcImm};
-			const opcode jz_regAddr				{jz_opcode | opcode_flag_srcAddr};
-			const opcode jz_immAddr				{jz_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+			/* Conditional branches (Jcc), card maize-64: IMMEDIATE target only (the register
+			   / indirect forms are removed; conditional-indirect synthesizes as an inverted
+			   Jcc over JMP reg). Three base slots ($17/$18/$19); the freed slots
+			   $1A/$1B/$1C/$37/$38/$39/$3A return to reserved. */
+			const opcode jcc_base {0x17}; // column 0; col1 = $18, col2 = $19
+			const opcode jz_opcode  {static_cast<opcode>(cond_row_0 | (jcc_base + 0))}; // $17
+			const opcode jnz_opcode {static_cast<opcode>(cond_row_0 | (jcc_base + 1))}; // $18
+			const opcode jlt_opcode {static_cast<opcode>(cond_row_0 | (jcc_base + 2))}; // $19
+			const opcode jb_opcode  {static_cast<opcode>(cond_row_1 | (jcc_base + 0))}; // $57
+			const opcode jgt_opcode {static_cast<opcode>(cond_row_1 | (jcc_base + 1))}; // $58
+			const opcode ja_opcode  {static_cast<opcode>(cond_row_1 | (jcc_base + 2))}; // $59
+			const opcode jge_opcode {static_cast<opcode>(cond_row_2 | (jcc_base + 0))}; // $97
+			const opcode jle_opcode {static_cast<opcode>(cond_row_2 | (jcc_base + 1))}; // $98
+			const opcode jbe_opcode {static_cast<opcode>(cond_row_2 | (jcc_base + 2))}; // $99
+			const opcode jae_opcode {static_cast<opcode>(cond_row_3 | (jcc_base + 0))}; // $D7
 
-			const opcode jnz_opcode				{0x18};
-			const opcode jnz_regVal				{jnz_opcode | opcode_flag_srcReg};
-			const opcode jnz_immVal				{jnz_opcode | opcode_flag_srcImm};
-			const opcode jnz_regAddr			{jnz_opcode | opcode_flag_srcAddr};
-			const opcode jnz_immAddr			{jnz_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
-
-			const opcode jlt_opcode				{0x19};
-			const opcode jlt_regVal				{jlt_opcode | opcode_flag_srcReg};
-			const opcode jlt_immVal				{jlt_opcode | opcode_flag_srcImm};
-			const opcode jlt_regAddr			{jlt_opcode | opcode_flag_srcAddr};
-			const opcode jlt_immAddr			{jlt_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
-
-			const opcode jb_opcode				{0x1A};
-			const opcode jb_regVal				{jb_opcode | opcode_flag_srcReg};
-			const opcode jb_immVal				{jb_opcode | opcode_flag_srcImm};
-			const opcode jb_regAddr				{jb_opcode | opcode_flag_srcAddr};
-			const opcode jb_immAddr				{jb_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
-
-			const opcode jgt_opcode				{0x1B};
-			const opcode jgt_regVal				{jgt_opcode | opcode_flag_srcReg};
-			const opcode jgt_immVal				{jgt_opcode | opcode_flag_srcImm};
-			const opcode jgt_regAddr			{jgt_opcode | opcode_flag_srcAddr};
-			const opcode jgt_immAddr			{jgt_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
-
-			const opcode ja_opcode				{0x1C};
-			const opcode ja_regVal				{ja_opcode | opcode_flag_srcReg};
-			const opcode ja_immVal				{ja_opcode | opcode_flag_srcImm};
-			const opcode ja_regAddr				{ja_opcode | opcode_flag_srcAddr};
-			const opcode ja_immAddr				{ja_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
-
-			// Branch complements (card maize-8): JGE (>=s) = !JLT, JLE (<=s) = !JGT,
-			// JBE (<=u) = !JA, JAE (>=u) = !JB.
-			const opcode jge_opcode				{0x37};
-			const opcode jge_regVal				{jge_opcode | opcode_flag_srcReg};
-			const opcode jge_immVal				{jge_opcode | opcode_flag_srcImm};
-			const opcode jge_regAddr			{jge_opcode | opcode_flag_srcAddr};
-			const opcode jge_immAddr			{jge_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
-
-			const opcode jle_opcode				{0x38};
-			const opcode jle_regVal				{jle_opcode | opcode_flag_srcReg};
-			const opcode jle_immVal				{jle_opcode | opcode_flag_srcImm};
-			const opcode jle_regAddr			{jle_opcode | opcode_flag_srcAddr};
-			const opcode jle_immAddr			{jle_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
-
-			const opcode jbe_opcode				{0x39};
-			const opcode jbe_regVal				{jbe_opcode | opcode_flag_srcReg};
-			const opcode jbe_immVal				{jbe_opcode | opcode_flag_srcImm};
-			const opcode jbe_regAddr			{jbe_opcode | opcode_flag_srcAddr};
-			const opcode jbe_immAddr			{jbe_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
-
-			const opcode jae_opcode				{0x3A};
-			const opcode jae_regVal				{jae_opcode | opcode_flag_srcReg};
-			const opcode jae_immVal				{jae_opcode | opcode_flag_srcImm};
-			const opcode jae_regAddr			{jae_opcode | opcode_flag_srcAddr};
-			const opcode jae_immAddr			{jae_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
-
-			// Condition-to-value materialization (card maize-55): SETcc writes 0/1
-			// into a single register operand per the same flag predicate the matching
-			// Jcc branch uses. One flat opcode per condition (no numeric condition
-			// field), each srcReg-shaped like clr_opcode; dispatched on the full byte.
-			// $EC/$ED remain reserved.
-			const opcode setz_opcode			{0x2B};
-			const opcode setnz_opcode			{0x2C};
-			const opcode setlt_opcode			{0x2D};
-			const opcode setb_opcode			{0x6B};
-			const opcode setgt_opcode			{0x6C};
-			const opcode seta_opcode			{0x6D};
-			const opcode setge_opcode			{0xAB};
-			const opcode setle_opcode			{0xAC};
-			const opcode setbe_opcode			{0xAD};
-			const opcode setae_opcode			{0xEB};
+			// SETcc (card maize-55): materialize a condition as 0/1 in one register operand,
+			// using the shared predicate table above. Three base slots ($2B/$2C/$2D) with the
+			// condition row in the two high bits; $EC/$ED remain reserved.
+			const opcode setcc_base {0x2B}; // column 0; col1 = $2C, col2 = $2D
+			const opcode setz_opcode  {static_cast<opcode>(cond_row_0 | (setcc_base + 0))}; // $2B
+			const opcode setnz_opcode {static_cast<opcode>(cond_row_0 | (setcc_base + 1))}; // $2C
+			const opcode setlt_opcode {static_cast<opcode>(cond_row_0 | (setcc_base + 2))}; // $2D
+			const opcode setb_opcode  {static_cast<opcode>(cond_row_1 | (setcc_base + 0))}; // $6B
+			const opcode setgt_opcode {static_cast<opcode>(cond_row_1 | (setcc_base + 1))}; // $6C
+			const opcode seta_opcode  {static_cast<opcode>(cond_row_1 | (setcc_base + 2))}; // $6D
+			const opcode setge_opcode {static_cast<opcode>(cond_row_2 | (setcc_base + 0))}; // $AB
+			const opcode setle_opcode {static_cast<opcode>(cond_row_2 | (setcc_base + 1))}; // $AC
+			const opcode setbe_opcode {static_cast<opcode>(cond_row_2 | (setcc_base + 2))}; // $AD
+			const opcode setae_opcode {static_cast<opcode>(cond_row_3 | (setcc_base + 0))}; // $EB
 
 			const opcode call_opcode			{0x1D};
 			const opcode call_regVal			{call_opcode | opcode_flag_srcReg};
@@ -703,21 +669,23 @@ namespace maize {
 			const opcode push_regVal			{push_opcode | opcode_flag_srcReg};
 			const opcode push_immVal			{push_opcode | opcode_flag_srcImm};
 
-			const opcode clr_opcode				{0x22};
-			const opcode clr_regVal				{clr_opcode | opcode_flag_srcReg};
+			/* Unary register-only slot B (card maize-64): CLR (row0 $32), POP (row1 $72);
+			   rows 2/3 ($B2/$F2) reserved. */
+			const opcode clr_opcode {0x32};
 
 			const opcode int_opcode				{0x24};
 			const opcode int_regVal				{int_opcode | opcode_flag_srcReg};
 			const opcode int_immVal				{int_opcode | opcode_flag_srcImm};
 
-			const opcode pop_opcode				{0x26};
-			const opcode pop_regVal				{pop_opcode | opcode_flag_srcReg};
+			const opcode pop_opcode {static_cast<opcode>(cond_row_1 | 0x32)}; // $72
 
-			const opcode ret_opcode				{0x27};
-
-			const opcode iret_opcode			{0x28};
-
-			const opcode setint_opcode			{0x29};
+			/* Zero-operand family (card maize-64): both mode bits dead, four per slot.
+			   HALT stays pinned at $00 (zeroed memory halts; dedicated slot).
+			     slot $27: RET (row0 $27), IRET (row1 $67), NOP (row2 $A7), BRK (row3 $E7)
+			     slot $29: SETINT (row0 $29), CLRINT (row1 $69), SETCRY (row2 $A9), CLRCRY (row3 $E9) */
+			const opcode ret_opcode {static_cast<opcode>(cond_row_0 | 0x27)}; // $27
+			const opcode iret_opcode {static_cast<opcode>(cond_row_1 | 0x27)}; // $67
+			const opcode setint_opcode {static_cast<opcode>(cond_row_0 | 0x29)}; // $29
 
 			const opcode cmpind_opcode			{0x2F};
 			const opcode cmpind_regVal_regAddr	{cmpind_opcode | opcode_flag_srcReg};
@@ -727,34 +695,30 @@ namespace maize {
 			const opcode testind_regVal_regAddr	{testind_opcode | opcode_flag_srcReg};
 			const opcode testind_immVal_regAddr	{testind_opcode | opcode_flag_srcImm};
 
-			const opcode inc_opcode				{0x31};
-			const opcode inc_regVal				{inc_opcode | opcode_flag_srcReg};
-			
-			const opcode dec_opcode				{0x32};
-			const opcode dec_regVal				{dec_opcode | opcode_flag_srcReg};
-			
-			const opcode not_opcode				{0x33};
-			const opcode not_regVal				{not_opcode | opcode_flag_srcReg};
+			/* Unary register-only slot A (card maize-64): the ALU micro-ops, packed by the
+			   condition-style row bits. INC (row0 $31), DEC (row1 $71), NOT (row2 $B1),
+			   NEG (row3 $F1). NEG is two's-complement negate (QBE emits `neg`). tick()
+			   translates the row to a low-6-unique ALU selector before run_alu. */
+			const opcode inc_opcode {static_cast<opcode>(cond_row_0 | 0x31)}; // $31
+			const opcode dec_opcode {static_cast<opcode>(cond_row_1 | 0x31)}; // $71
+			const opcode not_opcode {static_cast<opcode>(cond_row_2 | 0x31)}; // $B1
+			const opcode neg_opcode {static_cast<opcode>(cond_row_3 | 0x31)}; // $F1
 
 			const opcode sys_opcode				{0x34};
 			const opcode sys_regVal				{sys_opcode | opcode_flag_srcReg};
 			const opcode sys_immVal				{sys_opcode | opcode_flag_srcImm};
 
-			const opcode nop_opcode				{0xAA};
+			const opcode nop_opcode {static_cast<opcode>(cond_row_2 | 0x27)}; // $A7
 
 			const opcode xchg_opcode			{0xE0};
 
-			const opcode setcry_opcode			{0xE1};
+			const opcode setcry_opcode {static_cast<opcode>(cond_row_2 | 0x29)}; // $A9
+			const opcode clrcry_opcode {static_cast<opcode>(cond_row_3 | 0x29)}; // $E9
+			const opcode clrint_opcode {static_cast<opcode>(cond_row_1 | 0x29)}; // $69
+			/* DUP ($E4) and SWAP ($E5) are killed (card maize-64): header-only ghosts with
+			   no dispatch, mazm entry, or README row; removed before the freeze. */
 
-			const opcode clrcry_opcode			{0xE2};
-
-			const opcode clrint_opcode			{0xE3};
-
-			const opcode dup_opcode				{0xE4};
-
-			const opcode swap_opcode			{0xE5};
-
-			const opcode brk_opcode				{0xFF};
+			const opcode brk_opcode {static_cast<opcode>(cond_row_3 | 0x27)}; // $E7
 
 		}
 

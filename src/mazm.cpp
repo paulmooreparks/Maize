@@ -250,6 +250,7 @@ namespace {
     void reg_compiler(token_tree &tree, std::string &opcode_str);
     void regimm_imm_compiler(token_tree &tree, std::string &opcode_str);
     void regimm_compiler(token_tree &tree, std::string &opcode_str);
+    void jcc_compiler(token_tree &tree, std::string &opcode_str);
     void regimm_regreg_compiler(token_tree &tree, std::string &opcode_str);
 
     /* Object-mode directives (maize-12). Registered as keywords in the LABEL /
@@ -304,19 +305,19 @@ namespace {
         { "INC",    {cpu::instr::inc_opcode    , opcode_1param_tokenizer, reg_compiler}},
         { "DEC",    {cpu::instr::dec_opcode    , opcode_1param_tokenizer, reg_compiler}},
         { "NOT",    {cpu::instr::not_opcode    , opcode_1param_tokenizer, reg_compiler}},
+        { "NEG",    {cpu::instr::neg_opcode    , opcode_1param_tokenizer, reg_compiler}},
         { "OUT",    {cpu::instr::out_opcode    , opcode_2param_tokenizer, regimm_imm_compiler}},
-        { "LNGJMP", {cpu::instr::lngjmp_opcode , opcode_1param_tokenizer, regimm_compiler}},
         { "JMP",    {cpu::instr::jmp_opcode    , opcode_1param_tokenizer, regimm_compiler}},
-        { "JZ",     {cpu::instr::jz_opcode     , opcode_1param_tokenizer, regimm_compiler}},
-        { "JNZ",    {cpu::instr::jnz_opcode    , opcode_1param_tokenizer, regimm_compiler}},
-        { "JLT",    {cpu::instr::jlt_opcode    , opcode_1param_tokenizer, regimm_compiler}},
-        { "JB",     {cpu::instr::jb_opcode     , opcode_1param_tokenizer, regimm_compiler}},
-        { "JGT",    {cpu::instr::jgt_opcode    , opcode_1param_tokenizer, regimm_compiler}},
-        { "JA",     {cpu::instr::ja_opcode     , opcode_1param_tokenizer, regimm_compiler}},
-        { "JGE",    {cpu::instr::jge_opcode    , opcode_1param_tokenizer, regimm_compiler}},
-        { "JLE",    {cpu::instr::jle_opcode    , opcode_1param_tokenizer, regimm_compiler}},
-        { "JBE",    {cpu::instr::jbe_opcode    , opcode_1param_tokenizer, regimm_compiler}},
-        { "JAE",    {cpu::instr::jae_opcode    , opcode_1param_tokenizer, regimm_compiler}},
+        { "JZ",     {cpu::instr::jz_opcode     , opcode_1param_tokenizer, jcc_compiler}},
+        { "JNZ",    {cpu::instr::jnz_opcode    , opcode_1param_tokenizer, jcc_compiler}},
+        { "JLT",    {cpu::instr::jlt_opcode    , opcode_1param_tokenizer, jcc_compiler}},
+        { "JB",     {cpu::instr::jb_opcode     , opcode_1param_tokenizer, jcc_compiler}},
+        { "JGT",    {cpu::instr::jgt_opcode    , opcode_1param_tokenizer, jcc_compiler}},
+        { "JA",     {cpu::instr::ja_opcode     , opcode_1param_tokenizer, jcc_compiler}},
+        { "JGE",    {cpu::instr::jge_opcode    , opcode_1param_tokenizer, jcc_compiler}},
+        { "JLE",    {cpu::instr::jle_opcode    , opcode_1param_tokenizer, jcc_compiler}},
+        { "JBE",    {cpu::instr::jbe_opcode    , opcode_1param_tokenizer, jcc_compiler}},
+        { "JAE",    {cpu::instr::jae_opcode    , opcode_1param_tokenizer, jcc_compiler}},
         { "CALL",   {cpu::instr::call_opcode   , opcode_1param_tokenizer, regimm_compiler}},
         { "OUTR",   {cpu::instr::outr_opcode   , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "IN",     {cpu::instr::in_opcode     , opcode_2param_tokenizer, regimm_reg_compiler}},
@@ -2149,6 +2150,16 @@ namespace {
             operand1 = operand1.substr(1);
         }
 
+        /* JMP targets the full 64-bit width in the flat-64 model (card maize-64):
+           a narrowed jump target is always a mistake, so reject a JMP operand that
+           carries an explicit sub-register suffix (any .Bn / .Qn / .Hn / .Wn form). */
+        if (opcode_str == "JMP" && is_register(operand1)
+                && operand1.find('.') != std::string::npos) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                "JMP targets the full 64-bit width; a sub-register operand '" + operand1
+                + "' is not allowed (drop the sub-register suffix)");
+        }
+
         if (is_register(operand1)) {
             operand1_byte = compile_register(operand1);
         }
@@ -2193,6 +2204,64 @@ namespace {
         }
         else if (operand_is_label) {
             current_address += write_label(current_address, operand1, operand1_literal);
+        }
+    }
+
+    /* Conditional-branch compiler (card maize-64): Jcc takes an IMMEDIATE target
+       only. The condition is baked into the opcode byte's high bits, so (unlike
+       regimm_compiler) the src-flag bits are NOT set from the operand form; the
+       opcode is emitted verbatim and the operand is always an immediate (literal or
+       label). A register or indirect (@) target is rejected with a diagnostic that
+       points at the inverted-Jcc-over-JMP synthesis. */
+    void jcc_compiler(token_tree &tree, std::string &opcode_str) {
+        u_byte opcode {opcodes[opcode_str].opcode};
+        auto it {tree.value.begin()};
+        current_ref_loc = { it->loc_file, it->loc_line };
+        auto operand1 {it->key};
+        u_byte operand1_byte {0};
+        bool operand_is_label {false};
+        cpu::reg_value operand1_literal {0};
+
+        if (!operand1.empty() && operand1[0] == special_chars::address) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                opcode_str + " takes an immediate target only; an indirect (@) conditional-branch "
+                "target is not allowed (synthesize with an inverted branch over JMP @reg)");
+        }
+        if (is_register(operand1)) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                opcode_str + " takes an immediate target only; a register conditional-branch "
+                "target is not allowed (synthesize with an inverted branch over JMP reg)");
+        }
+
+        if (is_literal(operand1)) {
+            operand1_byte |= compile_literal(operand1, operand1_literal);
+        }
+        else if (is_label(operand1)) {
+            operand_is_label = true;
+            operand1_byte |= compile_label(operand1, operand1_literal);
+        }
+        else {
+            operand_is_label = true;
+            operand1_byte |= add_label(operand1, operand1_literal);
+        }
+
+        current_address += cpu::mm.write_byte(current_address, opcode);
+        current_address += cpu::mm.write_byte(current_address, operand1_byte);
+
+        if (operand_is_label) {
+            current_address += write_label(current_address, operand1, operand1_literal);
+        }
+        else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
+            current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
+        }
+        else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
+            current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
+        }
+        else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
+            current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
+        }
+        else {
+            current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
         }
     }
 

@@ -62,6 +62,8 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_rsinit';        File = 'test_rsinit.mazm';        Expected = 'rsinit: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_div';           File = 'test_div.mazm';           Expected = 'div: PASS';                     Golden = $false }
     [pscustomobject]@{ Name = 'test_jcc';           File = 'test_jcc.mazm';           Expected = 'jcc: PASS';                     Golden = $false }
+    [pscustomobject]@{ Name = 'test_jcc_all';       File = 'test_jcc_all.mazm';       Expected = 'jcc-all: PASS';                 Golden = $false }
+    [pscustomobject]@{ Name = 'test_neg';           File = 'test_neg.mazm';           Expected = 'neg: PASS';                     Golden = $false }
     [pscustomobject]@{ Name = 'test_setcc';         File = 'test_setcc.mazm';         Expected = 'setcc: PASS';                   Golden = $false }
     [pscustomobject]@{ Name = 'test_memblock';      File = 'test_memblock.mazm';      Expected = 'memblock: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_widecount';     File = 'test_widecount.mazm';     Expected = 'widecount: PASS';               Golden = $false }
@@ -74,13 +76,14 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_setint';        File = 'test_setint.mazm';        Expected = 'setint: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_outr_in';       File = 'test_outr_in.mazm';       Expected = 'outr/in: PASS';                 Golden = $false }
     [pscustomobject]@{ Name = 'test_brk';           File = 'test_brk.mazm';           Expected = 'brk: PASS';                     Golden = $false }
-    [pscustomobject]@{ Name = 'test_lngjmp';        File = 'test_lngjmp.mazm';        Expected = 'lngjmp: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_tstind';        File = 'test_tstind.mazm';        Expected = 'tstind: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'reject_bad_register'; File = 'test_reject_badreg.mazm';     Expected = "unknown register 'R99'";      Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'reject_bad_literal';  File = 'test_reject_badliteral.mazm'; Expected = 'malformed hex literal';       Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'reject_include_self'; File = 'test_reject_include_self.mazm'; Expected = 'circular INCLUDE';          Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'reject_label_trunc';  File = 'test_reject_label_trunc.mazm'; Expected = 'unexpected end of file';     Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'reject_address_trunc'; File = 'test_reject_address_trunc.mazm'; Expected = 'unexpected end of file';  Golden = $false; ExpectAsmError = $true }
+    [pscustomobject]@{ Name = 'reject_jcc_reg';      File = 'test_reject_jcc_reg.mazm';    Expected = 'immediate target only';       Golden = $false; ExpectAsmError = $true }
+    [pscustomobject]@{ Name = 'reject_jmp_subreg';   File = 'test_reject_jmp_subreg.mazm'; Expected = 'full 64-bit width';           Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'nested_include';      File = 'test_nested_include.mazm';    Expected = 'nested include: PASS';        Golden = $true }
     [pscustomobject]@{ Name = 'address_fwdlabel';    File = 'test_address_fwdlabel.mazm';  Expected = 'address fwd-ref: PASS';       Golden = $false }
 )

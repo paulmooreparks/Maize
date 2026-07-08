@@ -53,8 +53,11 @@ namespace {
                    operand ('@' prefix) -- ST/CMPIND/TSTIND's destination.
          port    - PortImm: always an immediate (imm-size selector byte +
                    that many immediate bytes), independent of the opcode's own
-                   flag bits -- OUT's port operand. */
-    enum class operand_kind : std::uint8_t { none, src, reg, regaddr, port };
+                   flag bits -- OUT's port operand.
+         imm     - Immediate jump target: an imm-size selector byte + that many
+                   immediate bytes, like `port`, but the opcode's own high bits are
+                   the condition selector (not src flags) -- Jcc's target (maize-64). */
+    enum class operand_kind : std::uint8_t { none, src, reg, regaddr, port, imm };
 
     struct opcode_entry {
         const char *mnemonic {nullptr};
@@ -92,12 +95,19 @@ namespace {
         }
     }
 
-    /* Single-operand control-transfer family (JMP/Jcc/CALL/LNGJMP): SrcFlagged
-       op1 only. All four addressing-mode rows populated. */
+    /* Single-operand control-transfer family (JMP/CALL): SrcFlagged op1 only. All
+       four addressing-mode rows populated. */
     void add_jump_family(const char *mnem, u_byte base) {
         for (u_byte flag : {u_byte(0x00), u_byte(0x40), u_byte(0x80), u_byte(0xC0)}) {
             set_entry(u_byte(base | flag), mnem, {operand_kind::src});
         }
+    }
+
+    /* Conditional branch (Jcc), card maize-64: a single immediate target. The
+       opcode byte's high bits are the condition selector (not src flags), so the
+       operand is always an immediate; one flat opcode byte per condition. */
+    void add_jcc(const char *mnem, u_byte byte) {
+        set_entry(byte, mnem, {operand_kind::imm});
     }
 
     /* Two-row family, regVal/immVal only (no address forms populated): op1
@@ -115,13 +125,13 @@ namespace {
         set_entry(u_byte(base | 0x40), mnem, {operand_kind::src});
     }
 
-    /* Single row, single plain-register operand -- CLR/INC/DEC/NOT/POP. */
+    /* Single row, single plain-register operand -- CLR/INC/DEC/NOT/NEG/POP. */
     void add_reg_only(const char *mnem, u_byte byte) {
         set_entry(byte, mnem, {operand_kind::reg});
     }
 
     /* Single row, no operands -- HALT/RET/IRET/SETINT/CLRINT/SETCRY/CLRCRY/
-       NOP/BRK/DUP/SWAP. */
+       NOP/BRK. */
     void add_zero_operand(const char *mnem, u_byte byte) {
         set_entry(byte, mnem, {});
     }
@@ -149,14 +159,24 @@ namespace {
         }
 
         for (auto &f : std::initializer_list<fam> {
-            {"LNGJMP", instr_ns::lngjmp_opcode}, {"JMP", instr_ns::jmp_opcode}, {"JZ", instr_ns::jz_opcode},
-            {"JNZ", instr_ns::jnz_opcode}, {"JLT", instr_ns::jlt_opcode}, {"JB", instr_ns::jb_opcode},
-            {"JGT", instr_ns::jgt_opcode}, {"JA", instr_ns::ja_opcode}, {"CALL", instr_ns::call_opcode},
-            {"JGE", instr_ns::jge_opcode}, {"JLE", instr_ns::jle_opcode}, {"JBE", instr_ns::jbe_opcode},
-            {"JAE", instr_ns::jae_opcode},
+            {"JMP", instr_ns::jmp_opcode}, {"CALL", instr_ns::call_opcode},
         }) {
             add_jump_family(f.mnem, f.base);
         }
+
+        /* Jcc (card maize-64): ten immediate-target conditional branches, condition
+           encoded in the opcode byte's row/column bits. Freed slots ($1A/$1B/$1C/
+           $37/$38/$39/$3A) and the row-11 spares ($D8/$D9) stay reserved. */
+        add_jcc("JZ", instr_ns::jz_opcode);
+        add_jcc("JNZ", instr_ns::jnz_opcode);
+        add_jcc("JLT", instr_ns::jlt_opcode);
+        add_jcc("JB", instr_ns::jb_opcode);
+        add_jcc("JGT", instr_ns::jgt_opcode);
+        add_jcc("JA", instr_ns::ja_opcode);
+        add_jcc("JGE", instr_ns::jge_opcode);
+        add_jcc("JLE", instr_ns::jle_opcode);
+        add_jcc("JBE", instr_ns::jbe_opcode);
+        add_jcc("JAE", instr_ns::jae_opcode);
 
         /* CP / LD share ld_opcode's base byte ($01): the mnemonic is CP when the
            opcode's own srcAddr bit (0x80) is clear (regVal/immVal, a value
@@ -186,7 +206,7 @@ namespace {
         }
 
         add_src_only_2row("PUSH", instr_ns::push_opcode);
-        add_reg_only("CLR", instr_ns::clr_regVal);
+        add_reg_only("CLR", instr_ns::clr_opcode);
 
         /* SETcc (card maize-55): ten flat single-register opcodes materializing a
            flag condition as 0/1. $EC/$ED stay reserved. */
@@ -201,24 +221,15 @@ namespace {
         add_reg_only("SETA", instr_ns::seta_opcode);
         add_reg_only("SETBE", instr_ns::setbe_opcode);
 
-        /* INT ($24 regVal / $64 immVal) and DUP ($E4) / SWAP ($E5) are assigned
-           mnemonics in maize_cpu.h's instr namespace and in README's numeric
-           opcode table (README.md:715-716,821,823), so AC6483 requires them in
-           this table. cpu.cpp's tick() dispatch has NO case for any of the
-           three -- they fall through to the "unknown opcode" default and throw
-           at runtime (src/cpu.cpp:3367-3379) because their *execution*
-           semantics are still open questions (an interrupt-vector-table format
-           for INT; an operand width for DUP/SWAP's "top of stack", card
-           maize-10). That is an execution-time gap, not an encoding gap: the
-           byte-width/operand-shape of all three is unambiguous from README
-           (INT mirrors PUSH's single-SrcFlagged-operand shape; DUP/SWAP are
-           zero-operand single-byte opcodes like SETCRY/CLRCRY/NOP/BRK). Decode
-           is a static, encoding-level concern, so all three get real table
-           entries here rather than being treated as reserved/unknown bytes.
-           Flagged explicitly since the card's decisions list doesn't
-           pre-resolve this judgment call. */
+        /* INT ($24 regVal / $64 immVal) is assigned a mnemonic in maize_cpu.h's
+           instr namespace and in README's numeric opcode table, so it gets a real
+           decode entry here even though cpu.cpp's tick() has no dispatch case (its
+           execution semantics await an interrupt-vector-table format, card maize-10);
+           that is an execution-time gap, not an encoding gap. DUP/SWAP, which used to
+           be decoded here too, were header-only ghosts and are removed (card
+           maize-64); their freed bytes now disassemble as reserved. */
         add_src_only_2row("INT", instr_ns::int_opcode);
-        add_reg_only("POP", instr_ns::pop_regVal);
+        add_reg_only("POP", instr_ns::pop_opcode);
         add_zero_operand("RET", instr_ns::ret_opcode);
         add_zero_operand("IRET", instr_ns::iret_opcode);
         add_zero_operand("SETINT", instr_ns::setint_opcode);
@@ -227,9 +238,10 @@ namespace {
         add_src_regaddr_2row("CMPIND", instr_ns::cmpind_opcode);
         add_src_regaddr_2row("TSTIND", instr_ns::testind_opcode);
 
-        add_reg_only("INC", instr_ns::inc_regVal);
-        add_reg_only("DEC", instr_ns::dec_regVal);
-        add_reg_only("NOT", instr_ns::not_regVal);
+        add_reg_only("INC", instr_ns::inc_opcode);
+        add_reg_only("DEC", instr_ns::dec_opcode);
+        add_reg_only("NOT", instr_ns::not_opcode);
+        add_reg_only("NEG", instr_ns::neg_opcode);
 
         add_src_only_2row("SYS", instr_ns::sys_opcode);
 
@@ -237,8 +249,6 @@ namespace {
         add_zero_operand("SETCRY", instr_ns::setcry_opcode);
         add_zero_operand("CLRCRY", instr_ns::clrcry_opcode);
         add_zero_operand("CLRINT", instr_ns::clrint_opcode);
-        add_zero_operand("DUP", instr_ns::dup_opcode);
-        add_zero_operand("SWAP", instr_ns::swap_opcode);
 
         add_zero_operand("NOP", instr_ns::nop_opcode);
         add_zero_operand("BRK", instr_ns::brk_opcode);
@@ -376,7 +386,8 @@ namespace {
                 case operand_kind::regaddr:
                     operand_text[i] = "@" + render_reg(pbyte);
                     break;
-                case operand_kind::port: {
+                case operand_kind::port:
+                case operand_kind::imm: {
                     if (pbyte & 0xF8) {
                         malformed = true;
                         bad_byte = pbyte;

@@ -1,0 +1,5 @@
+; Negative test (card maize-64): a conditional branch takes an immediate target
+; only. A register target must be rejected with a diagnostic.
+$0000`0000:
+    JZ R0
+    HALT

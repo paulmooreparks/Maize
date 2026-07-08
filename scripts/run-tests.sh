@@ -236,6 +236,8 @@ run_test "test_stack64"      "test_stack64.mazm"      "stack64: PASS"           
 run_test "test_rsinit"       "test_rsinit.mazm"       "rsinit: PASS"                  0
 run_test "test_div"          "test_div.mazm"          "div: PASS"                     0
 run_test "test_jcc"          "test_jcc.mazm"          "jcc: PASS"                     0
+run_test "test_jcc_all"      "test_jcc_all.mazm"      "jcc-all: PASS"                 0
+run_test "test_neg"          "test_neg.mazm"          "neg: PASS"                     0
 run_test "test_setcc"        "test_setcc.mazm"        "setcc: PASS"                   0
 run_test "test_memblock"     "test_memblock.mazm"     "memblock: PASS"                0
 run_test "test_widecount"    "test_widecount.mazm"    "widecount: PASS"               0
@@ -248,13 +250,14 @@ run_test "test_call_ind"     "test_call_ind.mazm"     "call ind: PASS"          
 run_test "test_setint"       "test_setint.mazm"       "setint: PASS"                  0
 run_test "test_outr_in"      "test_outr_in.mazm"      "outr/in: PASS"                 0
 run_test "test_brk"          "test_brk.mazm"          "brk: PASS"                     0
-run_test "test_lngjmp"       "test_lngjmp.mazm"       "lngjmp: PASS"                  0
 run_test "test_tstind"       "test_tstind.mazm"       "tstind: PASS"                  0
 run_test "reject_bad_register"  "test_reject_badreg.mazm"        "unknown register 'R99'" 0 1
 run_test "reject_bad_literal"   "test_reject_badliteral.mazm"    "malformed hex literal"  0 1
 run_test "reject_include_self"  "test_reject_include_self.mazm"  "circular INCLUDE"       0 1
 run_test "reject_label_trunc"   "test_reject_label_trunc.mazm"   "unexpected end of file" 0 1
 run_test "reject_address_trunc" "test_reject_address_trunc.mazm" "unexpected end of file" 0 1
+run_test "reject_jcc_reg"       "test_reject_jcc_reg.mazm"       "immediate target only"  0 1
+run_test "reject_jmp_subreg"    "test_reject_jmp_subreg.mazm"    "full 64-bit width"      0 1
 run_test "nested_include"       "test_nested_include.mazm"       "nested include: PASS"   1
 run_test "address_fwdlabel"     "test_address_fwdlabel.mazm"     "address fwd-ref: PASS"  0
 
