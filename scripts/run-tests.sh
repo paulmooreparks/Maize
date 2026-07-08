@@ -403,6 +403,8 @@ run_mzdis_reserved_test() {
     fi
 
     out_file="${TEST_RUN_DIR}/test_mzdis_reserved.out"
+    # `|| dis_exit=$?` keeps a nonzero exit from tripping set -e; a bare
+    # `cmd; dis_exit=$?` would kill the whole script before the capture.
     dis_exit=0
     "$MZDIS_EXE" "$bin_path" >"$out_file" || dis_exit=$?
 
