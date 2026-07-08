@@ -1,13 +1,22 @@
 #include "all.h"
 
-/* Maize assembly emission (maize-62, hello-world slice).
+/* Maize assembly emission (maize-63, full single-TU coverage).
  *
- * Emits mazm mnemonics (CP, CALL, PUSH, POP, SUB, RET, ...), never raw opcode
- * bytes; mazm assembles them to the maize-64 encoding. The emitted surface is
- * exactly what hello world reaches (maize-11 "Back-end instruction-selection
- * coverage", hello subset): global address materialization, argument-in-R0,
- * CALL, a constant return into RV, and the prologue/epilogue. Everything else
- * die()s so maize-63 adds it deliberately rather than inheriting silent bugs.
+ * Emits mazm mnemonics (CP, CALL, ADD, CMP, Jcc, LD, ST, ...), never raw opcode
+ * bytes; mazm assembles them to the maize-64 encoding. This covers the full
+ * instruction-selection matrix a nontrivial single-TU C program reaches
+ * (maize-11 "Back-end instruction-selection coverage"): control flow, the
+ * comparison family as branch predicates and as materialized 0/1 values,
+ * arithmetic / logic / shift / signed+unsigned div/mod, sign/zero-extending
+ * sub-word loads and stores, explicit extensions, and frame-slot addressing.
+ * Anything genuinely out of scope (floating point, aggregates, ...) still
+ * die()s so it surfaces rather than miscompiling.
+ *
+ * Width convention (maize-11 decision 6406, the `w`-representation idiom): a QBE
+ * `w` (32-bit) value lives in a register's `H0` sub-register and its ALU/CMP ops
+ * run at 32-bit width; a QBE `l` (64-bit) value occupies the whole register.
+ * clssz() maps the operand class to the mazm sub-register suffix, so every
+ * operand is printed at exactly its class width.
  */
 
 typedef struct E E;
@@ -17,6 +26,24 @@ struct E {
 	uint64_t frame;   /* bytes reserved by the prologue SUB */
 	uint nsaved;      /* callee-saved registers preserved */
 };
+
+/* Sub-register size codes, low-field first. */
+enum { SzB, SzQ, SzH, SzW };
+static const char *subsuf[] = { ".B0", ".Q0", ".H0", "" };
+static const int   subhex[] = { 2, 4, 8, 16 };
+
+/* Operand width for a QBE class: `w` -> H0 (32-bit), `l` -> whole (64-bit). */
+static int
+clssz(int cls)
+{
+	return KWIDE(cls) ? SzW : SzH;
+}
+
+static uint64_t
+szmask(int sz)
+{
+	return sz == SzW ? ~(uint64_t)0 : ((uint64_t)1 << (subhex[sz] * 4)) - 1;
+}
 
 static char *
 rname(int r)
@@ -41,55 +68,100 @@ rname(int r)
 	return 0;
 }
 
-/* Emit a constant as a mazm immediate operand (no destination). Integer
- * constants are printed at their class width so the sign-extending CP that
- * consumes them reproduces the exact value; address constants become a full-64
- * label reference (maize-11 decision 6415), materialized into the whole
- * destination register by the consuming CP. */
+/* Print a value operand (constant immediate or register sub-register) at size
+ * sz. Integer constants are masked to the size so a negative value prints at the
+ * exact field width the consuming op reads; address constants become a full-64
+ * label reference (maize-11 decision 6415), always at whole-register width. */
 static void
-emitcon(Con *c, int k, E *e)
+opnd(Ref r, int sz, E *e)
 {
-	int w;
+	Con *c;
 
-	switch (c->type) {
-	case CBits:
-		w = KWIDE(k) ? 16 : 8;
-		fprintf(e->f, "$%0*"PRIx64, w, (uint64_t)c->bits.i);
+	switch (rtype(r)) {
+	case RCon:
+		c = &e->fn->con[r.val];
+		switch (c->type) {
+		case CBits:
+			fprintf(e->f, "$%0*"PRIx64, subhex[sz],
+				(uint64_t)c->bits.i & szmask(sz));
+			break;
+		case CAddr:
+			if (c->bits.i != 0)
+				die("maize emit: nonzero address offset is not supported");
+			fprintf(e->f, "%s", maize_sym(str(c->label)));
+			break;
+		default:
+			die("maize emit: undefined constant");
+		}
 		break;
-	case CAddr:
-		if (c->bits.i != 0)
-			die("maize emit: nonzero address offset is not supported (maize-63)");
-		fprintf(e->f, "%s", maize_sym(str(c->label)));
+	case RTmp:
+		assert(isreg(r));
+		fprintf(e->f, "%s%s", rname(r.val), subsuf[sz]);
 		break;
 	default:
-		die("maize emit: undefined constant");
+		die("maize emit: unsupported operand");
 	}
+}
+
+/* Print a register destination at size sz. */
+static void
+regw(Ref r, int sz, E *e)
+{
+	assert(isreg(r));
+	fprintf(e->f, "%s%s", rname(r.val), subsuf[sz]);
+}
+
+/* Print a memory address operand (`@Rn` or `@label`). */
+static void
+emitaddr(Ref r, E *e)
+{
+	Con *c;
+
+	switch (rtype(r)) {
+	case RTmp:
+		assert(isreg(r));
+		fprintf(e->f, "@%s", rname(r.val));
+		break;
+	case RCon:
+		c = &e->fn->con[r.val];
+		if (c->type != CAddr || c->bits.i != 0)
+			die("maize emit: unsupported memory address");
+		fprintf(e->f, "@%s", maize_sym(str(c->label)));
+		break;
+	default:
+		die("maize emit: unsupported memory address");
+	}
+}
+
+/* CP <src> <dst> at size sz. */
+static void
+cp(Ref src, Ref dst, int sz, E *e)
+{
+	fputs("\tCP\t", e->f);
+	opnd(src, sz, e);
+	fputc(' ', e->f);
+	regw(dst, sz, e);
+	fputc('\n', e->f);
+}
+
+/* <mnem> <src at ssz> <dst at dsz>. */
+static void
+alu(const char *mnem, Ref src, int ssz, Ref dst, int dsz, E *e)
+{
+	fprintf(e->f, "\t%s\t", mnem);
+	opnd(src, ssz, e);
+	fputc(' ', e->f);
+	regw(dst, dsz, e);
+	fputc('\n', e->f);
 }
 
 static void
 emitcopy(Ins *i, E *e)
 {
-	Ref r;
-	Con *c;
-
 	if (req(i->to, i->arg[0]))
 		return;
 	assert(isreg(i->to));
-	r = i->arg[0];
-	switch (rtype(r)) {
-	case RCon:
-		c = &e->fn->con[r.val];
-		fputs("\tCP\t", e->f);
-		emitcon(c, i->cls, e);
-		fprintf(e->f, " %s\n", rname(i->to.val));
-		break;
-	case RTmp:
-		assert(isreg(r));
-		fprintf(e->f, "\tCP\t%s %s\n", rname(r.val), rname(i->to.val));
-		break;
-	default:
-		die("maize emit: unsupported copy source");
-	}
+	cp(i->arg[0], i->to, clssz(i->cls), e);
 }
 
 static void
@@ -115,28 +187,200 @@ emitcall(Ins *i, E *e)
 	}
 }
 
+/* Reconcile a 3-address QBE ALU op `to = arg0 OP arg1` to Maize's two-address
+ * dst-accumulate form `OP arg1 to` (decision 6780). Establish to == arg0, then
+ * apply arg1. When arg1 already aliases `to` for a non-commutative op, route
+ * through the RT scratch so arg0 is not clobbered before arg1 is read. Shifts
+ * carry a `w` count regardless of the value class, so the source (count) is
+ * printed at 32-bit width. */
+static void
+emitbinop(Ins *i, const char *mnem, int commutative, int shiftlike, E *e)
+{
+	int dsz, ssz;
+	Ref to, a0, a1;
+
+	to = i->to;
+	a0 = i->arg[0];
+	a1 = i->arg[1];
+	assert(isreg(to));
+	dsz = clssz(i->cls);
+	ssz = shiftlike ? clssz(Kw) : dsz;
+
+	if (req(to, a1) && !commutative) {
+		/* to holds arg1; compute in RT so arg0 survives. */
+		cp(a0, TMP(RT), dsz, e);
+		alu(mnem, a1, ssz, TMP(RT), dsz, e);
+		cp(TMP(RT), to, dsz, e);
+		return;
+	}
+	if (req(to, a1)) {
+		/* commutative: to holds arg1, so `OP arg0 to`. */
+		alu(mnem, a0, dsz, to, dsz, e);
+		return;
+	}
+	if (!req(to, a0))
+		cp(a0, to, dsz, e);
+	alu(mnem, a1, ssz, to, dsz, e);
+}
+
+/* Condition (CmpI index) -> Jcc / SETcc mnemonic. Mirrors the shared predicate
+ * table in src/maize_cpu.h (decision 6776): ieq JZ, ine JNZ, isge JGE, isgt JGT,
+ * isle JLE, islt JLT, iuge JAE, iugt JA, iule JBE, iult JB. */
+static const char *jcctab[NCmpI] = {
+	"JZ", "JNZ", "JGE", "JGT", "JLE", "JLT", "JAE", "JA", "JBE", "JB"
+};
+static const char *setcctab[NCmpI] = {
+	"SETZ", "SETNZ", "SETGE", "SETGT", "SETLE", "SETLT",
+	"SETAE", "SETA", "SETBE", "SETB"
+};
+
+/* CMP arg1 arg0 (== arg0 - arg1, so the flags match QBE's `arg0 <cc> arg1`),
+ * then SETcc into `to` when the result is materialized as a value. When to == R
+ * the comparison is flag-only: seljmp fused it into the block's Jcc. */
+static void
+emitcmp(Ins *i, int kc, int c, E *e)
+{
+	int sz;
+
+	sz = clssz(kc);
+	fputs("\tCMP\t", e->f);
+	opnd(i->arg[1], sz, e);    /* src */
+	fputc(' ', e->f);
+	regw(i->arg[0], sz, e);    /* dst (register) */
+	fputc('\n', e->f);
+	if (!req(i->to, R))
+		/* Bare register destination writes a clean full-W0 0/1. */
+		fprintf(e->f, "\t%s\t%s\n", setcctab[c], rname(i->to.val));
+}
+
+/* LD @addr dst.<width>; then CP (sign) / CPZ (zero) extend for a sub-word load.
+ * There is no LDZ (decision 6779): the load reads exactly the sub-register width
+ * and the extension widens to the class width. */
+static void
+emitload(Ins *i, E *e)
+{
+	int rsz, signext, dsz;
+
+	switch (i->op) {
+	case Oloadsb: rsz = SzB; signext = 1; break;
+	case Oloadub: rsz = SzB; signext = 0; break;
+	case Oloadsh: rsz = SzQ; signext = 1; break;
+	case Oloaduh: rsz = SzQ; signext = 0; break;
+	case Oloadsw: rsz = SzH; signext = 1; break;
+	case Oloaduw: rsz = SzH; signext = 0; break;
+	case Oload:   rsz = clssz(i->cls); signext = -1; break;
+	default: die("maize emit: unsupported load");
+	}
+	fputs("\tLD\t", e->f);
+	emitaddr(i->arg[0], e);
+	fputc(' ', e->f);
+	regw(i->to, rsz, e);
+	fputc('\n', e->f);
+	if (signext >= 0) {
+		dsz = clssz(i->cls);
+		fprintf(e->f, "\t%s\t", signext ? "CP" : "CPZ");
+		regw(i->to, rsz, e);
+		fputc(' ', e->f);
+		regw(i->to, dsz, e);
+		fputc('\n', e->f);
+	}
+}
+
+/* ST src @addr at the store's width. */
+static void
+emitstore(Ins *i, E *e)
+{
+	int ssz;
+
+	switch (i->op) {
+	case Ostoreb: ssz = SzB; break;
+	case Ostoreh: ssz = SzQ; break;
+	case Ostorew: ssz = SzH; break;
+	case Ostorel: ssz = SzW; break;
+	default: die("maize emit: unsupported store");
+	}
+	fputs("\tST\t", e->f);
+	opnd(i->arg[0], ssz, e);
+	fputc(' ', e->f);
+	emitaddr(i->arg[1], e);
+	fputc('\n', e->f);
+}
+
+/* Explicit width cast: CP (sign) / CPZ (zero) from the sub-word source. */
+static void
+emitext(Ins *i, E *e)
+{
+	int ssz, signext, dsz;
+
+	switch (i->op) {
+	case Oextsb: ssz = SzB; signext = 1; break;
+	case Oextub: ssz = SzB; signext = 0; break;
+	case Oextsh: ssz = SzQ; signext = 1; break;
+	case Oextuh: ssz = SzQ; signext = 0; break;
+	case Oextsw: ssz = SzH; signext = 1; break;
+	case Oextuw: ssz = SzH; signext = 0; break;
+	default: die("maize emit: unsupported extension");
+	}
+	dsz = clssz(i->cls);
+	fprintf(e->f, "\t%s\t", signext ? "CP" : "CPZ");
+	opnd(i->arg[0], ssz, e);
+	fputc(' ', e->f);
+	regw(i->to, dsz, e);
+	fputc('\n', e->f);
+}
+
+/* Frame-slot address materialization: LEA $-<off> BP <reg>. The locals region
+ * sits just below the saved-register block the prologue reserved; slot s (a
+ * 4-byte unit index) is at BP - (8*nsaved + 4*(fn->slot - s)). */
+static void
+emitaddrslot(Ins *i, E *e)
+{
+	int s;
+	uint64_t off;
+
+	assert(rtype(i->arg[0]) == RSlot);
+	s = i->arg[0].val;
+	off = 8 * (uint64_t)e->nsaved + 4 * ((uint64_t)e->fn->slot - s);
+	fprintf(e->f, "\tLEA\t$-%02"PRIx64" BP %s\n", off, rname(i->to.val));
+}
+
 static void
 emitins(Ins *i, E *e)
 {
+	int kc, c;
+
 	switch (i->op) {
-	case Onop:
-		break;
-	case Ocopy:
-		emitcopy(i, e);
-		break;
-	case Ocall:
-		emitcall(i, e);
-		break;
+	case Onop:  break;
+	case Ocopy: emitcopy(i, e); break;
+	case Ocall: emitcall(i, e); break;
+	case Oaddr: emitaddrslot(i, e); break;
+	case Oadd:  emitbinop(i, "ADD",  1, 0, e); break;
+	case Osub:  emitbinop(i, "SUB",  0, 0, e); break;
+	case Omul:  emitbinop(i, "MUL",  1, 0, e); break;
+	case Oand:  emitbinop(i, "AND",  1, 0, e); break;
+	case Oor:   emitbinop(i, "OR",   1, 0, e); break;
+	case Oxor:  emitbinop(i, "XOR",  1, 0, e); break;
+	case Oshl:  emitbinop(i, "SHL",  0, 1, e); break;
+	case Oshr:  emitbinop(i, "SHR",  0, 1, e); break;
+	case Osar:  emitbinop(i, "SAR",  0, 1, e); break;
+	case Odiv:  emitbinop(i, "DIV",  0, 0, e); break;
+	case Orem:  emitbinop(i, "MOD",  0, 0, e); break;
+	case Oudiv: emitbinop(i, "UDIV", 0, 0, e); break;
+	case Ourem: emitbinop(i, "UMOD", 0, 0, e); break;
 	default:
-		die("maize emit: unimplemented op '%s' (maize-63)", optab[i->op].name);
+		if (iscmp(i->op, &kc, &c)) { emitcmp(i, kc, c, e); break; }
+		if (isload(i->op))         { emitload(i, e); break; }
+		if (isstore(i->op))        { emitstore(i, e); break; }
+		if (isext(i->op))          { emitext(i, e); break; }
+		die("maize emit: unimplemented op '%s'", optab[i->op].name);
 	}
 }
 
 /* Reserved-frame layout (bytes below BP):
  *   [BP-8*1 .. BP-8*nsaved]   saved callee-saved registers
  *   [.. below ..]             spill slots / locals
- * For hello world nsaved == 0 and there are no locals, so the frame is empty
- * and the prologue/epilogue reduce to exactly asm/hello.mazm:strlen's shape. */
+ * A leaf with no saves and no locals has an empty frame, so the
+ * prologue/epilogue reduce to exactly asm/hello.mazm:strlen's shape. */
 static uint64_t
 savedoff(uint n)
 {
@@ -202,7 +446,7 @@ maize_emitfn(Fn *fn, FILE *out)
 	E *e;
 	Blk *b;
 	Ins *i;
-	int lbl;
+	int c;
 
 	e = &(E){.f = out, .fn = fn};
 	framelayout(e);
@@ -210,12 +454,11 @@ maize_emitfn(Fn *fn, FILE *out)
 	fprintf(e->f, "%s:\n", maize_sym(fn->name));
 	prologue(e);
 
-	for (lbl = 0, b = fn->start; b; b = b->link) {
-		if (lbl || b->npred > 1)
+	for (b = fn->start; b; b = b->link) {
+		if (b != fn->start)
 			fprintf(e->f, "Lm%d:\n", id0 + b->id);
 		for (i = b->ins; i != &b->ins[b->nins]; i++)
 			emitins(i, e);
-		lbl = 1;
 		switch (b->jmp.type) {
 		case Jret0:
 			epilogue(e);
@@ -223,11 +466,18 @@ maize_emitfn(Fn *fn, FILE *out)
 		case Jjmp:
 			if (b->s1 != b->link)
 				fprintf(e->f, "\tJMP\tLm%d\n", id0 + b->s1->id);
-			else
-				lbl = 0;
 			break;
 		default:
-			die("maize emit: unsupported control flow (maize-63)");
+			if (b->jmp.type >= Jjf && b->jmp.type < Jjf + NCmpI) {
+				c = b->jmp.type - Jjf;
+				fprintf(e->f, "\t%s\tLm%d\n",
+					jcctab[c], id0 + b->s1->id);
+				if (b->s2 != b->link)
+					fprintf(e->f, "\tJMP\tLm%d\n",
+						id0 + b->s2->id);
+			} else
+				die("maize emit: unsupported control flow (maize-63)");
+			break;
 		}
 	}
 	id0 += fn->nblk;

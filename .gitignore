@@ -57,3 +57,13 @@ CMakeUserPresets.json
 # maize-12: linker/assembler object + executable artifacts (build products)
 *.mzo
 *.mzx
+
+# maize-63: C-toolchain (ctest) pipeline build outputs. The fixtures ctest/*.c
+# and ctest/*.expected stay tracked; every intermediate the run-ctest.sh pipeline
+# drops next to them is a build product.
+ctest/*.bin
+ctest/*.mazm
+ctest/*.body.mazm
+ctest/*.lf.c
+ctest/*.ssa
+ctest/*.norm.ssa

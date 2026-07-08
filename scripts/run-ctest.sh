@@ -119,7 +119,14 @@ run_ctest() {
         echo "[FAIL] ${name}: cproc-qbe failed"; cat "${WORK_DIR}/${name}.cproc.log" >&2
         FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
-    sed 's/call extern /call /' "$ssa" > "$norm"
+    # Normalize two IL-version-skew points between the pinned cproc and the
+    # pinned qbe (same class of fix as `call extern`, above):
+    #   - `call extern $sym` -> `call $sym`  (call-linkage annotation qbe predates)
+    #   - `=<w|l> neg X`      -> `=<w|l> sub 0, X`  (cproc emits the `neg` unary op,
+    #     which this pinned qbe's parser predates; `sub 0, X` is the identity
+    #     lowering and carries the same class/semantics).
+    sed -e 's/call extern /call /' \
+        -e 's/\(=[wl]\) neg /\1 sub 0, /' "$ssa" > "$norm"
     if ! "$QBE" -t maize "$norm" > "$body" 2>"${WORK_DIR}/${name}.qbe.log"; then
         echo "[FAIL] ${name}: qbe -t maize failed"; cat "${WORK_DIR}/${name}.qbe.log" >&2
         FAIL_COUNT=$((FAIL_COUNT + 1)); return
@@ -154,6 +161,7 @@ run_ctest() {
 
 echo "=== C toolchain end-to-end (cproc -> qbe -t maize -> mazm -> maize) ==="
 run_ctest "hello"
+run_ctest "capstone"
 
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then

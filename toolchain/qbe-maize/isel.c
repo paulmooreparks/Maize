@@ -1,14 +1,27 @@
 #include "all.h"
 
-/* Maize instruction selection (maize-62, hello-world slice).
+/* Maize instruction selection (maize-63, full single-TU coverage).
  *
  * Maize is CISC: the ALU keeps memory and immediate operands, so QBE constants
  * flow straight through to emit as immediates and no separate "load immediate"
- * pass is needed. The only rewriting isel does here is turning stack-slot temps
- * into explicit frame-relative address materializations (Oaddr). The full
- * instruction-selection matrix (comparisons materialized as 0/1, sign/zero
- * extending loads, div/mod, shifts, ...) is maize-63's job and is not reached by
- * hello world; unreached shapes err() rather than miscompile.
+ * pass is needed. isel does three things here:
+ *
+ *   1. Rewrites stack-slot temps into explicit frame-relative address
+ *      materializations (Oaddr), via fixarg.
+ *   2. Canonicalizes the comparison family so the constant operand (if any) sits
+ *      in the CMP src position: `CMP src dst` computes `dst - src`, and QBE
+ *      evaluates `cmp<cc> arg0,arg1` as `arg0 <cc> arg1`, so the natural lowering
+ *      is `CMP arg1 arg0`; when arg0 is the constant we swap operands and swap the
+ *      condition (cmpop) so the register lands in dst. emit does the CMP+SETcc /
+ *      CMP+Jcc.  (decisions 6775, 6776)
+ *   3. Lowers conditional branches (seljmp): compare/branch fusion when the
+ *      comparison feeds only the jnz, else an explicit `CMP $00 <reg>` on the
+ *      branched value since data movement does not set flags (decision 6779).
+ *
+ * The 3-address -> 2-address reconciliation for the ALU ops is done in emit
+ * (where physical-register aliasing is observable), so sel leaves those ops in
+ * their QBE 3-address form. Phi resolution is inherited from QBE's target-
+ * independent register allocator (rega.c); the backend adds no phi handling.
  */
 
 static void
@@ -28,19 +41,47 @@ fixarg(Ref *pr, Fn *fn)
 	}
 }
 
+/* The op carrying condition c for class k (Kw or Kl). */
+static int
+cmpop_for(int k, int c)
+{
+	return (k == Kw ? Ocmpw : Ocmpl) + c;
+}
+
 static void
 sel(Ins i, Fn *fn)
 {
-	Ref *iarg;
+	Ref *a;
+	int kc, c;
 
-	switch (i.op) {
-	case Onop:
+	if (i.op == Onop)
 		return;
-	case Ocall:
+	if (i.op == Ocall) {
 		/* Keep the call target as-is (a CAddr constant becomes a direct
 		 * `CALL label`; a register becomes an indirect `CALL Rn`). */
 		emiti(i);
 		return;
+	}
+
+	if (iscmp(i.op, &kc, &c)) {
+		if (c >= NCmpI)
+			err("maize isel: floating-point comparison is not supported");
+		emiti(i);
+		a = curi->arg;
+		if (rtype(a[0]) == RCon) {
+			/* The constant must occupy the CMP src (arg1) slot; swap
+			 * operands and swap the condition so the register is dst. */
+			Ref t = a[0];
+			a[0] = a[1];
+			a[1] = t;
+			curi->op = cmpop_for(kc, cmpop(c));
+		}
+		fixarg(&a[0], fn);
+		fixarg(&a[1], fn);
+		return;
+	}
+
+	switch (i.op) {
 	case Ocopy:
 	case Oadd:
 	case Osub:
@@ -48,6 +89,13 @@ sel(Ins i, Fn *fn)
 	case Oand:
 	case Oor:
 	case Oxor:
+	case Oshl:
+	case Oshr:
+	case Osar:
+	case Odiv:
+	case Orem:
+	case Oudiv:
+	case Ourem:
 	case Ostoreb:
 	case Ostoreh:
 	case Ostorew:
@@ -59,26 +107,90 @@ sel(Ins i, Fn *fn)
 	case Oloaduh:
 	case Oloadsw:
 	case Oloaduw:
+	case Oextsb:
+	case Oextub:
+	case Oextsh:
+	case Oextuh:
+	case Oextsw:
+	case Oextuw:
 		emiti(i);
-		iarg = curi->arg;
-		fixarg(&iarg[0], fn);
-		fixarg(&iarg[1], fn);
+		a = curi->arg;
+		fixarg(&a[0], fn);
+		fixarg(&a[1], fn);
 		return;
 	default:
 		err("maize isel: unsupported op '%s' (maize-63)", optab[i.op].name);
 	}
 }
 
+/* If the block's last instruction is an integer comparison, return it. */
+static Ins *
+lastcmp(Blk *b)
+{
+	Ins *i;
+	int kc, c;
+
+	if (b->nins == 0)
+		return 0;
+	i = &b->ins[b->nins - 1];
+	if (iscmp(i->op, &kc, &c) && c < NCmpI)
+		return i;
+	return 0;
+}
+
 static void
 seljmp(Blk *b, Fn *fn)
 {
-	(void)fn;
+	Ref r;
+	Ins *fi;
+	Tmp *t;
+	int kc, c;
+
 	switch (b->jmp.type) {
 	case Jret0:
 	case Jjmp:
 		return;
+	case Jjnz:
+		break;
 	default:
-		err("maize isel: unsupported control flow (conditional branch is maize-63)");
+		err("maize isel: unsupported control flow");
+	}
+
+	r = b->jmp.arg;
+	assert(rtype(r) == RTmp);
+	b->jmp.arg = R;
+	t = &fn->tmp[r.val];
+
+	if (b->s1 == b->s2) {
+		b->jmp.type = Jjmp;
+		b->s2 = 0;
+		return;
+	}
+
+	fi = lastcmp(b);
+	if (fi && req(fi->to, r) && t->nuse == 1) {
+		/* Compare/branch fusion: reuse the comparison as a flag-only CMP
+		 * (to = R => emit emits CMP without a SETcc) and branch on it. */
+		iscmp(fi->op, &kc, &c);
+		if (rtype(fi->arg[0]) == RCon) {
+			Ref tmp = fi->arg[0];
+			fi->arg[0] = fi->arg[1];
+			fi->arg[1] = tmp;
+			c = cmpop(c);
+			fi->op = cmpop_for(kc, c);
+		}
+		fi->to = R;
+		b->jmp.type = Jjf + c;
+	} else {
+		/* Branch on a non-comparison value: data movement does not set
+		 * flags, so materialize an explicit `CMP $00 <reg>` (arg1 == 0,
+		 * arg0 == r => CMP arg1 arg0) and take the nonzero edge with JNZ. */
+		kc = fn->tmp[r.val].cls;
+		if (kc != Kw && kc != Kl)
+			err("maize isel: unsupported branch value class");
+		emit(cmpop_for(kc, Cine), kc, R, r, CON_Z);
+		fixarg(&curi->arg[0], fn);
+		b->jmp.type = Jjf + Cine;
 	}
 }
 
@@ -90,14 +202,13 @@ maize_isel(Fn *fn)
 	uint n, al;
 	int64_t sz;
 
-	/* Assign frame slots to stack allocations (Oalloc). Not reached by hello,
-	 * but kept so a stray fixed-size alloc lowers rather than crashes. */
+	/* Assign frame slots to stack allocations (Oalloc). */
 	b = fn->start;
 	for (al = Oalloc, n = 4; al <= Oalloc1; al++, n *= 2)
 		for (i = b->ins; i < &b->ins[b->nins]; i++)
 			if (i->op == al) {
 				if (rtype(i->arg[0]) != RCon)
-					err("maize isel: dynamic alloc is not supported (maize-63)");
+					err("maize isel: dynamic alloc is not supported");
 				sz = fn->con[i->arg[0].val].bits.i;
 				if (sz < 0 || sz >= INT_MAX - 15)
 					err("maize isel: invalid alloc size %"PRId64, sz);
