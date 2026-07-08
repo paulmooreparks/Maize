@@ -2783,6 +2783,31 @@ namespace {
         fout.write(reinterpret_cast<const char *>(file.data()), file.size());
         fout.close();
     }
+
+    void print_usage(std::ostream &out) {
+        out <<
+            "usage: mazm [options] <input.mazm>\n"
+            "\n"
+            "Maize assembler. Assembles <input.mazm> into a flat memory image written\n"
+            "next to the input file as <input>.bin, or into a relocatable object\n"
+            "<input>.mzo with -c. On assembly errors no output is produced and any\n"
+            "stale output at the target path is removed.\n"
+            "\n"
+            "options:\n"
+            "  -c, --emit-object     emit a relocatable .mzo object instead of a flat .bin\n"
+            "  --check               validate only: run the full assembly pipeline with\n"
+            "                        no filesystem effects (nothing written or removed)\n"
+            "  --stdin               read source from standard input instead of a file;\n"
+            "                        requires --check and --base-path\n"
+            "  --base-path <dir>     directory INCLUDE paths resolve against\n"
+            "                        (default: the input file's directory)\n"
+            "  --source-name <name>  name reported in diagnostics for --stdin input\n"
+            "                        (default: <stdin>)\n"
+            "  -h, --help            show this help and exit\n"
+            "\n"
+            "Unrecognized --flags are ignored, so editor integrations can pass newer\n"
+            "flags to older assemblers.\n";
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -2797,7 +2822,11 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         std::string arg {argv[i]};
 
-        if (arg == "--check") {
+        if (arg == "-h" || arg == "--help") {
+            print_usage(std::cout);
+            return 0;
+        }
+        else if (arg == "--check") {
             check_only = true;
         }
         else if (arg == "-c" || arg == "--emit-object") {
@@ -2873,48 +2902,53 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (!input_file.empty()) {
-        try {
-            auto input_path = std::filesystem::path(input_file);
-            auto canonical_path = std::filesystem::canonical(input_path).make_preferred();
-            auto parent_path = canonical_path.parent_path().make_preferred();
-            base_path = base_path_arg.empty() ? parent_path.string() : base_path_arg;
+    if (input_file.empty()) {
+        /* No input and no --stdin: nothing to do. Print help and exit nonzero
+           so a bare or misspelled invocation is not mistaken for success. */
+        print_usage(std::cerr);
+        return 1;
+    }
 
-            if (!check_only) {
-                std::cout << "Assembling from " << canonical_path.string() << std::endl;
-            }
+    try {
+        auto input_path = std::filesystem::path(input_file);
+        auto canonical_path = std::filesystem::canonical(input_path).make_preferred();
+        auto parent_path = canonical_path.parent_path().make_preferred();
+        base_path = base_path_arg.empty() ? parent_path.string() : base_path_arg;
 
-            assemble(canonical_path.string());
-        }
-        catch (const error_limit_reached &) {
-            /* record_diag already appended the stopping line; fall through
-               to the flush below. */
-        }
-        catch (const env_error &e) {
-            flush_diags();
-            std::cerr << e.what() << std::endl;
-            return 1;
-        }
-        catch (const asm_error &e) {
-            /* Safety net: the recovery sites should have caught this.
-               Already formatted as "mazm: <file>:<line>: error: <msg>". */
-            flush_diags();
-            std::cerr << e.what() << std::endl;
-            return 1;
-        }
-        catch (const std::exception &e) {
-            /* Anything else (e.g. a missing input file makes std::filesystem
-               throw): still exit nonzero with a mazm-prefixed message rather than
-               an unhandled-exception abort. */
-            flush_diags();
-            std::cerr << "mazm: error: " << e.what() << std::endl;
-            return 1;
+        if (!check_only) {
+            std::cout << "Assembling from " << canonical_path.string() << std::endl;
         }
 
-        if (!diags.empty()) {
-            flush_diags();
-            return 1;
-        }
+        assemble(canonical_path.string());
+    }
+    catch (const error_limit_reached &) {
+        /* record_diag already appended the stopping line; fall through
+           to the flush below. */
+    }
+    catch (const env_error &e) {
+        flush_diags();
+        std::cerr << e.what() << std::endl;
+        return 1;
+    }
+    catch (const asm_error &e) {
+        /* Safety net: the recovery sites should have caught this.
+           Already formatted as "mazm: <file>:<line>: error: <msg>". */
+        flush_diags();
+        std::cerr << e.what() << std::endl;
+        return 1;
+    }
+    catch (const std::exception &e) {
+        /* Anything else (e.g. a missing input file makes std::filesystem
+           throw): still exit nonzero with a mazm-prefixed message rather than
+           an unhandled-exception abort. */
+        flush_diags();
+        std::cerr << "mazm: error: " << e.what() << std::endl;
+        return 1;
+    }
+
+    if (!diags.empty()) {
+        flush_diags();
+        return 1;
     }
 
     return 0;
