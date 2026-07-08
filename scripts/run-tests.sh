@@ -403,8 +403,8 @@ run_mzdis_reserved_test() {
     fi
 
     out_file="${TEST_RUN_DIR}/test_mzdis_reserved.out"
-    "$MZDIS_EXE" "$bin_path" >"$out_file"
-    dis_exit=$?
+    dis_exit=0
+    "$MZDIS_EXE" "$bin_path" >"$out_file" || dis_exit=$?
 
     if [ "$dis_exit" -eq 0 ] \
         && grep -qE 'DB \$21.*unknown opcode' "$out_file" \
@@ -444,8 +444,8 @@ run_mzdis_truncated_test() {
     dd if="$bin_path" of="$trunc_path" bs=1 count=8 >/dev/null 2>&1
 
     out_file="${TEST_RUN_DIR}/test_mzdis_truncate.out"
-    "$MZDIS_EXE" "$trunc_path" >"$out_file"
-    dis_exit=$?
+    dis_exit=0
+    "$MZDIS_EXE" "$trunc_path" >"$out_file" || dis_exit=$?
 
     if [ "$dis_exit" -eq 1 ] \
         && grep -qE '^\s+HALT\b' "$out_file" \
@@ -475,8 +475,8 @@ run_mzdis_mzo_reject_test() {
 
     out_file="${TEST_RUN_DIR}/test_mzdis_mzo.out"
     err_file="${TEST_RUN_DIR}/test_mzdis_mzo.err"
-    "$MZDIS_EXE" "$mzo_path" >"$out_file" 2>"$err_file"
-    dis_exit=$?
+    dis_exit=0
+    "$MZDIS_EXE" "$mzo_path" >"$out_file" 2>"$err_file" || dis_exit=$?
 
     if [ "$dis_exit" -eq 1 ] \
         && [ ! -s "$out_file" ] \
@@ -507,8 +507,8 @@ run_mzdis_mzx_test() {
     fi
 
     out_file="${TEST_RUN_DIR}/test_mzdis_mzx.out"
-    "$MZDIS_EXE" "$mzx_path" >"$out_file"
-    dis_exit=$?
+    dis_exit=0
+    "$MZDIS_EXE" "$mzx_path" >"$out_file" || dis_exit=$?
 
     if [ "$dis_exit" -eq 0 ] \
         && grep -qE '^\s+CALL\b.*ENTRY' "$out_file" \
