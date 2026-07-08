@@ -84,6 +84,15 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+	/* card maize-57: process-start stack-pointer contract. Set RS explicitly to
+	   the highest 8-byte-aligned address in the flat 64-bit space, for both the
+	   .mzx and flat-.bin load paths, so the initial SP is an intentional line
+	   rather than the implicit zero-init of a process-global register. The stack
+	   is full-descending: the first push pre-decrements RS and lands at
+	   0xFFFFFFFFFFFFFFF0. No wraparound is relied upon. RP is already set per
+	   path (load_mzx records the .mzx entry; a flat image leaves RP at 0). */
+	regs::rs.w0 = 0xFFFFFFFFFFFFFFF8;
+
 	/* card maize-10, Decision D6465: a single always-registered loopback test device,
 	   solely so OUT/OUTR/IN have a real port to exercise in regression tests. Bare
 	   `device` instance with no specialized behavior (src/maize_cpu.h class device).

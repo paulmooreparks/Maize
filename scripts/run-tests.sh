@@ -233,6 +233,7 @@ run_test "test_addr64"       "test_addr64.mazm"       "addr64: PASS"            
 run_test "test_cmptest"      "test_cmptest.mazm"      "cmptest: PASS"                 0
 run_test "test_ldimm"        "test_ldimm.mazm"        "ld imm: PASS"                  0
 run_test "test_stack64"      "test_stack64.mazm"      "stack64: PASS"                 0
+run_test "test_rsinit"       "test_rsinit.mazm"       "rsinit: PASS"                  0
 run_test "test_div"          "test_div.mazm"          "div: PASS"                     0
 run_test "test_jcc"          "test_jcc.mazm"          "jcc: PASS"                     0
 run_test "test_setcc"        "test_setcc.mazm"        "setcc: PASS"                   0

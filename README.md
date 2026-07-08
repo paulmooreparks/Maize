@@ -442,11 +442,36 @@ where mentioned, are only a privilege/protection concept.
        and executed. PC is an alias for RP.
 
     RS Stack-pointer register: the full 64-bit address of the top of the stack, which grows
-       downward in memory. SP is an alias for RS.
+       downward in memory. SP is an alias for RS. The stack is full-descending: PUSH and CALL
+       pre-decrement RS before writing, so RS always points at the last value pushed (or, at
+       process start, one slot past the top usable slot).
 
 There is also an instruction register, RI, which the decoder sets as it reads each instruction
 and its parameters from memory. RI can only be set by the decoder and is not addressable as an
 instruction operand.
+
+#### Process start
+
+At process start (a fresh VM invocation) Maize guarantees the following register and stack
+contract. Maize is an unbounded flat 64-bit machine; there is no bounded RAM ceiling, so the
+initial stack pointer is a chosen top-of-space constant, not a derived RAM limit.
+
+    RS (SP)          0xFFFFFFFFFFFFFFF8, the highest 8-byte-aligned address in the flat 64-bit
+                     space. The stack is full-descending, so the first 8-byte push pre-decrements
+                     RS and lands at 0xFFFFFFFFFFFFFFF0. RS is set to this explicit constant; no
+                     stack-pointer wraparound is relied upon. The initial stack is empty (no
+                     argc/argv/envp or process-start data block; that layout is deferred to the
+                     C ABI).
+    RP (PC)          the program entry: the recorded entry point for a .mzx executable, or
+                     address 0 for a flat image.
+    RB (BP)          0.
+    RF               the arithmetic/logic flags (RF.H0, aliased FL) are clear; the privileged
+                     bit is set (execution starts privileged); interrupts are disabled; the
+                     running bit is set once execution begins.
+    R0..R9, RT, RV   0.
+
+These values are a guaranteed contract, not incidental defaults: crt0 and the C calling
+convention depend on a usable stack pointer from the first instruction.
 
 ### Flags
 
@@ -548,11 +573,23 @@ Notes:
 
 ## Execution
 
-The CPU starts in privileged mode, and the program counter (PC) is initially set to address
-$0000,0000,0000,0000. When in privileged mode, the privilege flag is set, and instructions marked
-as privileged may be executed. When the privilege flag is cleared, certain flags, registers, and
-instructions are inaccessible. Program execution may return to privileged mode via hardware
-interrupts or via software-generated (INT instruction) interrupts.
+The CPU starts in privileged mode. When in privileged mode, the privilege flag is set, and
+instructions marked as privileged may be executed. When the privilege flag is cleared, certain
+flags, registers, and instructions are inaccessible. Program execution may return to privileged
+mode via hardware interrupts or via software-generated (INT instruction) interrupts.
+
+At process start the register and stack state is a guaranteed contract (see "Process start" under
+Special-purpose Registers):
+
+- The program counter (RP/PC) is set to the program entry: the recorded entry point for a .mzx
+  executable, or address $0000,0000,0000,0000 for a flat image.
+- The stack pointer (RS/SP) is set to 0xFFFFFFFFFFFFFFF8, the highest 8-byte-aligned address in
+  the flat 64-bit space. The stack grows downward: PUSH and CALL pre-decrement RS before writing,
+  so the first 8-byte push lands at 0xFFFFFFFFFFFFFFF0. The initial stack is empty. No
+  stack-pointer wraparound is relied upon.
+- The base pointer (RB/BP) is 0, the general registers R0..R9, RT, and RV are 0, and the
+  arithmetic/logic flags (RF.H0) are clear with interrupts disabled. This lets crt0 CALL into the
+  program with a usable stack from the very first instruction.
 
 
 ## Opcode Bytes

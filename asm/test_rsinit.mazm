@@ -1,0 +1,65 @@
+; **********************************************************************************
+; Regression test for card maize-57: process-start stack-pointer contract.
+;
+; The VM guarantees RS (SP) = 0xFFFFFFFFFFFFFFF8 at process start, the highest
+; 8-byte-aligned address in the flat 64-bit space. The FIRST observable action of
+; this program captures RS and asserts it equals that constant, before anything
+; touches the stack. It then exercises the stack with no prior SP setup: a CALL
+; whose return address must round-trip through the initialized stack, and a
+; PUSH/POP inside the leaf. The PASS line prints via SYS $01 only if both the
+; initial-RS assertion and the round-trip hold.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- FIRST observable action: initial RS must equal 0xFFFFFFFFFFFFFFF8 ----
+    CP SP R0                        ; capture the process-start stack pointer
+    CMP $FFFFFFFFFFFFFFF8 R0        ; flags = R0 - top-of-space constant
+    JNZ fail                       ; initial RS was not the guaranteed value
+
+    ; ---- exercise the stack with no prior SP setup ----
+    ; CALL pushes the return address using the initialized RS; the leaf also
+    ; PUSH/POPs a sentinel. If RS were not usable at entry, the return address
+    ; would not round-trip and control would not reach the PASS line.
+    CLR R4
+    CALL sub_leaf                  ; sets R4.B0 = $01 and returns here
+    CMP $01 R4.B0
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $0D R2                      ; 13 bytes
+    SYS $01
+    HALT
+
+sub_leaf:
+    ; Push a sentinel and pop it back to confirm PUSH/POP round-trips on the
+    ; initialized stack, then signal success to the caller.
+    CP $CAFEF00DDEADBEEF R5
+    PUSH R5
+    CLR R6
+    POP R6
+    CMP R5 R6
+    JNZ fail                       ; PUSH/POP did not round-trip
+    CP $01 R4.B0
+    RET                            ; return address must round-trip through the stack
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $0D R2                      ; 13 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "rsinit: PASS\n\0"
+
+fail_string:
+    STRING "rsinit: FAIL\n\0"
