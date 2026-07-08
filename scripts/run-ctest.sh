@@ -1,0 +1,154 @@
+#!/bin/sh
+# Compile + run the C hello-world through the full Maize C toolchain and diff its
+# stdout against the committed fixture (maize-62, maize-11 AC 6397 / 6399).
+#
+# Pipeline (maize-11 "Pipeline"; single-TU whole-program, no linker):
+#
+#   ctest/hello.c
+#     -> cproc-qbe            (C11 -> QBE IL)
+#     -> normalize            (drop the `extern` call-linkage annotation; see below)
+#     -> qbe -t maize         (QBE IL -> mazm)
+#     -> prepend runtime      (crt0 + syscall + puts, decision 6636 order)
+#     -> mazm                 (mazm -> flat .bin)
+#     -> maize                (execute; capture stdout)
+#     -> diff vs ctest/hello.expected
+#
+# This is kept DISTINCT from run-tests.{sh,ps1} (the asm/ corpus harness) so a
+# codegen regression reports separately from an asm-suite regression (maize-61
+# decision 6611 precedent). maize-63 adds its nontrivial program to this runner.
+#
+# `extern` normalization: the pinned cproc (d1c53dd) emits `call extern $sym`, a
+# call-linkage annotation the pinned qbe (4420727) predates and rejects. In the
+# Maize single-TU whole-program model (decision 6411/6636) all symbols resolve in
+# mazm's one shared label table, so the annotation carries no meaning and is
+# normalized away deterministically here.
+#
+# Exit codes:
+#   0 - every C program produced its expected stdout
+#   1 - a program mismatched, or a pipeline stage failed
+#   2 - environment/setup failure (a required executable is missing)
+#
+# Usage: scripts/run-ctest.sh [--preset <name>] [--skip-build]
+
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
+CTEST_DIR="${REPO_ROOT}/ctest"
+RT_DIR="${REPO_ROOT}/toolchain/rt"
+QBE_DIR="${REPO_ROOT}/toolchain/qbe"
+CPROC_DIR="${REPO_ROOT}/toolchain/cproc"
+
+UNAME=$(uname -s)
+case "$UNAME" in
+    Linux)  DEFAULT_PRESET='linux-debug' ;;
+    Darwin) DEFAULT_PRESET='macos-debug' ;;
+    MINGW*|MSYS*|CYGWIN*) DEFAULT_PRESET='windows-llvm-mingw-debug' ;;
+    *) echo "unsupported platform for run-ctest.sh: ${UNAME}" >&2; exit 2 ;;
+esac
+
+PRESET="$DEFAULT_PRESET"
+SKIP_BUILD=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --preset) PRESET="${2:-}"; shift 2 ;;
+        --preset=*) PRESET="${1#--preset=}"; shift ;;
+        --skip-build) SKIP_BUILD=1; shift ;;
+        *) echo "Unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+BUILD_DIR="${REPO_ROOT}/build/${PRESET}"
+WORK_DIR="${BUILD_DIR}/ctest-run"
+
+# Resolve an executable path, tolerating a .exe suffix on Windows.
+resolve_exe() {
+    if [ -x "$1" ] || [ -f "$1" ]; then echo "$1"; return 0; fi
+    if [ -x "$1.exe" ] || [ -f "$1.exe" ]; then echo "$1.exe"; return 0; fi
+    return 1
+}
+
+# Build the C toolchain if the compilers are absent (fresh-clone one-command).
+if [ "$SKIP_BUILD" -eq 0 ]; then
+    if ! resolve_exe "${QBE_DIR}/obj/qbe" >/dev/null \
+    || ! resolve_exe "${CPROC_DIR}/cproc-qbe" >/dev/null; then
+        "${SCRIPT_DIR}/build-toolchain.sh"
+    fi
+fi
+
+CPROC_QBE=$(resolve_exe "${CPROC_DIR}/cproc-qbe") || {
+    echo "run-ctest.sh: cproc-qbe not found; run scripts/build-toolchain.sh first." >&2; exit 2; }
+QBE=$(resolve_exe "${QBE_DIR}/obj/qbe") || {
+    echo "run-ctest.sh: qbe not found; run scripts/build-toolchain.sh first." >&2; exit 2; }
+MAZM=$(resolve_exe "${BUILD_DIR}/mazm") || {
+    echo "run-ctest.sh: mazm not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+MAIZE=$(resolve_exe "${BUILD_DIR}/maize") || {
+    echo "run-ctest.sh: maize not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+
+mkdir -p "${WORK_DIR}"
+
+FAIL_COUNT=0
+TOTAL=0
+
+run_ctest() {
+    name="$1"
+    src="${CTEST_DIR}/${name}.c"
+    expfile="${CTEST_DIR}/${name}.expected"
+    TOTAL=$((TOTAL + 1))
+
+    if [ ! -f "$src" ] || [ ! -f "$expfile" ]; then
+        echo "[FAIL] ${name}: missing source or expected fixture" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+
+    ssa="${WORK_DIR}/${name}.ssa"
+    norm="${WORK_DIR}/${name}.norm.ssa"
+    body="${WORK_DIR}/${name}.body.mazm"
+    full="${WORK_DIR}/${name}.mazm"
+    bin="${WORK_DIR}/${name}.bin"
+
+    if ! "$CPROC_QBE" < "$src" > "$ssa" 2>"${WORK_DIR}/${name}.cproc.log"; then
+        echo "[FAIL] ${name}: cproc-qbe failed"; cat "${WORK_DIR}/${name}.cproc.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    sed 's/call extern /call /' "$ssa" > "$norm"
+    if ! "$QBE" -t maize "$norm" > "$body" 2>"${WORK_DIR}/${name}.qbe.log"; then
+        echo "[FAIL] ${name}: qbe -t maize failed"; cat "${WORK_DIR}/${name}.qbe.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    cat "${RT_DIR}/crt0.mazm" "${RT_DIR}/syscall.mazm" "${RT_DIR}/puts.mazm" "$body" > "$full"
+    if ! "$MAZM" "$full" >"${WORK_DIR}/${name}.mazm.log" 2>&1 || [ ! -f "$bin" ]; then
+        echo "[FAIL] ${name}: mazm failed"; cat "${WORK_DIR}/${name}.mazm.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    # Compare stdout against the committed fixture. Exact byte match is required
+    # (this verifies the greeting AND the trailing newline puts appends); the only
+    # tolerance is maize appending ONE extra trailing newline on Linux (documented
+    # in src/maize.cpp and handled the same way by run-tests). So: exact cmp, else
+    # accept iff the two agree once trailing newlines are stripped.
+    out="${WORK_DIR}/${name}.out"
+    "$MAIZE" "$bin" > "$out" 2>/dev/null || true
+    if cmp -s "$out" "$expfile" \
+    || { [ "$(cat "$out")" = "$(cat "$expfile")" ]; }; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"$(cat "$expfile")\""
+        echo "        actual:   \"$(cat "$out")\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+echo "=== C toolchain end-to-end (cproc -> qbe -t maize -> mazm -> maize) ==="
+run_ctest "hello"
+
+echo "-----------------------------------------------------------------------"
+if [ "$FAIL_COUNT" -eq 0 ]; then
+    echo "C toolchain: ${TOTAL} passed, 0 failed."
+    exit 0
+else
+    echo "C toolchain: $((TOTAL - FAIL_COUNT)) passed, ${FAIL_COUNT} failed."
+    exit 1
+fi

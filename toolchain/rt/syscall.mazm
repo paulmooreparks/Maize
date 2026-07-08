@@ -1,0 +1,24 @@
+; ==================================================================================
+; syscall.mazm -- freestanding syscall wrappers over SYS (maize-62, maize-11 "Runtime")
+;
+; Thin wrappers keyed to src/sys.cpp `sys::call` as it stands on master. The Maize C
+; ABI passes the first three integer arguments in R0, R1, R2 -- the exact registers
+; the SYS handlers read -- so each wrapper is just `SYS <id>; RET`. Counts are read as
+; full-64 (regs::r2.w0), confirming maize-56 landed; buffers are full-64 addresses
+; (regs::r1.w0), consistent with the flat-64 model.
+;
+;   sys_write(R0=fd, R1=buf, R2=count) -> RV   SYS $01  (bytes written)
+;   sys_read (R0=fd, R1=buf, R2=count) -> RV   SYS $00  (bytes read)
+;   exit(R0=code)                              maps to HALT (sys_exit is a stub)
+; ==================================================================================
+
+sys_write:
+    SYS $01                 ; fd/buf/count already in R0/R1/R2 per the C ABI
+    RET
+
+sys_read:
+    SYS $00
+    RET
+
+exit:
+    HALT                    ; sys_exit ($3C) is a stub; end the run directly

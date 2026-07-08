@@ -1,12 +1,13 @@
 #!/bin/sh
 # Build the vendored C toolchain (cproc + qbe) from a clean checkout (maize-61).
 #
-# This is a BUILD-ONLY gate: it builds stock cproc and stock qbe with each tool's
-# own build system and checks that the expected executables were produced. There is
-# no .mazm emission yet (the Maize target is a later maize-11 wave), so there is
-# nothing to stdout-diff. This is deliberately kept separate from
-# scripts/run-tests.{sh,ps1}, which own the asm/ PASS/FAIL harness, so a toolchain
-# build regression reports distinctly from an asm/ test regression.
+# This is a BUILD gate: it overlays the Maize QBE target onto the pinned qbe
+# submodule (maize-62), builds cproc and qbe with each tool's own build system, and
+# checks that the expected executables were produced and that `qbe -t maize` is a
+# recognized target. The end-to-end C-hello-world stdout diff lives in its own
+# script (scripts/run-ctest.sh), kept separate from scripts/run-tests.{sh,ps1} (the
+# asm/ PASS/FAIL harness) so a codegen regression reports distinctly from a toolchain
+# build regression or an asm/ test regression.
 #
 # Runs on Linux/macOS directly (system compiler + POSIX make) and on Windows under
 # MSYS2's POSIX environment (msys2/setup-msys2, `shell: msys2 {0}`). It is NOT run
@@ -52,6 +53,12 @@ case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) CONFIGURE_HOST="--host=x86_64-linux-gnu" ;;
 esac
 
+# Overlay the Maize QBE target onto the pinned qbe submodule (maize-62). This
+# copies the target sources into qbe/maize/ and applies the registration patch
+# before the build, keeping the submodule pinned at its upstream commit.
+echo "=== overlaying Maize qbe target ==="
+"${SCRIPT_DIR}/apply-maize-qbe-target.sh"
+
 echo "=== building qbe (${QBE_DIR}) ==="
 "${MAKE}" -C "${QBE_DIR}" CC="${CC}"
 
@@ -84,5 +91,16 @@ if [ "$missing" -ne 0 ]; then
     exit 1
 fi
 
-echo "toolchain build OK (cproc + qbe)"
+# --- Verify `qbe -t maize` is a recognized target (maize-62 AC 6626) --------------
+QBE_EXE="${QBE_DIR}/obj/qbe"
+[ -f "${QBE_EXE}" ] || QBE_EXE="${QBE_DIR}/obj/qbe.exe"
+echo "=== verifying qbe -t maize target ==="
+if printf 'export function w $t() {\n@s\n\tret 0\n}\n' | "${QBE_EXE}" -t maize - >/dev/null 2>&1; then
+    echo "  OK: qbe -t maize"
+else
+    echo "build-toolchain.sh: qbe does not recognize the 'maize' target." >&2
+    exit 1
+fi
+
+echo "toolchain build OK (cproc + qbe + Maize target)"
 exit 0

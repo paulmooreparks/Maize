@@ -1,0 +1,102 @@
+diff --git a/Makefile b/Makefile
+index 1a0074f..5ae3a54 100644
+--- a/Makefile
++++ b/Makefile
+@@ -7,11 +7,13 @@ SRC      = main.c util.c parse.c cfg.c mem.c ssa.c alias.c load.c copy.c \
+            fold.c live.c spill.c rega.c gas.c
+ AMD64SRC = amd64/targ.c amd64/sysv.c amd64/isel.c amd64/emit.c
+ ARM64SRC = arm64/targ.c arm64/abi.c arm64/isel.c arm64/emit.c
+-SRCALL   = $(SRC) $(AMD64SRC) $(ARM64SRC)
++MAIZESRC = maize/targ.c maize/abi.c maize/isel.c maize/emit.c maize/data.c
++SRCALL   = $(SRC) $(AMD64SRC) $(ARM64SRC) $(MAIZESRC)
+ 
+ AMD64OBJ = $(AMD64SRC:%.c=$(OBJDIR)/%.o)
+ ARM64OBJ = $(ARM64SRC:%.c=$(OBJDIR)/%.o)
+-OBJ      = $(SRC:%.c=$(OBJDIR)/%.o) $(AMD64OBJ) $(ARM64OBJ)
++MAIZEOBJ = $(MAIZESRC:%.c=$(OBJDIR)/%.o)
++OBJ      = $(SRC:%.c=$(OBJDIR)/%.o) $(AMD64OBJ) $(ARM64OBJ) $(MAIZEOBJ)
+ 
+ CFLAGS += -Wall -Wextra -std=c99 -g -pedantic
+ 
+@@ -27,11 +29,13 @@ $(OBJDIR)/timestamp:
+ 	@mkdir -p $(OBJDIR)
+ 	@mkdir -p $(OBJDIR)/amd64
+ 	@mkdir -p $(OBJDIR)/arm64
++	@mkdir -p $(OBJDIR)/maize
+ 	@touch $@
+ 
+ $(OBJ): all.h ops.h
+ $(AMD64OBJ): amd64/all.h
+ $(ARM64OBJ): arm64/all.h
++$(MAIZEOBJ): maize/all.h
+ $(OBJDIR)/main.o: config.h
+ 
+ config.h:
+diff --git a/all.h b/all.h
+index f49b4ef..8abef69 100644
+--- a/all.h
++++ b/all.h
+@@ -53,6 +53,7 @@ struct Target {
+ 	void (*abi)(Fn *);
+ 	void (*isel)(Fn *);
+ 	void (*emitfn)(Fn *, FILE *);
++	void (*emitdat)(Dat *, FILE *); /* maize target: mazm data emission */
+ };
+ 
+ #define BIT(n) ((bits)1 << (n))
+diff --git a/main.c b/main.c
+index abef591..ea5e477 100644
+--- a/main.c
++++ b/main.c
+@@ -7,6 +7,7 @@ Target T;
+ 
+ extern Target T_amd64_sysv;
+ extern Target T_arm64;
++extern Target T_maize;
+ 
+ static struct TMap {
+ 	char *name;
+@@ -14,6 +15,7 @@ static struct TMap {
+ } tmap[] = {
+ 	{ "amd64_sysv", &T_amd64_sysv },
+ 	{ "arm64", &T_arm64 },
++	{ "maize", &T_maize },
+ 	{ 0, 0 }
+ };
+ 
+@@ -44,10 +46,14 @@ data(Dat *d)
+ 	if (dbg)
+ 		return;
+ 	if (d->type == DEnd) {
+-		fputs("/* end data */\n\n", outf);
++		if (!T.emitdat)
++			fputs("/* end data */\n\n", outf);
+ 		freeall();
+ 	}
+-	gasemitdat(d, outf);
++	if (T.emitdat)
++		T.emitdat(d, outf);
++	else
++		gasemitdat(d, outf);
+ }
+ 
+ static void
+@@ -99,7 +105,8 @@ func(Fn *fn)
+ 			fn->rpo[n]->link = fn->rpo[n+1];
+ 	if (!dbg) {
+ 		T.emitfn(fn, outf);
+-		fprintf(outf, "/* end function %s */\n\n", fn->name);
++		if (!T.emitdat)
++			fprintf(outf, "/* end function %s */\n\n", fn->name);
+ 	} else
+ 		fprintf(stderr, "\n");
+ 	freeall();
+@@ -193,7 +200,7 @@ main(int ac, char *av[])
+ 		parse(inf, f, data, func);
+ 	} while (++optind < ac);
+ 
+-	if (!dbg) {
++	if (!dbg && !T.emitdat) {
+ 		gasemitfin(outf);
+ 		if (asm == Gaself)
+ 			fprintf(outf, ".section .note.GNU-stack,\"\",@progbits\n");

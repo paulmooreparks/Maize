@@ -17,11 +17,14 @@ jobs:
       - name: Install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: Build C toolchain (cproc + qbe)
+      - name: Build C toolchain (cproc + qbe + Maize target)
         run: scripts/build-toolchain.sh
 
       - name: Build and run tests
         run: scripts/run-tests.sh
+
+      - name: C hello world end-to-end (cproc -> qbe -t maize -> mazm -> maize)
+        run: scripts/run-ctest.sh --skip-build
 
   windows:
     runs-on: windows-latest
@@ -38,8 +41,9 @@ jobs:
           install: >-
             gcc
             make
+            git
 
-      - name: Build C toolchain (cproc + qbe)
+      - name: Build C toolchain (cproc + qbe + Maize target)
         shell: msys2 {0}
         run: scripts/build-toolchain.sh
 
@@ -60,3 +64,7 @@ jobs:
 
       - name: Build and run tests
         run: scripts/run-tests.ps1
+
+      - name: C hello world end-to-end (cproc -> qbe -t maize -> mazm -> maize)
+        shell: msys2 {0}
+        run: scripts/run-ctest.sh --preset windows-llvm-mingw-debug --skip-build

@@ -1,0 +1,16 @@
+; ==================================================================================
+; crt0.mazm -- freestanding C runtime entry stub (maize-62, maize-11 decision 6412)
+;
+; This fragment is concatenated FIRST, so the entry sits at origin $0000`0000. It
+; mirrors asm/hello.mazm's entry exactly: call main, then halt. It does NOT set the
+; stack pointer -- it relies on the VM initializing RS (and a defined top-of-RAM) at
+; reset, the process-start contract confirmed and documented by maize-57.
+;
+; main's return value has nowhere observable to go yet: sys_exit is a stub and HALT
+; ends the run, so stdout is the sole verification contract (maize-11 decision 6408,
+; maize-62 decision 6638). Real exit-status plumbing is deferred to maize-58.
+; ==================================================================================
+
+$0000`0000:
+    CALL main               ; enter the compiled C program
+    HALT                    ; end the run (exit status is unobserved for now)
