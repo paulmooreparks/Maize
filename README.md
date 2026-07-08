@@ -490,6 +490,7 @@ be set in privileged mode and are unaffected by the arithmetic/logic instruction
     SAR                      last bit shifted out    result   0 (cleared)             result == 0
     SETCRY                   1                       -        -                       -
     CLRCRY                   0                       -        -                       -
+    SETcc (SETZ..SETAE)      -                       -        -                       -
 
 Notes:
 
@@ -525,6 +526,25 @@ Notes:
   LEA leave C/N/V/Z unchanged; only the instructions in the table above set flags. This matches
   x86 (MOV), ARM, and RISC-V, and keeps condition codes stable across register shuffling, so a
   compare and its dependent branch may be separated by data moves.
+- SETcc reads flags but is flag-neutral: it writes 0 or 1 into a destination register per the
+  same flag predicate the matching Jcc branch uses, and leaves C/N/V/Z (and all other RF bits)
+  unchanged. It is the branchless counterpart to `CMP; Jcc`: `CMP a b` then `SETLT dst` sets dst
+  to 1 when the signed comparison holds, else 0. A bare register destination writes the full W0
+  (a clean 0/1 with no stale upper bits); an explicit subregister writes only that field and
+  preserves the rest of the register, exactly like CLR. Each predicate is identical to its Jcc
+  case so SETcc and the branch can never disagree for the same flag state:
+
+    Mnemonic  Opcode  Condition            Predicate
+    SETZ      $2B     equal / zero         Z == 1
+    SETNZ     $2C     not-equal / nonzero  Z == 0
+    SETLT     $2D     signed <             N != V
+    SETGE     $AB     signed >=            N == V
+    SETGT     $6C     signed >             Z == 0 and N == V
+    SETLE     $AC     signed <=            Z == 1 or N != V
+    SETB      $6B     unsigned <           C == 1
+    SETAE     $EB     unsigned >=          C == 0
+    SETA      $6D     unsigned >           C == 0 and Z == 0
+    SETBE     $AD     unsigned <=          C == 1 or Z == 1
 
 ## Execution
 
@@ -732,19 +752,19 @@ bit 7 is interpreted as follows:
 
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
 
-    %0010`1011  $2B                             reserved
-    %0110`1011  $6B                             reserved
-    %1010`1011  $AB                             reserved
-    %1110`1011  $EB                             reserved
+    %0010`1011  $2B   SETZ      regVal          Set destination register to 1 if Zero flag is set, else 0 (reads flags; flag-neutral)
+    %0110`1011  $6B   SETB      regVal          Set destination register to 1 if Carry flag is set (unsigned <), else 0 (reads flags; flag-neutral)
+    %1010`1011  $AB   SETGE     regVal          Set destination register to 1 if Negative flag equals Overflow flag (signed >=), else 0 (reads flags; flag-neutral)
+    %1110`1011  $EB   SETAE     regVal          Set destination register to 1 if Carry flag is clear (unsigned >=), else 0 (reads flags; flag-neutral)
 
-    %0010`1100  $2C                             reserved
-    %0110`1100  $6C                             reserved
-    %1010`1100  $AC                             reserved
+    %0010`1100  $2C   SETNZ     regVal          Set destination register to 1 if Zero flag is clear, else 0 (reads flags; flag-neutral)
+    %0110`1100  $6C   SETGT     regVal          Set destination register to 1 if Zero flag is clear and Negative flag equals Overflow flag (signed >), else 0 (reads flags; flag-neutral)
+    %1010`1100  $AC   SETLE     regVal          Set destination register to 1 if Zero flag is set or Negative flag differs from Overflow flag (signed <=), else 0 (reads flags; flag-neutral)
     %1110`1100  $EC                             reserved
 
-    %0010`1101  $2D                             reserved
-    %0110`1101  $6D                             reserved
-    %1010`1101  $AD                             reserved
+    %0010`1101  $2D   SETLT     regVal          Set destination register to 1 if Negative flag differs from Overflow flag (signed <), else 0 (reads flags; flag-neutral)
+    %0110`1101  $6D   SETA      regVal          Set destination register to 1 if Carry flag is clear and Zero flag is clear (unsigned >), else 0 (reads flags; flag-neutral)
+    %1010`1101  $AD   SETBE     regVal          Set destination register to 1 if Carry flag is set or Zero flag is set (unsigned <=), else 0 (reads flags; flag-neutral)
     %1110`1101  $ED                             reserved
 
     %0010`1110  $2E   SAR       regVal  reg     Arithmetic-shift value in destination register right by value in source register
@@ -1166,9 +1186,9 @@ metadata that the linker's hygiene pass already validates.
     %0010`1000  $28   IRET                      Pop FL and PC from the stack and continue execution at the address in PC. Used to return from interrupt (privileged).
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
     %0010`1010  $2A
-    %0010`1011  $2B                             reserved
-    %0010`1100  $2C                             reserved
-    %0010`1101  $2D                             reserved
+    %0010`1011  $2B   SETZ      regVal          Set destination register to 1 if Zero flag is set, else 0 (reads flags; flag-neutral)
+    %0010`1100  $2C   SETNZ     regVal          Set destination register to 1 if Zero flag is clear, else 0 (reads flags; flag-neutral)
+    %0010`1101  $2D   SETLT     regVal          Set destination register to 1 if Negative flag differs from Overflow flag (signed <), else 0 (reads flags; flag-neutral)
     %0010`1110  $2E   SAR       regVal  reg     Arithmetic-shift value in destination register right by value in source register
     %0010`1111  $2F   CMPIND    regVal regAddr  Set flags by subtracting source register value from value at address in destination register
     %0011`0000  $30   TSTIND    regVal regAddr  Set flags by ANDing source register value with value at address in destination register
@@ -1230,9 +1250,9 @@ metadata that the linker's hygiene pass already validates.
     %0110`1000  $68
     %0110`1001  $69
     %0110`1010  $6A
-    %0110`1011  $6B                             reserved
-    %0110`1100  $6C                             reserved
-    %0110`1101  $6D                             reserved
+    %0110`1011  $6B   SETB      regVal          Set destination register to 1 if Carry flag is set (unsigned <), else 0 (reads flags; flag-neutral)
+    %0110`1100  $6C   SETGT     regVal          Set destination register to 1 if Zero flag is clear and Negative flag equals Overflow flag (signed >), else 0 (reads flags; flag-neutral)
+    %0110`1101  $6D   SETA      regVal          Set destination register to 1 if Carry flag is clear and Zero flag is clear (unsigned >), else 0 (reads flags; flag-neutral)
     %0110`1110  $6E   SAR       immVal  reg     Arithmetic-shift value in destination register right by immediate value
     %0110`1111  $6F   CMPIND    immVal regAddr  Set flags by subtracting immediate value from value at address in destination register
     %0111`0000  $70   TSTIND    immVal regAddr  Set flags by ANDing immediate value with value at address in destination register
@@ -1294,9 +1314,9 @@ metadata that the linker's hygiene pass already validates.
     %1010`1000  $A8
     %1010`1001  $A9
     %1010`1010  $AA   NOP                       No operation. Used as an instruction placeholder.
-    %1010`1011  $AB                             reserved
-    %1010`1100  $AC                             reserved
-    %1010`1101  $AD                             reserved
+    %1010`1011  $AB   SETGE     regVal          Set destination register to 1 if Negative flag equals Overflow flag (signed >=), else 0 (reads flags; flag-neutral)
+    %1010`1100  $AC   SETLE     regVal          Set destination register to 1 if Zero flag is set or Negative flag differs from Overflow flag (signed <=), else 0 (reads flags; flag-neutral)
+    %1010`1101  $AD   SETBE     regVal          Set destination register to 1 if Carry flag is set or Zero flag is set (unsigned <=), else 0 (reads flags; flag-neutral)
     %1010`1110  $AE   SAR       regAddr reg     Arithmetic-shift value in destination register right by value at address in source register
     %1010`1111  $AF
     %1011`0000  $B0
@@ -1358,7 +1378,7 @@ metadata that the linker's hygiene pass already validates.
     %1110`1000  $E8
     %1110`1001  $E9
     %1110`1010  $EA
-    %1110`1011  $EB                             reserved
+    %1110`1011  $EB   SETAE     regVal          Set destination register to 1 if Carry flag is clear (unsigned >=), else 0 (reads flags; flag-neutral)
     %1110`1100  $EC                             reserved
     %1110`1101  $ED                             reserved
     %1110`1110  $EE   SAR       immAddr reg     Arithmetic-shift value in destination register right by value at immediate address

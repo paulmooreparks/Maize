@@ -61,6 +61,7 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_stack64';       File = 'test_stack64.mazm';       Expected = 'stack64: PASS';                 Golden = $false }
     [pscustomobject]@{ Name = 'test_div';           File = 'test_div.mazm';           Expected = 'div: PASS';                     Golden = $false }
     [pscustomobject]@{ Name = 'test_jcc';           File = 'test_jcc.mazm';           Expected = 'jcc: PASS';                     Golden = $false }
+    [pscustomobject]@{ Name = 'test_setcc';         File = 'test_setcc.mazm';         Expected = 'setcc: PASS';                   Golden = $false }
     [pscustomobject]@{ Name = 'test_memblock';      File = 'test_memblock.mazm';      Expected = 'memblock: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_crossblock';    File = 'test_crossblock.mazm';    Expected = 'crossblk: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_adc';           File = 'test_adc.mazm';           Expected = 'adc: PASS';                     Golden = $false }

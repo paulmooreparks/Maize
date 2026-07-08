@@ -570,6 +570,18 @@ namespace maize {
                 dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask);
             }
 
+            /* SETcc write (card maize-55): identical masked write to clr_reg, but
+               src_value is the condition (0 or 1) instead of the constant 0. The
+               named destination subregister field becomes 0/1 and the rest of the
+               register is preserved. Flag-neutral: RF is never touched here. */
+            void set_reg(reg_value &dst, subreg_enum dst_subreg, bool condition) {
+                auto dst_offset = subreg_offset_map[dst_subreg];
+                auto dst_mask = subreg_mask_map[dst_subreg];
+
+                u_word src_value = condition ? 1 : 0;
+                dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask);
+            }
+
             bool cmp_regval_reg(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
                 auto src_offset = subreg_offset_map[src_subreg];
                 auto src_mask = subreg_mask_map[src_subreg];
@@ -2185,6 +2197,71 @@ namespace maize {
                     case instr::clr_regVal: {
                         regs::rp.w0 += 1;
                         clr_reg(op1_reg(), op1_subreg_flag());
+                        break;
+                    }
+
+                    /* SETcc (card maize-55): materialize a flag condition as a 0/1
+                       value in the single register operand. Each predicate below is
+                       copied verbatim from the matching Jcc case body so SETcc and
+                       Jcc can never disagree for the same flag state. Flag-neutral:
+                       RF is read but never written. */
+                    case instr::setz_opcode: {
+                        regs::rp.w0 += 1;
+                        set_reg(op1_reg(), op1_subreg_flag(), (bool)zero_flag);
+                        break;
+                    }
+
+                    case instr::setnz_opcode: {
+                        regs::rp.w0 += 1;
+                        set_reg(op1_reg(), op1_subreg_flag(), !zero_flag);
+                        break;
+                    }
+
+                    case instr::setlt_opcode: {
+                        regs::rp.w0 += 1;
+                        set_reg(op1_reg(), op1_subreg_flag(), (bool)negative_flag != (bool)overflow_flag);
+                        break;
+                    }
+
+                    case instr::setge_opcode: {
+                        regs::rp.w0 += 1;
+                        set_reg(op1_reg(), op1_subreg_flag(), (bool)negative_flag == (bool)overflow_flag);
+                        break;
+                    }
+
+                    case instr::setgt_opcode: {
+                        regs::rp.w0 += 1;
+                        set_reg(op1_reg(), op1_subreg_flag(), !zero_flag && ((bool)negative_flag == (bool)overflow_flag));
+                        break;
+                    }
+
+                    case instr::setle_opcode: {
+                        regs::rp.w0 += 1;
+                        set_reg(op1_reg(), op1_subreg_flag(), zero_flag || ((bool)negative_flag != (bool)overflow_flag));
+                        break;
+                    }
+
+                    case instr::setb_opcode: {
+                        regs::rp.w0 += 1;
+                        set_reg(op1_reg(), op1_subreg_flag(), (bool)carryout_flag);
+                        break;
+                    }
+
+                    case instr::setae_opcode: {
+                        regs::rp.w0 += 1;
+                        set_reg(op1_reg(), op1_subreg_flag(), !carryout_flag);
+                        break;
+                    }
+
+                    case instr::seta_opcode: {
+                        regs::rp.w0 += 1;
+                        set_reg(op1_reg(), op1_subreg_flag(), !carryout_flag && !zero_flag);
+                        break;
+                    }
+
+                    case instr::setbe_opcode: {
+                        regs::rp.w0 += 1;
+                        set_reg(op1_reg(), op1_subreg_flag(), carryout_flag || zero_flag);
                         break;
                     }
 

@@ -1,0 +1,203 @@
+; **********************************************************************************
+; Regression test for card maize-55: SETcc condition-to-value materialization.
+;
+; Covers set-true and set-false paths for the zero predicate (SETZ), a signed
+; predicate (SETLT), and an unsigned predicate (SETB); asserts the destination is
+; exactly 0/1, that a bare-register write clears stale upper bytes (full W0), that a
+; narrow-subregister write preserves the rest of the register, and that RF is
+; bit-identical across the instruction (flag-neutral).
+;
+; CMP src dst computes (dst - src); the SETcc immediately follows so nothing disturbs
+; the flags between the compare and the materialization. Each assertion re-compares
+; the destination against the expected 0/1 and branches to the single fail path on a
+; mismatch; reaching the end prints PASS.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- SETZ true: equal compare sets Z ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; 5 - 5 = 0 -> Z set
+    SETZ R3.B0
+    CMP $01 R3.B0          ; expect R3.B0 == 1
+    JNZ fail
+
+    ; ---- SETZ false: unequal compare clears Z ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; 5 - 3 = 2 -> Z clear
+    SETZ R3.B0
+    CMP $00 R3.B0          ; expect R3.B0 == 0
+    JNZ fail
+
+    ; ---- SETLT true: signed <, N != V ----
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; 3 - 5 = -2 -> N set, V clear -> N != V
+    SETLT R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETLT false: signed >=, N == V ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; 5 - 3 = 2 -> N == V
+    SETLT R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETB true: unsigned <, C set (borrow) ----
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; 3 - 5 borrow -> C set
+    SETB R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETB false: unsigned >=, C clear ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; 5 - 3 no borrow -> C clear
+    SETB R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETGE true: signed >=, N == V ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; 5 - 5 = 0 -> N == V (equality)
+    SETGE R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETGE false: signed <, N != V ----
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; 3 - 5 = -2 -> N != V
+    SETGE R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETGT true: signed >, Z == 0 and N == V ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; 5 - 3 = 2 -> Z clear, N == V
+    SETGT R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETGT false: at equality, Z == 1 ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; Z set
+    SETGT R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETLE true: signed <=, Z == 1 or N != V ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; Z set (equality)
+    SETLE R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETLE false: signed >, Z == 0 and N == V ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; 2 -> Z clear, N == V
+    SETLE R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETA true: unsigned >, C == 0 and Z == 0 ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; 5 - 3 no borrow -> C clear, Z clear
+    SETA R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETA false: at equality, Z == 1 ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; Z set
+    SETA R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETAE true: unsigned >=, C == 0 ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; no borrow -> C clear (equality)
+    SETAE R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETAE false: unsigned <, C == 1 ----
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; 3 - 5 borrow -> C set
+    SETAE R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETBE true: unsigned <=, C == 1 or Z == 1 ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; Z set (equality)
+    SETBE R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETBE false: unsigned >, C == 0 and Z == 0 ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; no borrow, Z clear
+    SETBE R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- bare register writes full W0 with no stale upper bytes ----
+    CP $FF R5.B7
+    CP $FF R5.B1           ; dirty upper bytes
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; Z set
+    SETZ R5                ; bare register -> full W0 becomes 1
+    CMP $01 R5.B0
+    JNZ fail
+    CMP $00 R5.B1          ; upper byte cleared
+    JNZ fail
+    CMP $00 R5.B7          ; top byte cleared
+    JNZ fail
+
+    ; ---- narrow subregister write preserves the rest of the register ----
+    CLR R6
+    CP $AA R6.B1           ; sentinel in byte 1
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; Z set
+    SETZ R6.B0             ; write only B0
+    CMP $01 R6.B0          ; B0 == 1
+    JNZ fail
+    CMP $AA R6.B1          ; B1 preserved
+    JNZ fail
+
+    ; ---- flag-neutral: RF bit-identical across SETcc (condition-true) ----
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; establish a known flag state
+    CP RF R9               ; snapshot flags (CP is flag-neutral)
+    SETLT R3.B0            ; under test (condition true)
+    CP RF R8               ; snapshot flags again
+    CMP R9 R8              ; expect identical
+    JNZ fail
+
+    ; ---- flag-neutral: RF bit-identical across SETcc (condition-false) ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; establish a different known flag state
+    CP RF R9
+    SETLT R3.B0            ; under test (condition false)
+    CP RF R8
+    CMP R9 R8
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $0C R2              ; 12 bytes
+    SYS $01
+    HALT
+
+fail:
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $0C R2              ; 12 bytes
+    SYS $01
+    HALT
+
+pass_string:
+    STRING "setcc: PASS\n\0"
+
+fail_string:
+    STRING "setcc: FAIL\n\0"

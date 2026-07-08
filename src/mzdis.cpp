@@ -188,6 +188,19 @@ namespace {
         add_src_only_2row("PUSH", instr_ns::push_opcode);
         add_reg_only("CLR", instr_ns::clr_regVal);
 
+        /* SETcc (card maize-55): ten flat single-register opcodes materializing a
+           flag condition as 0/1. $EC/$ED stay reserved. */
+        add_reg_only("SETZ", instr_ns::setz_opcode);
+        add_reg_only("SETNZ", instr_ns::setnz_opcode);
+        add_reg_only("SETLT", instr_ns::setlt_opcode);
+        add_reg_only("SETGE", instr_ns::setge_opcode);
+        add_reg_only("SETGT", instr_ns::setgt_opcode);
+        add_reg_only("SETLE", instr_ns::setle_opcode);
+        add_reg_only("SETB", instr_ns::setb_opcode);
+        add_reg_only("SETAE", instr_ns::setae_opcode);
+        add_reg_only("SETA", instr_ns::seta_opcode);
+        add_reg_only("SETBE", instr_ns::setbe_opcode);
+
         /* INT ($24 regVal / $64 immVal) and DUP ($E4) / SWAP ($E5) are assigned
            mnemonics in maize_cpu.h's instr namespace and in README's numeric
            opcode table (README.md:715-716,821,823), so AC6483 requires them in

@@ -665,6 +665,22 @@ namespace maize {
 			const opcode jae_regAddr			{jae_opcode | opcode_flag_srcAddr};
 			const opcode jae_immAddr			{jae_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
+			// Condition-to-value materialization (card maize-55): SETcc writes 0/1
+			// into a single register operand per the same flag predicate the matching
+			// Jcc branch uses. One flat opcode per condition (no numeric condition
+			// field), each srcReg-shaped like clr_opcode; dispatched on the full byte.
+			// $EC/$ED remain reserved.
+			const opcode setz_opcode			{0x2B};
+			const opcode setnz_opcode			{0x2C};
+			const opcode setlt_opcode			{0x2D};
+			const opcode setb_opcode			{0x6B};
+			const opcode setgt_opcode			{0x6C};
+			const opcode seta_opcode			{0x6D};
+			const opcode setge_opcode			{0xAB};
+			const opcode setle_opcode			{0xAC};
+			const opcode setbe_opcode			{0xAD};
+			const opcode setae_opcode			{0xEB};
+
 			const opcode call_opcode			{0x1D};
 			const opcode call_regVal			{call_opcode | opcode_flag_srcReg};
 			const opcode call_immVal			{call_opcode | opcode_flag_srcImm};

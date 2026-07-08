@@ -235,6 +235,7 @@ run_test "test_ldimm"        "test_ldimm.mazm"        "ld imm: PASS"            
 run_test "test_stack64"      "test_stack64.mazm"      "stack64: PASS"                 0
 run_test "test_div"          "test_div.mazm"          "div: PASS"                     0
 run_test "test_jcc"          "test_jcc.mazm"          "jcc: PASS"                     0
+run_test "test_setcc"        "test_setcc.mazm"        "setcc: PASS"                   0
 run_test "test_memblock"     "test_memblock.mazm"     "memblock: PASS"                0
 run_test "test_crossblock"   "test_crossblock.mazm"   "crossblk: PASS"                0
 run_test "test_adc"          "test_adc.mazm"          "adc: PASS"                     0
