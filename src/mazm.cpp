@@ -132,13 +132,22 @@ namespace {
     maize::u_word obj_cur_start {0};
 
     /* One relocation: the flat address of the immediate bytes to patch, the
-       referenced symbol name, and the width-keyed relocation type. */
+       referenced symbol name, the width-keyed relocation type, and a signed
+       addend added to the resolved symbol address at link time (DREF label+off,
+       maize-89). Existing ABS32/ADDRESS references carry addend 0. */
     struct obj_reloc_rec {
         maize::u_word flat_off;
         std::string symbol;
         maize::u_byte r_type;
+        std::int64_t addend;
     };
     std::vector<obj_reloc_rec> obj_relocs {};
+
+    /* Per-section-kind maximum alignment (maize-89), raised by the ALIGN
+       directive and emitted into each .mzo section header (default 1). The
+       linker aligns each section's load address to this value, so a datum
+       aligned to a section-relative boundary becomes absolutely aligned. */
+    maize::u_word obj_sec_align[5] {1, 1, 1, 1, 1};
 
     /* Names exported via the GLOBAL directive (GLOBAL binding); all other
        defined labels stay LOCAL. */
@@ -259,6 +268,8 @@ namespace {
     void section_compiler(token_tree &tree, std::string &opcode_str);
     void global_compiler(token_tree &tree, std::string &opcode_str);
     void zero_compiler(token_tree &tree, std::string &opcode_str);
+    void dref_compiler(token_tree &tree, std::string &opcode_str);
+    void align_compiler(token_tree &tree, std::string &opcode_str);
     void write_object(std::string const &path);
 
     std::unordered_map<std::string, keyword_data> keywords {
@@ -270,7 +281,9 @@ namespace {
         { "CODE", {nullptr, code_compiler}},
         { "SECTION", {opcode_1param_tokenizer, section_compiler}},
         { "GLOBAL", {opcode_1param_tokenizer, global_compiler}},
-        { "ZERO", {opcode_1param_tokenizer, zero_compiler}}
+        { "ZERO", {opcode_1param_tokenizer, zero_compiler}},
+        { "DREF", {opcode_2param_tokenizer, dref_compiler}},
+        { "ALIGN", {opcode_1param_tokenizer, align_compiler}}
     };
 
     std::unordered_map<std::string, opcode_data> opcodes {
@@ -1993,10 +2006,11 @@ namespace {
     }
 
     /* Emit a width-keyed relocation for a label reference and write that many
-       placeholder (zero) bytes; the linker fills them in. */
-    void obj_emit_label_ref(std::string &label, size_t width) {
+       placeholder (zero) bytes; the linker fills them in. The optional signed
+       addend is added to the resolved symbol address at link time (maize-89). */
+    void obj_emit_label_ref(std::string &label, size_t width, std::int64_t addend = 0) {
         obj_note_ref(label);
-        obj_relocs.push_back({ current_address, label, maize::obj::reloc_for_width(width) });
+        obj_relocs.push_back({ current_address, label, maize::obj::reloc_for_width(width), addend });
         for (size_t i = 0; i < width; ++i) {
             current_address += cpu::mm.write_byte(current_address, 0);
         }
@@ -2010,7 +2024,7 @@ namespace {
            sub-register before reaching here (maize-12). */
         if (emit_object) {
             obj_note_ref(label);
-            obj_relocs.push_back({ current_address, label, maize::obj::R_MAIZE_ABS32 });
+            obj_relocs.push_back({ current_address, label, maize::obj::R_MAIZE_ABS32, 0 });
             return cpu::mm.write_hword(address, 0);
         }
 
@@ -2593,6 +2607,137 @@ namespace {
         current_address += static_cast<maize::u_hword>(value.w0);
     }
 
+    /* Parse an unsigned integer directive operand (maize-89). Accepts a
+       prefixed literal ($hex / #dec / %bin, reusing compile_literal) or a bare
+       decimal token, so DREF/ALIGN can be written naturally (`DREF 8 target`,
+       `ALIGN 16`). */
+    std::uint64_t parse_uint_operand(std::string const &tok, src_loc const &loc) {
+        if (tok.empty()) {
+            fatal(loc.file, loc.line, "expected an integer operand");
+        }
+        if (tok[0] == special_chars::hex || tok[0] == special_chars::dec
+                || tok[0] == special_chars::bin) {
+            std::string t = tok;
+            cpu::reg_value v {0};
+            compile_literal(t, v);
+            return v.w0;
+        }
+        std::uint64_t out = 0;
+        std::stringstream cvt;
+        cvt << std::dec << tok;
+        cvt >> out;
+        if (cvt.fail() || !cvt.eof()) {
+            fatal(loc.file, loc.line, "expected an integer, got '" + tok + "'");
+        }
+        return out;
+    }
+
+    /* Parse a signed addend suffix (maize-89): a leading '+' or '-' followed by
+       an unsigned integer operand (bare decimal or a prefixed literal). */
+    std::int64_t parse_signed_operand(std::string const &tok, src_loc const &loc) {
+        if (tok.empty()) {
+            fatal(loc.file, loc.line, "expected a signed offset");
+        }
+        bool negative = false;
+        std::string body = tok;
+        if (body[0] == special_chars::pos) {
+            body = body.substr(1);
+        }
+        else if (body[0] == special_chars::neg) {
+            negative = true;
+            body = body.substr(1);
+        }
+        std::int64_t magnitude = static_cast<std::int64_t>(parse_uint_operand(body, loc));
+        return negative ? -magnitude : magnitude;
+    }
+
+    /* DREF <bytes> <label>[+/-offset] (maize-89): emit a relocatable reference
+       to <label> in the current section's data. <bytes> is 4 (R_MAIZE_ABS32) or
+       8 (R_MAIZE_ABS64); the linker patches the placeholder to the symbol's
+       linked address plus the optional signed addend. Inert in flat mode. */
+    void dref_compiler(token_tree &tree, std::string &opcode_str) {
+        if (!emit_object) {
+            /* DREF is inert in flat mode: the flat image has no relocations. */
+            return;
+        }
+        auto it = tree.value.begin();
+        auto &bytes_node = *it;
+        current_ref_loc = { bytes_node.loc_file, bytes_node.loc_line };
+        std::uint64_t width = parse_uint_operand(bytes_node.key, current_ref_loc);
+        if (width != 4 && width != 8) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                "DREF width must be 4 or 8, got '" + bytes_node.key + "'");
+        }
+
+        ++it;
+        auto &ref_node = *it;
+        current_ref_loc = { ref_node.loc_file, ref_node.loc_line };
+        std::string ref = ref_node.key;
+
+        /* Split off an optional signed addend suffix. A leading sign character
+           belongs to the label position, so scan from index 1. */
+        std::string label = ref;
+        std::int64_t addend = 0;
+        std::size_t sep = ref.find_first_of("+-", 1);
+        if (sep != std::string::npos) {
+            label = ref.substr(0, sep);
+            addend = parse_signed_operand(ref.substr(sep), current_ref_loc);
+        }
+        if (label.empty()) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                "DREF requires a label operand");
+        }
+
+        obj_emit_label_ref(label, static_cast<std::size_t>(width), addend);
+    }
+
+    /* ALIGN <n> (maize-89): pad the current section to an n-byte section-relative
+       boundary and raise the section's recorded max alignment (emitted into the
+       .mzo section header, honored by the linker). <n> must be a power of two.
+       Inert in flat mode. */
+    void align_compiler(token_tree &tree, std::string &opcode_str) {
+        if (!emit_object) {
+            /* ALIGN is inert in flat mode: the image is a single blob. */
+            return;
+        }
+        if (tree.value.empty()) {
+            fatal(current_file, token_line, "ALIGN requires an alignment value");
+        }
+        auto &n_node = *tree.value.begin();
+        current_ref_loc = { n_node.loc_file, n_node.loc_line };
+        std::uint64_t n = parse_uint_operand(n_node.key, current_ref_loc);
+
+        if (n == 0 || (n & (n - 1)) != 0) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                "ALIGN value must be a power of two, got '" + n_node.key + "'");
+        }
+        /* The section header's align field is a single byte, so the linker can
+           only place a section on boundaries up to 128. */
+        if (n > 128) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                "ALIGN value must not exceed 128, got '" + n_node.key + "'");
+        }
+
+        /* Section-relative offset of the current position = bytes already
+           emitted into this section kind (closed spans of the same kind) plus
+           the length of the currently open span. */
+        maize::u_word sec_off = static_cast<maize::u_word>(current_address - obj_cur_start);
+        for (auto const &sp : obj_spans) {
+            if (sp.kind == obj_cur_kind && sp.end >= sp.start) {
+                sec_off += (sp.end - sp.start);
+            }
+        }
+
+        maize::u_word pad = static_cast<maize::u_word>((n - (sec_off % n)) % n);
+        for (maize::u_word i = 0; i < pad; ++i) {
+            current_address += cpu::mm.write_byte(current_address, 0);
+        }
+
+        if (n > obj_sec_align[obj_cur_kind]) {
+            obj_sec_align[obj_cur_kind] = static_cast<maize::u_word>(n);
+        }
+    }
+
     /* Serialize the assembled image as a relocatable .mzo object (maize-12). */
     void write_object(std::string const &path) {
         using namespace maize::obj;
@@ -2735,7 +2880,7 @@ namespace {
         }
 
         /* Relocations, grouped by target section. */
-        struct out_reloc { std::uint64_t r_offset; std::uint32_t r_symbol; u_byte r_type; };
+        struct out_reloc { std::uint64_t r_offset; std::uint32_t r_symbol; u_byte r_type; std::int64_t r_addend; };
         std::vector<std::vector<out_reloc>> sec_relocs(present.size());
         for (auto const &rel : obj_relocs) {
             u_byte kind;
@@ -2747,6 +2892,7 @@ namespace {
             r.r_offset = off;
             r.r_symbol = sym_index[rel.symbol];
             r.r_type = rel.r_type;
+            r.r_addend = rel.addend;
             sec_relocs[sec_index_of[kind]].push_back(r);
         }
 
@@ -2807,7 +2953,7 @@ namespace {
             put_u32(file, sec_name_off[i]);
             put_u8(file, k);
             put_u8(file, default_attrs(k));
-            put_u8(file, 1);                                     /* align */
+            put_u8(file, static_cast<u_byte>(obj_sec_align[k]));  /* align (maize-89) */
             put_u8(file, 0);                                     /* reserved */
             put_u64(file, (k == SEC_BSS) ? 0 : sec_file_off[i]);
             put_u64(file, sec_size[k]);
@@ -2832,7 +2978,7 @@ namespace {
                 put_u8(file, 0);
                 put_u8(file, 0);
                 put_u8(file, 0);
-                put_u64(file, 0);                                /* r_addend */
+                put_u64(file, static_cast<std::uint64_t>(r.r_addend)); /* r_addend (maize-89) */
             }
         }
 

@@ -1,0 +1,69 @@
+; **********************************************************************************
+; Object-pipeline test for card maize-89: DREF label+offset addend plumbing.
+;
+; `DREF 8 target+off` must resolve to target_addr + off for both a nonzero and a
+; zero offset. The reloc addend is threaded through mazm's out_reloc, written
+; into the .mzo reloc record, and applied by mzld as value = sym_addr + addend.
+;
+; Non-vacuous: the middle check computes (stored - &target) and asserts it equals
+; the offset exactly, so a dropped or wrong addend fails rather than passing
+; silently. Prints "dref-addend: PASS" on success.
+; **********************************************************************************
+
+SECTION CODE
+
+GLOBAL _start
+
+_start:
+    ; ---- nonzero addend: stored == &target + 24 ----
+    CP dref_pos R3
+    LD @R3 R1
+    CP target R0
+    ADD $18 R0            ; expected = &target + 24
+    CMP R0 R1
+    JNZ fail
+
+    ; ---- non-vacuous: (stored - &target) == 24 exactly ----
+    CP dref_pos R3
+    LD @R3 R1
+    CP target R4
+    SUB R4 R1             ; R1 = stored - &target
+    CP $18 R0             ; expected offset = 24
+    CMP R0 R1
+    JNZ fail
+
+    ; ---- zero addend: stored == &target ----
+    CP dref_zero R3
+    LD @R3 R1
+    CP target R0
+    CMP R0 R1
+    JNZ fail
+
+    CP $01 R0
+    CP pass_msg R1
+    CP $12 R2             ; "dref-addend: PASS\n" = 18 bytes
+    SYS $01
+    HALT
+
+fail:
+    CP $01 R0
+    CP fail_msg R1
+    CP $12 R2
+    SYS $01
+    HALT
+
+SECTION RODATA
+
+target:
+    STRING "addend-target\0"
+pass_msg:
+    STRING "dref-addend: PASS\n\0"
+fail_msg:
+    STRING "dref-addend: FAIL\n\0"
+
+SECTION DATA
+
+dref_pos:
+    DREF 8 target+$18
+dref_zero:
+    DREF 8 target+0

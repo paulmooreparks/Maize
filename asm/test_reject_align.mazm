@@ -1,0 +1,10 @@
+; **********************************************************************************
+; Negative object-mode test for card maize-89: ALIGN rejects a non-power-of-two
+; value with a clear diagnostic. Assembled with `mazm -c`; the assembler must
+; exit nonzero and name the "power of two" constraint.
+; **********************************************************************************
+
+SECTION DATA
+
+    DATA $01
+ALIGN 3

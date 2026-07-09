@@ -1215,9 +1215,26 @@ partitioned into sections with these directives:
     SECTION CODE | RODATA | DATA | BSS   ; select the section subsequent content lands in
     GLOBAL name                          ; export `name` (GLOBAL binding); default is LOCAL
     ZERO n                               ; reserve n uninitialised bytes (only in BSS)
+    DREF bytes label[+/-offset]          ; embed a relocatable pointer to `label` in data
+    ALIGN n                              ; pad the section to an n-byte boundary (n a power of two)
 
 Defaults when no `SECTION` directive has been seen: content lands in CODE. Function
 labels (in CODE) get symbol type FUNC; data labels (in RODATA/DATA/BSS) get OBJECT.
+
+`DREF` writes a data-resident pointer to `label`: `bytes` is 4 or 8, choosing a 32-bit
+(`R_MAIZE_ABS32`) or 64-bit (`R_MAIZE_ABS64`) reference. The assembler emits that many
+placeholder zero bytes and records a relocation, so the linker patches the slot to the
+label's linked address plus the optional signed `offset` (an addend). Use it for a
+pointer-in-data such as a jump table entry or the address of another object. `label`
+may be defined later in the same unit, or imported from another unit.
+
+`ALIGN n` pads the current section with zero bytes so the next datum starts on an
+`n`-byte boundary, and records `n` as the section's required alignment; the linker
+places the section on a matching boundary, so the alignment holds in the linked image.
+`n` must be a power of two (a non-power-of-two is a hard error) and at most 128.
+
+`DREF` and `ALIGN` apply only in object mode; in flat (`-c` absent) assembly both are
+inert no-ops, and the flat `.mzb` output is unchanged.
 
 A label reference's relocation width follows the immediate width the operand encodes.
 For a two-operand data move the width is the destination sub-register width, so

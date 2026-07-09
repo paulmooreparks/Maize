@@ -1,0 +1,61 @@
+; **********************************************************************************
+; Object-pipeline test for card maize-89: DREF relocatable references in data.
+;
+; A DATA pointer holding `DREF 8 target` (target lives in a different section,
+; RODATA) must, after mazm -c -> mzld -> maize, read back target's linked
+; runtime address. A second `DREF 4 target` exercises the 32-bit (ABS32) width.
+; Assembled with -c, linked, and run; prints "dref: PASS" on success.
+;
+; Proof: the program loads the stored pointer and independently loads target's
+; own linked address via a full-width label reference, then compares. Equality
+; means the linker patched the DREF placeholder to target's real address.
+; **********************************************************************************
+
+SECTION CODE
+
+GLOBAL _start
+
+_start:
+    ; ---- DREF 8: the 64-bit stored pointer equals &target ----
+    CP dref8 R3
+    LD @R3 R1              ; actual = *(dref8) = relocated &target
+    CP target R0           ; expected = &target (full-width ABS64 load)
+    CMP R0 R1
+    JNZ fail
+
+    ; ---- DREF 4: the 32-bit stored pointer equals &target (low 32 bits) ----
+    CP dref4 R3
+    CLR R1
+    LD @R3 R1.H0           ; actual = 32-bit stored pointer, zero-extended
+    CP target R0           ; expected = &target
+    CMP R0 R1
+    JNZ fail
+
+    CP $01 R0
+    CP pass_msg R1
+    CP $0B R2              ; "dref: PASS\n" = 11 bytes
+    SYS $01
+    HALT
+
+fail:
+    CP $01 R0
+    CP fail_msg R1
+    CP $0B R2
+    SYS $01
+    HALT
+
+SECTION RODATA
+
+target:
+    STRING "maize-89-target\0"
+pass_msg:
+    STRING "dref: PASS\n\0"
+fail_msg:
+    STRING "dref: FAIL\n\0"
+
+SECTION DATA
+
+dref8:
+    DREF 8 target
+dref4:
+    DREF 4 target

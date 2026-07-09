@@ -341,6 +341,61 @@ $results += Invoke-LinkRejectTest 'link_undefined_symbol' "undefined symbol 'msg
 Emit-Object 'link_range.mazm'
 $results += Invoke-LinkRejectTest 'link_range_overflow' 'does not fit in 8-bit' @((Join-Path $TestRunDir 'link_range.mzo'))
 
+# --- maize-89: single-object assemble -> link -> run for DREF / ALIGN ---------------
+# Each fixture assembles with -c, links to a .mzx, and runs under maize, proving that
+# DREF references resolve to a symbol's linked address (plus a signed addend) and that
+# a datum after ALIGN lands on the aligned boundary.
+function Invoke-ObjPipelineTest($name, $src, $expected) {
+    Emit-Object $src
+    $obj = Join-Path $TestRunDir ([System.IO.Path]::ChangeExtension($src, 'mzo'))
+    $mzx = Join-Path $TestRunDir ([System.IO.Path]::ChangeExtension($src, 'mzx'))
+    if (-not (Test-Path $obj)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'mazm -c produced no .mzo' }
+    }
+    $log = [System.IO.Path]::GetTempFileName()
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $MzldExe -o $mzx $obj *> $log
+    $linkExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($linkExit -ne 0) {
+        $out = Get-Content -Raw -Path $log -ErrorAction SilentlyContinue
+        Remove-Item -Force $log -ErrorAction SilentlyContinue
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = "link failed: $(Trim-TrailingNewlines $out)" }
+    }
+    Remove-Item -Force $log -ErrorAction SilentlyContinue
+
+    $stdoutFile = [System.IO.Path]::GetTempFileName()
+    & $MaizeExe $mzx > $stdoutFile 2> $null
+    $me = $LASTEXITCODE
+    $actualRaw = Get-Content -Raw -Path $stdoutFile -ErrorAction SilentlyContinue
+    Remove-Item -Force $stdoutFile -ErrorAction SilentlyContinue
+    $actual = Trim-TrailingNewlines $actualRaw
+    return [pscustomobject]@{ Name = $name; Pass = (($me -eq 0) -and ($actual -eq $expected)); Expected = $expected; Actual = $actual }
+}
+
+# Object-mode reject: mazm -c must exit nonzero with a diagnostic containing $expected.
+function Invoke-ObjRejectTest($name, $src, $expected) {
+    $srcPath = Join-Path $AsmDir $src
+    $dst = Join-Path $TestRunDir $src
+    Copy-Item -Path $srcPath -Destination $dst -Force
+    $log = [System.IO.Path]::GetTempFileName()
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $MazmExe -c $dst *> $log
+    $ec = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    $out = Get-Content -Raw -Path $log -ErrorAction SilentlyContinue
+    Remove-Item -Force $log -ErrorAction SilentlyContinue
+    $rejected = ($ec -ne 0) -and ($null -ne $out) -and ($out -like "*$expected*")
+    return [pscustomobject]@{ Name = $name; Pass = $rejected; Expected = "assembler rejects with: $expected"; Actual = (Trim-TrailingNewlines $out) }
+}
+
+$results += Invoke-ObjPipelineTest 'obj_dref'         'test_obj_dref.mazm'         'dref: PASS'
+$results += Invoke-ObjPipelineTest 'obj_dref_addend'  'test_obj_dref_addend.mazm'  'dref-addend: PASS'
+$results += Invoke-ObjPipelineTest 'obj_align'        'test_obj_align.mazm'        'align: PASS'
+$results += Invoke-ObjRejectTest   'obj_align_reject' 'test_reject_align.mazm'     'power of two'
+
 # --- maize-14: mzdis disassembler ---------------------------------------------------
 # Round trip (AC6477/AC6478/AC6483): assemble a code-only, SECTION-clean fixture that
 # hits every addressing-mode family and operand-count shape, disassemble it, reassemble

@@ -1,0 +1,50 @@
+; **********************************************************************************
+; Object-pipeline test for card maize-89: ALIGN section alignment.
+;
+; A one-byte filler datum precedes `ALIGN 16`, so ALIGN must pad the DATA section
+; to a 16-byte section-relative boundary AND raise the section's recorded
+; max-align. mzld then places the DATA section on a 16-aligned load address, so
+; the datum after ALIGN lands at an absolutely 16-aligned runtime address.
+;
+; Proof / non-vacuous: the program loads the datum's linked address and masks the
+; low 4 bits; a correctly aligned address masks to 0. A dropped ALIGN pad (or a
+; section header still hardcoded to align=1) leaves the datum unaligned and the
+; check fails. Prints "align: PASS" on success.
+; **********************************************************************************
+
+SECTION CODE
+
+GLOBAL _start
+
+_start:
+    CP aligned R1
+    AND $0F R1            ; low 4 bits of the datum's linked address
+    CMP $00 R1            ; a 16-aligned address masks to 0
+    JNZ fail
+
+    CP $01 R0
+    CP pass_msg R1
+    CP $0C R2            ; "align: PASS\n" = 12 bytes
+    SYS $01
+    HALT
+
+fail:
+    CP $01 R0
+    CP fail_msg R1
+    CP $0C R2
+    SYS $01
+    HALT
+
+SECTION RODATA
+
+pass_msg:
+    STRING "align: PASS\n\0"
+fail_msg:
+    STRING "align: FAIL\n\0"
+
+SECTION DATA
+
+    DATA $AB             ; one filler byte, so the following ALIGN actually pads
+ALIGN 16
+aligned:
+    DATA $CD             ; must sit on a 16-byte boundary in the linked image

@@ -334,6 +334,80 @@ run_link_reject_test "link_undefined_symbol" "undefined symbol 'msgB'" "${TEST_R
 emit_object "link_range.mazm"
 run_link_reject_test "link_range_overflow" "does not fit in 8-bit" "${TEST_RUN_DIR}/link_range.mzo"
 
+# --- maize-89: single-object assemble -> link -> run for DREF / ALIGN ----------------
+# Each fixture assembles with -c, links to a .mzx, and runs under maize; the program
+# proves at runtime that DREF references resolve to a symbol's linked address (plus a
+# signed addend) and that a datum after ALIGN lands on the aligned boundary.
+run_obj_pipeline_test() {
+    name="$1"
+    src="$2"
+    expected="$3"
+    TOTAL=$((TOTAL + 1))
+    emit_object "$src"
+    obj="${TEST_RUN_DIR}/${src%.mazm}.mzo"
+    mzx="${TEST_RUN_DIR}/${src%.mazm}.mzx"
+    if [ ! -f "$obj" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm -c produced no .mzo)"
+        return
+    fi
+    log=$(mktemp)
+    if ! "$MZLD_EXE" -o "$mzx" "$obj" >"$log" 2>&1; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (link failed)"
+        cat "$log"
+        rm -f "$log"
+        return
+    fi
+    rm -f "$log"
+    out=$(mktemp)
+    if "$MAIZE_EXE" "$mzx" >"$out" 2>/dev/null; then
+        me=0
+    else
+        me=$?
+    fi
+    actual=$(cat "$out")
+    rm -f "$out"
+    if [ "$me" -eq 0 ] && [ "$actual" = "$expected" ]; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: \"${expected}\""
+        echo "        actual:   \"${actual}\""
+    fi
+}
+
+# Object-mode reject: mazm -c must exit nonzero with a diagnostic containing $expected.
+run_obj_reject_test() {
+    name="$1"
+    src="$2"
+    expected="$3"
+    TOTAL=$((TOTAL + 1))
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    log=$(mktemp)
+    if "$MAZM_EXE" -c "${TEST_RUN_DIR}/${src}" >"$log" 2>&1; then
+        ec=0
+    else
+        ec=$?
+    fi
+    actual=$(cat "$log")
+    rm -f "$log"
+    if [ "$ec" -ne 0 ] && printf '%s' "$actual" | grep -qF "$expected"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected reject: \"${expected}\""
+        echo "        actual:          \"${actual}\""
+    fi
+}
+
+run_obj_pipeline_test "obj_dref"         "test_obj_dref.mazm"         "dref: PASS"
+run_obj_pipeline_test "obj_dref_addend"  "test_obj_dref_addend.mazm"  "dref-addend: PASS"
+run_obj_pipeline_test "obj_align"        "test_obj_align.mazm"        "align: PASS"
+run_obj_reject_test   "obj_align_reject" "test_reject_align.mazm"     "power of two"
+
 # --- maize-14: mzdis disassembler ---------------------------------------------------
 # Round trip (AC6477/AC6478/AC6483): assemble a code-only, SECTION-clean fixture that
 # hits every addressing-mode family and operand-count shape, disassemble it, reassemble
