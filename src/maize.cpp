@@ -60,22 +60,16 @@ static bool load_mzx(const std::vector<char> &buf) {
 
 static void print_usage(std::ostream &out) {
 	out <<
-		"usage: maize <image.mzb|.mzx>\n"
+		"maize - run a Maize program\n"
 		"\n"
-		"Maize VM. Runs a single memory image: a flat .mzb image, or a linked .mzx\n"
-		"executable. The loader dispatches on the image's header magic -- a .mzx\n"
-		"magic loads via the linked-executable path (segment table, recorded entry\n"
-		"point); anything else falls through to the legacy flat load-at-address-0\n"
-		"path.\n"
+		"Usage:\n"
+		"  maize <program>      run a compiled Maize program (.mzb or .mzx)\n"
+		"  maize -h, --help     show this help\n"
 		"\n"
-		"  -h, --help     show this help and exit\n"
+		"Example:\n"
+		"  maize hello.mzb\n"
 		"\n"
-		"The host process's own exit status reflects the guest program's return: a\n"
-		"program that ends via HALT with no explicit exit defaults to 0; SYS $3C\n"
-		"(sys_exit) sets the low 8 bits of R0 as the exit code.\n"
-		"\n"
-		"Command-line arguments beyond the image path are accepted but not yet\n"
-		"delivered to the guest program (argv[2]+ is ignored).\n";
+		"Passing arguments to the program is not supported yet.\n";
 }
 
 int main(int argc, char *argv[]) {
