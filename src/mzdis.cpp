@@ -27,9 +27,11 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "maize_cpu.h"
@@ -284,6 +286,17 @@ namespace {
         return oss.str();
     }
 
+    /* Reconstructs the numeric value of a little-endian (file-order) byte
+       sequence -- shared by render_imm (display) and the control-flow-target
+       collection pass (maize-70), which needs the raw address, not text. */
+    u_word bytes_to_value(const std::vector<u_byte> &bytes) {
+        u_word value = 0;
+        for (std::size_t i = bytes.size(); i-- > 0; ) {
+            value = (value << 8) | bytes[i];
+        }
+        return value;
+    }
+
     /* Fixed-width zero-padded hex matching the operand's declared byte width,
        with a backtick digit-group separator every 4 hex digits for widths >= 4
        bytes (spec: "Operand rendering"). `bytes` holds the operand's raw bytes
@@ -291,10 +304,7 @@ namespace {
        the numeric value before formatting, big-endian display order. */
     std::string render_imm(const std::vector<u_byte> &bytes) {
         std::size_t width = bytes.size();
-        u_word value = 0;
-        for (std::size_t i = width; i-- > 0; ) {
-            value = (value << 8) | bytes[i];
-        }
+        u_word value = bytes_to_value(bytes);
 
         std::size_t hexdigits = width * 2;
         std::ostringstream oss;
@@ -325,6 +335,35 @@ namespace {
         return render_imm(bytes);
     }
 
+    /* maize-70: flat-image addresses are 32-bit (`u_hword`, mazm.cpp:108 --
+       current_address's type for the flat/no-SECTION assembly path), so the
+       symbolic listing's origin label and per-line address comments render at
+       32-bit width (8 hex digits, one backtick group) to match mazm's own
+       origin-label form exactly (e.g. hello.mazm:4's "$0000`0000:"), not the
+       64-bit / 16-hex-digit form format_addr uses for .mzx vaddrs. */
+    std::string format_addr32(u_word addr) {
+        std::vector<u_byte> bytes(4);
+        for (int i = 0; i < 4; ++i) {
+            bytes[static_cast<std::size_t>(i)] = static_cast<u_byte>((addr >> (8 * i)) & 0xFF);
+        }
+        return render_imm(bytes);
+    }
+
+    /* Synthesized-label identifier suffix: lowercase hex, zero-padded to a
+       minimum of 4 digits, no separators (spec: "Label / symbol synthesis
+       rules" naming convention) -- a plain identifier mazm's tokenizer accepts
+       unambiguously, distinct from the backtick-grouped $-prefixed address
+       forms used in comments. */
+    std::string label_hex(u_word addr) {
+        std::ostringstream oss;
+        oss << std::hex << addr;
+        std::string s = oss.str();
+        while (s.size() < 4) {
+            s = "0" + s;
+        }
+        return s;
+    }
+
     /* ---- instruction decode ------------------------------------------- */
 
     enum class decode_status { ok, unknown_opcode, malformed, truncated };
@@ -332,9 +371,21 @@ namespace {
     struct decode_result {
         decode_status status {decode_status::ok};
         std::size_t consumed {0};   // valid for ok/unknown_opcode/malformed
-        std::string text {};        // rendered "MNEMONIC operand ..." body, for ok
+        std::string text {};        // rendered "MNEMONIC operand ..." body (literal operands), for ok; "DATA $XX" for unknown_opcode
         std::size_t need {0};       // for truncated: total bytes short
         u_byte bad_byte {0};        // for malformed: the offending param byte
+
+        /* maize-70: structured fields for the flat-image symbolic renderer's
+           two-pass label synthesis. Populated alongside `text` for ok status;
+           unused by the legacy (.mzx / pre-existing) rendering path, which
+           reads `text` directly and stays byte-for-byte unchanged. */
+        std::string mnemonic {};                     // for ok
+        std::size_t param_count {0};                 // for ok
+        std::array<std::string, 3> operand_texts {};  // for ok: literal-rendered per-operand text
+        int cf_operand_index {-1};                   // for ok: index into operand_texts of a symbolizable control-flow target, else -1
+        u_word cf_target {0};                         // valid iff cf_operand_index >= 0: the target address
+        std::size_t cf_width {0};                     // valid iff cf_operand_index >= 0: observed immediate width in bytes
+        char cf_role {0};                             // 'f' = CALL (fn_), 'l' = JMP/Jcc (loc_), 0 = not a candidate
     };
 
     /* Decode exactly one instruction starting at buf[seg_start + offset],
@@ -350,7 +401,10 @@ namespace {
             decode_result r;
             r.status = decode_status::unknown_opcode;
             r.consumed = 1;
-            r.text = "DB " + hex_u8(op);
+            /* D-DATA (maize-70): DB is not a mazm keyword (mazm.cpp:284-296),
+               so a DB line cannot be reassembled and would break round-trip.
+               DATA $XX reassembles to the same byte. */
+            r.text = "DATA " + hex_u8(op);
             return r;
         }
 
@@ -369,11 +423,19 @@ namespace {
 
         u_byte src_flag = op & 0xC0;
 
-        struct imm_need { std::size_t operand_index; std::size_t width; bool addr_prefix; };
+        /* maize-70: `is_cf` / `role` mark an immediate that is a candidate for
+           symbolic-label rendering by the flat-image two-pass sweep -- a
+           direct (non-`@`-indirect) CALL/JMP target, or any Jcc target (always
+           immediate). `role` follows the spec's naming rule: 'f' for CALL
+           (fn_), 'l' for JMP/Jcc (loc_). The legacy rendering path (.mzx /
+           format_addr-based decode_sweep) ignores these fields entirely. */
+        struct imm_need { std::size_t operand_index; std::size_t width; bool addr_prefix; bool is_cf; char role; };
         std::vector<imm_need> imm_needs;
         std::array<std::string, 3> operand_text {};
         bool malformed = false;
         u_byte bad_byte = 0;
+        bool is_call = (std::string(entry.mnemonic) == "CALL");
+        bool is_jump = (std::string(entry.mnemonic) == "JMP");
 
         for (std::size_t i = 0; i < param_count && !malformed; ++i) {
             operand_kind k = entry.operands[i];
@@ -386,15 +448,26 @@ namespace {
                 case operand_kind::regaddr:
                     operand_text[i] = "@" + render_reg(pbyte);
                     break;
-                case operand_kind::port:
-                case operand_kind::imm: {
+                case operand_kind::port: {
                     if (pbyte & 0xF8) {
                         malformed = true;
                         bad_byte = pbyte;
                         break;
                     }
                     std::size_t w = std::size_t(1) << (pbyte & 0x07);
-                    imm_needs.push_back({i, w, false});
+                    imm_needs.push_back({i, w, false, false, 0});
+                    break;
+                }
+                case operand_kind::imm: {
+                    /* Jcc: always a direct immediate target (maize-64), never
+                       indirect -- always a loc_ candidate. */
+                    if (pbyte & 0xF8) {
+                        malformed = true;
+                        bad_byte = pbyte;
+                        break;
+                    }
+                    std::size_t w = std::size_t(1) << (pbyte & 0x07);
+                    imm_needs.push_back({i, w, false, true, 'l'});
                     break;
                 }
                 case operand_kind::src: {
@@ -411,7 +484,13 @@ namespace {
                             break;
                         }
                         std::size_t w = std::size_t(1) << (pbyte & 0x07);
-                        imm_needs.push_back({i, w, src_flag == 0xC0});
+                        bool addr_prefix = (src_flag == 0xC0);
+                        /* '@' indirect forms (immAddr) are memory-indirect, not
+                           code labels -- never symbolized (spec). Only the
+                           direct (immVal) CALL/JMP operand is a candidate. */
+                        bool is_cf = !addr_prefix && (is_call || is_jump);
+                        char role = is_cf ? (is_call ? 'f' : 'l') : 0;
+                        imm_needs.push_back({i, w, addr_prefix, is_cf, role});
                     }
                     break;
                 }
@@ -440,6 +519,9 @@ namespace {
             return r;
         }
 
+        decode_result r;
+        r.status = decode_status::ok;
+
         std::size_t imm_cursor = offset + 1 + param_count;
         for (auto &n : imm_needs) {
             std::vector<u_byte> bytes(
@@ -447,6 +529,12 @@ namespace {
                 buf.begin() + static_cast<long>(seg_start + imm_cursor + n.width));
             std::string rendered = render_imm(bytes);
             operand_text[n.operand_index] = (n.addr_prefix ? "@" : "") + rendered;
+            if (n.is_cf) {
+                r.cf_operand_index = static_cast<int>(n.operand_index);
+                r.cf_target = bytes_to_value(bytes);
+                r.cf_width = n.width;
+                r.cf_role = n.role;
+            }
             imm_cursor += n.width;
         }
 
@@ -456,10 +544,11 @@ namespace {
             line += operand_text[i];
         }
 
-        decode_result r;
-        r.status = decode_status::ok;
         r.consumed = 1 + param_count + imm_total;
         r.text = line;
+        r.mnemonic = entry.mnemonic;
+        r.param_count = param_count;
+        r.operand_texts = operand_text;
         return r;
     }
 
@@ -506,6 +595,170 @@ namespace {
         return false;
     }
 
+    /* maize-70: the flat-`.mzb` symbolic disassembly path (spec: "Listing
+       format" / "Label / symbol synthesis rules"). Two passes over the whole
+       file, decoded from address 0 (flat images have no vaddr/base offset):
+
+         Pass 1 (collect): linear-decode every item, recording its start
+         address as a synchronization boundary and, for `ok` items, any
+         control-flow-target candidate the item carries.
+
+         Label map: a candidate becomes a synthesized label iff its observed
+         width is exactly 4 bytes, its target is in-image, and the target
+         coincides with a recorded item boundary (D-WIDTH; never mid-
+         instruction / mid-DATA-line). CALL (fn_) wins over JMP/Jcc (loc_) on
+         a shared address (deterministic role tie-break, spec).
+
+         Pass 2 (render): the comment-only SYMBOLS index, the single origin
+         label at address 0, then each item -- a label declaration line where
+         one was synthesized, followed by the instruction/DATA line with the
+         qualifying operand rendered symbolically (all others stay literal,
+         `render_imm`-rendered exactly as before) and the byte/address
+         trailing comment (documentation only, never load-bearing -- mazm
+         strips comments on reassembly). */
+    constexpr std::size_t COMMENT_COL = 40;
+
+    bool decode_sweep_symbolic(const std::vector<u_byte> &buf, std::ostream &out) {
+        struct sweep_item {
+            u_word addr {0};
+            decode_result result {};
+        };
+
+        std::size_t seg_len = buf.size();
+        std::vector<sweep_item> items;
+        std::unordered_set<std::uint64_t> boundaries;
+        bool truncated = false;
+
+        std::size_t offset = 0;
+        while (offset < seg_len) {
+            u_word addr = static_cast<u_word>(offset);
+            decode_result r = decode_one(buf, 0, seg_len, offset);
+
+            if (r.status == decode_status::truncated) {
+                sweep_item it;
+                it.addr = addr;
+                it.result = r;
+                items.push_back(it);
+                truncated = true;
+                break;
+            }
+
+            sweep_item it;
+            it.addr = addr;
+            it.result = r;
+            items.push_back(it);
+            boundaries.insert(static_cast<std::uint64_t>(addr));
+            offset += r.consumed;
+        }
+
+        /* Build the label map: address -> role ('f' wins over 'l'), then
+           address -> synthesized name. */
+        std::map<u_word, char> roles;
+        for (auto &it : items) {
+            if (it.result.status != decode_status::ok) {
+                continue;
+            }
+            if (it.result.cf_operand_index < 0) {
+                continue;
+            }
+            if (it.result.cf_width != 4) {
+                continue;
+            }
+            u_word target = it.result.cf_target;
+            if (target >= static_cast<u_word>(seg_len)) {
+                continue;
+            }
+            if (boundaries.find(static_cast<std::uint64_t>(target)) == boundaries.end()) {
+                continue;
+            }
+            auto existing = roles.find(target);
+            if (existing == roles.end() || existing->second != 'f') {
+                roles[target] = it.result.cf_role;
+            }
+        }
+
+        std::map<u_word, std::string> labels;
+        for (auto &kv : roles) {
+            std::string prefix = (kv.second == 'f') ? "fn_" : "loc_";
+            labels[kv.first] = prefix + label_hex(kv.first);
+        }
+
+        /* Pass 2: render. */
+        if (!labels.empty()) {
+            out << "; SYMBOLS:\n";
+            for (auto &kv : labels) {
+                out << ";   " << kv.second << "  " << format_addr32(kv.first) << "\n";
+            }
+            out << "\n";
+        }
+
+        out << format_addr32(0) << ":\n";
+
+        for (auto &it : items) {
+            if (it.result.status == decode_status::truncated) {
+                out << "    ; TRUNCATED at " << format_addr32(it.addr) << ": expected " << it.result.need
+                    << " more byte(s)\n";
+                continue;
+            }
+
+            auto lit = labels.find(it.addr);
+            if (lit != labels.end()) {
+                out << lit->second << ":\n";
+            }
+
+            if (it.result.status == decode_status::malformed) {
+                out << "    ; " << format_addr32(it.addr) << " malformed operand byte " << hex_u8(it.result.bad_byte)
+                    << " (reserved bits set)\n";
+                continue;
+            }
+
+            /* Raw bytes this item occupies, for the trailing comment. */
+            std::string bytes_str;
+            for (std::size_t i = 0; i < it.result.consumed; ++i) {
+                if (i > 0) {
+                    bytes_str += " ";
+                }
+                bytes_str += hex_u8(buf[static_cast<std::size_t>(it.addr) + i]);
+            }
+
+            std::string line;
+            if (it.result.status == decode_status::ok) {
+                line = it.result.mnemonic;
+                for (std::size_t i = 0; i < it.result.param_count; ++i) {
+                    line += " ";
+                    if (static_cast<int>(i) == it.result.cf_operand_index) {
+                        auto tgt_lit = labels.find(it.result.cf_target);
+                        if (tgt_lit != labels.end() && it.result.cf_width == 4) {
+                            line += tgt_lit->second;
+                            continue;
+                        }
+                    }
+                    line += it.result.operand_texts[i];
+                }
+            }
+            else {
+                /* unknown_opcode: r.text already holds "DATA $XX". */
+                line = it.result.text;
+            }
+
+            std::string body = "    " + line;
+            if (body.size() < COMMENT_COL) {
+                body += std::string(COMMENT_COL - body.size(), ' ');
+            }
+            else {
+                body += " ";
+            }
+
+            out << body << "; " << format_addr32(it.addr) << ": " << bytes_str;
+            if (it.result.status == decode_status::unknown_opcode) {
+                out << " unknown opcode";
+            }
+            out << "\n";
+        }
+
+        return truncated;
+    }
+
     void render_data_segment(const std::vector<u_byte> &buf, std::uint64_t file_off, std::uint64_t file_size,
                               u_word vaddr, const char *kind_label, std::ostream &out) {
         out << "; ---- " << kind_label << ": vaddr=" << format_addr(vaddr) << ", size=" << file_size << " ----\n";
@@ -550,6 +803,19 @@ static void print_usage(std::ostream &out) {
         "\n"
         "Example:\n"
         "  mzdis hello.mzb\n"
+        "\n"
+        "For a flat .mzb program, the listing reassembles through mazm back to\n"
+        "the exact original file, byte for byte. Addresses that other\n"
+        "instructions call or branch to get a short synthesized label (fn_ for\n"
+        "call targets, loc_ for branch targets) shown both in a comment-only\n"
+        "\"; SYMBOLS:\" index at the top and as the operand at each reference\n"
+        "(e.g. \"CALL fn_0053\" instead of a raw address), so the listing reads\n"
+        "like a normal program and still edits safely: references follow their\n"
+        "label if you move code around. Every line also carries a trailing\n"
+        "comment with its address and raw bytes for reference; comments are\n"
+        "just documentation and are ignored on reassembly. Bytes that aren't\n"
+        "part of any recognized instruction show up as \"DATA $XX\" so they\n"
+        "still reassemble along with everything else.\n"
         "\n"
         "Disassembling .mzo object files is not supported yet.\n";
 }
@@ -655,8 +921,11 @@ int main(int argc, char **argv) {
         /* No recognized magic: flat image, decoded from address 0 to EOF --
            matches maize.cpp's loader fallback exactly (maize.cpp:79-85), so
            "what mzdis disassembles" and "what maize would execute" stay the
-           same file-format decision in both tools. */
-        truncated = decode_sweep(buf, 0, buf.size(), 0, std::nullopt, out);
+           same file-format decision in both tools. maize-70: the flat path
+           renders through the two-pass symbolic sweep (sparse synthesized
+           labels + symbolic operands); .mzx's decode_sweep call above is
+           untouched (out of scope, see spec). */
+        truncated = decode_sweep_symbolic(buf, out);
     }
 
     if (!out_path.empty()) {

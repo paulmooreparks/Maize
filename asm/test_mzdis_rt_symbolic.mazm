@@ -1,0 +1,31 @@
+; maize-70: mzdis symbolic round-trip fixture (AC7275, AC7276).
+;
+; Code-only, no interleaved data -- every control-flow target here is a label
+; reference, so mazm's write_label always encodes it as a 32-bit immediate
+; (D-WIDTH), and mzdis's two-pass sweep synthesizes a label for every one of
+; them: CALL targets become fn_, JMP/Jcc targets become loc_. Includes both
+; forward references (target address higher than the referencing instruction)
+; and backward references (target address lower), and hits all three
+; qualifying mnemonic families (CALL, JMP, Jcc). Nothing here is meant to
+; actually run; it exists to exercise the disassembler's label synthesis.
+
+$0000`0000:
+    CALL subroutine         ; forward CALL -> fn_
+    JMP loop_start           ; forward JMP -> loc_
+
+subroutine:
+    PUSH R0
+    POP R0
+    RET
+
+loop_start:
+    CLR R0
+loop_body:
+    INC R0
+    CP $05 R0
+    JNZ loop_body             ; backward Jcc -> loc_
+    JMP done                  ; forward JMP -> loc_
+
+done:
+    CALL subroutine           ; backward CALL -> fn_ (same target, already labeled)
+    HALT

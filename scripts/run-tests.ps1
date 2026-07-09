@@ -485,8 +485,11 @@ function Invoke-MzdisRoundtripTest {
     return [pscustomobject]@{ Name = $name; Pass = $identical; Expected = 'reassembled .mzb byte-identical to original'; Actual = if ($identical) { 'byte-identical' } else { "length $($origBytes.Length) vs $($reasmBytes.Length), or content differs" } }
 }
 
-# Reserved-opcode resync (AC6481): two reserved bytes decode as DB $XX / unknown
-# opcode, advancing exactly one byte each, and decoding resumes correctly afterward.
+# Reserved-opcode resync + round-trip (AC6481, AC7278): two reserved bytes decode
+# as DATA $XX / unknown opcode (D-DATA: DB is not a mazm keyword and would break
+# round-trip; DATA $XX reassembles to the same byte), advancing exactly one byte
+# each, decoding resumes correctly afterward, and mzdis's own output reassembles
+# back to the original .mzb byte-for-byte.
 function Invoke-MzdisReservedTest {
     $name = 'mzdis_reserved_resync'
     $srcPath = Join-Path $AsmDir 'test_mzdis_reserved.mazm'
@@ -499,18 +502,80 @@ function Invoke-MzdisReservedTest {
         return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to produce a .mzb' }
     }
 
-    $stdoutFile = Join-Path $TestRunDir 'test_mzdis_reserved.out'
-    & $MzdisExe $binPath > $stdoutFile
+    $disPath = Join-Path $TestRunDir 'test_mzdis_reserved.dis.mazm'
+    & $MzdisExe -o $disPath $binPath
     $disExit = $LASTEXITCODE
-    $text = Get-Content -Raw -Path $stdoutFile
+    $text = if (Test-Path $disPath) { Get-Content -Raw -Path $disPath } else { '' }
 
     # Reserved-byte resyncs alone must NOT force exit 1 (spec: "Exit codes").
-    $pass = ($disExit -eq 0) `
-        -and ($text -match [regex]::Escape('DB $21') + '.*unknown opcode') `
-        -and ($text -match [regex]::Escape('DB $93') + '.*unknown opcode') `
+    $decodePass = ($disExit -eq 0) `
+        -and ($text -match [regex]::Escape('DATA $21') + '.*unknown opcode') `
+        -and ($text -match [regex]::Escape('DATA $93') + '.*unknown opcode') `
         -and ($text -match '(?m)^\s+NOP\b') `
         -and ($text -notmatch '(?i)TRUNCATED')
-    return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = 'DB $21/$93 unknown-opcode lines, NOP decodes correctly after, exit 0'; Actual = if ($pass) { 'as expected' } else { "exit $disExit; see $stdoutFile" } }
+    if (-not $decodePass) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'DATA $21/$93 unknown-opcode lines, NOP decodes correctly after, exit 0'; Actual = "exit $disExit; see $disPath" }
+    }
+
+    $reasmBin = [System.IO.Path]::ChangeExtension($disPath, 'mzb')
+    & $MazmExe $disPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $reasmBin)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = "mzdis's own output reassembles cleanly"; Actual = 'mazm failed to reassemble mzdis output' }
+    }
+
+    $origBytes = [System.IO.File]::ReadAllBytes($binPath)
+    $reasmBytes = [System.IO.File]::ReadAllBytes($reasmBin)
+    $identical = ($origBytes.Length -eq $reasmBytes.Length) -and (-not (Compare-Object $origBytes $reasmBytes))
+    return [pscustomobject]@{ Name = $name; Pass = $identical; Expected = 'reassembled .mzb byte-identical to original'; Actual = if ($identical) { 'byte-identical' } else { "length $($origBytes.Length) vs $($reasmBytes.Length), or content differs" } }
+}
+
+# Symbolic round trip (AC7275, AC7276): a code-only fixture whose in-image
+# 32-bit CALL/JMP/Jcc targets (forward and backward) all qualify for label
+# synthesis. Asserts symbolization actually fired (fn_/loc_ declaration lines
+# AND symbolic operands present -- not a silent fallback to literals), then
+# reassembles mzdis's own output and diffs the resulting .mzb against the
+# original byte-for-byte, same as Invoke-MzdisRoundtripTest.
+function Invoke-MzdisRtSymbolicTest {
+    $name = 'mzdis_rt_symbolic'
+    $srcPath = Join-Path $AsmDir 'test_mzdis_rt_symbolic.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_mzdis_rt_symbolic.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to produce a .mzb' }
+    }
+
+    $disPath = Join-Path $TestRunDir 'test_mzdis_rt_symbolic.dis.mazm'
+    & $MzdisExe -o $disPath $binPath
+    $disExit = $LASTEXITCODE
+    if ($disExit -ne 0 -or -not (Test-Path $disPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'mzdis exits 0 with clean decode'; Actual = "mzdis exit $disExit" }
+    }
+    $disText = Get-Content -Raw -Path $disPath
+    if ($disText -match '(?i)unknown opcode|malformed|TRUNCATED') {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'no unknown/malformed/truncated lines (code-only fixture)'; Actual = 'decode diagnostic found' }
+    }
+
+    $symbolized = ($disText -match '(?m)^fn_[0-9a-f]+:') `
+        -and ($disText -match '(?m)^loc_[0-9a-f]+:') `
+        -and ($disText -match 'CALL fn_[0-9a-f]+') `
+        -and ($disText -match '(JMP|JNZ) loc_[0-9a-f]+')
+    if (-not $symbolized) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'synthesized fn_/loc_ declarations AND symbolic operands (symbolization fired)'; Actual = "missing one or more; see $disPath" }
+    }
+
+    $reasmBin = [System.IO.Path]::ChangeExtension($disPath, 'mzb')
+    & $MazmExe $disPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $reasmBin)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = "mzdis's own output reassembles cleanly"; Actual = 'mazm failed to reassemble mzdis output' }
+    }
+
+    $origBytes = [System.IO.File]::ReadAllBytes($binPath)
+    $reasmBytes = [System.IO.File]::ReadAllBytes($reasmBin)
+    $identical = ($origBytes.Length -eq $reasmBytes.Length) -and (-not (Compare-Object $origBytes $reasmBytes))
+    return [pscustomobject]@{ Name = $name; Pass = $identical; Expected = 'reassembled .mzb byte-identical to original'; Actual = if ($identical) { 'byte-identical' } else { "length $($origBytes.Length) vs $($reasmBytes.Length), or content differs" } }
 }
 
 # Truncated tail (AC6482): chop the assembled fixture mid-immediate so the final
@@ -592,6 +657,7 @@ function Invoke-MzdisMzxTest {
 }
 
 $results += Invoke-MzdisRoundtripTest
+$results += Invoke-MzdisRtSymbolicTest
 $results += Invoke-MzdisReservedTest
 $results += Invoke-MzdisTruncatedTest
 $results += Invoke-MzdisMzoRejectTest

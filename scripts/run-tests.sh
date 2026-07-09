@@ -550,8 +550,11 @@ run_mzdis_roundtrip_test() {
     fi
 }
 
-# Reserved-opcode resync (AC6481): two reserved bytes decode as DB $XX / unknown
-# opcode, advancing exactly one byte each, and decoding resumes correctly afterward.
+# Reserved-opcode resync + round-trip (AC6481, AC7278): two reserved bytes decode
+# as DATA $XX / unknown opcode (D-DATA: DB is not a mazm keyword and would break
+# round-trip; DATA $XX reassembles to the same byte), advancing exactly one byte
+# each, decoding resumes correctly afterward, and mzdis's own output reassembles
+# back to the original .mzb byte-for-byte.
 run_mzdis_reserved_test() {
     name="mzdis_reserved_resync"
     TOTAL=$((TOTAL + 1))
@@ -567,23 +570,107 @@ run_mzdis_reserved_test() {
         return
     fi
 
-    out_file="${TEST_RUN_DIR}/test_mzdis_reserved.out"
+    dis_path="${TEST_RUN_DIR}/test_mzdis_reserved.dis.mazm"
     # `|| dis_exit=$?` keeps a nonzero exit from tripping set -e; a bare
     # `cmd; dis_exit=$?` would kill the whole script before the capture.
     dis_exit=0
-    "$MZDIS_EXE" "$bin_path" >"$out_file" || dis_exit=$?
+    "$MZDIS_EXE" -o "$dis_path" "$bin_path" || dis_exit=$?
 
-    if [ "$dis_exit" -eq 0 ] \
-        && grep -qE 'DB \$21.*unknown opcode' "$out_file" \
-        && grep -qE 'DB \$93.*unknown opcode' "$out_file" \
-        && grep -qE '^\s+NOP\b' "$out_file" \
-        && ! grep -qi 'TRUNCATED' "$out_file"; then
+    if [ "$dis_exit" -ne 0 ] \
+        || ! grep -qE 'DATA \$21.*unknown opcode' "$dis_path" \
+        || ! grep -qE 'DATA \$93.*unknown opcode' "$dis_path" \
+        || ! grep -qE '^\s+NOP\b' "$dis_path" \
+        || grep -qi 'TRUNCATED' "$dis_path"; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: DATA \$21/\$93 unknown-opcode lines, NOP decodes correctly after, exit 0"
+        echo "        actual:   exit ${dis_exit}; see ${dis_path}"
+        return
+    fi
+
+    reasm_bin="${dis_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$dis_path" >/dev/null 2>&1 || [ ! -f "$reasm_bin" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: mzdis's own output reassembles cleanly"
+        echo "        actual:   mazm failed to reassemble mzdis output"
+        return
+    fi
+
+    if cmp -s "$bin_path" "$reasm_bin"; then
         echo "[PASS] ${name}"
     else
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
-        echo "        expected: DB \$21/\$93 unknown-opcode lines, NOP decodes correctly after, exit 0"
-        echo "        actual:   exit ${dis_exit}; see ${out_file}"
+        echo "        expected: reassembled .mzb byte-identical to original"
+        echo "        actual:   content differs"
+    fi
+}
+
+# Symbolic round trip (AC7275, AC7276): a code-only fixture whose in-image
+# 32-bit CALL/JMP/Jcc targets (forward and backward) all qualify for label
+# synthesis. Asserts symbolization actually fired (fn_/loc_ declaration lines
+# AND symbolic operands present -- not a silent fallback to literals), then
+# reassembles mzdis's own output and diffs the resulting .mzb against the
+# original byte-for-byte, same as run_mzdis_roundtrip_test.
+run_mzdis_rt_symbolic_test() {
+    name="mzdis_rt_symbolic"
+    TOTAL=$((TOTAL + 1))
+    asm_path="${TEST_RUN_DIR}/test_mzdis_rt_symbolic.mazm"
+    cp "${ASM_DIR}/test_mzdis_rt_symbolic.mazm" "$asm_path"
+    bin_path="${asm_path%.mazm}.mzb"
+
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: fixture assembles cleanly"
+        echo "        actual:   mazm failed to produce a .mzb"
+        return
+    fi
+
+    dis_path="${TEST_RUN_DIR}/test_mzdis_rt_symbolic.dis.mazm"
+    if ! "$MZDIS_EXE" -o "$dis_path" "$bin_path"; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: mzdis exits 0 with clean decode"
+        echo "        actual:   mzdis exited nonzero"
+        return
+    fi
+    if grep -qiE 'unknown opcode|malformed|TRUNCATED' "$dis_path"; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: no unknown/malformed/truncated lines (code-only fixture)"
+        echo "        actual:   decode diagnostic found"
+        return
+    fi
+
+    if ! grep -qE '^fn_[0-9a-f]+:' "$dis_path" \
+        || ! grep -qE '^loc_[0-9a-f]+:' "$dis_path" \
+        || ! grep -qE 'CALL fn_[0-9a-f]+' "$dis_path" \
+        || ! grep -qE '(JMP|JNZ) loc_[0-9a-f]+' "$dis_path"; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: synthesized fn_/loc_ declarations AND symbolic operands (symbolization fired)"
+        echo "        actual:   missing one or more; see ${dis_path}"
+        return
+    fi
+
+    reasm_bin="${dis_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$dis_path" >/dev/null 2>&1 || [ ! -f "$reasm_bin" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: mzdis's own output reassembles cleanly"
+        echo "        actual:   mazm failed to reassemble mzdis output"
+        return
+    fi
+
+    if cmp -s "$bin_path" "$reasm_bin"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: reassembled .mzb byte-identical to original"
+        echo "        actual:   content differs"
     fi
 }
 
@@ -692,6 +779,7 @@ run_mzdis_mzx_test() {
 }
 
 run_mzdis_roundtrip_test
+run_mzdis_rt_symbolic_test
 run_mzdis_reserved_test
 run_mzdis_truncated_test
 run_mzdis_mzo_reject_test
