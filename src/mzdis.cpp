@@ -541,23 +541,17 @@ namespace {
 
 static void print_usage(std::ostream &out) {
     out <<
-        "usage: mzdis [-o out_path] <input>\n"
+        "mzdis - disassemble a Maize program back to assembly\n"
         "\n"
-        "Maize disassembler. Turns a flat .mzb memory image or a linked .mzx\n"
-        "executable back into readable Maize assembly text, written to stdout\n"
-        "unless -o redirects it to a file. .mzo relocatable objects are not\n"
-        "supported (see maize-14 follow-on).\n"
+        "Usage:\n"
+        "  mzdis <program>            disassemble a Maize program (.mzb or .mzx)\n"
+        "  mzdis -o <file> <program>  write the disassembly to a file\n"
+        "  mzdis -h, --help           show this help\n"
         "\n"
-        "options:\n"
-        "  -o <out_path>   write disassembly to out_path instead of stdout\n"
-        "  -h, --help      show this help and exit\n"
+        "Example:\n"
+        "  mzdis hello.mzb\n"
         "\n"
-        "Exits 0 on a full clean decode. Exits 1 if the input cannot be opened,\n"
-        "is a .mzo object, or the sweep hits a truncated instruction tail near\n"
-        "end of file (any output already rendered is still written before\n"
-        "returning 1).\n"
-        "\n"
-        "An input path is required.\n";
+        "Disassembling .mzo object files is not supported yet.\n";
 }
 
 int main(int argc, char **argv) {
