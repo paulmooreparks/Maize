@@ -1,25 +1,49 @@
 ; **********************************************************************************
-; Regression test for card maize-57: process-start stack-pointer contract.
+; Regression test for the process-start stack contract (card maize-57, as amended by
+; card maize-60).
 ;
-; The VM guarantees RS (SP) = 0xFFFFFFFFFFFFFFF8 at process start, the highest
-; 8-byte-aligned address in the flat 64-bit space. The FIRST observable action of
-; this program captures RS and asserts it equals that constant, before anything
-; touches the stack. It then exercises the stack with no prior SP setup: a CALL
-; whose return address must round-trip through the initialized stack, and a
-; PUSH/POP inside the leaf. The PASS line prints via SYS $01 only if both the
-; initial-RS assertion and the round-trip hold.
+; maize-57 originally guaranteed RS = 0xFFFFFFFFFFFFFFF8 with an empty initial stack.
+; maize-60 amends that: the VM now builds a System V-style process-start block at the
+; top of RAM and points RS at its base, so RS points at argc. This program captures
+; that block as its FIRST observable action and asserts the amended contract:
+;
+;   [RS + 0]   argc            == 1  (the harness runs `maize <image>` with no guest
+;                                     args, so argv is just argv[0])
+;   [RS + 8]   argv[0]         != 0  (points at the image string, image-as-invoked)
+;   [RS + 16]  argv[1]         == 0  (argv[] NULL terminator)
+;   [RS + 24]  envp[0]         == 0  (envp[] NULL terminator; envc == 0, and envp is
+;                                     NULL-terminated even when empty)
+;
+; It then exercises the stack region BELOW the block with no prior SP setup: a CALL
+; whose return address must round-trip, and a PUSH/POP inside the leaf. The PASS line
+; prints via SYS $01 only if the block assertions AND the round-trip all hold.
 ; **********************************************************************************
 
 $0000`0000:
-    ; ---- FIRST observable action: initial RS must equal 0xFFFFFFFFFFFFFFF8 ----
-    CP SP R0                        ; capture the process-start stack pointer
-    CMP $FFFFFFFFFFFFFFF8 R0        ; flags = R0 - top-of-space constant
-    JNZ fail                       ; initial RS was not the guaranteed value
+    ; ---- FIRST observable action: RS points at argc ----
+    LD @RS R0                       ; R0 = argc = [RS]
+    CMP $01 R0                      ; harness passes no guest args => argc == 1
+    JNZ fail
 
-    ; ---- exercise the stack with no prior SP setup ----
-    ; CALL pushes the return address using the initialized RS; the leaf also
-    ; PUSH/POPs a sentinel. If RS were not usable at entry, the return address
-    ; would not round-trip and control would not reach the PASS line.
+    LEA $08 RS RT                   ; RT = &argv[0]
+    LD @RT R1                       ; R1 = argv[0] pointer
+    CMP $00 R1                      ; argv[0] must be non-NULL (the image string)
+    JZ fail
+
+    LEA $10 RS RT                   ; RT = &argv[1] (argv NULL terminator, argc == 1)
+    LD @RT R1
+    CMP $00 R1                      ; argv[] must be NULL-terminated
+    JNZ fail
+
+    LEA $18 RS RT                   ; RT = &envp[0] (envp NULL terminator, envc == 0)
+    LD @RT R1
+    CMP $00 R1                      ; envp[] must be NULL-terminated even when empty
+    JNZ fail
+
+    ; ---- exercise the stack region below the block, no prior SP setup ----
+    ; CALL pushes the return address below RS; the leaf also PUSH/POPs a sentinel. If
+    ; the stack were not usable, the return address would not round-trip and control
+    ; would not reach the PASS line.
     CLR R4
     CALL sub_leaf                  ; sets R4.B0 = $01 and returns here
     CMP $01 R4.B0
@@ -36,8 +60,8 @@ $0000`0000:
     HALT
 
 sub_leaf:
-    ; Push a sentinel and pop it back to confirm PUSH/POP round-trips on the
-    ; initialized stack, then signal success to the caller.
+    ; Push a sentinel and pop it back to confirm PUSH/POP round-trips on the stack
+    ; region below the block, then signal success to the caller.
     CP $CAFEF00DDEADBEEF R5
     PUSH R5
     CLR R6

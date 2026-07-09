@@ -213,10 +213,51 @@ run_exit_status_test() {
     fi
 }
 
+# maize-60 argc/argv/envp end-to-end. Compiles ctest/args.c, then runs it with the
+# working directory set to WORK_DIR (which holds the compiled args.mzb) and the image
+# named by the FIXED RELATIVE path `args.mzb`, so argv[0] is the deterministic string
+# `args.mzb` rather than an absolute build path. Passes one --env-populated pair via
+# -e/--env plus another env entry and two guest args, then diffs stdout against
+# ctest/args.expected with the same exact-cmp-else-trailing-newline-tolerant compare
+# run_ctest uses. This asserts the whole chain: launcher block construction, RS-points-
+# at-argc, crt0 marshalling into R0/R1/R2, and the argc-bounded argv loop (a wrong argc
+# would change the printed line count). The guest environment is exactly the two --env
+# values -- the host's ambient environment is never inherited.
+run_args_test() {
+    name="args"
+    expfile="${CTEST_DIR}/${name}.expected"
+    TOTAL=$((TOTAL + 1))
+
+    if [ ! -f "$expfile" ]; then
+        echo "[FAIL] ${name}: missing expected fixture" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+
+    compile_c "$name" || return
+    # compile_c wrote ${WORK_DIR}/args.mzb; run from WORK_DIR so argv[0] == args.mzb.
+
+    out="${WORK_DIR}/${name}.out"
+    exp="${WORK_DIR}/${name}.exp"
+    ( cd "$WORK_DIR" && "$MAIZE" --env GREETING=hi --env TARGET=maize args.mzb alpha beta ) \
+        > "$out" 2>/dev/null || true
+    tr -d '\r' < "$expfile" > "$exp"
+    if cmp -s "$out" "$exp" \
+    || { [ "$(cat "$out")" = "$(cat "$exp")" ]; }; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"$(cat "$exp")\""
+        echo "        actual:   \"$(cat "$out")\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
 echo "=== C toolchain end-to-end (cproc -> qbe -t maize -> mazm -> maize) ==="
 run_ctest "hello"
 run_ctest "capstone"
 run_exit_status_test "exitcode" 42
+run_args_test
 
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then

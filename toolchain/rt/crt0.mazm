@@ -1,10 +1,23 @@
 ; ==================================================================================
 ; crt0.mazm -- freestanding C runtime entry stub (maize-62, maize-11 decision 6412)
 ;
-; This fragment is concatenated FIRST, so the entry sits at origin $0000`0000. It
-; mirrors asm/hello.mazm's entry exactly: call main, then halt. It does NOT set the
-; stack pointer -- it relies on the VM initializing RS (and a defined top-of-RAM) at
-; reset, the process-start contract confirmed and documented by maize-57.
+; This fragment is concatenated FIRST, so the entry sits at origin $0000`0000. At
+; process entry the VM has already built a System V-style process-start block at the
+; top of RAM and set RS to point at its base (maize-60, amending maize-57). The block
+; is, from RS upward:
+;
+;     [RS + 0]                 argc
+;     [RS + 8]                 argv[0]   (pointer to argv[0]'s string)
+;     ...                      argv[argc-1]
+;     [RS + 8 + argc*8]        NULL      (argv terminator)
+;     [next 8]                 envp[0]   (pointer to envp[0]'s string)
+;     ...                      envp[envc-1]
+;     [...]                    NULL      (envp terminator)
+;
+; This stub marshals argc/argv/envp off that block into the C ABI argument registers
+; R0/R1/R2, then calls main(argc, argv, envp). envp = argv + (argc+1)*8 (skip the
+; argv[] slots and their NULL terminator). The marshalling is unconditional: a
+; main(void) simply ignores R0/R1/R2, so hello/capstone/exitcode keep working.
 ;
 ; main's return value becomes the observable process exit status (maize-58): after
 ; main returns, its value lands in RV (the C ABI return register); we copy it into R0
@@ -14,6 +27,12 @@
 ; ==================================================================================
 
 $0000`0000:
-    CALL main               ; enter the compiled C program
-    CP RV R0                ; main's return value (RV, C ABI) -> R0 (exit-code arg)
-    SYS $3C                 ; sys_exit(R0): terminate, carrying main's status
+    LD  @RS R0              ; R0 = argc            = [RS]
+    LEA $08 RS R1           ; R1 = argv (&argv[0]) = RS + 8
+    CP  R0 R2               ; R2 = argc
+    INC R2                  ; R2 = argc + 1        (skip argv[] and its NULL terminator)
+    SHL $03 R2             ; R2 = (argc + 1) * 8   (bytes to skip)
+    LEA R2 R1 R2          ; R2 = envp             = argv + (argc+1)*8
+    CALL main              ; main(R0=argc, R1=argv, R2=envp)
+    CP RV R0               ; main's return value (RV, C ABI) -> R0 (exit-code arg)
+    SYS $3C                ; sys_exit(R0): terminate, carrying main's status

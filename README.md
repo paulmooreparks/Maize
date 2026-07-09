@@ -157,13 +157,45 @@ usable executables.
 ## Running Maize programs directly
 
 You can register `maize` as the operating system's handler for Maize images, so
-that an image runs directly the way a `.py` or `.js` file does. `maize <path>`
-already loads and runs both image formats, dispatching on the header: a `.mzx`
+that an image runs directly the way a `.py` or `.js` file does. The full command
+line is:
+
+```
+maize [options] <image> [guest-args...]
+```
+
+Options are consumed up to the first non-option token, which is `<image>`;
+everything after `<image>` is passed to the program as its `argv`, verbatim (a
+`-flag` after the image is a guest argument, never a maize option). `argv[0]` is
+`<image>` exactly as you typed it. A `--` explicitly ends the options if you need
+the image name itself to start with `-`.
+
+`maize` loads and runs both image formats, dispatching on the header: a `.mzx`
 (linked) image begins with the magic bytes `M Z X 0x01` and is loaded segment by
 segment; anything else is loaded as a flat `.mzb` image at address 0. Registration
 is OS-level glue on top of that, and the runner behaves as a well-formed
-interpreter: it takes the image path as its first argument, accepts an absolute
-path, and tolerates extra arguments after the path.
+interpreter: it takes the image path as its first non-option argument, accepts an
+absolute path, and passes any following arguments through to the guest.
+
+### Setting the program's environment
+
+A program's environment is built only from what you pass on the command line;
+`maize` never inherits your shell's own environment, so a run is deterministic.
+
+- `-e KEY=VAL`, `--env KEY=VAL`, or `--env=KEY=VAL` adds one variable. Repeatable.
+- `--env-file <path>` adds variables from a file of `KEY=VAL` lines. Blank lines
+  and lines whose first non-whitespace character is `#` are ignored. Repeatable.
+
+`KEY` must match `[A-Za-z_][A-Za-z0-9_]*`; the value is everything after the first
+`=` (it may contain further `=` characters or be empty, and there is no shell
+quoting or `$`-expansion). Entries are kept in the order given, with no
+de-duplication. With no env flags the program still receives a valid, empty
+environment.
+
+```sh
+maize --env GREETING=hi --env TARGET=world hello.mzb alpha beta
+maize --env-file run.env prog.mzb
+```
 
 The scripts below are documented, user-run tools. They are **not** run by the
 build, and they change OS state, so run them yourself and reverse them with the
@@ -213,18 +245,18 @@ To run `prog` and have the shell find `prog.mzb`/`prog.mzx`, add `.MZB;.MZX` to
 to append them to your user `PATHEXT` automatically (also reversed by
 `unregister`).
 
-### What works, and the one caveat
+### What works
 
 - **Exit status works.** A directly-run image's process exit code reflects the
   program's return value (`maize` surfaces the guest's `SYS $3C` exit through its
   own exit status). A C program that ends with `return 13` yields `$?` == 13 on
   Linux (or `%ERRORLEVEL%` == 13 on Windows); codes truncate to the usual 0-255
   range.
-- **Caveat: guest arguments are not yet delivered.** The program runs, but
-  command-line arguments after the image path are not yet passed into the guest
-  (the process-start stack is empty; argv delivery is tracked separately). The
-  registration scripts and the OS handler tolerate extra arguments; they simply
-  do not reach the guest program yet.
+- **Arguments and environment are delivered.** Command-line arguments after the
+  image reach the guest as `argv`, and `-e/--env`/`--env-file` values reach it as
+  `envp`, so a C `main(int argc, char **argv, char **envp)` sees them directly.
+  When registered as an OS handler, `binfmt_misc` / the file association pass the
+  invocation's trailing arguments straight through to the guest.
 
 ## Project Status
 
@@ -530,14 +562,13 @@ instruction operand.
 
 At process start (a fresh VM invocation) Maize guarantees the following register and stack
 contract. Maize is an unbounded flat 64-bit machine; there is no bounded RAM ceiling, so the
-initial stack pointer is a chosen top-of-space constant, not a derived RAM limit.
+top of the stack is a chosen top-of-space constant, not a derived RAM limit.
 
-    RS (SP)          0xFFFFFFFFFFFFFFF8, the highest 8-byte-aligned address in the flat 64-bit
-                     space. The stack is full-descending, so the first 8-byte push pre-decrements
-                     RS and lands at 0xFFFFFFFFFFFFFFF0. RS is set to this explicit constant; no
-                     stack-pointer wraparound is relied upon. The initial stack is empty (no
-                     argc/argv/envp or process-start data block; that layout is deferred to the
-                     C ABI).
+    RS (SP)          the base of the process-start block (see below): RS points at argc. The
+                     block occupies the top of the address space, ending at 0xFFFFFFFFFFFFFFF8;
+                     the guest image loads at address 0, so the two never overlap. The stack is
+                     full-descending, so the first guest push pre-decrements RS into the free
+                     region just below the block. No stack-pointer wraparound is relied upon.
     RP (PC)          the program entry: the recorded entry point for a .mzx executable, or
                      address 0 for a flat image.
     RB (BP)          0.
@@ -547,7 +578,30 @@ initial stack pointer is a chosen top-of-space constant, not a derived RAM limit
     R0..R9, RT, RV   0.
 
 These values are a guaranteed contract, not incidental defaults: crt0 and the C calling
-convention depend on a usable stack pointer from the first instruction.
+convention depend on a usable stack pointer and a well-formed process-start block from the
+first instruction.
+
+##### Process-start block (argc / argv / envp)
+
+Maize places a System V-style process-start block at the top of the address space and points
+RS at its base, so a C `main(int argc, char **argv, char **envp)` is always callable. There is
+no ELF auxiliary vector. From RS upward, every slot is 8 bytes and little-endian (it reads back
+through `LD @`):
+
+    RS + 0                      argc
+    RS + 8                      argv[0]   -> address of argv[0]'s string
+    ...                         argv[argc-1]
+    RS + 8 + argc*8             0         (argv NULL terminator)
+    next 8                      envp[0]   -> address of envp[0]'s string
+    ...                         envp[envc-1]
+    ...                         0         (envp NULL terminator)
+    [higher addresses]          the NUL-terminated argument and environment strings, packed in
+                                order and ending at the top of the address space
+
+`argv[i]` and `envp[j]` hold the absolute address of their NUL-terminated string. `envp` is
+always present and NULL-terminated, even when there are zero environment entries, so
+`main(argc, argv, envp)` is always well-formed. The C runtime's crt0 reads argc, argv, and envp
+off this block into the argument registers and calls `main`; a `main(void)` simply ignores them.
 
 ### Flags
 
