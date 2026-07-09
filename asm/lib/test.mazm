@@ -1,0 +1,134 @@
+; **********************************************************************************
+; asm/lib/test.mazm -- shared test-support library for hand-written asm/test_*.mazm
+; programs (card maize-35).
+;
+; INCLUDE-only: no $0000`0000: entry point (precedent: asm/nested_mid/leaf.mazm,
+; middle.mazm). Nothing in CMakeLists.txt globs asm/*.mazm as a test manifest --
+; membership is the explicit table in scripts/run-tests.sh / run-tests.ps1 -- so
+; this file cannot be mistaken for a standalone runnable test.
+;
+; mazm has no macro facility (its keyword table, src/mazm.cpp:262-280, has no MACRO
+; entry; INCLUDE is literal token-stream splicing, not parameterized expansion), so
+; shared logic here is ordinary CALL/RET subroutines, register-args-only ABI, no BP
+; stack frame (frame-free, matching the sub_leaf: convention in
+; asm/test_rsinit.mazm:38-48; none of these routines need local stack scratch).
+;
+; sys_puts (SYS $F0, maize-34) no longer exists: maize-73 reverted it, restoring the
+; honest kernel/libc split (sys_write is the only write primitive; string-length
+; computation is caller-side). write_string below is exactly that caller-side
+; computation for the asm test suite: an inline strlen scan (mirroring the
+; toolchain/rt/puts.mazm idiom landed by maize-73) followed by ONE sys_write call.
+; No SYS $F0 / sys_puts reference appears anywhere in this file.
+;
+; NAMESPACE CONSTRAINT: mazm assembles one flat label space across INCLUDE
+; boundaries (no scoping). Consuming test files must not define labels colliding
+; with the five routine names below or their internal loop labels
+; (write_string_scan_loop, write_string_scan_done, test_assert_eq_pass,
+; test_assert_mem_eq_loop, test_assert_mem_eq_fail, test_assert_mem_eq_pass) -- a
+; collision produces a duplicate-label assembler diagnostic (cf.
+; asm/test_dup_label.mazm), not a silent miscompile, but avoid it by convention.
+;
+; RF.B0 bit layout referenced by callers isolating flag bits: C=$01 N=$02 V=$04
+; P=$08 Z=$10.
+; **********************************************************************************
+
+; ----------------------------------------------------------------------------------
+; write_string (R0 = ptr to a NUL-terminated string)
+;
+; Inline strlen scan that preserves the original pointer (R1) in a register
+; distinct from the scan cursor (R3): the pointer that becomes sys_write's buf arg
+; must not be the register doing the scan-and-increment (idiom mirrors the
+; just-landed toolchain/rt/puts.mazm from maize-73). Once the length is known,
+; issues exactly ONE sys_write(fd=1, ptr, len) via SYS $01 directly -- no CALL to a
+; toolchain/rt wrapper; asm/test_*.mazm files are freestanding raw asm with no link
+; to toolchain/rt, same as today's inline SYS $01 idiom. Does not append a newline
+; (the caller's message string already ends in \n).
+;
+; Clobbers: R0-R4, RF. RET.
+; ----------------------------------------------------------------------------------
+write_string:
+    CP R0 R1                 ; buf = s (preserve original pointer for sys_write)
+    CP R0 R3                 ; scan cursor, starts at s (distinct from R1)
+    CLR R2                   ; len = 0
+write_string_scan_loop:
+    LD @R3 R4.B0              ; R4.B0 = *cursor
+    CMP $00 R4.B0             ; data movement doesn't set flags; test explicitly
+    JZ write_string_scan_done
+    INC R3
+    INC R2
+    JMP write_string_scan_loop
+write_string_scan_done:
+    CP $01 R0                 ; fd = 1 (stdout); R1 already holds s, R2 already holds len
+    SYS $01
+    RET
+
+; ----------------------------------------------------------------------------------
+; test_report_pass (R0 = ptr to a NUL-terminated "<name>: PASS\n" string)
+;
+; CALLs write_string to emit the message, then sys_exit(0) (SYS $3C). Never
+; returns.
+; ----------------------------------------------------------------------------------
+test_report_pass:
+    CALL write_string
+    CLR R0
+    SYS $3C
+
+; ----------------------------------------------------------------------------------
+; test_report_fail (R0 = ptr to a NUL-terminated "<name>: FAIL\n" string)
+;
+; CALLs write_string to emit the message, then sys_exit(1) (SYS $3C). Never
+; returns.
+; ----------------------------------------------------------------------------------
+test_report_fail:
+    CALL write_string
+    CP $01 R0
+    SYS $3C
+
+; ----------------------------------------------------------------------------------
+; test_assert_eq (R0 = expected, R1 = actual, R2 = ptr to fail message)
+;
+; Full 64-bit CMP R0 R1. Equal: RET (clobbers RF only). Not equal: CALLs
+; test_report_fail with R2's message (never returns on mismatch).
+;
+; Calling-convention note: this compares the FULL 64-bit R0/R1. Callers isolating
+; a narrow field (the common AND $01 R8.B0 flag-bit-isolation pattern) must CLR the
+; holding register first so the untouched upper bytes are zero, then build a clean
+; full-width expected value the same way.
+; ----------------------------------------------------------------------------------
+test_assert_eq:
+    CMP R0 R1
+    JZ test_assert_eq_pass
+    CP R2 R0
+    CALL test_report_fail   ; never returns
+test_assert_eq_pass:
+    RET
+
+; ----------------------------------------------------------------------------------
+; test_assert_mem_eq (R0 = ptr A, R1 = ptr B, R2 = length, R3 = ptr to fail msg)
+;
+; Byte-by-byte compare over R2 bytes using LEA-indexed loads (LEA idx base dest ->
+; dest = base + idx), NOT pointer increment, since this ISA's only memory
+; addressing mode is register-indirect (@Rn) with no offset/index form.
+;
+; Equal: RET, clobbering R4-R8 and RF but NOT R0-R3 (args survive a successful
+; call). Not equal: CALLs test_report_fail with R3's message (never returns on
+; mismatch).
+; ----------------------------------------------------------------------------------
+test_assert_mem_eq:
+    CLR R4
+test_assert_mem_eq_loop:
+    CMP R4 R2
+    JZ test_assert_mem_eq_pass
+    LEA R4 R0 R5
+    LD @R5 R6.B0
+    LEA R4 R1 R7
+    LD @R7 R8.B0
+    CMP R6.B0 R8.B0
+    JNZ test_assert_mem_eq_fail
+    INC R4
+    JMP test_assert_mem_eq_loop
+test_assert_mem_eq_fail:
+    CP R3 R0
+    CALL test_report_fail    ; never returns
+test_assert_mem_eq_pass:
+    RET

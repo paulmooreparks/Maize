@@ -8,10 +8,21 @@
 ;   $00 - $01  sets C (unsigned borrow)
 ;
 ; The flags are read back from RF.B0 (C=bit0=$01, N=bit1=$02, V=bit2=$04, Z=bit4=$10)
-; and each required bit is isolated with AND before branching. Any mismatch jumps to
-; the single fail path; reaching the end prints PASS.
+; and each required bit is isolated with AND before comparing via test_assert_eq
+; (card maize-35). Any mismatch reports FAIL and exits 1 via test_assert_eq's own
+; CALL to test_report_fail; reaching the end reports PASS and exits 0.
 ;
 ; RF.B0 bit layout: C=$01  N=$02  V=$04  P=$08  Z=$10
+;
+; NOTE on INCLUDE placement: "$0000`0000:" is a numeric-address CODE-block header,
+; not a plain label -- mazm's code_compiler (src/mazm.cpp ~1780-1806) resets
+; current_address to the literal value whenever the header is a hex literal
+; instead of a name. lib/test.mazm's routines use plain-name labels, so if the
+; INCLUDE appears BEFORE this header, their bytes land at address 0 (nothing
+; precedes them) and are then silently overwritten when "$0000`0000:" resets the
+; cursor back to 0 for this file's own code, corrupting both. Placing INCLUDE
+; AFTER the runnable check code (below) keeps the check code at the low addresses
+; execution actually starts from, with the library appended monotonically after.
 ; **********************************************************************************
 
 $0000`0000:
@@ -20,59 +31,68 @@ $0000`0000:
     CP $01 R1.B0
     ADD R1.B0 R0.B0         ; R0.B0 = $FF + $01 = $00
     CP RF.B0 R9.B0          ; snapshot flags before any flag-touching instruction
+    CLR R8
     CP R9.B0 R8.B0
     AND $01 R8.B0           ; isolate C
-    JZ fail                 ; C must be set
+    CP $01 R0                ; expected: C set
+    CP R8 R1                 ; actual (clean full-width, upper bytes zeroed by CLR R8)
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; R9 still holds the flags snapshotted right after ADD above (a passing
+    ; test_assert_eq call clobbers only RF, not R9 -- re-reading RF.B0 here
+    ; instead would capture test_assert_eq's own internal CMP flags, not the
+    ; ADD's).
+    CLR R8
     CP R9.B0 R8.B0
     AND $04 R8.B0           ; isolate V
-    JNZ fail                ; V must be clear
+    CLR R0
+    CP R8 R1                 ; actual: V clear expected
+    CP fail_string R2
+    CALL test_assert_eq
 
     ; ---- $7F + $01 : V set ----
     CP $7F R0.B0
     CP $01 R1.B0
     ADD R1.B0 R0.B0         ; R0.B0 = $7F + $01 = $80
     CP RF.B0 R9.B0
+    CLR R8
     CP R9.B0 R8.B0
-    AND $04 R8.B0           ; isolate V
-    JZ fail                 ; V must be set
+    AND $04 R8.B0           ; isolate V (bit 2 stays at its own position: $04 when set)
+    CP $04 R0                ; expected: V set (AND leaves the isolated bit unshifted)
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
 
     ; ---- $80 - $01 : V set ----
     CP $80 R0.B0
     CP $01 R1.B0
     SUB R1.B0 R0.B0         ; R0.B0 = $80 - $01 = $7F
     CP RF.B0 R9.B0
+    CLR R8
     CP R9.B0 R8.B0
-    AND $04 R8.B0           ; isolate V
-    JZ fail                 ; V must be set
+    AND $04 R8.B0           ; isolate V (bit 2 stays at its own position: $04 when set)
+    CP $04 R0                ; expected: V set (AND leaves the isolated bit unshifted)
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
 
     ; ---- $00 - $01 : C set (borrow) ----
     CP $00 R0.B0
     CP $01 R1.B0
     SUB R1.B0 R0.B0         ; R0.B0 = $00 - $01 = $FF
     CP RF.B0 R9.B0
+    CLR R8
     CP R9.B0 R8.B0
     AND $01 R8.B0           ; isolate C
-    JZ fail                 ; C must be set
+    CP $01 R0                ; expected: C set
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
 
     ; ---- all checks passed ----
-    CLR R0
-    CLR R1
-    CLR R2
-    CP $01 R0
-    CP pass_string R1
-    CP $12 R2               ; 18 bytes
-    SYS $01
-    HALT
-
-fail:
-    CLR R0
-    CLR R1
-    CLR R2
-    CP $01 R0
-    CP fail_string R1
-    CP $12 R2               ; 18 bytes
-    SYS $01
-    HALT
+    CP pass_string R0
+    CALL test_report_pass     ; never returns
 
 ; **********************************************************************************
 pass_string:
@@ -80,3 +100,12 @@ pass_string:
 
 fail_string:
     STRING "flags arith: FAIL\n\0"
+
+; **********************************************************************************
+; Library INCLUDE appended here rather than at the top of the file (see the
+; INCLUDE-placement note above the "$0000`0000:" header): lib/test.mazm's routines
+; use plain-name labels, so splicing them in here places them at whatever address
+; current_address has reached after this file's own code and data, monotonically
+; after it, instead of colliding with the numeric-address reset that
+; "$0000`0000:" performs.
+INCLUDE "lib/test.mazm"

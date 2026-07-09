@@ -222,7 +222,7 @@ run_test() {
 run_test "hello"             "hello.mazm"             "Hello, world!"                 1
 run_test "test_mul"          "test_mul.mazm"          "MUL test: PASS (1/2/4/8-byte)" 0
 run_test "test_mulw"         "test_mulw.mazm"         "MULW test: PASS"               0
-run_test "test_flags_arith"  "test_flags_arith.mazm"  "flags arith: PASS"             0
+run_test "test_flags_arith"  "test_flags_arith.mazm"  "flags arith: PASS"             1
 run_test "test_flags_branch" "test_flags_branch.mazm" "flags branch: PASS"            0
 run_test "test_flags_shl"    "test_flags_shl.mazm"    "flags shl: PASS"               0
 run_test "test_flags_shr"    "test_flags_shr.mazm"    "flags shr: PASS"               0
