@@ -115,7 +115,7 @@ Uses the system Clang from the Xcode Command Line Tools (xcode-select --install)
 ### Smoke test
 
     mazm asm/hello.mazm
-    maize asm/hello.bin
+    maize asm/hello.mzb
 
 Should print "Hello, world!". Every preset's build directory lives under build/<preset-name>/.
 
@@ -1053,10 +1053,10 @@ be an explicit `$`/`#`/`%`-prefixed literal.)
 ## Object Files, Linking, and Executables
 
 By default `mazm` assembles a single `.mazm` source straight to a flat, header-less
-memory image (a `.bin`) that `maize` loads byte-for-byte at address 0. For programs
+memory image (a `.mzb`) that `maize` loads byte-for-byte at address 0. For programs
 built from more than one translation unit, Maize adds a relocatable **object format**
 (`.mzo`), a **linker** (`mzld`), and a linked **executable format** (`.mzx`). These are
-additive and opt-in: the flat `.bin` path is unchanged.
+additive and opt-in: the flat `.mzb` path is unchanged.
 
     mazm -c a.mazm            # assemble a.mazm -> a.mzo (relocatable object)
     mazm -c b.mazm            # assemble b.mazm -> b.mzo

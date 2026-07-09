@@ -32,6 +32,9 @@
 *.txt  text eol=lf
 *.json text eol=lf
 
-# Binary assets must never be line-ending-normalized (keeps asm/*.bin and any
-# other binaries byte-identical across checkouts).
-*.bin  binary
+# Binary assets must never be line-ending-normalized (keeps asm/hello.mzb and any
+# other binaries byte-identical across checkouts). The Maize file-format family:
+# .mzb flat images, .mzo relocatable objects, .mzx linked executables.
+*.mzb  binary
+*.mzo  binary
+*.mzx  binary

@@ -2,7 +2,7 @@
 ; Regression test for card maize-42: programs larger than one 256-byte block, and
 ; control flow that crosses a block boundary.
 ;
-; hello.bin is exactly 256 bytes (one block), the only reason the block-boundary bug
+; hello.mzb is exactly 256 bytes (one block), the only reason the block-boundary bug
 ; went unnoticed. Code is emitted contiguously from address 0, so the two NOP sleds
 ; below place real, executable instructions on both sides of the 0x100 and 0x200
 ; boundaries. NOP is a single-byte opcode (0xAA).

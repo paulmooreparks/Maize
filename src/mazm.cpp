@@ -94,7 +94,7 @@ namespace {
 
     /* --check mode (maize-46): run the full tokenize+compile pipeline with zero
        filesystem effects. Editors probe assembly validity on save; a probe must
-       neither write a .bin nor delete a previously-good one. */
+       neither write a .mzb nor delete a previously-good one. */
     bool check_only {false};
 
     /* --stdin mode (maize-49): check a buffer piped over standard input, so an
@@ -113,10 +113,10 @@ namespace {
     std::map<maize::u_word, std::vector<u_byte>> memory_map {};
 
     /* Object-emission mode (maize-12). When emit_object is set (mazm -c), the
-       assembler emits a relocatable .mzo instead of a resolved flat .bin: every
+       assembler emits a relocatable .mzo instead of a resolved flat .mzb: every
        symbolic operand becomes a relocation (never resolved inline), labels
        become symbols, and content is partitioned into CODE/RODATA/DATA/BSS
-       sections. The flat path is completely untouched, preserving hello.bin. */
+       sections. The flat path is completely untouched, preserving hello.mzb. */
     bool emit_object {false};
 
     /* A contiguous run of the flat assembly image that belongs to one section
@@ -475,9 +475,9 @@ namespace {
         std::filesystem::path asm_path {std::filesystem::canonical(file_path)};
 
         /* Object mode (maize-12) emits <file>.mzo; the default flat path emits
-           <file>.bin, byte for byte unchanged. */
+           <file>.mzb, byte for byte unchanged. */
         std::filesystem::path out_path {asm_path};
-        out_path.replace_extension(emit_object ? "mzo" : "bin");
+        out_path.replace_extension(emit_object ? "mzo" : "mzb");
         std::filesystem::path bin_path {out_path};
 
         /* Stale-binary rule (maize-13, AC9): remove any pre-existing output up
@@ -514,8 +514,9 @@ namespace {
 
         if (!diags.empty()) {
             /* Recovered errors were recorded (maize-50): success is the only
-               state that produces a binary. The up-front stale-.bin removal
-               already ran, per the maize-13 rule. */
+               state that produces a binary. The up-front stale-.mzb removal
+               already ran, per the maize-13 rule.
+           (The flat image is now <input>.mzb.) */
             return;
         }
 
@@ -2858,12 +2859,12 @@ namespace {
             "usage: mazm [options] <input.mazm>\n"
             "\n"
             "Maize assembler. Assembles <input.mazm> into a flat memory image written\n"
-            "next to the input file as <input>.bin, or into a relocatable object\n"
+            "next to the input file as <input>.mzb, or into a relocatable object\n"
             "<input>.mzo with -c. On assembly errors no output is produced and any\n"
             "stale output at the target path is removed.\n"
             "\n"
             "options:\n"
-            "  -c, --emit-object     emit a relocatable .mzo object instead of a flat .bin\n"
+            "  -c, --emit-object     emit a relocatable .mzo object instead of a flat .mzb\n"
             "  --check               validate only: run the full assembly pipeline with\n"
             "                        no filesystem effects (nothing written or removed)\n"
             "  --stdin               read source from standard input instead of a file;\n"
@@ -2920,7 +2921,7 @@ int main(int argc, char* argv[]) {
 
     if (stdin_mode) {
         /* Stdin is a check-only surface: there is no input path to derive a
-           .bin target from, and no file directory to resolve INCLUDEs
+           .mzb target from, and no file directory to resolve INCLUDEs
            against, so both must be explicit. */
         if (!check_only) {
             std::cerr << "mazm: error: --stdin requires --check" << std::endl;

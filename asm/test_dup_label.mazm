@@ -11,10 +11,10 @@
 ; Expected behavior after maize-13: mazm rejects this file with a nonzero exit and
 ; a diagnostic of the form
 ;     mazm: <file>:<line>: error: label 'done' redeclared (first declared at <file>:<line>)
-; citing both declaration sites, and writes no .bin.
+; citing both declaration sites, and writes no .mzb.
 ;
 ; This file is intentionally NOT a passing program; it exists to assert the
-; assembler diagnostic. There is no accompanying committed .bin.
+; assembler diagnostic. There is no accompanying committed .mzb.
 ; **********************************************************************************
 
 $0000`0000:

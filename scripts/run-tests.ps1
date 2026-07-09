@@ -198,7 +198,7 @@ function Invoke-Test($test) {
         $asmPath = Join-Path $TestRunDir $test.File
         Copy-Item -Path $srcPath -Destination $asmPath -Force
     }
-    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'bin')
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
 
     $mazmLog = [System.IO.Path]::GetTempFileName()
     # mazm.exe writes its rejection diagnostic to stderr on purpose for the
@@ -343,18 +343,18 @@ $results += Invoke-LinkRejectTest 'link_range_overflow' 'does not fit in 8-bit' 
 # --- maize-14: mzdis disassembler ---------------------------------------------------
 # Round trip (AC6477/AC6478/AC6483): assemble a code-only, SECTION-clean fixture that
 # hits every addressing-mode family and operand-count shape, disassemble it, reassemble
-# mzdis's own output text, and diff the resulting .bin against the original byte-for-
+# mzdis's own output text, and diff the resulting .mzb against the original byte-for-
 # byte -- the strongest test the spec names.
 function Invoke-MzdisRoundtripTest {
     $name = 'mzdis_roundtrip'
     $srcPath = Join-Path $AsmDir 'test_mzdis_roundtrip.mazm'
     $asmPath = Join-Path $TestRunDir 'test_mzdis_roundtrip.mazm'
     Copy-Item -Path $srcPath -Destination $asmPath -Force
-    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'bin')
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
 
     & $MazmExe $asmPath *> $null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
-        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to produce a .bin' }
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to produce a .mzb' }
     }
 
     $disPath = Join-Path $TestRunDir 'test_mzdis_roundtrip.dis.mazm'
@@ -368,7 +368,7 @@ function Invoke-MzdisRoundtripTest {
         return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'no unknown/malformed/truncated lines'; Actual = 'decode diagnostic found in a code-only fixture' }
     }
 
-    $reasmBin = [System.IO.Path]::ChangeExtension($disPath, 'bin')
+    $reasmBin = [System.IO.Path]::ChangeExtension($disPath, 'mzb')
     & $MazmExe $disPath *> $null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $reasmBin)) {
         return [pscustomobject]@{ Name = $name; Pass = $false; Expected = "mzdis's own output reassembles cleanly"; Actual = 'mazm failed to reassemble mzdis output' }
@@ -377,7 +377,7 @@ function Invoke-MzdisRoundtripTest {
     $origBytes = [System.IO.File]::ReadAllBytes($binPath)
     $reasmBytes = [System.IO.File]::ReadAllBytes($reasmBin)
     $identical = ($origBytes.Length -eq $reasmBytes.Length) -and (-not (Compare-Object $origBytes $reasmBytes))
-    return [pscustomobject]@{ Name = $name; Pass = $identical; Expected = 'reassembled .bin byte-identical to original'; Actual = if ($identical) { 'byte-identical' } else { "length $($origBytes.Length) vs $($reasmBytes.Length), or content differs" } }
+    return [pscustomobject]@{ Name = $name; Pass = $identical; Expected = 'reassembled .mzb byte-identical to original'; Actual = if ($identical) { 'byte-identical' } else { "length $($origBytes.Length) vs $($reasmBytes.Length), or content differs" } }
 }
 
 # Reserved-opcode resync (AC6481): two reserved bytes decode as DB $XX / unknown
@@ -387,11 +387,11 @@ function Invoke-MzdisReservedTest {
     $srcPath = Join-Path $AsmDir 'test_mzdis_reserved.mazm'
     $asmPath = Join-Path $TestRunDir 'test_mzdis_reserved.mazm'
     Copy-Item -Path $srcPath -Destination $asmPath -Force
-    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'bin')
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
 
     & $MazmExe $asmPath *> $null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
-        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to produce a .bin' }
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to produce a .mzb' }
     }
 
     $stdoutFile = Join-Path $TestRunDir 'test_mzdis_reserved.out'
@@ -416,17 +416,17 @@ function Invoke-MzdisTruncatedTest {
     $srcPath = Join-Path $AsmDir 'test_mzdis_truncate_src.mazm'
     $asmPath = Join-Path $TestRunDir 'test_mzdis_truncate_src.mazm'
     Copy-Item -Path $srcPath -Destination $asmPath -Force
-    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'bin')
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
 
     & $MazmExe $asmPath *> $null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
-        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to produce a .bin' }
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to produce a .mzb' }
     }
 
     # HALT(1) + CLR R0(2) + CP $12345678 R0 (opcode+param+4-byte imm = 6) = 9 real
     # bytes; keep only the first 8, cutting the immediate 2 bytes short.
     $allBytes = [System.IO.File]::ReadAllBytes($binPath)
-    $truncPath = Join-Path $TestRunDir 'test_mzdis_truncate.bin'
+    $truncPath = Join-Path $TestRunDir 'test_mzdis_truncate.mzb'
     [System.IO.File]::WriteAllBytes($truncPath, $allBytes[0..7])
 
     $stdoutFile = Join-Path $TestRunDir 'test_mzdis_truncate.out'

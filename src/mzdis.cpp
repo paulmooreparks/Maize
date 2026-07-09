@@ -1,6 +1,6 @@
 /* maize-14: mzdis, the Maize disassembler.
 
-   Turns a flat .bin or a linked .mzx back into readable Maize assembly text.
+   Turns a flat .mzb or a linked .mzx back into readable Maize assembly text.
    .mzo (relocatable object) input is explicitly rejected -- see the OQ3 note on
    card maize-14; object disassembly (unresolved symbols, relocations) is a
    separate, harder problem.

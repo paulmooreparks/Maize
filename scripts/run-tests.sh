@@ -164,7 +164,7 @@ run_test() {
         cp "$src_path" "${TEST_RUN_DIR}/${file}"
         asm_path="${TEST_RUN_DIR}/${file}"
     fi
-    bin_path="${asm_path%.mazm}.bin"
+    bin_path="${asm_path%.mazm}.mzb"
 
     mazm_log=$(mktemp)
     if "$MAZM_EXE" "$asm_path" >"$mazm_log" 2>&1; then
@@ -336,20 +336,20 @@ run_link_reject_test "link_range_overflow" "does not fit in 8-bit" "${TEST_RUN_D
 # --- maize-14: mzdis disassembler ---------------------------------------------------
 # Round trip (AC6477/AC6478/AC6483): assemble a code-only, SECTION-clean fixture that
 # hits every addressing-mode family and operand-count shape, disassemble it, reassemble
-# mzdis's own output text, and diff the resulting .bin against the original byte-for-
+# mzdis's own output text, and diff the resulting .mzb against the original byte-for-
 # byte -- the strongest test the spec names.
 run_mzdis_roundtrip_test() {
     name="mzdis_roundtrip"
     TOTAL=$((TOTAL + 1))
     asm_path="${TEST_RUN_DIR}/test_mzdis_roundtrip.mazm"
     cp "${ASM_DIR}/test_mzdis_roundtrip.mazm" "$asm_path"
-    bin_path="${asm_path%.mazm}.bin"
+    bin_path="${asm_path%.mazm}.mzb"
 
     if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
         echo "        expected: fixture assembles cleanly"
-        echo "        actual:   mazm failed to produce a .bin"
+        echo "        actual:   mazm failed to produce a .mzb"
         return
     fi
 
@@ -369,7 +369,7 @@ run_mzdis_roundtrip_test() {
         return
     fi
 
-    reasm_bin="${dis_path%.mazm}.bin"
+    reasm_bin="${dis_path%.mazm}.mzb"
     if ! "$MAZM_EXE" "$dis_path" >/dev/null 2>&1 || [ ! -f "$reasm_bin" ]; then
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
@@ -383,7 +383,7 @@ run_mzdis_roundtrip_test() {
     else
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
-        echo "        expected: reassembled .bin byte-identical to original"
+        echo "        expected: reassembled .mzb byte-identical to original"
         echo "        actual:   content differs"
     fi
 }
@@ -395,13 +395,13 @@ run_mzdis_reserved_test() {
     TOTAL=$((TOTAL + 1))
     asm_path="${TEST_RUN_DIR}/test_mzdis_reserved.mazm"
     cp "${ASM_DIR}/test_mzdis_reserved.mazm" "$asm_path"
-    bin_path="${asm_path%.mazm}.bin"
+    bin_path="${asm_path%.mazm}.mzb"
 
     if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
         echo "        expected: fixture assembles cleanly"
-        echo "        actual:   mazm failed to produce a .bin"
+        echo "        actual:   mazm failed to produce a .mzb"
         return
     fi
 
@@ -433,19 +433,19 @@ run_mzdis_truncated_test() {
     TOTAL=$((TOTAL + 1))
     asm_path="${TEST_RUN_DIR}/test_mzdis_truncate_src.mazm"
     cp "${ASM_DIR}/test_mzdis_truncate_src.mazm" "$asm_path"
-    bin_path="${asm_path%.mazm}.bin"
+    bin_path="${asm_path%.mazm}.mzb"
 
     if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
         echo "        expected: fixture assembles cleanly"
-        echo "        actual:   mazm failed to produce a .bin"
+        echo "        actual:   mazm failed to produce a .mzb"
         return
     fi
 
     # HALT(1) + CLR R0(2) + CP \$12345678 R0 (opcode+param+4-byte imm = 6) = 9 real
     # bytes; keep only the first 8, cutting the immediate 2 bytes short.
-    trunc_path="${TEST_RUN_DIR}/test_mzdis_truncate.bin"
+    trunc_path="${TEST_RUN_DIR}/test_mzdis_truncate.mzb"
     dd if="$bin_path" of="$trunc_path" bs=1 count=8 >/dev/null 2>&1
 
     out_file="${TEST_RUN_DIR}/test_mzdis_truncate.out"

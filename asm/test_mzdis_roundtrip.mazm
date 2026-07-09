@@ -12,7 +12,7 @@
 ; OUTR/IN's fixed-register-port shape, XCHG's fixed-two-register shape) named
 ; in AC6483. scripts/run-tests.ps1's mzdis_roundtrip test assembles this,
 ; disassembles the result with mzdis, reassembles mzdis's own output text, and
-; diffs the two .bin files byte-for-byte.
+; diffs the two .mzb files byte-for-byte.
 
 ; ---- 0-operand ----
 HALT

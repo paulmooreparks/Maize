@@ -28,7 +28,7 @@
         },
         {
             "label": "Check current .mazm (no output file)",
-            "detail": "mazm --check on the active file: same clickable errors, zero filesystem effects (no .bin written, stale .bin kept).",
+            "detail": "mazm --check on the active file: same clickable errors, zero filesystem effects (no .mzb written, stale .mzb kept).",
             "type": "shell",
             "command": "mazm",
             "args": [

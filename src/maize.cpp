@@ -75,7 +75,7 @@ int main(int argc, char *argv[]) {
 	fin.close();
 
 	/* Additive .mzx branch (maize-12). Any non-.mzx image falls through to the
-	   legacy flat load-at-0 path, byte for byte, preserving flat .bin support. */
+	   legacy flat load-at-0 path, byte for byte, preserving flat .mzb support. */
 	if (!load_mzx(buf)) {
 		maize::u_word address {0x0000000000000000};
 		for (char c : buf) {
@@ -86,7 +86,7 @@ int main(int argc, char *argv[]) {
 
 	/* card maize-57: process-start stack-pointer contract. Set RS explicitly to
 	   the highest 8-byte-aligned address in the flat 64-bit space, for both the
-	   .mzx and flat-.bin load paths, so the initial SP is an intentional line
+	   .mzx and flat-.mzb load paths, so the initial SP is an intentional line
 	   rather than the implicit zero-init of a process-global register. The stack
 	   is full-descending: the first push pre-decrements RS and lands at
 	   0xFFFFFFFFFFFFFFF0. No wraparound is relied upon. RP is already set per

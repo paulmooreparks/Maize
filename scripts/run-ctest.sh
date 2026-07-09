@@ -9,7 +9,7 @@
 #     -> normalize            (drop the `extern` call-linkage annotation; see below)
 #     -> qbe -t maize         (QBE IL -> mazm)
 #     -> prepend runtime      (crt0 + syscall + puts, decision 6636 order)
-#     -> mazm                 (mazm -> flat .bin)
+#     -> mazm                 (mazm -> flat .mzb)
 #     -> maize                (execute; capture stdout)
 #     -> diff vs ctest/hello.expected
 #
@@ -96,7 +96,7 @@ FAIL_COUNT=0
 TOTAL=0
 
 # Compile a C fixture through the full pipeline (cproc -> normalize -> qbe -t maize
-# -> prepend runtime -> mazm) to a flat maize .bin. On success sets BIN to the
+# -> prepend runtime -> mazm) to a flat maize .mzb. On success sets BIN to the
 # output path and returns 0; on failure prints a [FAIL] line, bumps FAIL_COUNT, and
 # returns 1. Shared by the stdout runner (run_ctest) and the exit-status runner
 # (run_exit_status_test) so both exercise the identical toolchain path.
@@ -115,7 +115,7 @@ compile_c() {
     norm="${WORK_DIR}/${name}.norm.ssa"
     body="${WORK_DIR}/${name}.body.mazm"
     full="${WORK_DIR}/${name}.mazm"
-    bin="${WORK_DIR}/${name}.bin"
+    bin="${WORK_DIR}/${name}.mzb"
 
     # Defense in depth for CRLF checkouts (belt-and-suspenders with .gitattributes
     # eol=lf): cproc is strict C11 and treats a bare CR as a stray token, so strip

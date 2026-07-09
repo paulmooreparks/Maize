@@ -61,7 +61,7 @@ CMakeUserPresets.json
 # maize-63: C-toolchain (ctest) pipeline build outputs. The fixtures ctest/*.c
 # and ctest/*.expected stay tracked; every intermediate the run-ctest.sh pipeline
 # drops next to them is a build product.
-ctest/*.bin
+ctest/*.mzb
 ctest/*.mazm
 ctest/*.body.mazm
 ctest/*.lf.c
