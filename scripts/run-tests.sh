@@ -228,6 +228,7 @@ run_test "test_flags_shl"    "test_flags_shl.mazm"    "flags shl: PASS"         
 run_test "test_flags_shr"    "test_flags_shr.mazm"    "flags shr: PASS"               0
 run_test "test_flags_sar"    "test_flags_sar.mazm"    "flags sar: PASS"               0
 run_test "test_flags_mul8"   "test_flags_mul8.mazm"   "flags mul8: PASS"              0
+run_test "test_mul_zero"     "test_mul_zero.mazm"     "mul zero: PASS"                1
 run_test "test_flags_move"   "test_flags_move.mazm"   "flags move: PASS"              0
 run_test "test_addr64"       "test_addr64.mazm"       "addr64: PASS"                  0
 run_test "test_cmptest"      "test_cmptest.mazm"      "cmptest: PASS"                 0

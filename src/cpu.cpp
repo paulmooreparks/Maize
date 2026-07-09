@@ -184,14 +184,25 @@ namespace maize {
             std::vector<std::pair<std::pair<reg*, subreg_enum>, int8_t>> increment_array;
             std::map<u_qword, device*> devices;
         
+            // (maize-86) T is one of the unsigned width types (u_byte/u_qword/u_hword/u_word); note
+            // that testing a < 0 / b < 0 against an unsigned type makes the "negative" branches below
+            // dead and leaves the V/C meaning for unsigned MUL debatable. That is a separate M2
+            // flag-semantics question, deliberately out of scope here; this card only removes the
+            // b == 0 divide-by-zero crash.
             template <typename T>
             static constexpr bool is_mul_overflow(const T &a, const T &b) {
+                if (b == 0) {
+                    return false;
+                }
                 return ((b >= 0) && (a >= 0) && (a > std::numeric_limits<T>::max() / b))
                     || ((b < 0) && (a < 0) && (a < std::numeric_limits<T>::max() / b));
             }
 
             template <typename T>
             static constexpr bool is_mul_underflow(const T &a, const T &b) {
+                if (b == 0) {
+                    return false;
+                }
                 return ((b >= 0) && (a < 0) && (a < std::numeric_limits<T>::min() / b))
                     || ((b < 0) && (a >= 0) && (a > std::numeric_limits<T>::min() / b));
             }
