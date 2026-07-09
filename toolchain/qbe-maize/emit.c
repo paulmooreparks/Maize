@@ -111,26 +111,35 @@ regw(Ref r, int sz, E *e)
 	fprintf(e->f, "%s%s", rname(r.val), subsuf[sz]);
 }
 
-/* Print a memory address operand (`@Rn` or `@label`). */
-static void
-emitaddr(Ref r, E *e)
+/* Resolve a memory-address operand to a register for `@reg` addressing, and
+ * return that register's name. A register address is used directly. A label
+ * (or other constant) address is first materialized into the RT scratch with a
+ * preceding `CP <label> RT`; the caller relies on this being emitted BEFORE the
+ * LD/ST line it is building. Maize keeps memory addresses in registers on both
+ * sides of a memory op (maize-43): mazm rejects `ST src @label` outright, and
+ * its `LD @label` ties the address-immediate width to the loaded sub-register
+ * (so a `char` global's address would truncate to ABS8). Routing every label
+ * address through RT sidesteps both and matches the register-address idiom the
+ * frame-slot loads/stores already use. */
+static const char *
+memaddrreg(Ref r, E *e)
 {
 	Con *c;
 
 	switch (rtype(r)) {
 	case RTmp:
 		assert(isreg(r));
-		fprintf(e->f, "@%s", rname(r.val));
-		break;
+		return rname(r.val);
 	case RCon:
 		c = &e->fn->con[r.val];
 		if (c->type != CAddr || c->bits.i != 0)
 			die("maize emit: unsupported memory address");
-		fprintf(e->f, "@%s", maize_sym(str(c->label)));
-		break;
+		fprintf(e->f, "\tCP\t%s RT\n", maize_sym(str(c->label)));
+		return "RT";
 	default:
 		die("maize emit: unsupported memory address");
 	}
+	return 0;
 }
 
 /* CP <src> <dst> at size sz. */
@@ -271,9 +280,7 @@ emitload(Ins *i, E *e)
 	case Oload:   rsz = clssz(i->cls); signext = -1; break;
 	default: die("maize emit: unsupported load");
 	}
-	fputs("\tLD\t", e->f);
-	emitaddr(i->arg[0], e);
-	fputc(' ', e->f);
+	fprintf(e->f, "\tLD\t@%s ", memaddrreg(i->arg[0], e));
 	regw(i->to, rsz, e);
 	fputc('\n', e->f);
 	if (signext >= 0) {
@@ -291,6 +298,7 @@ static void
 emitstore(Ins *i, E *e)
 {
 	int ssz;
+	const char *areg;
 
 	switch (i->op) {
 	case Ostoreb: ssz = SzB; break;
@@ -299,11 +307,10 @@ emitstore(Ins *i, E *e)
 	case Ostorel: ssz = SzW; break;
 	default: die("maize emit: unsupported store");
 	}
+	areg = memaddrreg(i->arg[1], e);   /* may emit `CP <label> RT` first */
 	fputs("\tST\t", e->f);
 	opnd(i->arg[0], ssz, e);
-	fputc(' ', e->f);
-	emitaddr(i->arg[1], e);
-	fputc('\n', e->f);
+	fprintf(e->f, " @%s\n", areg);
 }
 
 /* Explicit width cast: CP (sign) / CPZ (zero) from the sub-word source. */
