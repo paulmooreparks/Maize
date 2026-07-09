@@ -106,4 +106,10 @@ int main(int argc, char *argv[]) {
 	std::cout << std::endl;
 #endif
 	sys::exit();
+
+	/* card maize-58: surface main's return value as the host process's own exit
+	   status. SYS $3C (sys_exit) recorded the low 8 bits of R0 here; a program
+	   that ended via HALT recorded nothing, so this defaults to 0. The host's
+	   normal 8-bit process-status truncation applies on top. */
+	return sys::exit_code();
 }

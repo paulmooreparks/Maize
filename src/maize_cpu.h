@@ -753,6 +753,7 @@ namespace maize {
 
 		void add_device(u_qword id, device& new_device);
 		void run();
+		void power_off();
 
 
 	} // namespace cpu; 

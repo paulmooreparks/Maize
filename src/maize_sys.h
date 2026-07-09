@@ -20,6 +20,10 @@ namespace maize {
 		void init();
 		u_word call(u_qword syscall_id);
 		void exit();
+		/* Process exit status recorded by SYS $3C (sys_exit); default 0 when no
+		   sys_exit ran (e.g. a program that ended via HALT). Read by maize.cpp's
+		   main after cpu::run() returns. */
+		int exit_code();
 	} // namespace sys
 
 	namespace syscall {

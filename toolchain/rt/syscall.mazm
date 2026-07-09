@@ -9,7 +9,7 @@
 ;
 ;   sys_write(R0=fd, R1=buf, R2=count) -> RV   SYS $01  (bytes written)
 ;   sys_read (R0=fd, R1=buf, R2=count) -> RV   SYS $00  (bytes read)
-;   exit(R0=code)                              maps to HALT (sys_exit is a stub)
+;   exit(R0=code)                              SYS $3C  (sys_exit: terminate w/ status)
 ; ==================================================================================
 
 sys_write:
@@ -21,4 +21,5 @@ sys_read:
     RET
 
 exit:
-    HALT                    ; sys_exit ($3C) is a stub; end the run directly
+    SYS $3C                 ; sys_exit(R0=code); does not return
+    RET                     ; unreachable (VM stops in $3C); kept for wrapper symmetry

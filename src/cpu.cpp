@@ -2286,8 +2286,15 @@ namespace maize {
                 /* Execute instruction */
                 switch (regs::ri.b0) {
                     case instr::halt_opcode: {
-                        running_flag = false;
-                        is_power_on = false; // just temporary until I get "device" interaction working
+                        /* HALT halts the core pending an interrupt; it does NOT
+                           carry an exit status. The VM has no interrupt source,
+                           so a halted core has nothing to wake it: clearing
+                           running_flag stops tick() and clearing is_power_on
+                           makes run() return instead of blocking on
+                           int_event.wait(). With no recorded exit code, maize
+                           exits 0. The status-carrying termination path is
+                           SYS $3C (sys_exit), see src/sys.cpp. */
+                        power_off();
                         break;
                     }
 
@@ -3119,6 +3126,16 @@ namespace maize {
                     }
                 }
             }
+        }
+
+        /* Stop the VM: drop out of tick()'s instruction loop (running_flag) and
+           out of run()'s power loop (is_power_on) so run() returns rather than
+           blocking on int_event.wait(). Shared by the HALT handler and by
+           SYS $3C (sys_exit); both file-local flags live in cpu-internal
+           anonymous namespaces, so this is the single exported stop primitive. */
+        void power_off() {
+            running_flag = false;
+            is_power_on = false;
         }
 
         void run() {

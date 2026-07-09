@@ -294,6 +294,19 @@ namespace maize {
 
     namespace sys {
 
+        namespace {
+            /* Single source of truth for the process exit status. Default 0
+               (a program that ends via HALT records no code); written only by
+               SYS $3C (sys_exit). maize.cpp's main reads it via exit_code()
+               after cpu::run() returns and returns it as the host process's
+               own exit status. */
+            int exit_status = 0;
+        }
+
+        int exit_code() {
+            return exit_status;
+        }
+
         void init() {
             syscall::_init();
         }
@@ -331,8 +344,17 @@ namespace maize {
                     return syscall::write(fd, buf, count);
                 }
 
-                /* sys_exit */
+                /* sys_exit: record main's status and terminate the VM. The exit
+                   code is the first integer argument in R0 (same ABI slot fd
+                   uses for sys_read/sys_write). We record the low 8 bits only;
+                   Maize does not clamp or error on larger values (return 256 is
+                   observed as 0), matching the host's 8-bit process-status
+                   truncation. power_off() stops the VM so cpu::run() returns
+                   rather than blocking on int_event.wait(); this syscall never
+                   returns to the program, so its return value is immaterial. */
                 case 0x003CU: {
+                    exit_status = static_cast<int>(regs::r0.w0 & 0xFFU);
+                    cpu::power_off();
                     break;
                 }
 

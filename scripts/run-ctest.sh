@@ -17,6 +17,11 @@
 # codegen regression reports separately from an asm-suite regression (maize-61
 # decision 6611 precedent). maize-63 adds its nontrivial program to this runner.
 #
+# maize-58 adds an exit-status check (run_exit_status_test): a fixture whose main
+# returns a fixed nonzero constant is run and its process exit status ($?) is
+# captured and asserted, a code path separate from the stdout compare so an
+# exit-status regression (sys_exit / crt0 / maize.cpp) surfaces on its own.
+#
 # `extern` normalization: the pinned cproc (d1c53dd) emits `call extern $sym`, a
 # call-linkage annotation the pinned qbe (4420727) predates and rejects. In the
 # Maize single-TU whole-program model (decision 6411/6636) all symbols resolve in
@@ -90,16 +95,19 @@ mkdir -p "${WORK_DIR}"
 FAIL_COUNT=0
 TOTAL=0
 
-run_ctest() {
+# Compile a C fixture through the full pipeline (cproc -> normalize -> qbe -t maize
+# -> prepend runtime -> mazm) to a flat maize .bin. On success sets BIN to the
+# output path and returns 0; on failure prints a [FAIL] line, bumps FAIL_COUNT, and
+# returns 1. Shared by the stdout runner (run_ctest) and the exit-status runner
+# (run_exit_status_test) so both exercise the identical toolchain path.
+compile_c() {
     name="$1"
     src="${CTEST_DIR}/${name}.c"
-    expfile="${CTEST_DIR}/${name}.expected"
-    TOTAL=$((TOTAL + 1))
 
-    if [ ! -f "$src" ] || [ ! -f "$expfile" ]; then
-        echo "[FAIL] ${name}: missing source or expected fixture" >&2
+    if [ ! -f "$src" ]; then
+        echo "[FAIL] ${name}: missing source fixture" >&2
         FAIL_COUNT=$((FAIL_COUNT + 1))
-        return
+        return 1
     fi
 
     lfsrc="${WORK_DIR}/${name}.lf.c"
@@ -117,7 +125,7 @@ run_ctest() {
 
     if ! "$CPROC_QBE" < "$lfsrc" > "$ssa" 2>"${WORK_DIR}/${name}.cproc.log"; then
         echo "[FAIL] ${name}: cproc-qbe failed"; cat "${WORK_DIR}/${name}.cproc.log" >&2
-        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return 1
     fi
     # Normalize two IL-version-skew points between the pinned cproc and the
     # pinned qbe (same class of fix as `call extern`, above):
@@ -129,13 +137,30 @@ run_ctest() {
         -e 's/\(=[wl]\) neg /\1 sub 0, /' "$ssa" > "$norm"
     if ! "$QBE" -t maize "$norm" > "$body" 2>"${WORK_DIR}/${name}.qbe.log"; then
         echo "[FAIL] ${name}: qbe -t maize failed"; cat "${WORK_DIR}/${name}.qbe.log" >&2
-        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return 1
     fi
     cat "${RT_DIR}/crt0.mazm" "${RT_DIR}/syscall.mazm" "${RT_DIR}/puts.mazm" "$body" > "$full"
     if ! "$MAZM" "$full" >"${WORK_DIR}/${name}.mazm.log" 2>&1 || [ ! -f "$bin" ]; then
         echo "[FAIL] ${name}: mazm failed"; cat "${WORK_DIR}/${name}.mazm.log" >&2
-        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return 1
     fi
+    BIN="$bin"
+    return 0
+}
+
+run_ctest() {
+    name="$1"
+    expfile="${CTEST_DIR}/${name}.expected"
+    TOTAL=$((TOTAL + 1))
+
+    if [ ! -f "$expfile" ]; then
+        echo "[FAIL] ${name}: missing expected fixture" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+
+    compile_c "$name" || return
+    bin="$BIN"
 
     # Compare stdout against the committed fixture. Exact byte match is required
     # (this verifies the greeting AND the trailing newline puts appends); the only
@@ -159,9 +184,39 @@ run_ctest() {
     fi
 }
 
+# maize-58 exit-status observability. A code path DISTINCT from the stdout compare
+# above: compile a C fixture whose main returns a fixed nonzero constant, run maize
+# on it, and capture $? IMMEDIATELY on the very next line -- before any tr/cmp/cat
+# can clobber it -- then assert it equals the expected status. set -eu is active and
+# maize now exits nonzero ON PURPOSE, so the invocation is guarded with set +e / set
+# -e (NOT `|| true`, which would erase the very status under test).
+run_exit_status_test() {
+    name="$1"
+    expected_status="$2"
+    TOTAL=$((TOTAL + 1))
+
+    compile_c "$name" || return
+    bin="$BIN"
+
+    set +e
+    "$MAIZE" "$bin" >/dev/null 2>&1
+    status=$?
+    set -e
+
+    if [ "$status" -eq "$expected_status" ]; then
+        echo "[PASS] ${name} (exit status ${status})"
+    else
+        echo "[FAIL] ${name} (exit status)"
+        echo "        expected: ${expected_status}"
+        echo "        actual:   ${status}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
 echo "=== C toolchain end-to-end (cproc -> qbe -t maize -> mazm -> maize) ==="
 run_ctest "hello"
 run_ctest "capstone"
+run_exit_status_test "exitcode" 42
 
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then

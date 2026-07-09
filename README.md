@@ -189,8 +189,12 @@ written in Maize assembly.
     $0000`0000:             ; The back-tick (`)  is used as a number separator.
                             ; Underscore (_) and comma (,) may also be used as separators.
         CALL main
-        HALT                ; For now, HALT exits the Maize interpreter, but in the
-                            ; future it will pause the CPU and wait for an interrupt.
+        HALT                ; HALT halts the core pending an interrupt. With no interrupt
+                            ; source in the VM, a halted core has nothing to wake it, so the
+                            ; run loop returns and the Maize host process exits 0 with no
+                            ; status. The status-carrying termination path is sys_exit
+                            ; (SYS $3C): it records the low 8 bits of R0 as the process exit
+                            ; status. A C program's crt0 routes main's return value there.
 
     ; **********************************************************************************
     ; The output message
@@ -1009,6 +1013,16 @@ conforming programs compute the length into R2 with full-register operations (th
 `SUB` above target the whole register, leaving the upper bits zero), this is transparent to
 existing code. The SYS / INT encoding, the syscall-number-in-R9 convention, and the address
 arguments (fd in R0, buffer address in R1) are unchanged.
+
+`sys_exit` (`SYS $3C`) is the status-carrying termination path. It reads the exit code from
+R0 (the same first-argument slot `fd` uses), records the low 8 bits as the process exit
+status, and stops the VM so the `maize` host process returns that value as its own exit
+code. Maize does not clamp or error on out-of-range values: `return 256` is observed as `0`,
+`return 257` as `1`, because the host's process-status truncation is 8-bit (POSIX
+`WEXITSTATUS` masks `& 0xFF`). This is distinct from HALT: HALT halts the core pending an
+interrupt and records no status, so a program that ends via HALT exits `0`. The hand-written
+`asm/` corpus ends in HALT and is verified by stdout, not exit status, so its observable
+behavior (stdout plus a clean stop) is unchanged by the sys_exit path.
 
 
 ## Assembler Syntax

@@ -6,11 +6,14 @@
 ; stack pointer -- it relies on the VM initializing RS (and a defined top-of-RAM) at
 ; reset, the process-start contract confirmed and documented by maize-57.
 ;
-; main's return value has nowhere observable to go yet: sys_exit is a stub and HALT
-; ends the run, so stdout is the sole verification contract (maize-11 decision 6408,
-; maize-62 decision 6638). Real exit-status plumbing is deferred to maize-58.
+; main's return value becomes the observable process exit status (maize-58): after
+; main returns, its value lands in RV (the C ABI return register); we copy it into R0
+; (sys_exit's first-argument register) and invoke SYS $3C (sys_exit), which records
+; the low 8 bits as the exit status and terminates the VM. maize then returns that
+; status as its own host-process exit code.
 ; ==================================================================================
 
 $0000`0000:
     CALL main               ; enter the compiled C program
-    HALT                    ; end the run (exit status is unobserved for now)
+    CP RV R0                ; main's return value (RV, C ABI) -> R0 (exit-code arg)
+    SYS $3C                 ; sys_exit(R0): terminate, carrying main's status
