@@ -1,8 +1,12 @@
 ; ==================================================================================
-; crt0.mazm -- freestanding C runtime entry stub (maize-62, maize-11 decision 6412)
+; crt0.mazm -- freestanding C runtime entry stub (maize-62; maize-77 object model)
 ;
-; This fragment is concatenated FIRST, so the entry sits at origin $0000`0000. At
-; process entry the VM has already built a System V-style process-start block at the
+; Assembled to a relocatable object (mazm -c crt0.mazm -> crt0.mzo) and linked by
+; mzld with the syscall/puts/body objects. The entry is the GLOBAL symbol `_start`
+; (mzld's default entry); the linker records its linked address in the .mzx header
+; and load_mzx sets RP=_start, so crt0 need not be physically first and carries no
+; numeric origin. At process entry the VM has already built a System V-style
+; process-start block at the
 ; top of RAM and set RS to point at its base (maize-60, amending maize-57). The block
 ; is, from RS upward:
 ;
@@ -26,7 +30,10 @@
 ; status as its own host-process exit code.
 ; ==================================================================================
 
-$0000`0000:
+SECTION CODE
+
+GLOBAL _start
+_start:
     LD  @RS R0              ; R0 = argc            = [RS]
     LEA $08 RS R1           ; R1 = argv (&argv[0]) = RS + 8
     CP  R0 R2               ; R2 = argc

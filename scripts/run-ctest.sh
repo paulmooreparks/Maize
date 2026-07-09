@@ -2,15 +2,16 @@
 # Compile + run the C hello-world through the full Maize C toolchain and diff its
 # stdout against the committed fixture (maize-62, maize-11 AC 6397 / 6399).
 #
-# Pipeline (maize-11 "Pipeline"; single-TU whole-program, no linker):
+# Pipeline (maize-77 segmented .mzo -> mzld -> .mzx object model):
 #
 #   ctest/hello.c
 #     -> cproc-qbe            (C11 -> QBE IL)
 #     -> normalize            (drop the `extern` call-linkage annotation; see below)
-#     -> qbe -t maize         (QBE IL -> mazm)
-#     -> prepend runtime      (crt0 + syscall + puts, decision 6636 order)
-#     -> mazm                 (mazm -> flat .mzb)
-#     -> maize                (execute; capture stdout)
+#     -> qbe -t maize         (QBE IL -> mazm, with SECTION/GLOBAL/ALIGN/DREF)
+#     -> mazm -c              (body.mazm -> body.mzo relocatable object)
+#     -> mzld                 (crt0.mzo syscall.mzo puts.mzo body.mzo -> hello.mzx;
+#                              default entry _start; W^X, per-section alignment)
+#     -> maize                (load_mzx sets RP=_start; execute; capture stdout)
 #     -> diff vs ctest/hello.expected
 #
 # This is kept DISTINCT from run-tests.{sh,ps1} (the asm/ corpus harness) so a
@@ -89,17 +90,38 @@ MAZM=$(resolve_exe "${BUILD_DIR}/mazm") || {
     echo "run-ctest.sh: mazm not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 MAIZE=$(resolve_exe "${BUILD_DIR}/maize") || {
     echo "run-ctest.sh: maize not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+MZLD=$(resolve_exe "${BUILD_DIR}/mzld") || {
+    echo "run-ctest.sh: mzld not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 
 mkdir -p "${WORK_DIR}"
+
+# Assemble the freestanding runtime as relocatable objects once per run (maize-77
+# decision 7168): crt0/syscall/puts each become a .mzo, linked into every fixture's
+# .mzx. mazm -c writes <input>.mzo beside its input, so the sources are copied into
+# WORK_DIR first (keeping the source tree clean). A failure here is a setup failure.
+RT_OBJS=""
+for rt in crt0 syscall puts; do
+    cp "${RT_DIR}/${rt}.mazm" "${WORK_DIR}/${rt}.mazm"
+    if ! "$MAZM" -c "${WORK_DIR}/${rt}.mazm" >"${WORK_DIR}/${rt}.mazm.log" 2>&1 \
+    || [ ! -f "${WORK_DIR}/${rt}.mzo" ]; then
+        echo "run-ctest.sh: failed to assemble runtime object ${rt}.mazm:" >&2
+        cat "${WORK_DIR}/${rt}.mazm.log" >&2
+        exit 2
+    fi
+    RT_OBJS="${RT_OBJS} ${WORK_DIR}/${rt}.mzo"
+done
 
 FAIL_COUNT=0
 TOTAL=0
 
-# Compile a C fixture through the full pipeline (cproc -> normalize -> qbe -t maize
-# -> prepend runtime -> mazm) to a flat maize .mzb. On success sets BIN to the
-# output path and returns 0; on failure prints a [FAIL] line, bumps FAIL_COUNT, and
-# returns 1. Shared by the stdout runner (run_ctest) and the exit-status runner
-# (run_exit_status_test) so both exercise the identical toolchain path.
+# Compile a C fixture through the full SEGMENTED pipeline (maize-77):
+#   cproc-qbe -> normalize -> qbe -t maize -> mazm -c (body -> .mzo)
+#     -> mzld (crt0.mzo syscall.mzo puts.mzo body.mzo -> .mzx, default entry _start)
+# On success sets BIN to the linked .mzx and returns 0; on failure prints a [FAIL]
+# line, bumps FAIL_COUNT, and returns 1. Shared by the stdout runner (run_ctest), the
+# exit-status runner (run_exit_status_test), and the argv runner (run_args_test) so
+# all three exercise the identical toolchain path. The runtime is no longer cat-
+# prepended: it is assembled to objects (RT_OBJS, above) and linked.
 compile_c() {
     name="$1"
     src="${CTEST_DIR}/${name}.c"
@@ -114,8 +136,8 @@ compile_c() {
     ssa="${WORK_DIR}/${name}.ssa"
     norm="${WORK_DIR}/${name}.norm.ssa"
     body="${WORK_DIR}/${name}.body.mazm"
-    full="${WORK_DIR}/${name}.mazm"
-    bin="${WORK_DIR}/${name}.mzb"
+    bodyobj="${WORK_DIR}/${name}.body.mzo"
+    mzx="${WORK_DIR}/${name}.mzx"
 
     # Defense in depth for CRLF checkouts (belt-and-suspenders with .gitattributes
     # eol=lf): cproc is strict C11 and treats a bare CR as a stray token, so strip
@@ -128,23 +150,35 @@ compile_c() {
         FAIL_COUNT=$((FAIL_COUNT + 1)); return 1
     fi
     # Normalize two IL-version-skew points between the pinned cproc and the
-    # pinned qbe (same class of fix as `call extern`, above):
-    #   - `call extern $sym` -> `call $sym`  (call-linkage annotation qbe predates)
+    # pinned qbe:
+    #   - `<op> extern $sym` -> `<op> $sym`  (symbol-linkage annotation the pinned
+    #     qbe predates). cproc tags EVERY external-symbol operand `extern`, not only
+    #     call targets: `call extern $puts`, but also `loadsb extern $g`,
+    #     `add extern $arr, 4`, etc. In the Maize linked-image model every `$sym`
+    #     resolves through mzld regardless, so the annotation carries no meaning and
+    #     is stripped wherever it prefixes a `$`. (maize-77: file-scope globals are
+    #     the first fixtures to read externs outside a call, surfacing the non-call
+    #     forms; hello/capstone only ever hit `call extern`.)
     #   - `=<w|l> neg X`      -> `=<w|l> sub 0, X`  (cproc emits the `neg` unary op,
     #     which this pinned qbe's parser predates; `sub 0, X` is the identity
     #     lowering and carries the same class/semantics).
-    sed -e 's/call extern /call /' \
+    # NOTE: keep this sed in sync with the maize-cc local test harness's normalizer.
+    sed -e 's/extern \$/$/g' \
         -e 's/\(=[wl]\) neg /\1 sub 0, /' "$ssa" > "$norm"
     if ! "$QBE" -t maize "$norm" > "$body" 2>"${WORK_DIR}/${name}.qbe.log"; then
         echo "[FAIL] ${name}: qbe -t maize failed"; cat "${WORK_DIR}/${name}.qbe.log" >&2
         FAIL_COUNT=$((FAIL_COUNT + 1)); return 1
     fi
-    cat "${RT_DIR}/crt0.mazm" "${RT_DIR}/syscall.mazm" "${RT_DIR}/puts.mazm" "$body" > "$full"
-    if ! "$MAZM" "$full" >"${WORK_DIR}/${name}.mazm.log" 2>&1 || [ ! -f "$bin" ]; then
-        echo "[FAIL] ${name}: mazm failed"; cat "${WORK_DIR}/${name}.mazm.log" >&2
+    if ! "$MAZM" -c "$body" >"${WORK_DIR}/${name}.mazm.log" 2>&1 || [ ! -f "$bodyobj" ]; then
+        echo "[FAIL] ${name}: mazm -c failed"; cat "${WORK_DIR}/${name}.mazm.log" >&2
         FAIL_COUNT=$((FAIL_COUNT + 1)); return 1
     fi
-    BIN="$bin"
+    if ! "$MZLD" -o "$mzx" ${RT_OBJS} "$bodyobj" >"${WORK_DIR}/${name}.mzld.log" 2>&1 \
+    || [ ! -f "$mzx" ]; then
+        echo "[FAIL] ${name}: mzld failed"; cat "${WORK_DIR}/${name}.mzld.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return 1
+    fi
+    BIN="$mzx"
     return 0
 }
 
@@ -235,11 +269,11 @@ run_args_test() {
     fi
 
     compile_c "$name" || return
-    # compile_c wrote ${WORK_DIR}/args.mzb; run from WORK_DIR so argv[0] == args.mzb.
+    # compile_c wrote ${WORK_DIR}/args.mzx; run from WORK_DIR so argv[0] == args.mzx.
 
     out="${WORK_DIR}/${name}.out"
     exp="${WORK_DIR}/${name}.exp"
-    ( cd "$WORK_DIR" && "$MAIZE" --env GREETING=hi --env TARGET=maize args.mzb alpha beta ) \
+    ( cd "$WORK_DIR" && "$MAIZE" --env GREETING=hi --env TARGET=maize args.mzx alpha beta ) \
         > "$out" 2>/dev/null || true
     tr -d '\r' < "$expfile" > "$exp"
     if cmp -s "$out" "$exp" \
@@ -253,11 +287,50 @@ run_args_test() {
     fi
 }
 
-echo "=== C toolchain end-to-end (cproc -> qbe -t maize -> mazm -> maize) ==="
+# maize-77 W^X negative case (AC 7147): mzld must reject an executable section that
+# is also writable. mazm only ever emits canonical per-kind attrs (CODE = R+X), so a
+# W+X object cannot be authored in source; instead we take the linked runtime's
+# crt0.mzo (whose sole section is CODE) and flip its section-attrs byte to add
+# ATTR_WRITE, turning R+X into W+X, then confirm mzld refuses it. The .mzo section
+# header layout (src/maize_obj.h): 48-byte object header, then 40-byte section
+# headers; the first section header's attrs byte is at offset 48 + 4 (name_off) + 1
+# (kind) = 53. CODE's default attrs 0x0B (EXEC|READ|ALLOC) OR ATTR_WRITE (0x04) =
+# 0x0F. A vacuous guard (never rejecting) fails this test.
+run_wx_reject_test() {
+    name="wx_reject"
+    expected="writable and executable"
+    TOTAL=$((TOTAL + 1))
+
+    probe="${WORK_DIR}/wx_probe.mzo"
+    cp "${WORK_DIR}/crt0.mzo" "$probe"
+    printf '\017' | dd of="$probe" bs=1 seek=53 count=1 conv=notrunc >/dev/null 2>&1
+
+    log=$(mktemp)
+    if "$MZLD" -o "${WORK_DIR}/wx_probe.mzx" "$probe" >"$log" 2>&1; then
+        ec=0
+    else
+        ec=$?
+    fi
+    actual=$(cat "$log")
+    rm -f "$log"
+    if [ "$ec" -ne 0 ] && printf '%s' "$actual" | grep -qF "$expected"; then
+        echo "[PASS] ${name} (mzld rejects W+X)"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected mzld reject containing: \"${expected}\""
+        echo "        actual (exit ${ec}):             \"${actual}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+echo "=== C toolchain end-to-end (cproc -> qbe -t maize -> mazm -c -> mzld -> maize) ==="
 run_ctest "hello"
 run_ctest "capstone"
+run_ctest "globals"
+run_ctest "ptrdata"
 run_exit_status_test "exitcode" 42
 run_args_test
+run_wx_reject_test
 
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then

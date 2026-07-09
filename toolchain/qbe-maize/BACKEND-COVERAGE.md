@@ -34,8 +34,15 @@ whole-program model these annotations are meaningless -- see
 
 | QBE IL | Maize lowering | Notes |
 |--------|----------------|-------|
-| `data { b "..." }` | labelled `DATA $HH ...` byte list | one label per symbol; strings decoded from QBE's gas-escaped form to raw bytes (`data.c`) |
-| global address (`$sym`) | `CP <label> Rn`, Rn = whole register (W0) | full-64 materialization, maize-11 decision 6415 (see below) |
+| data object (`data $sym = ...`) | `SECTION <kind>` + optional `GLOBAL` + `<sym>:` + body | deferred section-routing state machine (`data.c`, modelled on `qbe/gas.c`); routing below |
+| `b/h/w/l <int>` item | `DATA $HH ...` byte list via `emitnum` | 1/2/4/8-byte little-endian; proven at each width by `ctest/globals.c` |
+| `b "..."` item | `DATA $HH ...` byte list via `emitstr` | strings decoded from QBE's gas-escaped form to raw bytes |
+| wholly-zero object (`z N` only) | `SECTION BSS` + `ZERO N` (NOBITS) | zero-at-load via `load_mzx`, no file bytes; proven by `globals.c` zero array read-before-write |
+| partially-zero object (`w 1, z N`) | stays in `SECTION DATA`, holes/tail as real `DATA $00` bytes | C data-vs-bss rule (decision 7166) |
+| `align N` (`DAlign`) | `ALIGN N` (maize-89 directive) | section-relative pad + section max-align; honored by `mzld`; proven by `globals.c` 8-aligned `long` |
+| pointer-in-data (`l $sym[+off]`) | `DREF 8 <sym>[+off]` (maize-89 directive) -> `R_MAIZE_ABS64` | linker patches slot with `sym_addr + addend`; proven by `ctest/ptrdata.c` (`int *p=&g`, `&arr[1]`, `char *msgs[]`) |
+| pointer-in-data (`w $sym[+off]`) | `DREF 4 <sym>[+off]` -> `R_MAIZE_ABS32` | 4-byte variant (not reached by the current fixtures; supported) |
+| global address (`$sym`, code) | `CP <label> Rn`, Rn = whole register (W0) | full-64 materialization, maize-11 decision 6415 (see below); code-side `R_MAIZE_ABS64`, unchanged by maize-77 |
 | integer/pointer arg | `CP <src> Rk` into `R0..R9` | ABI arg registers |
 | `call $sym` / `call %r` | `CALL <label>` / `CALL Rn` | direct or register-indirect |
 | `ret <val>` | `CP <val> RV` then epilogue | scalar return via RV |
@@ -102,6 +109,70 @@ hand-assembly convenience forms, `R_MAIZE_ABS64` here) and the sign-extending
 vs. sub-register write -- holds; only the immediate encoding width is an inherent
 `mazm` property, not a truncation.
 
+## Image layout (segmented `.mzx`, maize-77)
+
+The C pipeline is `cproc-qbe -> qbe -t maize -> mazm -c -> mzld -> maize`: the QBE
+back-end emits mazm text decorated with the object-mode directives
+`SECTION`/`GLOBAL`/`ALIGN`/`DREF` (all inert no-ops in mazm's flat mode, so the
+same text also assembles flat), `mazm -c` produces a relocatable `.mzo`, and `mzld`
+links the runtime objects (`crt0`/`syscall`/`puts`) plus the body object into one
+linked `.mzx`. `mazm` without `-c` and the flat `.mzb` format are unchanged; the
+hand-written asm suite stays on the flat path.
+
+### Section routing (`data.c`, OQ-e disposition (a))
+
+The pinned cproc emits no `section ".rodata"` annotation, so routing is by name in
+the back-end:
+
+- `.L`-prefixed compiler-internal objects (string literals, switch tables) ->
+  `SECTION RODATA`;
+- named objects (mutable file-scope globals) -> `SECTION DATA`;
+- wholly-zero objects -> `SECTION BSS` (NOBITS);
+- an explicit `DStart` section hint is honored if ever present (forward-compat).
+
+Exported objects (`data $sym`, non-static) additionally get `GLOBAL <sym>`; static
+objects stay local. `emit.c` opens each function with `SECTION CODE` and emits
+`GLOBAL <fn>` for an exported function, so the runtime's cross-object `CALL main`
+resolves through `mzld`.
+
+### Segment picture
+
+`mzld` lays sections out from base `0x0` in fixed order CODE, RODATA, DATA, BSS,
+each aligned to its recorded max-align; `load_mzx` copies each segment to its vaddr,
+zero-fills the BSS tail, and sets `RP = entry` (`_start`, the GLOBAL entry in crt0):
+
+```
+ low  0x0            +-----------------+  CODE   (R+X)   entry = _start
+                     |  crt0/syscall/  |
+                     |  puts / body    |
+                     +-----------------+  RODATA (R)     string literals, consts
+                     +-----------------+  DATA   (R+W)   mutable globals (initialized)
+                     +-----------------+  BSS    (R+W, NOBITS) zero-at-load
+      end-of-image   +-----------------+
+                     |  (implicitly-   |  <- future heap grows UP (OQ-d intent)
+                     |   zero gap)     |
+                     |  full-desc stack|  <- grows DOWN from TOP
+      RS -> &argc    | argc/argv/envp  |  maize-60 process-start block
+high 0xFFFFFFFFFFFFFFF8 +-------------+  TOP
+```
+
+- **W^X:** `mzld` rejects any W+X input section up front; with CODE = R+X and
+  DATA/BSS = R+W (`default_attrs`) nothing is ever both. Proven positively (the C
+  program links and runs) and negatively (a section-attrs-flipped object is
+  rejected), `scripts/run-ctest.sh`.
+- **NOBITS BSS:** a wholly-zero object carries `mem_size > file_size == 0`;
+  `load_mzx` zero-fills it at load, so it is both correct and compact (no on-disk
+  zero bloat).
+- **Honored alignment:** `align N` -> `ALIGN N` -> section-relative pad + section
+  max-align -> `mzld` aligns the section base; a datum's absolute address then
+  satisfies `% N == 0`.
+- **Pointer-in-data:** `R_MAIZE_ABS64` (8-byte) / `R_MAIZE_ABS32` (4-byte) slots
+  are patched by `mzld` with `sym_addr + addend`.
+- **Non-collision with maize-60:** the image occupies low memory from 0; the
+  process-start block sits at TOP and is built after load. The heap (unbuilt) is
+  reserved to grow up from end-of-image into the gap (direction only; no
+  brk/sbrk/malloc here).
+
 ## ISA-ambiguity log
 
 Every lowering point where more than one lowering was plausible, the chosen one,
@@ -160,5 +231,9 @@ The following genuinely remain unsupported and `err()` in `abi.c`/`isel.c` (or
 - varargs;
 - environment calls;
 - more than 10 register arguments / stack-passed argument overflow past R9;
-- dynamic (non-constant) `alloc`;
-- address references embedded in initialized data.
+- dynamic (non-constant) `alloc`.
+
+(Address references embedded in initialized data are now **supported** via
+`R_MAIZE_ABS64`/`ABS32`; see the Image-layout and pointer-in-data rows above.
+Nonzero CODE-side address offsets on `CAddr` operands remain a separate `emit.c`
+`die()` gap, out of scope for maize-77.)

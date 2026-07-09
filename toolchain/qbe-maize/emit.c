@@ -451,6 +451,13 @@ maize_emitfn(Fn *fn, FILE *out)
 	e = &(E){.f = out, .fn = fn};
 	framelayout(e);
 
+	/* Segmented pipeline (maize-77): route the function into the CODE section
+	 * and export it when QBE marks it visible, so the runtime's cross-object
+	 * CALL (e.g. crt0 -> main) resolves through mzld. Both directives are inert
+	 * no-ops in mazm's flat mode (decision 7167). */
+	fputs("\tSECTION CODE\n", e->f);
+	if (fn->export)
+		fprintf(e->f, "\tGLOBAL %s\n", maize_sym(fn->name));
 	fprintf(e->f, "%s:\n", maize_sym(fn->name));
 	prologue(e);
 

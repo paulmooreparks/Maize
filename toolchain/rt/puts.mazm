@@ -20,7 +20,18 @@
 ; Prologue/epilogue follow the Maize C ABI (PUSH BP; CP SP BP; ... CP BP SP; POP BP;
 ; RET). R0-R4 are caller-saved scratch; sys_write's body (SYS $01; RET) doesn't
 ; touch R1/R2, so s and len survive the call without needing a callee-saved slot.
+;
+; maize-77: assembled to puts.mzo and linked by mzld. `puts` is the only exported
+; symbol; `sys_write` is an undefined cross-object reference resolved from
+; syscall.mzo. The trailing newline lives in SECTION RODATA (a read-only constant);
+; `CP puts_newline R1` materializes its linked address via the existing two-operand
+; code-side label path (a whole-register destination -> 8-byte R_MAIZE_ABS64), the
+; same mechanism `CALL sys_write` uses, resolved intra-object at link.
 ; ==================================================================================
+
+SECTION CODE
+
+GLOBAL puts
 
 puts:
     PUSH BP                 ; establish frame
@@ -57,6 +68,8 @@ puts_strlen_done:
     CP BP SP                ; tear down frame
     POP BP
     RET
+
+SECTION RODATA
 
 puts_newline:
     DATA $0a                ; '\n'

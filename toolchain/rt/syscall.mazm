@@ -10,7 +10,17 @@
 ;   sys_write(R0=fd, R1=buf, R2=count) -> RV   SYS $01  (bytes written)
 ;   sys_read (R0=fd, R1=buf, R2=count) -> RV   SYS $00  (bytes read)
 ;   exit(R0=code)                              SYS $3C  (sys_exit: terminate w/ status)
+;
+; maize-77: assembled to syscall.mzo and linked by mzld. The three wrappers cross
+; the object boundary (puts and the C body CALL them), so each is GLOBAL; nothing
+; else here is exported.
 ; ==================================================================================
+
+SECTION CODE
+
+GLOBAL sys_write
+GLOBAL sys_read
+GLOBAL exit
 
 sys_write:
     SYS $01                 ; fd/buf/count already in R0/R1/R2 per the C ABI
