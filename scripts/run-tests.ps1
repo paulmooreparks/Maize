@@ -66,6 +66,7 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_jcc_all';       File = 'test_jcc_all.mazm';       Expected = 'jcc-all: PASS';                 Golden = $false }
     [pscustomobject]@{ Name = 'test_neg';           File = 'test_neg.mazm';           Expected = 'neg: PASS';                     Golden = $false }
     [pscustomobject]@{ Name = 'test_setcc';         File = 'test_setcc.mazm';         Expected = 'setcc: PASS';                   Golden = $false }
+    [pscustomobject]@{ Name = 'test_setcc_alias';   File = 'test_setcc_alias.mazm';   Expected = 'setcc-alias: PASS';             Golden = $false }
     [pscustomobject]@{ Name = 'test_memblock';      File = 'test_memblock.mazm';      Expected = 'memblock: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_widecount';     File = 'test_widecount.mazm';     Expected = 'widecount: PASS';               Golden = $false }
     [pscustomobject]@{ Name = 'test_crossblock';    File = 'test_crossblock.mazm';    Expected = 'crossblk: PASS';                Golden = $false }

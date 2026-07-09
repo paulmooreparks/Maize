@@ -240,6 +240,7 @@ run_test "test_jcc"          "test_jcc.mazm"          "jcc: PASS"               
 run_test "test_jcc_all"      "test_jcc_all.mazm"      "jcc-all: PASS"                 0
 run_test "test_neg"          "test_neg.mazm"          "neg: PASS"                     0
 run_test "test_setcc"        "test_setcc.mazm"        "setcc: PASS"                   0
+run_test "test_setcc_alias"  "test_setcc_alias.mazm"  "setcc-alias: PASS"             0
 run_test "test_memblock"     "test_memblock.mazm"     "memblock: PASS"                0
 run_test "test_widecount"    "test_widecount.mazm"    "widecount: PASS"               0
 run_test "test_crossblock"   "test_crossblock.mazm"   "crossblk: PASS"                0

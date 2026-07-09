@@ -701,6 +701,26 @@ Notes:
     SETA      $6D     unsigned >           C == 0 and Z == 0
     SETBE     $AD     unsigned <=          C == 1 or Z == 1
 
+  For readability from a C backend or hand-written x86-idiom assembly, `mazm` also accepts the
+  following synonym mnemonics; each is assembler-only sugar that emits the identical opcode as its
+  canonical form above, so the two are byte-identical after assembly:
+
+    Synonym   Canonical
+    SETE      SETZ
+    SETNE     SETNZ
+    SETL      SETLT
+    SETNGE    SETLT
+    SETNL     SETGE
+    SETG      SETGT
+    SETNLE    SETGT
+    SETNG     SETLE
+    SETC      SETB
+    SETNAE    SETB
+    SETNC     SETAE
+    SETNB     SETAE
+    SETNBE    SETA
+    SETNA     SETBE
+
 ## Execution
 
 The CPU starts in privileged mode. When in privileged mode, the privilege flag is set, and

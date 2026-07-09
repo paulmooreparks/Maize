@@ -1,0 +1,236 @@
+; **********************************************************************************
+; Regression test for card maize-59: C-friendly SETcc alias mnemonics.
+;
+; Each of the 14 x86/C-idiom SETcc synonym names (SETE, SETNE, SETL, SETNGE, SETNL,
+; SETG, SETNLE, SETNG, SETC, SETNAE, SETNC, SETNB, SETNBE, SETNA) is exercised
+; exactly like the canonical maize-55 SETcc test (asm/test_setcc.mazm): CMP src dst
+; establishes a known flag state, the alias runs, and the destination is
+; CMP-checked against the expected materialized 0/1 value, branching to a single
+; fail path on mismatch. Both a true and a false path are covered for every alias,
+; spanning the equality (SETE/SETNE), signed (SETL/SETNGE/SETNL/SETG/SETNLE/SETNG),
+; and unsigned (SETC/SETNAE/SETNC/SETNB/SETNBE/SETNA) condition families.
+;
+; Since each alias is an additional key in mazm's opcode table pointing at the
+; identical {opcode, tokenizer, compiler} triple as its canonical target
+; (src/mazm.cpp), the alias and its canonical form assemble to byte-identical
+; encodings by construction; matching runtime behavior here against the
+; predicates already proven correct by test_setcc.mazm is the acceptance evidence
+; for that byte-identity.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- SETE true: equal compare sets Z (alias of SETZ) ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; 5 - 5 = 0 -> Z set
+    SETE R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETE false: unequal compare clears Z ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; Z clear
+    SETE R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETNE true: unequal compare, Z clear (alias of SETNZ) ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; Z clear
+    SETNE R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETNE false: equal compare, Z set ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; Z set
+    SETNE R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETL true: signed <, N != V (alias of SETLT) ----
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; 3 - 5 = -2 -> N != V
+    SETL R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETL false: signed >=, N == V ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; N == V
+    SETL R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETNGE true: not >= == signed < (alias of SETLT) ----
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; N != V
+    SETNGE R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETNGE false: N == V ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; N == V
+    SETNGE R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETNL true: not < == signed >= (alias of SETGE), N == V at equality ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; N == V (equality)
+    SETNL R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETNL false: signed <, N != V ----
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; N != V
+    SETNL R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETG true: signed >, Z == 0 and N == V (alias of SETGT) ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; Z clear, N == V
+    SETG R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETG false: at equality, Z == 1 ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; Z set
+    SETG R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETNLE true: not <= == signed > (alias of SETGT) ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; Z clear, N == V
+    SETNLE R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETNLE false: Z == 1 ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; Z set
+    SETNLE R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETNG true: not > == signed <= (alias of SETLE), Z set (equality) ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; Z set
+    SETNG R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETNG false: signed >, Z clear and N == V ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; Z clear, N == V
+    SETNG R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETC true: unsigned <, C set (borrow) (alias of SETB) ----
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; 3 - 5 borrow -> C set
+    SETC R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETC false: unsigned >=, C clear ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; no borrow -> C clear
+    SETC R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETNAE true: not >= == unsigned < (alias of SETB) ----
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; C set
+    SETNAE R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETNAE false: C clear ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; C clear
+    SETNAE R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETNC true: no carry == unsigned >= (alias of SETAE), C clear (equality) ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; no borrow -> C clear
+    SETNC R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETNC false: unsigned <, C set ----
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; borrow -> C set
+    SETNC R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETNB true: not < == unsigned >= (alias of SETAE) ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; C clear (equality)
+    SETNB R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETNB false: C set ----
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; C set
+    SETNB R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETNBE true: not <= == unsigned > (alias of SETA), C clear and Z clear ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; no borrow -> C clear, Z clear
+    SETNBE R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETNBE false: at equality, Z == 1 ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; Z set
+    SETNBE R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- SETNA true: not > == unsigned <= (alias of SETBE), Z set (equality) ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; Z set
+    SETNA R3.B0
+    CMP $01 R3.B0          ; expect 1
+    JNZ fail
+
+    ; ---- SETNA false: unsigned >, C clear and Z clear ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; no borrow, Z clear
+    SETNA R3.B0
+    CMP $00 R3.B0          ; expect 0
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $12 R2              ; 18 bytes
+    SYS $01
+    HALT
+
+fail:
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $12 R2              ; 18 bytes
+    SYS $01
+    HALT
+
+pass_string:
+    STRING "setcc-alias: PASS\n\0"
+
+fail_string:
+    STRING "setcc-alias: FAIL\n\0"
