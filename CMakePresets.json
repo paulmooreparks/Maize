@@ -7,14 +7,28 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
     {
-      "name": "windows-llvm-mingw-debug",
-      "displayName": "Windows (llvm-mingw, Debug)",
+      "name": "debug-common",
+      "hidden": true,
       "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "release-common",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "windows-llvm-mingw-toolchain",
+      "hidden": true,
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
         "CMAKE_C_COMPILER": "${sourceDir}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe",
@@ -23,9 +37,8 @@
       }
     },
     {
-      "name": "windows-msys2-debug",
-      "displayName": "Windows (MSYS2 UCRT64 GCC, Debug, fallback)",
-      "inherits": "base",
+      "name": "windows-msys2-toolchain",
+      "hidden": true,
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
         "CMAKE_C_COMPILER": "C:/msys64/ucrt64/bin/gcc.exe",
@@ -34,28 +47,74 @@
       }
     },
     {
+      "name": "linux-toolchain",
+      "hidden": true,
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "macos-toolchain",
+      "hidden": true,
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    },
+    {
+      "name": "windows-llvm-mingw-debug",
+      "displayName": "Windows (llvm-mingw, Debug)",
+      "inherits": ["windows-llvm-mingw-toolchain", "debug-common"]
+    },
+    {
+      "name": "windows-llvm-mingw-release",
+      "displayName": "Windows (llvm-mingw, Release)",
+      "inherits": ["windows-llvm-mingw-toolchain", "release-common"]
+    },
+    {
+      "name": "windows-msys2-debug",
+      "displayName": "Windows (MSYS2 UCRT64 GCC, Debug, fallback)",
+      "inherits": ["windows-msys2-toolchain", "debug-common"]
+    },
+    {
+      "name": "windows-msys2-release",
+      "displayName": "Windows (MSYS2 UCRT64 GCC, Release, fallback)",
+      "inherits": ["windows-msys2-toolchain", "release-common"]
+    },
+    {
       "name": "linux-debug",
       "displayName": "Linux (Debug)",
-      "inherits": "base",
-      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+      "inherits": ["linux-toolchain", "debug-common"]
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux (Release)",
+      "inherits": ["linux-toolchain", "release-common"]
     },
     {
       "name": "macos-debug",
       "displayName": "macOS (Debug)",
-      "inherits": "base",
-      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+      "inherits": ["macos-toolchain", "debug-common"]
+    },
+    {
+      "name": "macos-release",
+      "displayName": "macOS (Release)",
+      "inherits": ["macos-toolchain", "release-common"]
     }
   ],
   "buildPresets": [
     { "name": "windows-llvm-mingw-debug", "configurePreset": "windows-llvm-mingw-debug" },
+    { "name": "windows-llvm-mingw-release", "configurePreset": "windows-llvm-mingw-release" },
     { "name": "windows-msys2-debug", "configurePreset": "windows-msys2-debug" },
+    { "name": "windows-msys2-release", "configurePreset": "windows-msys2-release" },
     { "name": "linux-debug", "configurePreset": "linux-debug" },
-    { "name": "macos-debug", "configurePreset": "macos-debug" }
+    { "name": "linux-release", "configurePreset": "linux-release" },
+    { "name": "macos-debug", "configurePreset": "macos-debug" },
+    { "name": "macos-release", "configurePreset": "macos-release" }
   ],
   "testPresets": [
     { "name": "windows-llvm-mingw-debug", "configurePreset": "windows-llvm-mingw-debug" },
+    { "name": "windows-llvm-mingw-release", "configurePreset": "windows-llvm-mingw-release" },
     { "name": "windows-msys2-debug", "configurePreset": "windows-msys2-debug" },
+    { "name": "windows-msys2-release", "configurePreset": "windows-msys2-release" },
     { "name": "linux-debug", "configurePreset": "linux-debug" },
-    { "name": "macos-debug", "configurePreset": "macos-debug" }
+    { "name": "linux-release", "configurePreset": "linux-release" },
+    { "name": "macos-debug", "configurePreset": "macos-debug" },
+    { "name": "macos-release", "configurePreset": "macos-release" }
   ]
 }
