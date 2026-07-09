@@ -49,7 +49,8 @@ cheap now and expensive after binaries and third-party VMs exist.
   privilege boundary only? One answer, written down.
 
 Exit: all decisions recorded here or in the spec draft; VM implements
-them; hello.mazm and core.mazm still run.
+them; hello.mazm still runs (core.mazm was retired to the M4 BIOS work,
+see maize-23; it is archived under asm/old_tortilla_files/).
 
 ## Milestone 0.5: Stabilization
 
