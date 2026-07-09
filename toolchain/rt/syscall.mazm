@@ -9,11 +9,20 @@
 ;
 ;   sys_write(R0=fd, R1=buf, R2=count) -> RV   SYS $01  (bytes written)
 ;   sys_read (R0=fd, R1=buf, R2=count) -> RV   SYS $00  (bytes read)
+;   sys_puts (R0=fd, R1=ptr)           -> RV   SYS $F0  (bytes written; VM scans strlen)
 ;   exit(R0=code)                              SYS $3C  (sys_exit: terminate w/ status)
+;
+; sys_puts is Maize-native ($F0-$FF band, no Linux analog): the VM scans from R1
+; to the terminating $00 and writes the bytes before it (NUL not written, no
+; implicit newline). Only fd/ptr are consumed; no length register is needed.
 ; ==================================================================================
 
 sys_write:
     SYS $01                 ; fd/buf/count already in R0/R1/R2 per the C ABI
+    RET
+
+sys_puts:
+    SYS $F0                 ; fd/ptr already in R0/R1; VM derives the length
     RET
 
 sys_read:

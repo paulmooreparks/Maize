@@ -1096,6 +1096,39 @@ interrupt and records no status, so a program that ends via HALT exits `0`. The 
 `asm/` corpus ends in HALT and is verified by stdout, not exit status, so its observable
 behavior (stdout plus a clean stop) is unchanged by the sys_exit path.
 
+`sys_puts` (`SYS $F0`) writes a NUL-terminated string to a file descriptor without the
+caller precomputing its length. It reads `fd` from R0 and the string pointer from R1, scans
+from that pointer for the first `$00` byte, and writes the bytes before it through the same
+host writer `sys_write` uses.
+
+    ; Output a NUL-terminated string using sys_puts
+    CP $01 R0               ; file descriptor 1 (STDOUT) in register R0
+    CP hello_world R1       ; string address in register R1 (full-64 pointer)
+    SYS $F0                 ; call sys_puts; VM scans for the terminating $00
+
+`RV.w0` receives the underlying `write()`'s return: the byte count on success and
+`(u_word)-1` on error, exactly matching `sys_write`'s contract (so `RV` is not guaranteed to
+equal the scanned length on a partial write). The terminating `$00` is **not** written and
+**no** implicit trailing newline is emitted: `sys_puts` writes exactly the string bytes
+(raw / `fputs`-style), so a caller wanting a newline writes one explicitly. An empty string
+(first byte is `$00`) writes zero bytes and returns `0`. The pointer is not null-checked and
+the scan has no length cap, matching C `strlen` semantics (an unterminated string is guest
+UB), consistent with the freestanding model.
+
+The syscall id is a single byte: `SYS` passes `operand1.b0` to the dispatcher, so the id
+space is `$00`-`$FF`. Maize mirrors Linux x86-64 numbers where an analog exists (read=`$00`,
+write=`$01`, exit=`$3C`, reboot=`$A9`), but there is no Linux "write a C string" syscall.
+`sys_puts` therefore takes `$F0`, opening `$F0`-`$FF` as a **Maize-native convenience band**
+that deliberately does not mirror Linux.
+
+| SYS | name | args | returns |
+| --- | --- | --- | --- |
+| `$00` | `sys_read` | R0=fd, R1=buf, R2=count | RV=bytes read |
+| `$01` | `sys_write` | R0=fd, R1=buf, R2=count | RV=bytes written, `(u_word)-1` on error |
+| `$3C` | `sys_exit` | R0=code | (does not return; low 8 bits become exit status) |
+| `$A9` | `sys_reboot` | (none) | (reserved) |
+| `$F0` | `sys_puts` | R0=fd, R1=ptr | RV=bytes written, `(u_word)-1` on error; NUL-terminated, no implicit newline |
+
 
 ## Assembler Syntax
 

@@ -1,45 +1,32 @@
 ; ==================================================================================
-; puts.mazm -- minimal freestanding puts (maize-62, maize-11 decision 6412)
+; puts.mazm -- minimal freestanding puts (maize-62, maize-11 decision 6412; maize-34)
 ;
 ; int puts(char const *s):  writes s (NUL-terminated) to stdout, then a trailing
-; newline, and returns a non-negative int. The length is computed with a strlen loop
-; modeled on asm/hello.mazm:strlen (LD @Rn Rx.B0; CMP $00 Rx.B0; JZ; INC). The write
-; goes through the sys_write wrapper (arg-in-registers + CALL/RET), so main -> puts ->
-; sys_write exercises a two-level call chain through the C ABI frame contract.
+; newline, and returns a non-negative int. The string body is written via the
+; sys_puts wrapper (SYS $F0): the VM scans for the terminating NUL and writes the
+; bytes before it, so puts no longer hand-rolls a strlen loop. main -> puts ->
+; sys_puts / sys_write still exercises a two-level call chain through the C ABI
+; frame contract.
 ;
-; The trailing newline is why the expected stdout is the greeting PLUS '\n'
-; (maize-62 decision 6635).
+; sys_puts appends no newline (raw / fputs-style), so puts writes the trailing '\n'
+; itself via the existing sys_write(1, &newline, 1) path. Observable stdout is
+; unchanged: the greeting PLUS '\n' (maize-62 decision 6635).
 ;
 ; Prologue/epilogue follow the Maize C ABI (PUSH BP; CP SP BP; ... CP BP SP; POP BP;
-; RET). R1/R2/R3 are caller-saved scratch; R6 is callee-saved and preserved so the
-; string pointer survives the sys_write call.
+; RET). R0/R1/R2 are caller-saved scratch; no callee-saved register is needed now
+; that the string pointer does not have to survive a strlen loop.
 ; ==================================================================================
 
 puts:
     PUSH BP                 ; establish frame
     CP SP BP
-    PUSH R6                 ; preserve callee-saved R6 (holds the string pointer)
 
-    CP R0 R6                ; R6 = s (survives the sys_write call)
-
-    ; --- length = strlen(s) -----------------------------------------------------
-    CLR R2                  ; length = 0
-puts_len_loop:
-    LEA R2 R6 R1            ; R1 = s + length
-    LD @R1 R3.B0            ; R3.B0 = *(s + length)
-    CMP $00 R3.B0           ; data movement does not set flags; test explicitly
-    JZ puts_len_done        ; stop at the terminating NUL
-    INC R2                  ; ++length
-    JMP puts_len_loop
-puts_len_done:
-
-    ; --- sys_write(1, s, length) ------------------------------------------------
+    ; --- sys_puts(1, s): the VM scans s for the NUL and writes the bytes before it ---
+    CP R0 R1                ; ptr = s (capture before R0 is overwritten with fd)
     CP $01 R0               ; fd = 1 (stdout)
-    CP R6 R1                ; buf = s
-    ;   R2 already holds length
-    CALL sys_write
+    CALL sys_puts
 
-    ; --- write the trailing newline ---------------------------------------------
+    ; --- write the trailing newline (puts appends '\n') -------------------------
     CP $01 R0               ; fd = 1
     CP puts_newline R1      ; buf = &newline (full-64 address materialization)
     CP $01 R2               ; count = 1
@@ -47,7 +34,6 @@ puts_len_done:
 
     CP $00 RV               ; return 0 (non-negative)
 
-    POP R6                  ; restore callee-saved R6
     CP BP SP                ; tear down frame
     POP BP
     RET

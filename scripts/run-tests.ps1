@@ -77,6 +77,7 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_outr_in';       File = 'test_outr_in.mazm';       Expected = 'outr/in: PASS';                 Golden = $false }
     [pscustomobject]@{ Name = 'test_brk';           File = 'test_brk.mazm';           Expected = 'brk: PASS';                     Golden = $false }
     [pscustomobject]@{ Name = 'test_tstind';        File = 'test_tstind.mazm';        Expected = 'tstind: PASS';                  Golden = $false }
+    [pscustomobject]@{ Name = 'test_puts';          File = 'test_puts.mazm';          Expected = 'puts: PASS';                    Golden = $false }
     [pscustomobject]@{ Name = 'reject_bad_register'; File = 'test_reject_badreg.mazm';     Expected = "unknown register 'R99'";      Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'reject_bad_literal';  File = 'test_reject_badliteral.mazm'; Expected = 'malformed hex literal';       Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'reject_include_self'; File = 'test_reject_include_self.mazm'; Expected = 'circular INCLUDE';          Golden = $false; ExpectAsmError = $true }
