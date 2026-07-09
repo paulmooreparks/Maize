@@ -344,37 +344,6 @@ namespace maize {
                     return syscall::write(fd, buf, count);
                 }
 
-                /* sys_puts: Maize-native string-write ($F0-$FF is the Maize-native
-                   convenience band that does not mirror Linux syscall numbers).
-                   Write a NUL-terminated string to fd R0 without a caller-supplied
-                   length: scan from R1 for the first $00 byte, then write the bytes
-                   before it (the NUL is not written; no implicit trailing newline)
-                   through the same host writer sys_write uses, so fd handling,
-                   short-write behavior, and the (u_word)-1 error return are identical
-                   to sys_write by construction. RV.w0 receives write()'s return. */
-                case 0x00F0U: {
-                    u_word fd {regs::r0.w0};
-                    u_word address {regs::r1.w0};
-
-                    /* length = count of bytes before the terminating $00 (C strlen
-                       semantics: no cap; an unterminated string is guest UB). */
-                    u_word length {0};
-                    while (mm.read_byte(address + length) != 0x00U) {
-                        ++length;
-                    }
-
-                    /* Empty string: write nothing, return 0. The early return also
-                       guards against the &vec[0]-on-empty-vector UB the sys_write
-                       path would hit at count 0. */
-                    if (length == 0) {
-                        return 0;
-                    }
-
-                    std::vector<u_byte> str = mm.read(address, length);
-                    u_byte const* buf {&str[0]};
-                    return syscall::write(fd, buf, length);
-                }
-
                 /* sys_exit: record main's status and terminate the VM. The exit
                    code is the first integer argument in R0 (same ABI slot fd
                    uses for sys_read/sys_write). We record the low 8 bits only;

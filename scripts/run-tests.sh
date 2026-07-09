@@ -3,7 +3,7 @@
 # point; this is what maize-36 invokes).
 #
 # Configures and builds the linux-debug preset (or an override given via
-# --preset), then assembles and runs each of the 21 in-scope tests under asm/,
+# --preset), then assembles and runs each of the 49 in-scope tests under asm/,
 # comparing captured stdout against the expected output embedded below. Prints
 # a per-test PASS/FAIL report plus a summary line. Never prompts for input, so
 # it is safe for non-interactive CI use.
@@ -251,7 +251,6 @@ run_test "test_setint"       "test_setint.mazm"       "setint: PASS"            
 run_test "test_outr_in"      "test_outr_in.mazm"      "outr/in: PASS"                 0
 run_test "test_brk"          "test_brk.mazm"          "brk: PASS"                     0
 run_test "test_tstind"       "test_tstind.mazm"       "tstind: PASS"                  0
-run_test "test_puts"         "test_puts.mazm"         "puts: PASS"                    0
 run_test "reject_bad_register"  "test_reject_badreg.mazm"        "unknown register 'R99'" 0 1
 run_test "reject_bad_literal"   "test_reject_badliteral.mazm"    "malformed hex literal"  0 1
 run_test "reject_include_self"  "test_reject_include_self.mazm"  "circular INCLUDE"       0 1
