@@ -61,12 +61,25 @@ static bool load_mzx(const std::vector<char> &buf) {
 int main(int argc, char *argv[]) {
 	using namespace cpu;
 
+	/* card maize-67: well-behaved-interpreter hardening for direct execution. As
+	   an OS handler (Linux binfmt_misc / Windows file association) maize is
+	   invoked as `maize <image-path> [args...]`, so the image path is argv[1].
+	   Guard the missing-argument case (previously it printed an error but then
+	   dereferenced argv[1] anyway) and fail closed with a clear message if the
+	   image cannot be opened. Extra arguments (argv[2]+) are tolerated and
+	   ignored; delivering them to the guest is out of scope (maize-60). An
+	   absolute path works unchanged (std::ifstream accepts it verbatim). */
 	if (argc < 2) {
-		std::cerr << "Missing path to binary" << std::endl;
+		std::cerr << "usage: maize <image-path> [args...]" << std::endl;
+		return 2;
 	}
 
 	std::string file_path {argv[1]};
 	std::ifstream fin(file_path, std::fstream::binary);
+	if (!fin.is_open()) {
+		std::cerr << "maize: cannot open image '" << file_path << "'" << std::endl;
+		return 2;
+	}
 
 	/* Slurp the whole image so the loader can inspect the magic before deciding
 	   how to lay it out. */

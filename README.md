@@ -154,6 +154,78 @@ code it shouldn't take too long to complete them.
 The [assembler](https://github.com/paulmooreparks/Maize/blob/master/src/mazm.cpp) is still VERY bare-bones, but it's enough to generate
 usable executables.
 
+## Running Maize programs directly
+
+You can register `maize` as the operating system's handler for Maize images, so
+that an image runs directly the way a `.py` or `.js` file does. `maize <path>`
+already loads and runs both image formats, dispatching on the header: a `.mzx`
+(linked) image begins with the magic bytes `M Z X 0x01` and is loaded segment by
+segment; anything else is loaded as a flat `.mzb` image at address 0. Registration
+is OS-level glue on top of that, and the runner behaves as a well-formed
+interpreter: it takes the image path as its first argument, accepts an absolute
+path, and tolerates extra arguments after the path.
+
+The scripts below are documented, user-run tools. They are **not** run by the
+build, and they change OS state, so run them yourself and reverse them with the
+matching `unregister` action when you are done. Both are idempotent (safe to run
+twice) and fully reversible.
+
+### Linux (binfmt_misc)
+
+`scripts/register-binfmt.sh` registers two `binfmt_misc` entries, keyed the same
+way the loader dispatches:
+
+- `.mzx` images are matched by the header **magic** (`4D 5A 58 01`) at offset 0.
+  Because the match is on magic rather than name, a magic-bearing image runs
+  directly even with a different extension or no extension at all, as long as it
+  has the executable bit set.
+- `.mzb` images are matched by **extension**, because a flat image has no header
+  magic to key on (it begins with the first instruction).
+
+```sh
+# maize must be on PATH (or pass --interp /path/to/maize). Needs root.
+sudo ./scripts/register-binfmt.sh register
+chmod +x hello.mzb hello.mzx
+./hello.mzb        # runs via maize
+./hello.mzx        # runs via maize
+sudo ./scripts/register-binfmt.sh unregister   # reverses it cleanly
+```
+
+`binfmt_misc` invokes the interpreter as `maize <full-path> [args...]`, so the
+image path arrives as `maize`'s first argument. The entries are per-kernel (and,
+under WSL, per-instance), independent of Windows file associations.
+
+### Windows (file associations)
+
+`scripts/register-assoc.ps1` creates `.mzb`/`.mzx` associations under `HKCU`
+(no administrator rights required, nothing machine-wide changed) pointing at
+`maize.exe "%1"`:
+
+```powershell
+# maize.exe must be on PATH (or pass -MaizeExe C:\path\to\maize.exe).
+pwsh ./scripts/register-assoc.ps1 register
+.\hello.mzb        # runs via maize.exe (double-click in Explorer also works)
+pwsh ./scripts/register-assoc.ps1 unregister   # removes the association
+```
+
+To run `prog` and have the shell find `prog.mzb`/`prog.mzx`, add `.MZB;.MZX` to
+`PATHEXT`. The script prints guidance for this by default; pass `-UpdatePathext`
+to append them to your user `PATHEXT` automatically (also reversed by
+`unregister`).
+
+### What works, and the one caveat
+
+- **Exit status works.** A directly-run image's process exit code reflects the
+  program's return value (`maize` surfaces the guest's `SYS $3C` exit through its
+  own exit status). A C program that ends with `return 13` yields `$?` == 13 on
+  Linux (or `%ERRORLEVEL%` == 13 on Windows); codes truncate to the usual 0-255
+  range.
+- **Caveat: guest arguments are not yet delivered.** The program runs, but
+  command-line arguments after the image path are not yet passed into the guest
+  (the process-start stack is empty; argv delivery is tracked separately). The
+  registration scripts and the OS handler tolerate extra arguments; they simply
+  do not reach the guest program yet.
+
 ## Project Status
 
 As I said in the original [.NET implementation](https://github.com/paulmooreparks/Tortilla/), it's very early days for Maize, so don't
