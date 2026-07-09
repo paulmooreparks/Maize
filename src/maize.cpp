@@ -58,6 +58,26 @@ static bool load_mzx(const std::vector<char> &buf) {
 	return true;
 }
 
+static void print_usage(std::ostream &out) {
+	out <<
+		"usage: maize <image.mzb|.mzx>\n"
+		"\n"
+		"Maize VM. Runs a single memory image: a flat .mzb image, or a linked .mzx\n"
+		"executable. The loader dispatches on the image's header magic -- a .mzx\n"
+		"magic loads via the linked-executable path (segment table, recorded entry\n"
+		"point); anything else falls through to the legacy flat load-at-address-0\n"
+		"path.\n"
+		"\n"
+		"  -h, --help     show this help and exit\n"
+		"\n"
+		"The host process's own exit status reflects the guest program's return: a\n"
+		"program that ends via HALT with no explicit exit defaults to 0; SYS $3C\n"
+		"(sys_exit) sets the low 8 bits of R0 as the exit code.\n"
+		"\n"
+		"Command-line arguments beyond the image path are accepted but not yet\n"
+		"delivered to the guest program (argv[2]+ is ignored).\n";
+}
+
 int main(int argc, char *argv[]) {
 	using namespace cpu;
 
@@ -69,8 +89,19 @@ int main(int argc, char *argv[]) {
 	   image cannot be opened. Extra arguments (argv[2]+) are tolerated and
 	   ignored; delivering them to the guest is out of scope (maize-60). An
 	   absolute path works unchanged (std::ifstream accepts it verbatim). */
-	if (argc < 2) {
-		std::cerr << "usage: maize <image-path> [args...]" << std::endl;
+	if (argc >= 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help")) {
+		print_usage(std::cout);
+		return 0;
+	}
+
+	/* card maize-68: a bare invocation or an unrecognized leading-'-' flag are
+	   both CLI-usage errors -- maize exposes no flags besides -h/--help today,
+	   so a leading '-' is never a legitimate image path in practice. Print the
+	   same full help block used for -h/--help rather than a one-line string,
+	   matching the mzld/mazm convention, and fail closed (exit 2) before ever
+	   touching the filesystem. */
+	if (argc < 2 || argv[1][0] == '-') {
+		print_usage(std::cerr);
 		return 2;
 	}
 
