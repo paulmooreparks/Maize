@@ -1,0 +1,39 @@
+; **********************************************************************************
+; Leading pad object for the maize-95 backward-JMP relocation regression test.
+;
+; This object exists only to occupy CODE space so that the real fixture
+; (test_obj_backjmp) links at a NONZERO vaddr. That is what forces mzld to
+; relocate the main object's sections, which in turn is what the maize-95 fix is
+; about: a backward local-label JMP must carry a relocation so its target moves
+; with the section. This pad is never entered (the linked entry point is _start,
+; defined GLOBAL in the main object). It is deliberately a run of NOPs followed
+; by HALT: if the backward JMP is left un-relocated (the pre-fix bug), the JMP
+; mis-targets a low section-relative offset that lands inside THIS pad, executes
+; NOPs, HALTs, and prints nothing, so the test FAILS. That is the non-vacuity the
+; card requires.
+; **********************************************************************************
+
+SECTION CODE
+
+pad_filler:
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    HALT

@@ -1,0 +1,36 @@
+; **********************************************************************************
+; Object-pipeline regression test for card maize-95: a BACKWARD local-label JMP
+; must be relocated in object mode.
+;
+; The loop below uses an unconditional backward JMP (regimm_compiler, the fixed
+; path) as its back-edge and a forward JZ (jcc_compiler, already correct) as its
+; exit. Assembled with `mazm -c`, this fixture is linked AFTER a small leading
+; pad object (test_obj_backjmp_pad), so mzld places its CODE section at a nonzero
+; vaddr. If regimm_compiler fails to emit a relocation for the backward `JMP
+; loop`, the baked section-relative offset is never adjusted to the linked
+; address, so the jump mis-targets (into the pad) and the program never prints
+; "backjmp: PASS". With the fix the jump is relocated, the loop runs three times
+; and terminates, and the program prints the PASS line.
+; **********************************************************************************
+
+SECTION CODE
+
+GLOBAL _start
+
+_start:
+    CP $03 R3               ; loop counter = 3
+loop:
+    DEC R3                  ; counter -= 1 (arithmetic; sets Z when it reaches 0)
+    JZ done                 ; forward conditional exit (jcc_compiler: already correct)
+    JMP loop                ; BACKWARD unconditional JMP: the maize-95 relocation path
+done:
+    CP $01 R0               ; fd = stdout
+    CP pass_msg R1          ; message address (ABS32 relocation in object mode)
+    CP $0E R2               ; length of "backjmp: PASS\n" (14 bytes, NUL excluded)
+    SYS $01
+    HALT
+
+SECTION RODATA
+
+pass_msg:
+    STRING "backjmp: PASS\n\0"

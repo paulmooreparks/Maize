@@ -2213,7 +2213,19 @@ namespace {
         current_address += cpu::mm.write_byte(current_address, operand1_byte);
 
         if (operand_is_immediate) {
-            if (operand_is_label && operand1_literal.h0 == std::numeric_limits<u_hword>::max()) {
+            /* A label operand ALWAYS flows through write_label, whether it is a
+               still-pending forward reference or an already-resolved backward one
+               (card maize-95). write_label is the single choke point that records
+               the object-mode relocation, so mzld can patch the operand to the
+               symbol's linked address after the section is placed at its runtime
+               vaddr. The earlier "resolved backward label" shortcut baked the
+               section-relative offset here with no relocation: correct in flat
+               mode, but it silently mis-targeted a backward JMP/CALL once the
+               object was relocated to a nonzero base. In flat mode write_label
+               bakes the identical final value, so this stays byte-neutral there.
+               This mirrors jcc_compiler / regimm_reg_compiler, which already route
+               label operands through write_label unconditionally. */
+            if (operand_is_label) {
                 current_address += write_label(current_address, operand1, operand1_literal);
             }
             else {

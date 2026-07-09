@@ -392,10 +392,58 @@ function Invoke-ObjRejectTest($name, $src, $expected) {
     return [pscustomobject]@{ Name = $name; Pass = $rejected; Expected = "assembler rejects with: $expected"; Actual = (Trim-TrailingNewlines $out) }
 }
 
+# maize-95: a BACKWARD local-label JMP must be relocated in object mode. The main
+# fixture is linked AFTER a leading pad object so mzld gives it a nonzero vaddr; if
+# regimm_compiler emits no relocation for the backward JMP the jump mis-targets (or
+# spins) and the PASS line never prints. Start-Process with a bounded WaitForExit
+# both sidesteps the PS 5.1 stderr NativeCommandError artifact and guards a mis-
+# target that spins; exceeding the deadline counts as a failure.
+function Invoke-ObjBackjmpTest {
+    $name = 'obj_backjmp'
+    $expected = 'backjmp: PASS'
+    Emit-Object 'test_obj_backjmp_pad.mazm'
+    Emit-Object 'test_obj_backjmp.mazm'
+    $pad  = Join-Path $TestRunDir 'test_obj_backjmp_pad.mzo'
+    $main = Join-Path $TestRunDir 'test_obj_backjmp.mzo'
+    $mzx  = Join-Path $TestRunDir 'test_obj_backjmp.mzx'
+    if ((-not (Test-Path $pad)) -or (-not (Test-Path $main))) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'mazm -c produced no .mzo' }
+    }
+    $log = [System.IO.Path]::GetTempFileName()
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    # Pad object FIRST so the main object's CODE section lands at a nonzero vaddr.
+    & $MzldExe -o $mzx $pad $main *> $log
+    $linkExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($linkExit -ne 0) {
+        $out = Get-Content -Raw -Path $log -ErrorAction SilentlyContinue
+        Remove-Item -Force $log -ErrorAction SilentlyContinue
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = "link failed: $(Trim-TrailingNewlines $out)" }
+    }
+    Remove-Item -Force $log -ErrorAction SilentlyContinue
+
+    $stdoutFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+    $proc = Start-Process -FilePath $MaizeExe -ArgumentList $mzx -PassThru -NoNewWindow `
+        -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+    if (-not $proc.WaitForExit(10000)) {
+        try { $proc.Kill() } catch { }
+        Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'timed out (mis-targeted backward JMP?)' }
+    }
+    $me = $proc.ExitCode
+    $actualRaw = Get-Content -Raw -Path $stdoutFile -ErrorAction SilentlyContinue
+    Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
+    $actual = Trim-TrailingNewlines $actualRaw
+    return [pscustomobject]@{ Name = $name; Pass = (($me -eq 0) -and ($actual -eq $expected)); Expected = $expected; Actual = $actual }
+}
+
 $results += Invoke-ObjPipelineTest 'obj_dref'         'test_obj_dref.mazm'         'dref: PASS'
 $results += Invoke-ObjPipelineTest 'obj_dref_addend'  'test_obj_dref_addend.mazm'  'dref-addend: PASS'
 $results += Invoke-ObjPipelineTest 'obj_align'        'test_obj_align.mazm'        'align: PASS'
 $results += Invoke-ObjRejectTest   'obj_align_reject' 'test_reject_align.mazm'     'power of two'
+$results += Invoke-ObjBackjmpTest
 
 # --- maize-14: mzdis disassembler ---------------------------------------------------
 # Round trip (AC6477/AC6478/AC6483): assemble a code-only, SECTION-clean fixture that

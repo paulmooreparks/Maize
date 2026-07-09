@@ -404,10 +404,58 @@ run_obj_reject_test() {
     fi
 }
 
+# maize-95: a BACKWARD local-label JMP must be relocated in object mode. The main
+# fixture is linked AFTER a leading pad object so mzld gives it a nonzero vaddr; if
+# regimm_compiler emits no relocation for the backward JMP the jump mis-targets (or
+# hangs) and the PASS line never prints. The maize run is wrapped in `timeout` so a
+# mis-target that spins cannot wedge the suite; a timeout counts as a failure.
+run_obj_backjmp_test() {
+    name="obj_backjmp"
+    expected="backjmp: PASS"
+    TOTAL=$((TOTAL + 1))
+    emit_object "test_obj_backjmp_pad.mazm"
+    emit_object "test_obj_backjmp.mazm"
+    pad="${TEST_RUN_DIR}/test_obj_backjmp_pad.mzo"
+    main="${TEST_RUN_DIR}/test_obj_backjmp.mzo"
+    mzx="${TEST_RUN_DIR}/test_obj_backjmp.mzx"
+    if [ ! -f "$pad" ] || [ ! -f "$main" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm -c produced no .mzo)"
+        return
+    fi
+    log=$(mktemp)
+    # Pad object FIRST so the main object's CODE section lands at a nonzero vaddr.
+    if ! "$MZLD_EXE" -o "$mzx" "$pad" "$main" >"$log" 2>&1; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (link failed)"
+        cat "$log"
+        rm -f "$log"
+        return
+    fi
+    rm -f "$log"
+    out=$(mktemp)
+    if timeout 10 "$MAIZE_EXE" "$mzx" >"$out" 2>/dev/null; then
+        me=0
+    else
+        me=$?
+    fi
+    actual=$(cat "$out")
+    rm -f "$out"
+    if [ "$me" -eq 0 ] && [ "$actual" = "$expected" ]; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: \"${expected}\" (exit 0)"
+        echo "        actual:   \"${actual}\" (exit ${me})"
+    fi
+}
+
 run_obj_pipeline_test "obj_dref"         "test_obj_dref.mazm"         "dref: PASS"
 run_obj_pipeline_test "obj_dref_addend"  "test_obj_dref_addend.mazm"  "dref-addend: PASS"
 run_obj_pipeline_test "obj_align"        "test_obj_align.mazm"        "align: PASS"
 run_obj_reject_test   "obj_align_reject" "test_reject_align.mazm"     "power of two"
+run_obj_backjmp_test
 
 # --- maize-14: mzdis disassembler ---------------------------------------------------
 # Round trip (AC6477/AC6478/AC6483): assemble a code-only, SECTION-clean fixture that
