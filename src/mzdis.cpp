@@ -539,6 +539,27 @@ namespace {
 
 } // namespace
 
+static void print_usage(std::ostream &out) {
+    out <<
+        "usage: mzdis [-o out_path] <input>\n"
+        "\n"
+        "Maize disassembler. Turns a flat .mzb memory image or a linked .mzx\n"
+        "executable back into readable Maize assembly text, written to stdout\n"
+        "unless -o redirects it to a file. .mzo relocatable objects are not\n"
+        "supported (see maize-14 follow-on).\n"
+        "\n"
+        "options:\n"
+        "  -o <out_path>   write disassembly to out_path instead of stdout\n"
+        "  -h, --help      show this help and exit\n"
+        "\n"
+        "Exits 0 on a full clean decode. Exits 1 if the input cannot be opened,\n"
+        "is a .mzo object, or the sweep hits a truncated instruction tail near\n"
+        "end of file (any output already rendered is still written before\n"
+        "returning 1).\n"
+        "\n"
+        "An input path is required.\n";
+}
+
 int main(int argc, char **argv) {
     std::string out_path;
     std::string in_path;
@@ -546,7 +567,11 @@ int main(int argc, char **argv) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "-o" && i + 1 < argc) {
+        if (arg == "-h" || arg == "--help") {
+            print_usage(std::cout);
+            return 0;
+        }
+        else if (arg == "-o" && i + 1 < argc) {
             out_path = argv[++i];
         }
         else if (!arg.empty() && arg[0] == '-') {
@@ -564,7 +589,7 @@ int main(int argc, char **argv) {
     }
 
     if (!have_input) {
-        std::cerr << "usage: mzdis [-o out_path] <input>" << std::endl;
+        print_usage(std::cerr);
         return 1;
     }
 
