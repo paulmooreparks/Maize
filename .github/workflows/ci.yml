@@ -26,6 +26,28 @@ jobs:
       - name: C hello world end-to-end (cproc -> qbe -t maize -> mazm -> maize)
         run: scripts/run-ctest.sh --skip-build
 
+  linux-sanitizers:
+    runs-on: ubuntu-latest
+    env:
+      ASAN_OPTIONS: abort_on_error=1:detect_leaks=0
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build C toolchain (cproc + qbe + Maize target)
+        run: scripts/build-toolchain.sh
+
+      - name: Build (ASan+UBSan) and run asm suite
+        run: scripts/run-tests.sh --preset linux-asan-ubsan
+
+      - name: C toolchain end-to-end under ASan+UBSan
+        run: scripts/run-ctest.sh --preset linux-asan-ubsan --skip-build
+
   windows:
     runs-on: windows-latest
     steps:

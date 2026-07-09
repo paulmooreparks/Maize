@@ -87,6 +87,16 @@
       "inherits": ["linux-toolchain", "release-common"]
     },
     {
+      "name": "linux-asan-ubsan",
+      "displayName": "Linux (ASan + UBSan)",
+      "inherits": ["linux-toolchain", "debug-common"],
+      "cacheVariables": {
+        "MAIZE_SANITIZE": "ON",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
       "name": "macos-debug",
       "displayName": "macOS (Debug)",
       "inherits": ["macos-toolchain", "debug-common"]
@@ -104,6 +114,7 @@
     { "name": "windows-msys2-release", "configurePreset": "windows-msys2-release" },
     { "name": "linux-debug", "configurePreset": "linux-debug" },
     { "name": "linux-release", "configurePreset": "linux-release" },
+    { "name": "linux-asan-ubsan", "configurePreset": "linux-asan-ubsan" },
     { "name": "macos-debug", "configurePreset": "macos-debug" },
     { "name": "macos-release", "configurePreset": "macos-release" }
   ],
@@ -114,6 +125,7 @@
     { "name": "windows-msys2-release", "configurePreset": "windows-msys2-release" },
     { "name": "linux-debug", "configurePreset": "linux-debug" },
     { "name": "linux-release", "configurePreset": "linux-release" },
+    { "name": "linux-asan-ubsan", "configurePreset": "linux-asan-ubsan" },
     { "name": "macos-debug", "configurePreset": "macos-debug" },
     { "name": "macos-release", "configurePreset": "macos-release" }
   ]
