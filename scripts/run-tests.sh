@@ -263,6 +263,44 @@ run_test "reject_jmp_subreg"    "test_reject_jmp_subreg.mazm"    "full 64-bit wi
 run_test "nested_include"       "test_nested_include.mazm"       "nested include: PASS"   1
 run_test "address_fwdlabel"     "test_address_fwdlabel.mazm"     "address fwd-ref: PASS"  0
 
+# maize-72: per-reference undefined-label diagnostics. Several distinct undefined
+# labels referenced from distinct lines must each report at their OWN file:line, and a
+# label referenced from TWO different lines (undefined_beta, lines 14 and 19) must
+# report on BOTH lines rather than twice on the first and never on the second. The
+# generic run_test negative form only greps for a single substring, so this fixture
+# gets a bespoke check that asserts each expected file:line diagnostic is present.
+run_undef_multiref_test() {
+    name="undef_multiref"
+    TOTAL=$((TOTAL + 1))
+    src="test_reject_undef_multiref.mazm"
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+
+    log=$(mktemp)
+    if "$MAZM_EXE" "$asm_path" >"$log" 2>&1; then
+        ec=0
+    else
+        ec=$?
+    fi
+    actual=$(cat "$log")
+    rm -f "$log"
+
+    if [ "$ec" -ne 0 ] \
+        && printf '%s' "$actual" | grep -qE ":14: error: undefined label 'undefined_beta'" \
+        && printf '%s' "$actual" | grep -qE ":15: error: undefined label 'undefined_alpha'" \
+        && printf '%s' "$actual" | grep -qE ":19: error: undefined label 'undefined_beta'" \
+        && printf '%s' "$actual" | grep -qE ":20: error: undefined label 'undefined_gamma'"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: nonzero exit; diagnostics at lines 14, 15, 19, 20, each on its own site"
+        echo "        actual:   exit ${ec}; \"${actual}\""
+    fi
+}
+
+run_undef_multiref_test
+
 # --- maize-12: multi-TU assemble -> link -> run --------------------------------------
 # Two separately-assembled objects (link_a defines _start and imports from link_b)
 # are linked into one .mzx executable and run under maize.

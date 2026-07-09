@@ -108,7 +108,9 @@ namespace {
     maize::u_hword current_address {};
     std::unordered_map<std::string, maize::u_hword> labels {};
     /* Ordered by fixup address (maize-50) so undefined-label diagnostics come
-       out in source-reference order, deterministically. */
+       out in source-reference order, deterministically. fixup_locs (maize-72,
+       declared below once src_loc exists) parallels this map, keyed by the
+       same fixup address, holding the per-reference source location. */
     std::map<maize::u_hword, std::string> fixups {};
     std::map<maize::u_word, std::vector<u_byte>> memory_map {};
 
@@ -171,6 +173,13 @@ namespace {
     std::unordered_map<std::string, src_loc> label_decl_loc {};
     std::unordered_map<std::string, src_loc> label_ref_loc {};
     src_loc current_ref_loc {};
+
+    /* Per-fixup-entry source location (maize-72). Keyed by the same fixup
+       address as `fixups`, so each reference to an undefined label carries
+       its OWN site rather than sharing label_ref_loc's per-NAME first-
+       reference-only location. Recorded at fixup-record time (write_label)
+       while current_ref_loc still reflects the reference being written. */
+    std::map<maize::u_hword, src_loc> fixup_locs {};
 
     template <typename T> struct expression;
 
@@ -667,8 +676,11 @@ namespace {
                    keeps the max() placeholder. Report it instead of writing the
                    sentinel into the binary. */
                 if (value == std::numeric_limits<u_hword>::max()) {
-                    src_loc loc = label_ref_loc.contains(label)
-                        ? label_ref_loc[label]
+                    /* maize-72: per-fixup location, not label_ref_loc's
+                       per-name first-reference-only location, so each
+                       reference site gets its own diagnostic. */
+                    src_loc loc = fixup_locs.contains(pair.first)
+                        ? fixup_locs[pair.first]
                         : src_loc {current_file, 0};
                     fatal(loc.file, loc.line, "undefined label '" + label + "'");
                 }
@@ -2044,6 +2056,10 @@ namespace {
 
         if (value.h0 == std::numeric_limits<u_hword>::max()) {
             fixups[current_address] = label;
+            /* maize-72: capture THIS reference's location, not the label's
+               first-reference location, so N references to the same
+               undefined name each cite their own site. */
+            fixup_locs[current_address] = current_ref_loc;
         }
 
         return cpu::mm.write_hword(address, value.h0);

@@ -1,0 +1,21 @@
+; **********************************************************************************
+; Negative test for card maize-72: each undefined-label REFERENCE must be diagnosed
+; at its own source site, not all pointing at the first reference to a given name.
+;
+; This fixture references several DISTINCT undefined labels from distinct lines, and
+; references one label (undefined_beta) from TWO different lines to prove the specific
+; regression this card targets: before the fix, both undefined_beta diagnostics pointed
+; at the first reference's line and the second reference produced nothing.
+;
+; The test harness treats this file as ExpectAsmError: it passes when assembly fails.
+; **********************************************************************************
+
+$0000`0000:
+    CALL undefined_beta      ; undefined_beta, reference #1
+    CALL undefined_alpha     ; undefined_alpha, only reference
+    HALT
+
+loop:
+    JMP undefined_beta       ; undefined_beta, reference #2 -- must ALSO diagnose
+    JMP undefined_gamma      ; undefined_gamma, only reference
+    HALT
