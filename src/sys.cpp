@@ -389,7 +389,7 @@ namespace maize {
 
                     std::vector<u_byte> buf;
                     buf.resize(count);
-                    u_byte* bufvec = &buf[0];
+                    u_byte* bufvec = buf.data();
                     u_word retval = syscall::read(fd, reinterpret_cast<void*>(bufvec), count);
 
                     /* retval in [-4095,-1] is an -errno result (same predicate
@@ -420,7 +420,7 @@ namespace maize {
                     u_word count {regs::r2.w0};
 
                     std::vector<u_byte> str = mm.read(address, count);
-                    u_byte const* buf {&str[0]};
+                    u_byte const* buf {str.data()};
                     return syscall::write(fd, buf, count);
                 }
 
