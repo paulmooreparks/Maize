@@ -2,18 +2,20 @@
 # Compile + run the C hello-world through the full Maize C toolchain and diff its
 # stdout against the committed fixture (maize-62, maize-11 AC 6397 / 6399).
 #
-# Pipeline (maize-77 segmented .mzo -> mzld -> .mzx object model):
+# Pipeline (maize-77 segmented .mzo -> mzld -> .mzx object model). The whole C
+# compile pipeline itself lives in scripts/cc-maize.sh (maize-96): the SINGLE
+# canonical driver both CI and the operator's ~/bin/maize-cc call, so what CI runs
+# is exactly what the operator acceptance-tests with. Per fixture:
 #
-#   ctest/hello.c
-#     -> cpp -E               (expand #include; cproc-qbe implements none -- maize-74)
-#     -> cproc-qbe            (C11 -> QBE IL)
-#     -> normalize            (drop the `extern` call-linkage annotation; see below)
-#     -> qbe -t maize         (QBE IL -> mazm, with SECTION/GLOBAL/ALIGN/DREF)
-#     -> mazm -c              (body.mazm -> body.mzo relocatable object)
-#     -> mzld                 (crt0.mzo syscall.mzo puts.mzo body.mzo -> hello.mzx;
-#                              default entry _start; W^X, per-section alignment)
+#   ctest/<name>.c
+#     -> cc-maize.sh --compile-only -o <name>.mzx   (tr -> cpp -E -> cproc-qbe ->
+#                              normalize -> qbe -t maize -> mazm -c -> mzld over the
+#                              crt0/syscall/puts/errno runtime; entry _start; W^X)
 #     -> maize                (load_mzx sets RP=_start; execute; capture stdout)
-#     -> diff vs ctest/hello.expected
+#     -> diff vs ctest/<name>.expected
+#
+# The normalize sed, the cpp flags, the RT object set, and the mzld link order are
+# defined in cc-maize.sh and NOWHERE ELSE, so CI and maize-cc cannot drift apart.
 #
 # This is kept DISTINCT from run-tests.{sh,ps1} (the asm/ corpus harness) so a
 # codegen regression reports separately from an asm-suite regression (maize-61
@@ -23,12 +25,6 @@
 # returns a fixed nonzero constant is run and its process exit status ($?) is
 # captured and asserted, a code path separate from the stdout compare so an
 # exit-status regression (sys_exit / crt0 / maize.cpp) surfaces on its own.
-#
-# `extern` normalization: the pinned cproc (d1c53dd) emits `call extern $sym`, a
-# call-linkage annotation the pinned qbe (4420727) predates and rejects. In the
-# Maize single-TU whole-program model (decision 6411/6636) all symbols resolve in
-# mazm's one shared label table, so the annotation carries no meaning and is
-# normalized away deterministically here.
 #
 # Exit codes:
 #   0 - every C program produced its expected stdout
@@ -83,10 +79,14 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
     fi
 fi
 
-CPROC_QBE=$(resolve_exe "${CPROC_DIR}/cproc-qbe") || {
-    echo "run-ctest.sh: cproc-qbe not found; run scripts/build-toolchain.sh first." >&2; exit 2; }
-QBE=$(resolve_exe "${QBE_DIR}/obj/qbe") || {
-    echo "run-ctest.sh: qbe not found; run scripts/build-toolchain.sh first." >&2; exit 2; }
+# The whole C compile pipeline (tr -> cpp -> cproc-qbe -> normalize -> qbe -> mazm -c
+# -> mzld) lives in scripts/cc-maize.sh (maize-96); this harness drives it via
+# --compile-only so CI exercises the EXACT pipeline the operator acceptance-tests with.
+# run-ctest therefore no longer resolves cproc-qbe / qbe / the system cpp itself: the
+# driver owns those. It still needs mazm (to re-assemble the W^X probe's crt0.mzo),
+# maize (to run each linked image), and mzld (the W^X negative case).
+CC_MAIZE="${SCRIPT_DIR}/cc-maize.sh"
+[ -f "$CC_MAIZE" ] || { echo "run-ctest.sh: driver ${CC_MAIZE} not found." >&2; exit 2; }
 MAZM=$(resolve_exe "${BUILD_DIR}/mazm") || {
     echo "run-ctest.sh: mazm not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 MAIZE=$(resolve_exe "${BUILD_DIR}/maize") || {
@@ -94,107 +94,19 @@ MAIZE=$(resolve_exe "${BUILD_DIR}/maize") || {
 MZLD=$(resolve_exe "${BUILD_DIR}/mzld") || {
     echo "run-ctest.sh: mzld not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 
-# System preprocessor for #include expansion (maize-74). cproc-qbe's own front-end
-# does not implement #include (toolchain/cproc/pp.c errors on it), so a fixture or
-# runtime source that includes toolchain/rt/syscall.h is preprocessed by the system
-# cc/gcc first. Mirror build-toolchain.sh's compiler pick.
-CPP="${CC:-}"
-if [ -z "$CPP" ]; then
-    if command -v cc >/dev/null 2>&1; then CPP=cc; else CPP=gcc; fi
-fi
-command -v "$CPP" >/dev/null 2>&1 || {
-    echo "run-ctest.sh: no C preprocessor (cc/gcc) found for #include expansion." >&2; exit 2; }
-
 mkdir -p "${WORK_DIR}"
-
-# Compile one C translation unit through the full SEGMENTED pipeline to a .mzo:
-#   cpp -E (expand #include) -> cproc-qbe -> normalize -> qbe -t maize -> mazm -c
-# $1 = source path, $2 = tag for intermediates/logs. On success sets COMPILE_MZO to
-# the emitted <tag>.body.mzo and returns 0; on failure prints context and returns 1
-# (the caller decides whether that is a fixture FAIL or a setup exit). Shared by the
-# fixture compiler (compile_c) and the C-runtime build (errno.c) so both take the
-# identical path.
-compile_c_tu() {
-    _src="$1"
-    _tag="$2"
-    _lf="${WORK_DIR}/${_tag}.lf.c"
-    _pp="${WORK_DIR}/${_tag}.pp.c"
-    _ssa="${WORK_DIR}/${_tag}.ssa"
-    _norm="${WORK_DIR}/${_tag}.norm.ssa"
-    _body="${WORK_DIR}/${_tag}.body.mazm"
-    COMPILE_MZO="${WORK_DIR}/${_tag}.body.mzo"
-
-    # Defense in depth for CRLF checkouts (belt-and-suspenders with .gitattributes
-    # eol=lf): cproc is strict C11 and treats a bare CR as a stray token, so strip CR
-    # bytes first. A clean LF checkout makes this a no-op. (maize-62)
-    tr -d '\r' < "$_src" > "$_lf"
-
-    # Expand #include and include guards with the system preprocessor. -nostdinc keeps
-    # the search to toolchain/rt (freestanding: no system headers are pulled in); -P
-    # drops GNU line markers (cproc-qbe tolerates them, so -P is just for cleanliness).
-    if ! "$CPP" -E -P -nostdinc -I "$RT_DIR" "$_lf" > "$_pp" 2>"${WORK_DIR}/${_tag}.cpp.log"; then
-        echo "compile_c_tu: cpp failed for ${_tag}" >&2; cat "${WORK_DIR}/${_tag}.cpp.log" >&2; return 1
-    fi
-    if ! "$CPROC_QBE" < "$_pp" > "$_ssa" 2>"${WORK_DIR}/${_tag}.cproc.log"; then
-        echo "compile_c_tu: cproc-qbe failed for ${_tag}" >&2; cat "${WORK_DIR}/${_tag}.cproc.log" >&2; return 1
-    fi
-    # Normalize two IL-version-skew points between the pinned cproc and the pinned qbe:
-    #   - `<op> extern $sym` -> `<op> $sym`  (symbol-linkage annotation the pinned qbe
-    #     predates). cproc tags EVERY external-symbol operand `extern`, not only call
-    #     targets, and in the Maize linked-image model every `$sym` resolves through
-    #     mzld regardless, so the annotation carries no meaning and is stripped.
-    #   - `=<w|l> neg X` -> `=<w|l> sub 0, X`  (the `neg` unary op the pinned qbe's
-    #     parser predates; `sub 0, X` is the identity lowering, same class/semantics).
-    # NOTE: keep this sed in sync with the maize-cc local test harness's normalizer.
-    sed -e 's/extern \$/$/g' \
-        -e 's/\(=[wl]\) neg /\1 sub 0, /' "$_ssa" > "$_norm"
-    if ! "$QBE" -t maize "$_norm" > "$_body" 2>"${WORK_DIR}/${_tag}.qbe.log"; then
-        echo "compile_c_tu: qbe -t maize failed for ${_tag}" >&2; cat "${WORK_DIR}/${_tag}.qbe.log" >&2; return 1
-    fi
-    if ! "$MAZM" -c "$_body" >"${WORK_DIR}/${_tag}.mazm.log" 2>&1 || [ ! -f "$COMPILE_MZO" ]; then
-        echo "compile_c_tu: mazm -c failed for ${_tag}" >&2; cat "${WORK_DIR}/${_tag}.mazm.log" >&2; return 1
-    fi
-    return 0
-}
-
-# Assemble the freestanding runtime as relocatable objects once per run (maize-77
-# decision 7168): crt0/syscall/puts each become a .mzo, linked into every fixture's
-# .mzx. mazm -c writes <input>.mzo beside its input, so the sources are copied into
-# WORK_DIR first (keeping the source tree clean). A failure here is a setup failure.
-RT_OBJS=""
-for rt in crt0 syscall puts; do
-    cp "${RT_DIR}/${rt}.mazm" "${WORK_DIR}/${rt}.mazm"
-    if ! "$MAZM" -c "${WORK_DIR}/${rt}.mazm" >"${WORK_DIR}/${rt}.mazm.log" 2>&1 \
-    || [ ! -f "${WORK_DIR}/${rt}.mzo" ]; then
-        echo "run-ctest.sh: failed to assemble runtime object ${rt}.mazm:" >&2
-        cat "${WORK_DIR}/${rt}.mazm.log" >&2
-        exit 2
-    fi
-    RT_OBJS="${RT_OBJS} ${WORK_DIR}/${rt}.mzo"
-done
-
-# maize-74: the errno storage + errno-translating wrappers (read/write over the raw
-# sys_* stubs) are a C runtime source, not asm. Compile it through the same segmented
-# C pipeline as the fixtures and add its object to RT_OBJS, so every C image links
-# errno + the wrappers alongside crt0/syscall/puts. This is the first C object to join
-# the previously asm-only RT set (AC 7294). A failure here is a setup failure.
-if ! compile_c_tu "${RT_DIR}/errno.c" "rt_errno"; then
-    echo "run-ctest.sh: failed to compile C runtime object errno.c" >&2
-    exit 2
-fi
-RT_OBJS="${RT_OBJS} ${COMPILE_MZO}"
 
 FAIL_COUNT=0
 TOTAL=0
 
-# Compile a C fixture through the full SEGMENTED pipeline (maize-77):
-#   cproc-qbe -> normalize -> qbe -t maize -> mazm -c (body -> .mzo)
-#     -> mzld (crt0.mzo syscall.mzo puts.mzo body.mzo -> .mzx, default entry _start)
-# On success sets BIN to the linked .mzx and returns 0; on failure prints a [FAIL]
-# line, bumps FAIL_COUNT, and returns 1. Shared by the stdout runner (run_ctest), the
-# exit-status runner (run_exit_status_test), and the argv runner (run_args_test) so
-# all three exercise the identical toolchain path. The runtime is no longer cat-
-# prepended: it is assembled to objects (RT_OBJS, above) and linked.
+# Compile a C fixture to a runnable .mzx by delegating to the shared driver in
+# --compile-only mode (maize-96). cc-maize.sh owns the whole pipeline end to end
+# (tr -> cpp -> cproc-qbe -> normalize -> qbe -t maize -> mazm -c -> mzld over the
+# crt0/syscall/puts/errno runtime set); this harness just asks for the linked image
+# and runs it. On success sets BIN to the linked .mzx and returns 0; on failure prints
+# a [FAIL] line, bumps FAIL_COUNT, and returns 1. Shared by the stdout runner
+# (run_ctest), the exit-status runner (run_exit_status_test), and the argv runner
+# (run_args_test) so all three exercise the identical toolchain path.
 compile_c() {
     name="$1"
     src="${CTEST_DIR}/${name}.c"
@@ -205,16 +117,10 @@ compile_c() {
         return 1
     fi
 
-    # cpp -> cproc-qbe -> normalize -> qbe -t maize -> mazm -c (see compile_c_tu).
-    if ! compile_c_tu "$src" "$name"; then
-        echo "[FAIL] ${name}: C compile failed"
-        FAIL_COUNT=$((FAIL_COUNT + 1)); return 1
-    fi
-
     mzx="${WORK_DIR}/${name}.mzx"
-    if ! "$MZLD" -o "$mzx" ${RT_OBJS} "$COMPILE_MZO" >"${WORK_DIR}/${name}.mzld.log" 2>&1 \
-    || [ ! -f "$mzx" ]; then
-        echo "[FAIL] ${name}: mzld failed"; cat "${WORK_DIR}/${name}.mzld.log" >&2
+    if ! "$CC_MAIZE" --preset "$PRESET" --compile-only -o "$mzx" "$src" \
+        >"${WORK_DIR}/${name}.cc.log" 2>&1 || [ ! -f "$mzx" ]; then
+        echo "[FAIL] ${name}: C compile failed"; cat "${WORK_DIR}/${name}.cc.log" >&2
         FAIL_COUNT=$((FAIL_COUNT + 1)); return 1
     fi
     BIN="$mzx"
@@ -340,8 +246,19 @@ run_wx_reject_test() {
     expected="writable and executable"
     TOTAL=$((TOTAL + 1))
 
+    # Re-assemble crt0 to a .mzo inline. The shared RT-object loop moved into
+    # cc-maize.sh (maize-96), so this probe now builds its own CODE-only object base
+    # rather than reusing one the harness assembled.
+    cp "${RT_DIR}/crt0.mazm" "${WORK_DIR}/wx_crt0.mazm"
+    if ! "$MAZM" -c "${WORK_DIR}/wx_crt0.mazm" >"${WORK_DIR}/wx_crt0.mazm.log" 2>&1 \
+    || [ ! -f "${WORK_DIR}/wx_crt0.mzo" ]; then
+        echo "[FAIL] ${name}: could not assemble crt0.mzo probe base" >&2
+        cat "${WORK_DIR}/wx_crt0.mazm.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
     probe="${WORK_DIR}/wx_probe.mzo"
-    cp "${WORK_DIR}/crt0.mzo" "$probe"
+    cp "${WORK_DIR}/wx_crt0.mzo" "$probe"
     printf '\017' | dd of="$probe" bs=1 seek=53 count=1 conv=notrunc >/dev/null 2>&1
 
     log=$(mktemp)
