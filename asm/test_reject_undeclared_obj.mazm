@@ -1,0 +1,13 @@
+; maize-71: object-mode strict undeclared-reference reject.
+; `mystery` is referenced but is neither defined in this translation unit nor
+; declared EXTERN, so under the strict declared-interface model `mazm -c` must
+; reject it (naming the symbol and suggesting EXTERN) rather than silently
+; emitting an implicit import.
+
+SECTION CODE
+
+GLOBAL _start
+
+_start:
+    CALL mystery           ; undefined, undeclared: strict object mode rejects this
+    HALT

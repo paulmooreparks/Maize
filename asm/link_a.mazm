@@ -10,6 +10,8 @@
 SECTION CODE
 
 GLOBAL _start
+EXTERN msgB                    ; string defined in unit B (imported, ABS64 address load)
+EXTERN getlenB                 ; function defined in unit B (imported, ABS32 call target)
 
 _start:
     CALL main

@@ -1228,18 +1228,43 @@ object or executable with nothing but this section.
 ### Object-mode assembler directives
 
 In object mode (`-c`) the assembler never resolves a symbolic operand inline: every
-label reference becomes a relocation, and a reference to a label this unit does not
-define is **not** an error (it becomes an undefined, importable symbol). Content is
-partitioned into sections with these directives:
+label reference becomes a relocation the linker fills in. Object mode uses **strict
+declared interfaces**: a reference to a symbol this unit neither defines nor declares
+`EXTERN` is an error, so a typo is caught at assembly time rather than deferred to the
+linker. Content is partitioned into sections with these directives:
 
     SECTION CODE | RODATA | DATA | BSS   ; select the section subsequent content lands in
     GLOBAL name                          ; export `name` (GLOBAL binding); default is LOCAL
+    PUBLIC name                          ; export `name`; a co-equal alias of GLOBAL
+    EXTERN name                          ; declare `name` as an import defined in another unit
     ZERO n                               ; reserve n uninitialised bytes (only in BSS)
     DREF bytes label[+/-offset]          ; embed a relocatable pointer to `label` in data
     ALIGN n                              ; pad the section to an n-byte boundary (n a power of two)
 
 Defaults when no `SECTION` directive has been seen: content lands in CODE. Function
 labels (in CODE) get symbol type FUNC; data labels (in RODATA/DATA/BSS) get OBJECT.
+
+`GLOBAL` and `PUBLIC` are the same directive under two names: each exports the named
+symbol with GLOBAL binding, and both assemble to byte-identical object output. Use
+whichever reads better; `PUBLIC`/`EXTERN` mirror the familiar export/import pairing.
+
+`EXTERN name` declares that `name` is defined in another translation unit. A reference
+to an `EXTERN`'d symbol that this unit does not define becomes an import (an undefined
+symbol the linker resolves against a matching `GLOBAL`/`PUBLIC` export). `EXTERN` emits
+no bytes and opens no section; an `EXTERN`'d name that is never referenced emits no
+symbol at all. Declaring `EXTERN` for a name this unit *does* define is harmless (the
+local definition wins and the declaration is a no-op), so an interface fragment can be
+shared by every unit, including the one that defines the symbol. An export directive
+(`GLOBAL`/`PUBLIC`) naming a symbol the unit never defines is an error
+(`cannot export undefined symbol`).
+
+In flat (`-c` absent) assembly `GLOBAL`, `PUBLIC`, and `EXTERN` are inert no-ops and the
+`.mzb` output is byte-identical, with one refinement: flat mode has no linker, so a
+reference to an `EXTERN`'d symbol that is never defined in the same file is reported as
+`unresolved external 'name'`. The `--check` mode (used by the editor's live check)
+accepts an `EXTERN`'d-but-undefined reference silently, since a later link will satisfy
+it, but still reports an *undeclared* undefined reference as `undefined label 'name'`
+so typos stay visible while editing.
 
 `DREF` writes a data-resident pointer to `label`: `bytes` is 4 or 8, choosing a 32-bit
 (`R_MAIZE_ABS32`) or 64-bit (`R_MAIZE_ABS64`) reference. The assembler emits that many

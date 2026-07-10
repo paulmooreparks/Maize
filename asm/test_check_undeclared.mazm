@@ -1,0 +1,6 @@
+; maize-71: --check still rejects an UNDECLARED undefined reference, so typos
+; stay diagnosable in the editor. `ghost` is neither defined here nor declared
+; EXTERN, so the live check must report it.
+
+    CALL ghost             ; undefined and undeclared: --check reports undefined label
+    HALT

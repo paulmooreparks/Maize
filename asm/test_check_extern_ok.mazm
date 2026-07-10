@@ -1,0 +1,8 @@
+; maize-71: --check accepts a module fragment that declares EXTERN for its
+; cross-module references. A later link will satisfy `helper`, so the editor's
+; live check (mazm --check) must not squiggle this valid fragment.
+
+EXTERN helper
+
+    CALL helper            ; declared import: accepted under --check, no diagnostic
+    HALT

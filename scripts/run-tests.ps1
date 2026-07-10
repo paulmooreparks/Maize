@@ -88,6 +88,8 @@ $Tests = @(
     [pscustomobject]@{ Name = 'reject_jmp_subreg';   File = 'test_reject_jmp_subreg.mazm'; Expected = 'full 64-bit width';           Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'nested_include';      File = 'test_nested_include.mazm';    Expected = 'nested include: PASS';        Golden = $true }
     [pscustomobject]@{ Name = 'address_fwdlabel';    File = 'test_address_fwdlabel.mazm';  Expected = 'address fwd-ref: PASS';       Golden = $false }
+    # maize-71: flat-mode EXTERN'd-but-undefined reference has no linker to resolve it.
+    [pscustomobject]@{ Name = 'flat_unresolved_extern'; File = 'test_reject_unresolved_extern.mazm'; Expected = "unresolved external 'undefsym'"; Golden = $false; ExpectAsmError = $true }
 )
 
 function Trim-TrailingNewlines([string]$s) {
@@ -444,6 +446,55 @@ $results += Invoke-ObjPipelineTest 'obj_dref_addend'  'test_obj_dref_addend.mazm
 $results += Invoke-ObjPipelineTest 'obj_align'        'test_obj_align.mazm'        'align: PASS'
 $results += Invoke-ObjRejectTest   'obj_align_reject' 'test_reject_align.mazm'     'power of two'
 $results += Invoke-ObjBackjmpTest
+
+# --- maize-71: EXTERN / PUBLIC declared module interfaces ----------------------------
+# --check accepts a fragment that declares EXTERN for its cross-module references
+# (the editor must not squiggle a valid fragment) but still errors on an
+# UNDECLARED undefined reference. $expectOk = $true means --check must exit 0;
+# $false means it must exit nonzero with $expected.
+function Invoke-CheckTest($name, $src, $expectOk, $expected) {
+    $srcPath = Join-Path $AsmDir $src
+    $dst = Join-Path $TestRunDir $src
+    Copy-Item -Path $srcPath -Destination $dst -Force
+    $log = [System.IO.Path]::GetTempFileName()
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $MazmExe --check $dst *> $log
+    $ec = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    $out = Get-Content -Raw -Path $log -ErrorAction SilentlyContinue
+    Remove-Item -Force $log -ErrorAction SilentlyContinue
+    if ($expectOk) {
+        return [pscustomobject]@{ Name = $name; Pass = ($ec -eq 0); Expected = '--check accepts (exit 0)'; Actual = if ($ec -eq 0) { 'accepted' } else { "exit ${ec}: $(Trim-TrailingNewlines $out)" } }
+    }
+    $rejected = ($ec -ne 0) -and ($null -ne $out) -and ($out -like "*$expected*")
+    return [pscustomobject]@{ Name = $name; Pass = $rejected; Expected = "--check rejects with: $expected"; Actual = (Trim-TrailingNewlines $out) }
+}
+
+# PUBLIC is a co-equal alias of GLOBAL: two fixtures that differ ONLY in the
+# export directive keyword must assemble to byte-identical .mzo objects.
+function Invoke-PublicAliasTest {
+    $name = 'public_global_identical'
+    Emit-Object 'test_export_global.mazm'
+    Emit-Object 'test_export_public.mazm'
+    $g = Join-Path $TestRunDir 'test_export_global.mzo'
+    $p = Join-Path $TestRunDir 'test_export_public.mzo'
+    if ((-not (Test-Path $g)) -or (-not (Test-Path $p))) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'byte-identical .mzo'; Actual = 'mazm -c produced no .mzo' }
+    }
+    $gb = [System.IO.File]::ReadAllBytes($g)
+    $pb = [System.IO.File]::ReadAllBytes($p)
+    $same = ($gb.Length -eq $pb.Length)
+    if ($same) {
+        for ($i = 0; $i -lt $gb.Length; $i++) { if ($gb[$i] -ne $pb[$i]) { $same = $false; break } }
+    }
+    return [pscustomobject]@{ Name = $name; Pass = $same; Expected = 'byte-identical .mzo'; Actual = if ($same) { 'identical' } else { 'GLOBAL and PUBLIC .mzo differ' } }
+}
+
+$results += Invoke-ObjRejectTest 'obj_undeclared_ref' 'test_reject_undeclared_obj.mazm' "undefined symbol 'mystery'"
+$results += Invoke-CheckTest 'check_extern_ok'  'test_check_extern_ok.mazm'  $true  ''
+$results += Invoke-CheckTest 'check_undeclared' 'test_check_undeclared.mazm' $false "undefined label 'ghost'"
+$results += Invoke-PublicAliasTest
 
 # --- maize-14: mzdis disassembler ---------------------------------------------------
 # Round trip (AC6477/AC6478/AC6483): assemble a code-only, SECTION-clean fixture that

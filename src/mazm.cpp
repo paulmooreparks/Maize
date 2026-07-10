@@ -151,9 +151,20 @@ namespace {
        aligned to a section-relative boundary becomes absolutely aligned. */
     maize::u_word obj_sec_align[5] {1, 1, 1, 1, 1};
 
-    /* Names exported via the GLOBAL directive (GLOBAL binding); all other
-       defined labels stay LOCAL. */
+    /* Names exported via the GLOBAL / PUBLIC directive (GLOBAL binding); all
+       other defined labels stay LOCAL. GLOBAL and PUBLIC are co-equal aliases
+       feeding this same set (maize-71). */
     std::set<std::string> obj_exports {};
+
+    /* Names declared as imports via the EXTERN directive (maize-71). A
+       reference to an EXTERN name that the TU never defines is a legitimate
+       cross-module import (an SHN_UNDEF symbol mzld resolves against a matching
+       export), not an undefined-symbol error. In object mode obj_externs gates
+       the strict undefined check; in flat / check mode it lets the fixup pass
+       tell a declared import (unresolved external) apart from a typo (undefined
+       label). Recorded in every mode; consulted only when a reference is
+       unresolved, so flat output stays byte-identical. */
+    std::set<std::string> obj_externs {};
 
     /* Diagnostic state (maize-13). current_file / current_line track the source
        position of the byte stream; token_line remembers the line a token began on
@@ -276,6 +287,7 @@ namespace {
        one-parameter tokenizer. In flat mode their compilers are no-ops. */
     void section_compiler(token_tree &tree, std::string &opcode_str);
     void global_compiler(token_tree &tree, std::string &opcode_str);
+    void extern_compiler(token_tree &tree, std::string &opcode_str);
     void zero_compiler(token_tree &tree, std::string &opcode_str);
     void dref_compiler(token_tree &tree, std::string &opcode_str);
     void align_compiler(token_tree &tree, std::string &opcode_str);
@@ -290,6 +302,8 @@ namespace {
         { "CODE", {nullptr, code_compiler}},
         { "SECTION", {opcode_1param_tokenizer, section_compiler}},
         { "GLOBAL", {opcode_1param_tokenizer, global_compiler}},
+        { "PUBLIC", {opcode_1param_tokenizer, global_compiler}},
+        { "EXTERN", {opcode_1param_tokenizer, extern_compiler}},
         { "ZERO", {opcode_1param_tokenizer, zero_compiler}},
         { "DREF", {opcode_2param_tokenizer, dref_compiler}},
         { "ALIGN", {opcode_1param_tokenizer, align_compiler}}
@@ -682,6 +696,21 @@ namespace {
                     src_loc loc = fixup_locs.contains(pair.first)
                         ? fixup_locs[pair.first]
                         : src_loc {current_file, 0};
+
+                    /* maize-71: a reference declared EXTERN is a legitimate
+                       import. In --check (the editor's live check) a later link
+                       will satisfy it, so it must not squiggle: accept it and
+                       move on. In flat assembly there is no linker, so it is
+                       genuinely unresolvable and errors. An UNDECLARED undefined
+                       reference still errors `undefined label` in both, keeping
+                       typos diagnosable. */
+                    if (obj_externs.count(label)) {
+                        if (check_only) {
+                            continue;
+                        }
+                        fatal(loc.file, loc.line, "unresolved external '" + label
+                            + "': flat mode has no linker; assemble with -c to produce a relocatable object");
+                    }
                     fatal(loc.file, loc.line, "undefined label '" + label + "'");
                 }
 
@@ -2632,6 +2661,20 @@ namespace {
         obj_exports.insert(tree.value.begin()->key);
     }
 
+    /* EXTERN <symbol> (maize-71): declare an import. Unlike the export and
+       section directives, EXTERN records its name in EVERY mode, because the
+       flat / check fixup pass consults obj_externs to tell a declared import
+       apart from a typo. It still emits no bytes and opens no section, so flat
+       output stays byte-identical. An empty operand is fatal, matching GLOBAL.
+       EXTERN of a name the TU also defines locally is a redundant no-op (the
+       local definition wins, decision 7273), so it is never an error. */
+    void extern_compiler(token_tree &tree, std::string &opcode_str) {
+        if (tree.value.empty()) {
+            fatal(current_file, token_line, "EXTERN requires a symbol name");
+        }
+        obj_externs.insert(tree.value.begin()->key);
+    }
+
     void zero_compiler(token_tree &tree, std::string &opcode_str) {
         if (!emit_object) {
             return;
@@ -2895,6 +2938,24 @@ namespace {
             s.name_off = add_str(name);
             s.size = 0;
             if (val == std::numeric_limits<maize::u_hword>::max()) {
+                /* STRICT declared interfaces (maize-71): an undefined reference
+                   in object mode is only legal as a declared import. A name the
+                   TU exports but never defines is a broken export; a name that
+                   is neither defined nor EXTERN-declared is a typo or a missing
+                   declaration. Both error here, before any .mzo bytes are
+                   written; names are sorted, so the diagnostic is deterministic.
+                   A name in obj_externs (and not exported) falls through to a
+                   legitimate SHN_UNDEF import. */
+                src_loc loc = label_ref_loc.count(name)
+                    ? label_ref_loc[name]
+                    : src_loc {current_file, 0};
+                if (obj_exports.count(name)) {
+                    fatal(loc.file, loc.line, "cannot export undefined symbol '" + name + "'");
+                }
+                if (!obj_externs.count(name)) {
+                    fatal(loc.file, loc.line, "undefined symbol '" + name
+                        + "' (declare it EXTERN if defined in another module)");
+                }
                 s.section_index = SHN_UNDEF;
                 s.binding = BIND_GLOBAL;
                 s.type = TYPE_NOTYPE;

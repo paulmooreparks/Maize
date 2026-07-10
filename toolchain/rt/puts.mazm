@@ -32,6 +32,7 @@
 SECTION CODE
 
 GLOBAL puts
+EXTERN sys_write               ; sys_write is defined in syscall.mzo; declare the import (maize-71)
 
 puts:
     PUSH BP                 ; establish frame

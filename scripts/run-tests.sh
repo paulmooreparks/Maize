@@ -495,6 +495,80 @@ run_obj_pipeline_test "obj_align"        "test_obj_align.mazm"        "align: PA
 run_obj_reject_test   "obj_align_reject" "test_reject_align.mazm"     "power of two"
 run_obj_backjmp_test
 
+# --- maize-71: EXTERN / PUBLIC declared module interfaces ----------------------------
+# --check accepts a fragment that declares EXTERN for its cross-module references
+# (the editor must not squiggle a valid fragment), but still errors on an
+# UNDECLARED undefined reference so typos remain diagnosable. expect_ok=1 means
+# --check must exit 0; expect_ok=0 means it must exit nonzero with $expected.
+run_check_test() {
+    name="$1"
+    src="$2"
+    expect_ok="$3"
+    expected="$4"
+    TOTAL=$((TOTAL + 1))
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    log=$(mktemp)
+    if "$MAZM_EXE" --check "${TEST_RUN_DIR}/${src}" >"$log" 2>&1; then
+        ec=0
+    else
+        ec=$?
+    fi
+    actual=$(cat "$log")
+    rm -f "$log"
+    if [ "$expect_ok" -eq 1 ]; then
+        if [ "$ec" -eq 0 ]; then
+            echo "[PASS] ${name}"
+        else
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            echo "[FAIL] ${name} (expected --check to accept, exit 0)"
+            echo "        actual: exit ${ec}: \"${actual}\""
+        fi
+    else
+        if [ "$ec" -ne 0 ] && printf '%s' "$actual" | grep -qF "$expected"; then
+            echo "[PASS] ${name}"
+        else
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            echo "[FAIL] ${name} (expected --check reject: \"${expected}\")"
+            echo "        actual: exit ${ec}: \"${actual}\""
+        fi
+    fi
+}
+
+# PUBLIC is a co-equal alias of GLOBAL: two fixtures that differ ONLY in the
+# export directive keyword must assemble to byte-identical .mzo objects.
+run_public_alias_test() {
+    name="public_global_identical"
+    TOTAL=$((TOTAL + 1))
+    emit_object "test_export_global.mazm"
+    emit_object "test_export_public.mazm"
+    g="${TEST_RUN_DIR}/test_export_global.mzo"
+    p="${TEST_RUN_DIR}/test_export_public.mzo"
+    if [ ! -f "$g" ] || [ ! -f "$p" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm -c produced no .mzo)"
+        return
+    fi
+    if cmp -s "$g" "$p"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (GLOBAL and PUBLIC .mzo differ)"
+    fi
+}
+
+# Object-mode strict reject: an undefined non-EXTERN reference under `mazm -c`
+# exits nonzero, names the symbol, and suggests EXTERN.
+run_obj_reject_test "obj_undeclared_ref" "test_reject_undeclared_obj.mazm" "undefined symbol 'mystery'"
+# Flat-mode reject: an EXTERN'd-but-locally-undefined reference has no linker to
+# resolve it, so flat assembly exits nonzero with `unresolved external`.
+run_test "flat_unresolved_extern" "test_reject_unresolved_extern.mazm" "unresolved external 'undefsym'" 0 1
+# Check-mode: EXTERN'd import accepted (exit 0); undeclared undefined reference
+# still rejected with `undefined label`.
+run_check_test "check_extern_ok"   "test_check_extern_ok.mazm"   1 ""
+run_check_test "check_undeclared"  "test_check_undeclared.mazm"  0 "undefined label 'ghost'"
+# PUBLIC / GLOBAL byte-identical export encoding.
+run_public_alias_test
+
 # --- maize-14: mzdis disassembler ---------------------------------------------------
 # Round trip (AC6477/AC6478/AC6483): assemble a code-only, SECTION-clean fixture that
 # hits every addressing-mode family and operand-count shape, disassemble it, reassemble

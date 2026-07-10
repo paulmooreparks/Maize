@@ -63,7 +63,7 @@
             }
         },
         "directive": {
-            "match": "\\b(ADDRESS|LABEL|DATA|STRING|INCLUDE|CODE)\\b",
+            "match": "\\b(ADDRESS|LABEL|DATA|STRING|INCLUDE|CODE|SECTION|GLOBAL|PUBLIC|EXTERN|ZERO|DREF|ALIGN)\\b",
             "name": "keyword.control.directive.mazm"
         },
         "opcode": {

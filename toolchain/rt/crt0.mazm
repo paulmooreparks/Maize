@@ -33,6 +33,7 @@
 SECTION CODE
 
 GLOBAL _start
+EXTERN main                    ; main is defined in another object; declare the import (maize-71)
 _start:
     LD  @RS R0              ; R0 = argc            = [RS]
     LEA $08 RS R1           ; R1 = argv (&argv[0]) = RS + 8

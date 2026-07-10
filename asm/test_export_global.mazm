@@ -1,0 +1,11 @@
+; maize-71: GLOBAL half of the PUBLIC/GLOBAL byte-identical proof. This fixture
+; and test_export_public.mazm differ only in the export directive keyword; both
+; must assemble to a byte-identical .mzo (same BIND_GLOBAL binding, same
+; section_index), proving PUBLIC is a co-equal alias of GLOBAL.
+
+SECTION CODE
+
+GLOBAL widget
+
+widget:
+    RET

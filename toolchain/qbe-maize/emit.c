@@ -446,6 +446,55 @@ epilogue(E *e)
 	fputs("\tRET\n", e->f);
 }
 
+/* Declare every external symbol the function references (maize-71). Under
+ * mazm's strict object model an undefined reference must be declared EXTERN or
+ * it is an assembly-time error, so the runtime's cross-object CALLs (crt0 ->
+ * main, puts -> sys_write, and the compiled body -> puts) need import
+ * declarations. Every symbol reference reaches the emitter as a CAddr constant
+ * in an instruction operand (call target or data-symbol address), so scan both
+ * args of every instruction and emit `EXTERN <sym>` for each distinct global
+ * symbol. Local (block) labels are skipped. EXTERN of a symbol the module also
+ * defines is a harmless no-op in mazm (decision 7273), and EXTERN is inert in
+ * mazm's flat mode, so the declarations never change flat output. */
+static void
+emit_externs(E *e)
+{
+	Blk *b;
+	Ins *i;
+	Con *c;
+	Ref r;
+	uint32_t *seen, lbl;
+	uint nseen, cap, k;
+	int a;
+
+	seen = 0;
+	nseen = 0;
+	cap = 0;
+	for (b = e->fn->start; b; b = b->link)
+		for (i = b->ins; i != &b->ins[b->nins]; i++)
+			for (a = 0; a < 2; a++) {
+				r = i->arg[a];
+				if (rtype(r) != RCon)
+					continue;
+				c = &e->fn->con[r.val];
+				if (c->type != CAddr || c->local)
+					continue;
+				lbl = c->label;
+				for (k = 0; k < nseen; k++)
+					if (seen[k] == lbl)
+						break;
+				if (k < nseen)
+					continue;
+				if (nseen == cap) {
+					cap = cap ? cap * 2 : 8;
+					seen = realloc(seen, cap * sizeof *seen);
+				}
+				seen[nseen++] = lbl;
+				fprintf(e->f, "\tEXTERN %s\n", maize_sym(str(lbl)));
+			}
+	free(seen);
+}
+
 void
 maize_emitfn(Fn *fn, FILE *out)
 {
@@ -465,6 +514,7 @@ maize_emitfn(Fn *fn, FILE *out)
 	fputs("\tSECTION CODE\n", e->f);
 	if (fn->export)
 		fprintf(e->f, "\tGLOBAL %s\n", maize_sym(fn->name));
+	emit_externs(e);
 	fprintf(e->f, "%s:\n", maize_sym(fn->name));
 	prologue(e);
 

@@ -1,6 +1,11 @@
 ; maize-12: translation unit B of the multi-TU link test.
 ; Exports a read-only string (msgB) and a function (getlenB) that unit A
 ; (link_a.mazm) imports. msgB lives in RODATA; getlenB lives in CODE.
+;
+; maize-71: getlenB is exported with PUBLIC and msgB with GLOBAL, so this fixture
+; proves the two directives are co-equal aliases: a PUBLIC export (getlenB)
+; resolves unit A's EXTERN import, and a GLOBAL export (msgB) still assembles and
+; links alongside it.
 
 SECTION RODATA
 
@@ -11,7 +16,7 @@ msgB:
 
 SECTION CODE
 
-GLOBAL getlenB
+PUBLIC getlenB
 
 getlenB:
     CP $07 RV               ; return the length of msgB in RV

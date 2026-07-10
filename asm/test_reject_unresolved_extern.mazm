@@ -1,0 +1,9 @@
+; maize-71: flat-mode unresolved-external reject.
+; EXTERN declares an import, and it is inert at directive time in flat mode. But
+; flat assembly has no linker, so a reference to an EXTERN'd symbol that is never
+; defined in this translation unit is genuinely unresolvable and must error.
+
+EXTERN undefsym
+
+    CALL undefsym          ; declared EXTERN, but never defined and no linker to resolve it
+    HALT
