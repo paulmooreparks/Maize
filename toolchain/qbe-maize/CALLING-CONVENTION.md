@@ -86,3 +86,13 @@ main:
 
 The runtime's hand-written `puts` (`toolchain/rt/puts.mazm`) preserves `R6` across
 its `sys_write` call, demonstrating the callee-saved store/restore contract.
+
+## Syscall ABI
+
+The C-to-syscall boundary (the `SYS` instruction's argument/result registers, the
+`-errno` error convention, the raw-stub / errno-wrapper split, and the frozen hosted
+syscall-number table) is a separate contract, recorded in
+[`../rt/SYSCALL-ABI.md`](../rt/SYSCALL-ABI.md). In brief: `SYS` reads arguments from
+the same `R0..R9` this document assigns and writes its result to `RV`; a result in
+`[-4095, -1]` is `-errno`, which the C wrapper layer (`toolchain/rt/errno.c`) flips
+into `errno` + a `-1` return.

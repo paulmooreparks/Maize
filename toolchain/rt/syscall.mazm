@@ -1,35 +1,52 @@
 ; ==================================================================================
-; syscall.mazm -- freestanding syscall wrappers over SYS (maize-62, maize-11 "Runtime")
+; syscall.mazm -- raw syscall stubs over SYS (maize-62, maize-11 "Runtime"; maize-74)
 ;
-; Thin wrappers keyed to src/sys.cpp `sys::call` as it stands on master. The Maize C
-; ABI passes the first three integer arguments in R0, R1, R2 -- the exact registers
-; the SYS handlers read -- so each wrapper is just `SYS <id>; RET`. Counts are read as
-; full-64 (regs::r2.w0), confirming maize-56 landed; buffers are full-64 addresses
-; (regs::r1.w0), consistent with the flat-64 model.
+; This is the RAW layer of the Maize syscall C binding: one C-callable stub per
+; in-scope syscall, each `SYS <number>; RET`, exported so C (and hand-written asm)
+; can call it by name. The stubs do NO error interpretation; each returns whatever
+; the VM leaves in RV, verbatim. This is the musl `__syscall` role. The POSIX-named,
+; errno-translating convenience layer (read/write via __syscall_ret) lives one level
+; up in toolchain/rt/errno.c and calls these.
 ;
-;   sys_write(R0=fd, R1=buf, R2=count) -> RV   SYS $01  (bytes written)
+; The Maize C ABI passes the first three integer arguments in R0, R1, R2 (the exact
+; registers the SYS handlers read), and the VM lands the syscall result in RV
+; (src/cpu.cpp: regs::rv.w0 = sys::call(...)), which is also the C return register.
+; So each stub is just `SYS <id>; RET`. Counts are read as full-64 (regs::r2.w0,
+; maize-56); buffers are full-64 addresses (regs::r1.w0), per the flat-64 model.
+;
 ;   sys_read (R0=fd, R1=buf, R2=count) -> RV   SYS $00  (bytes read)
-;   exit(R0=code)                              SYS $3C  (sys_exit: terminate w/ status)
+;   sys_write(R0=fd, R1=buf, R2=count) -> RV   SYS $01  (bytes written)
+;   _exit(R0=code)                             SYS $3C  (sys_exit: terminate w/ status)
 ;
-; maize-77: assembled to syscall.mzo and linked by mzld. The three wrappers cross
-; the object boundary (puts and the C body CALL them), so each is GLOBAL; nothing
-; else here is exported.
+; The frozen hosted syscall-number table (ABI as of maize-74; see
+; toolchain/rt/SYSCALL-ABI.md) mirrors the Linux x86-64 table by construction:
+; read=$00, write=$01, exit=$3C, reboot=$A9 reserved.
+;
+; Naming (maize-74 decision 7305): the raw stubs keep the sys_* names; the POSIX
+; names (read, write) belong to the errno wrappers. The raw process-termination
+; stub is _exit (POSIX raw termination, no atexit/flush); the buffered stdlib exit()
+; is deferred to maize-76. crt0 inlines SYS $3C directly (it does not CALL _exit),
+; so _exit has no in-tree caller yet; it is exported for C programs that call it.
+;
+; maize-77: assembled to syscall.mzo and linked by mzld. The stubs cross the object
+; boundary (puts and the C body CALL them), so each is GLOBAL; nothing else is
+; exported.
 ; ==================================================================================
 
 SECTION CODE
 
-GLOBAL sys_write
 GLOBAL sys_read
-GLOBAL exit
+GLOBAL sys_write
+GLOBAL _exit
+
+sys_read:
+    SYS $00                 ; fd/buf/count already in R0/R1/R2 per the C ABI
+    RET
 
 sys_write:
     SYS $01                 ; fd/buf/count already in R0/R1/R2 per the C ABI
     RET
 
-sys_read:
-    SYS $00
-    RET
-
-exit:
+_exit:
     SYS $3C                 ; sys_exit(R0=code); does not return
-    RET                     ; unreachable (VM stops in $3C); kept for wrapper symmetry
+    RET                     ; unreachable (VM stops in $3C); kept for stub symmetry
