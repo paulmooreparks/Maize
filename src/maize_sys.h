@@ -24,6 +24,11 @@ namespace maize {
 		   sys_exit ran (e.g. a program that ended via HALT). Read by maize.cpp's
 		   main after cpu::run() returns. */
 		int exit_code();
+		/* maize-75: seed the brk heap from the loaded image's end address.
+		   Called by maize.cpp's main after the image is loaded and before the
+		   process-start block is built; sets heap_base = current_brk =
+		   align_up(image_end, 16). */
+		void init_heap(u_word image_end);
 	} // namespace sys
 
 	namespace syscall {

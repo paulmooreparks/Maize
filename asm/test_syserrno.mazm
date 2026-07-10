@@ -1,0 +1,79 @@
+; **********************************************************************************
+; Regression test for card maize-75: real -errno on syscall failure.
+;
+; Every wrong-direction or out-of-scope fd must return -EBADF (9) in the frozen
+; [-4095,-1] band, i.e. RV == 0xFFFFFFFFFFFFFFF7, NOT a bare -1. This is the value
+; __syscall_ret turns into errno==9 / return -1. The checks are host-independent
+; (operator decision 7397 hard-codes the Linux ABI numbers on every host):
+;
+;   write to fd 0 (stdin, read-only)      -> -EBADF
+;   write to fd 3 (real file I/O, M4)     -> -EBADF
+;   read  from fd 1 (stdout, write-only)  -> -EBADF
+;   read  from fd 2 (stderr, write-only)  -> -EBADF
+;   read  from fd 3 (real file I/O, M4)   -> -EBADF
+;
+; A read that returns -errno must also write NOTHING to the guest buffer; here the
+; buffer pointer aims at read-only test data and the value never changes.
+; **********************************************************************************
+
+$0000`0000:
+    CP $FFFFFFFFFFFFFFF7 R9   ; the expected -EBADF (9) result
+
+    ; ---- write to fd 0 (read-only) ----
+    CLR R0
+    CP pass_string R1
+    CP $05 R2
+    SYS $01
+    CMP R9 RV
+    JNZ fail
+
+    ; ---- write to fd 3 (out of scope) ----
+    CP $03 R0
+    SYS $01
+    CMP R9 RV
+    JNZ fail
+
+    ; ---- read from fd 1 (write-only) ----
+    CP $01 R0
+    SYS $00
+    CMP R9 RV
+    JNZ fail
+
+    ; ---- read from fd 2 (write-only) ----
+    CP $02 R0
+    SYS $00
+    CMP R9 RV
+    JNZ fail
+
+    ; ---- read from fd 3 (out of scope) ----
+    CP $03 R0
+    SYS $00
+    CMP R9 RV
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1
+    CP $0F R2               ; 15 bytes ("syserrno: PASS\n")
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $0F R2               ; 15 bytes ("syserrno: FAIL\n")
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "syserrno: PASS\n\0"
+
+fail_string:
+    STRING "syserrno: FAIL\n\0"

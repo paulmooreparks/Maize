@@ -1,11 +1,28 @@
 #include "maize.h"
 // #include "maize_sys.h"
+#include <cerrno>
 
 /* This is all very broken right now, but I'm going to replace it with a sys_call architecture instead. */
 
 namespace maize {
     namespace syscall {
-#ifdef __linux__ 
+        /* maize-75: Linux-numbered errno values, HARD-CODED so a guest sees the
+           same code on every host (operator decision 7397). The bad-fd cases are
+           detected here and returned as -EBADF directly rather than deferring to
+           the host kernel; only a real host I/O failure on an in-scope stdio fd
+           differs (Linux passes its own errno through verbatim, which is
+           numerically identical to the ABI; Windows synthesizes -EIO). */
+        namespace {
+            constexpr int abi_ebadf {9};
+            constexpr int abi_eio {5};
+
+            /* Fold an errno code into the frozen [-4095,-1] result band. */
+            inline u_word neg_errno(int e) {
+                return static_cast<u_word>(-static_cast<long>(e));
+            }
+        }
+
+#ifdef __linux__
         namespace {
             void _init() {
             }
@@ -15,11 +32,32 @@ namespace maize {
         }
 
         u_word read(u_word fd, void* buf, u_word count) {
-            return ::read(fd, buf, count);
+            if (fd == 1 || fd == 2) {
+                return neg_errno(abi_ebadf);   // write-only stdio fds
+            }
+            if (fd >= 3) {
+                return neg_errno(abi_ebadf);   // real file I/O is out of scope (M4)
+            }
+            long r = ::read(static_cast<int>(fd), buf, count);
+            if (r < 0) {
+                // Host Linux errno is numerically identical to the Maize ABI.
+                return neg_errno(errno);
+            }
+            return static_cast<u_word>(r);
         }
 
         u_word write(u_word fd, const void* buf, u_word count) {
-            return ::write(fd, buf, count);
+            if (fd == 0) {
+                return neg_errno(abi_ebadf);   // stdin, read-only
+            }
+            if (fd >= 3) {
+                return neg_errno(abi_ebadf);   // real file I/O is out of scope (M4)
+            }
+            long r = ::write(static_cast<int>(fd), buf, count);
+            if (r < 0) {
+                return neg_errno(errno);
+            }
+            return static_cast<u_word>(r);
         }
 #elif _WIN32
         namespace {
@@ -221,7 +259,8 @@ namespace maize {
                     DWORD bytes_read {0};
 
                     if (!ReadFile(hStdin, cursor, this_chunk, &bytes_read, nullptr)) {
-                        return (u_word)-1;
+                        // No host errno; synthesize the ABI I/O-failure code.
+                        return neg_errno(abi_eio);
                     }
 
                     total_read += bytes_read;
@@ -239,15 +278,15 @@ namespace maize {
             }
 
             if (fd == 1 || fd == 2) {
-                return (u_word)-1;
+                return neg_errno(abi_ebadf);   // write-only stdio fds
             }
 
-            return -1;
+            return neg_errno(abi_ebadf);       // real file I/O is out of scope (M4)
         }
 
         u_word write(u_word fd, const void* buf, u_word count) {
             if (fd == 0) {
-                return (u_word)-1;
+                return neg_errno(abi_ebadf);   // stdin, read-only
             }
 
             if (fd < 3) {
@@ -265,7 +304,8 @@ namespace maize {
                     DWORD bytes_written {0};
 
                     if (!WriteFile(hStdHandle, cursor, this_chunk, &bytes_written, nullptr)) {
-                        return (u_word)-1;
+                        // No host errno; synthesize the ABI I/O-failure code.
+                        return neg_errno(abi_eio);
                     }
 
                     total_written += bytes_written;
@@ -282,7 +322,7 @@ namespace maize {
                 return total_written;
             }
 
-            return static_cast<u_word>(-1);
+            return neg_errno(abi_ebadf);       // real file I/O is out of scope (M4)
         }
 
 #else 
@@ -301,10 +341,33 @@ namespace maize {
                after cpu::run() returns and returns it as the host process's
                own exit status. */
             int exit_status = 0;
+
+            /* maize-75: brk heap bookkeeping. Maize memory is sparse and lazily
+               zero-filled, so brk allocates nothing; it moves a break value
+               between heap_base (the floor, = align_up(end-of-image,16)) and
+               HEAP_CEILING, enforcing those bounds. init_heap seeds both from
+               the loaded image's high-water mark before the process-start block
+               is built. */
+            u_word heap_base = 0;
+            u_word current_brk = 0;
+
+            /* Fixed ceiling (operator decision 7396). Reserves the top address
+               region below TOP (0xFFFFFFFFFFFFFFF8) for the descending stack; a
+               brk request above this returns the current break unchanged, giving
+               sbrk/malloc (maize-76) a real, detectable failure mode. */
+            constexpr u_word HEAP_CEILING = 0xFFFFFFFF00000000ull;
         }
 
         int exit_code() {
             return exit_status;
+        }
+
+        void init_heap(u_word image_end) {
+            /* align_up(image_end, 16): the heap floor sits on a 16-byte boundary
+               at or above the last byte of the loaded image. */
+            u_word aligned = (image_end + 15u) & ~static_cast<u_word>(15);
+            heap_base = aligned;
+            current_brk = aligned;
         }
 
         void init() {
@@ -317,7 +380,12 @@ namespace maize {
             switch (syscall_id) {
                 /* sys_read */
                 case 0x0000U: {
-                    u_word fd {regs::r0.w0};
+                    /* fd is a 32-bit C `int`; the Maize C ABI materializes it in
+                       the low half of R0 (e.g. `CP $01 R0.H0`) and leaves the
+                       upper 32 bits undefined when the register is reused, so
+                       read fd from the low 32 bits (maize-75). address/count stay
+                       full-64 (maize-56). */
+                    u_word fd {regs::r0.w0 & 0xFFFFFFFFU};
                     u_word address {regs::r1.w0};
                     u_word count {regs::r2.w0};
 
@@ -326,16 +394,30 @@ namespace maize {
                     u_byte* bufvec = &buf[0];
                     u_word retval = syscall::read(fd, reinterpret_cast<void*>(bufvec), count);
 
-                    for (u_word i = 0; i < count; ++i, ++address) {
-                        cpu::mm.write_byte(address, bufvec[i]);
+                    /* retval in [-4095,-1] is an -errno result (same predicate
+                       __syscall_ret uses): return it and write nothing to guest
+                       memory rather than spilling the buffer. */
+                    if (retval > static_cast<u_word>(-4096)) {
+                        return retval;
                     }
 
-                    break;
+                    /* Copy only the bytes actually read (retval), not the full
+                       requested count; a short read must not spill the
+                       uninitialized buffer tail. EOF (retval == 0) copies
+                       nothing. */
+                    for (u_word i = 0; i < retval; ++i) {
+                        cpu::mm.write_byte(address + i, bufvec[i]);
+                    }
+
+                    return retval;
                 }
 
                 /* sys_write */
                 case 0x0001U: {
-                    u_word fd {regs::r0.w0};
+                    /* fd is a 32-bit C `int` in the low half of R0 (see sys_read);
+                       read it from the low 32 bits so a stale upper half from a
+                       reused register cannot masquerade as an out-of-range fd. */
+                    u_word fd {regs::r0.w0 & 0xFFFFFFFFU};
                     u_word address {regs::r1.w0};
                     u_word count {regs::r2.w0};
 
@@ -356,6 +438,33 @@ namespace maize {
                     exit_status = static_cast<int>(regs::r0.w0 & 0xFFU);
                     cpu::power_off();
                     break;
+                }
+
+                /* sys_brk (maize-75): move the heap break. R0 = requested new
+                   break (0 queries). Returns the current (possibly unchanged)
+                   break and NEVER returns -errno: the returned break is a low
+                   address that cannot collide with the [-4095,-1] band, so brk is
+                   exempt from the error convention (operator decisions 7392/7396).
+                   A request below heap_base or above HEAP_CEILING leaves the break
+                   unchanged, the enforced failure mode sbrk/malloc detects
+                   (maize-76). Because Maize memory is sparse and lazily
+                   zero-filled, no allocation happens here; only the break value
+                   moves. */
+                case 0x000CU: {
+                    u_word requested {regs::r0.w0};
+
+                    if (requested == 0) {
+                        return current_brk;             // query idiom
+                    }
+                    if (requested < heap_base) {
+                        return current_brk;             // below the floor: unchanged
+                    }
+                    if (requested > HEAP_CEILING) {
+                        return current_brk;             // over the ceiling: unchanged
+                    }
+
+                    current_brk = requested;            // valid: set and return the new break
+                    return current_brk;
                 }
 
                 /* sys_reboot */

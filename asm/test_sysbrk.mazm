@@ -1,0 +1,80 @@
+; **********************************************************************************
+; Regression test for card maize-75: the brk heap syscall (SYS $0C).
+;
+; NOTE: the syscall is `brk` but asm/test_brk.mazm is already taken by the BRK
+; *instruction* test (card maize-10, a breakpoint no-op). To avoid clobbering that
+; coverage this fixture is named test_sysbrk and prints "sysbrk: PASS".
+;
+; SYS $0C contract (operator decisions 7392/7396):
+;   R0 = 0            -> RV = current break (query idiom); initial break B is
+;                        align_up(end-of-image, 16), discovered at runtime.
+;   R0 = B + K        -> RV = B + K (valid set; the new break).
+;   store/load in [B, B+K) round-trips (memory is physically present).
+;   R0 < heap_base    -> RV = current break, UNCHANGED (below the floor).
+;   R0 > HEAP_CEILING -> RV = current break, UNCHANGED (over the ceiling).
+;   brk NEVER returns a value in [-4095,-1]: every RV above is a low address,
+;   proven by the exact-equality checks below.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- query: discover the initial break B ----
+    CLR R0
+    SYS $0C
+    CP RV R3                 ; R3 = B (heap_base = align_up(end-of-image,16))
+
+    ; ---- set B + 0x100 ----
+    CP R3 R4
+    ADD $0100 R4             ; R4 = B + 0x100 (the expected new break)
+    CP R4 R0
+    SYS $0C
+    CMP R4 RV                ; RV must equal the requested new break
+    JNZ fail
+
+    ; ---- store/load round-trip inside [B, B+0x100) ----
+    CP $CAFEF00DDEADBEEF R7   ; a full 64-bit sentinel
+    ST R7 @R3                ; store at the heap base
+    LD @R3 R8
+    CMP R7 R8                ; must read back exactly what we wrote
+    JNZ fail
+
+    ; ---- below the floor: request B - 0x10, break must stay B + 0x100 ----
+    CP R3 R5
+    SUB $10 R5               ; R5 = B - 0x10  (< heap_base)
+    CP R5 R0
+    SYS $0C
+    CMP R4 RV                ; unchanged: still B + 0x100
+    JNZ fail
+
+    ; ---- over the ceiling: request > HEAP_CEILING, break must stay B + 0x100 ----
+    CP $FFFFFFFFFFFFFF00 R6   ; well above HEAP_CEILING (0xFFFFFFFF00000000)
+    CP R6 R0
+    SYS $0C
+    CMP R4 RV                ; unchanged: still B + 0x100
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1
+    CP $0D R2               ; 13 bytes ("sysbrk: PASS\n")
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $0D R2               ; 13 bytes ("sysbrk: FAIL\n")
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "sysbrk: PASS\n\0"
+
+fail_string:
+    STRING "sysbrk: FAIL\n\0"

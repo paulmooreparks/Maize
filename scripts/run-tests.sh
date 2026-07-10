@@ -252,6 +252,8 @@ run_test "test_call_ind"     "test_call_ind.mazm"     "call ind: PASS"          
 run_test "test_setint"       "test_setint.mazm"       "setint: PASS"                  0
 run_test "test_outr_in"      "test_outr_in.mazm"      "outr/in: PASS"                 0
 run_test "test_brk"          "test_brk.mazm"          "brk: PASS"                     0
+run_test "test_sysbrk"       "test_sysbrk.mazm"       "sysbrk: PASS"                  0
+run_test "test_syserrno"     "test_syserrno.mazm"     "syserrno: PASS"                0
 run_test "test_tstind"       "test_tstind.mazm"       "tstind: PASS"                  0
 run_test "reject_bad_register"  "test_reject_badreg.mazm"        "unknown register 'R99'" 0 1
 run_test "reject_bad_literal"   "test_reject_badliteral.mazm"    "malformed hex literal"  0 1
@@ -300,6 +302,41 @@ run_undef_multiref_test() {
 }
 
 run_undef_multiref_test
+
+# --- maize-75: sys_read byte-count fix (needs a known stdin) --------------------------
+# The generic run_test gives no stdin, so this bespoke runner pipes "hello" and
+# checks the program echoes exactly the bytes read plus an EOF marker: "hello|EOF".
+# The old fall-through-to-0 bug (and any short-read tail spill or nonzero EOF
+# return) produces different output, so a byte-exact match gates the fix.
+run_sysread_test() {
+    name="sysread_count"
+    expected="hello|EOF"
+    TOTAL=$((TOTAL + 1))
+    src="test_sysread.mazm"
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+    if out=$(printf 'hello' | "$MAIZE_EXE" "$bin_path" 2>/dev/null); then
+        me=0
+    else
+        me=$?
+    fi
+    if [ "$me" -eq 0 ] && [ "$out" = "$expected" ]; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: \"${expected}\""
+        echo "        actual:   \"${out}\" (exit ${me})"
+    fi
+}
+
+run_sysread_test
 
 # --- maize-12: multi-TU assemble -> link -> run --------------------------------------
 # Two separately-assembled objects (link_a defines _start and imports from link_b)

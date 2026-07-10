@@ -49,11 +49,23 @@ long __syscall_ret(unsigned long r) {
 future threading card, maize-74 OQ3). The wrapper signature does not change if `errno`
 later becomes thread-local.
 
-**Known gap (maize-75):** the VM does not yet produce real `-errno` codes. Today a
-failing call returns a bare `-1`, which still lands in `[-4095, -1]`, so the
-translation MECHANISM runs and `errno` becomes `1` on error. maize-75 makes the VM
-return the correct code (and fixes `sys_read`, whose `case $00` currently falls
-through to `return 0` instead of the byte count). The wrapper does not change then.
+**Closed by maize-75:** the VM now produces real `-errno` codes in the `[-4095, -1]`
+band. A wrong-direction or nonexistent fd (`write` to fd 0, `read` from fd 1/2, either
+to fd >= 3) returns `-EBADF` (9); a real host I/O failure on the in-scope stdio fds
+returns the host errno verbatim on Linux (numerically identical to the ABI) and a
+synthesized `-EIO` (5) on Windows. `sys_read` (`case $00`) now returns the byte count
+(it previously fell through to `return 0`) and copies only the bytes actually read, so
+a short read no longer spills the uninitialized buffer tail into guest memory. The
+wrapper layer (`__syscall_ret`) is unchanged.
+
+**`brk` is exempt from the errno convention.** `sys_brk` ($0C) always returns the
+current (possibly unchanged) break, never `-errno`: the break is a low address that
+cannot land in the `[-4095, -1]` band, and failure is detected by the caller comparing
+the returned break to the requested one (the libc `sbrk` wrapper, maize-76).
+
+**EFAULT is never produced.** Maize memory is sparse and lazily zero-filled, so every
+guest address is physically valid and a bad-pointer syscall cannot fault. This is an
+honest deviation from Linux, recorded rather than faked.
 
 ## Raw layer vs wrapper layer
 
@@ -76,13 +88,14 @@ Mirrors the Linux x86-64 table by construction. Frozen as of maize-74:
 |--------|--------|------|--------|
 | `$00` | `sys_read` | `R0`=fd, `R1`=buf, `R2`=count | `RV`=bytes read |
 | `$01` | `sys_write` | `R0`=fd, `R1`=buf, `R2`=count | `RV`=bytes written |
+| `$0C` | `sys_brk` | `R0`=new break (0=query) | `RV`=new (or current) break; never `-errno` |
 | `$3C` | `_exit` (`sys_exit`) | `R0`=code | does not return |
 | `$A9` | `sys_reboot` | reserved (VM stub) | reserved |
 
 ## Numbering policy
 
 - Mirror the Linux x86-64 number for any call that has a Linux equivalent (for
-  example `brk=$0C`, reserved for maize-75's heap).
+  example `brk=$0C`, the heap primitive landed by maize-75).
 - Reserve a Maize-private high block for calls with no Linux equivalent.
 - This hosted SYS table (the VM acting as kernel) is a namespace **distinct** from the
   eventual guest-OS `INT $80` table. Freezing the SYS numbers here does not bind that

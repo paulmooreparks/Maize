@@ -15,7 +15,7 @@ using namespace maize;
    segment's file bytes to its load address, zero-fill NOBITS/uninitialized
    tails, and set PC to the recorded entry. Returns false if the buffer is not a
    .mzx image so the caller can fall back to the legacy flat load. */
-static bool load_mzx(const std::vector<char> &buf) {
+static bool load_mzx(const std::vector<char> &buf, u_word &image_end) {
 	using namespace maize::obj;
 
 	if (buf.size() < MZX_HEADER_SIZE) {
@@ -53,6 +53,13 @@ static bool load_mzx(const std::vector<char> &buf) {
 		/* Zero-fill the NOBITS / uninitialized tail (BSS, or mem_size > file_size). */
 		for (std::uint64_t j = file_size; j < mem_size; ++j) {
 			cpu::mm.write_byte(vaddr + j, static_cast<u_byte>(0));
+		}
+
+		/* maize-75: track the image high-water mark so the heap base can sit
+		   just past the last loaded byte across every segment. */
+		u_word seg_end = static_cast<u_word>(vaddr + mem_size);
+		if (seg_end > image_end) {
+			image_end = seg_end;
 		}
 	}
 
@@ -326,12 +333,14 @@ int main(int argc, char *argv[]) {
 
 	/* Additive .mzx branch (maize-12). Any non-.mzx image falls through to the
 	   legacy flat load-at-0 path, byte for byte, preserving flat .mzb support. */
-	if (!load_mzx(buf)) {
+	maize::u_word image_end {0};
+	if (!load_mzx(buf, image_end)) {
 		maize::u_word address {0x0000000000000000};
 		for (char c : buf) {
 			cpu::mm.write_byte(address, static_cast<u_byte>(c));
 			++address;
 		}
+		image_end = static_cast<maize::u_word>(buf.size());
 	}
 
 	/* card maize-60 (amends maize-57): process-start contract. Build a System V-style
@@ -345,6 +354,11 @@ int main(int argc, char *argv[]) {
 	   block into R0/R1/R2 before calling main. The other reset guarantees
 	   (guaranteed-zero registers, no wraparound, RP set per load path -- load_mzx
 	   records the .mzx entry, a flat image leaves RP at 0) are unchanged. */
+	/* maize-75: seed the brk heap floor (align_up(image_end,16)) from the loaded
+	   image's high-water mark, BEFORE the process-start block is built near TOP.
+	   SYS $0C moves the break above this floor; the two regions never meet. */
+	sys::init_heap(image_end);
+
 	build_process_start_block(guest_argv, env_entries);
 
 	/* card maize-10, Decision D6465: a single always-registered loopback test device,

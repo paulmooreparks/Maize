@@ -1,0 +1,51 @@
+; **********************************************************************************
+; Regression test for card maize-75: sys_read (SYS $00) returns the byte count.
+;
+; Driven with a known stdin ("hello") by scripts/run-tests.sh. The program:
+;   1. reads up to 16 bytes from fd 0 into a scratch buffer -> RV = bytes read;
+;   2. echoes exactly RV bytes back to fd 1;
+;   3. reads again (the pipe is now at EOF) -> RV must be 0, so the second echo
+;      writes NOTHING;
+;   4. writes a fixed "|EOF\n" marker.
+;
+; With stdin "hello" the total stdout is "hello|EOF". The old defects both break
+; this: the fall-through-to-0 bug made step 1's RV always 0 (no "hello"); a
+; short-read that copied the full 16-byte count would spill the buffer tail, and a
+; non-zero EOF return would inject bytes between "hello" and the marker. Only the
+; corrected byte-count + min(retval,count) copy prints exactly "hello|EOF".
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- read #1 from fd 0 ----
+    CLR R0
+    CP $8000 R1             ; scratch buffer (well past the image)
+    CP $10 R2               ; request up to 16 bytes
+    SYS $00
+    CP RV R5                ; R5 = bytes actually read
+
+    ; ---- echo exactly RV bytes to fd 1 ----
+    CP $01 R0
+    CP $8000 R1
+    CP R5 R2
+    SYS $01
+
+    ; ---- read #2: pipe is at EOF, RV must be 0 ----
+    CLR R0
+    CP $8000 R1
+    CP $10 R2
+    SYS $00
+    CP RV R2                ; echo count = RV (0 at EOF -> writes nothing)
+    CP $01 R0
+    CP $8000 R1
+    SYS $01
+
+    ; ---- fixed end marker ----
+    CP $01 R0
+    CP marker R1
+    CP $05 R2               ; 5 bytes ("|EOF\n")
+    SYS $01
+    HALT
+
+; **********************************************************************************
+marker:
+    STRING "|EOF\n\0"
