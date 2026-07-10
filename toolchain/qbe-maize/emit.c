@@ -490,7 +490,7 @@ emit_externs(E *e)
 					seen = realloc(seen, cap * sizeof *seen);
 				}
 				seen[nseen++] = lbl;
-				fprintf(e->f, "\tEXTERN %s\n", maize_sym(str(lbl)));
+				fprintf(e->f, "EXTERN %s\n", maize_sym(str(lbl)));
 			}
 	free(seen);
 }
@@ -511,9 +511,9 @@ maize_emitfn(Fn *fn, FILE *out)
 	 * and export it when QBE marks it visible, so the runtime's cross-object
 	 * CALL (e.g. crt0 -> main) resolves through mzld. Both directives are inert
 	 * no-ops in mazm's flat mode (decision 7167). */
-	fputs("\tSECTION CODE\n", e->f);
+	fputs("SECTION CODE\n", e->f);
 	if (fn->export)
-		fprintf(e->f, "\tGLOBAL %s\n", maize_sym(fn->name));
+		fprintf(e->f, "GLOBAL %s\n", maize_sym(fn->name));
 	emit_externs(e);
 	fprintf(e->f, "%s:\n", maize_sym(fn->name));
 	prologue(e);

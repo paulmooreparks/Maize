@@ -151,11 +151,11 @@ data_section_kind(void)
 static void
 emit_preamble(const char *kind, FILE *f)
 {
-	fprintf(f, "\tSECTION %s\n", kind);
+	fprintf(f, "SECTION %s\n", kind);
 	if (cur_align > 1)
-		fprintf(f, "\tALIGN %d\n", cur_align);
+		fprintf(f, "ALIGN %d\n", cur_align);
 	if (cur_export)
-		fprintf(f, "\tGLOBAL %s\n", maize_sym(cur_name));
+		fprintf(f, "GLOBAL %s\n", maize_sym(cur_name));
 	fprintf(f, "%s:\n", maize_sym(cur_name));
 }
 
