@@ -380,12 +380,10 @@ namespace maize {
             switch (syscall_id) {
                 /* sys_read */
                 case 0x0000U: {
-                    /* fd is a 32-bit C `int`; the Maize C ABI materializes it in
-                       the low half of R0 (e.g. `CP $01 R0.H0`) and leaves the
-                       upper 32 bits undefined when the register is reused, so
-                       read fd from the low 32 bits (maize-75). address/count stay
-                       full-64 (maize-56). */
-                    u_word fd {regs::r0.w0 & 0xFFFFFFFFU};
+                    /* fd is a 32-bit C `int` carried in R0.H0 (the Maize C ABI
+                       materializes it there, e.g. `CP $01 R0.H0`), so read the
+                       low-32 subregister; address/count stay full-64 (maize-56). */
+                    u_word fd {regs::r0.h0};
                     u_word address {regs::r1.w0};
                     u_word count {regs::r2.w0};
 
@@ -414,10 +412,10 @@ namespace maize {
 
                 /* sys_write */
                 case 0x0001U: {
-                    /* fd is a 32-bit C `int` in the low half of R0 (see sys_read);
-                       read it from the low 32 bits so a stale upper half from a
-                       reused register cannot masquerade as an out-of-range fd. */
-                    u_word fd {regs::r0.w0 & 0xFFFFFFFFU};
+                    /* fd is a 32-bit C `int` in R0.H0 (see sys_read); read the
+                       low-32 subregister so a stale upper half from a reused
+                       register cannot masquerade as an out-of-range fd. */
+                    u_word fd {regs::r0.h0};
                     u_word address {regs::r1.w0};
                     u_word count {regs::r2.w0};
 
