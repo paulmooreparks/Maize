@@ -197,8 +197,9 @@ seljmp(Blk *b, Fn *fn)
 void
 maize_isel(Fn *fn)
 {
-	Blk *b;
+	Blk *b, **sb;
 	Ins *i;
+	Phi *p;
 	uint n, al;
 	int64_t sz;
 
@@ -221,6 +222,22 @@ maize_isel(Fn *fn)
 
 	for (b = fn->start; b; b = b->link) {
 		curi = &insb[NIns];
+		/* Materialize slot-address temps that reach a successor phi
+		 * argument (an `&local` used directly as a loop-carried phi
+		 * value). isel emits in reverse into curi, so running this pass
+		 * first lands the Oaddr (LEA) at the END of the predecessor
+		 * block, after any fused flag-only CMP the block Jcc consumes;
+		 * safe because maize LEA is flag-neutral (src/cpu.cpp; maize-4).
+		 * Without it the alloc temp survives to rega and is resolved on
+		 * the phi edge as a plain slot MOVE (the local's contents), not
+		 * a LEA (its address): a silent miscompile. amd64/isel.c and
+		 * arm64/isel.c run the identical pass (maize-103). */
+		for (sb = (Blk*[3]){b->s1, b->s2, 0}; *sb; sb++)
+			for (p = (*sb)->phi; p; p = p->link) {
+				for (n = 0; p->blk[n] != b; n++)
+					assert(n + 1 < p->narg);
+				fixarg(&p->arg[n], fn);
+			}
 		seljmp(b, fn);
 		for (i = &b->ins[b->nins]; i != b->ins;)
 			sel(*--i, fn);

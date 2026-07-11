@@ -288,6 +288,12 @@ run_ctest "ptrdata"
 # reg) and bug #3 (&&/ternary phi cycle -> Oswap die), both overlay-only.
 run_ctest "voidcall"
 run_ctest "freelist"
+# maize-103 codegen-gap regression: an &local carried DIRECTLY as a loop-carried
+# phi argument (freelist's inverse, no opaque() barrier). Pre-fix maize_isel never
+# ran fixarg over successor phi args, so the alloc temp reached rega and the phi
+# edge became a plain slot MOVE of the local's contents instead of a LEA of its
+# address: a silent wrong answer. Overlay-only fix in qbe-maize/isel.c.
+run_ctest "addrlocalphi"
 # maize-74 syscall C binding: raw stub direct (AC 7290), wrapper success returns the
 # byte count (AC 7291), and error-range translation sets errno + returns -1 (AC 7292).
 run_ctest "syscall_raw"
