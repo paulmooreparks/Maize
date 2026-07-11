@@ -71,6 +71,17 @@ resolve_exe() {
     return 1
 }
 
+# maize-114: translate a host fixture path into the form native `maize` expects for a
+# --mount grant. Under MSYS/MinGW the built maize is a native Windows exe, so a POSIX
+# /tmp/... path must become a Windows C:\... path (cygpath -w); elsewhere the path is
+# passed through unchanged. The guest side of the grant stays a *nix path.
+host_to_native() {
+    case "$UNAME" in
+        MINGW*|MSYS*|CYGWIN*) cygpath -w "$1" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
 # Build the C toolchain if the compilers are absent (fresh-clone one-command).
 if [ "$SKIP_BUILD" -eq 0 ]; then
     if ! resolve_exe "${QBE_DIR}/obj/qbe" >/dev/null \
@@ -352,6 +363,150 @@ run_driver_run_mode_test() {
     echo "[PASS] ${name} (driver -r propagated exit ${status}, left no .mzx)"
 }
 
+# maize-114 hostfs acceptance (doc section 8). Each runner prepares a host fixture
+# tree under WORK_DIR, invokes maize with the appropriate --mount grant (host path
+# translated to native form for the Windows leg), and asserts stdout. Exit-code
+# capture follows the same set +e / status-on-next-line discipline as
+# run_exit_status_test (never `|| true` on the status under test). The cat and ls
+# scenarios must pass on BOTH Linux and Windows (operator ruling OQ 7850: Linux in CI,
+# Windows verified locally at Test; the Windows CI lane is follow-up maize-117).
+
+# Strip maize's one-extra-trailing-newline-on-Linux artifact and any blank lines, so a
+# sorted/one-line compare is not perturbed by it (same tolerance run_ctest applies).
+CAT_PAYLOAD='hostfs cat payload line'
+
+run_hostfs_cat() {
+    name="cat_hostfs"
+    TOTAL=$((TOTAL + 1))
+    compile_c "$name" || return
+    bin="$BIN"
+
+    root="${WORK_DIR}/hostfs_cat"
+    rm -rf "$root"; mkdir -p "$root/ro"
+    printf '%s\n' "$CAT_PAYLOAD" > "$root/ro/payload.txt"
+    nat=$(host_to_native "$root/ro")
+
+    set +e
+    actual=$("$MAIZE" --mount "${nat}=/ro:ro" "$bin" 2>/dev/null)
+    set -e
+    expected=$(printf '%s\n' "$CAT_PAYLOAD")
+
+    if [ "$actual" = "$expected" ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"${expected}\""
+        echo "        actual:   \"${actual}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_hostfs_ls() {
+    name="ls_hostfs"
+    TOTAL=$((TOTAL + 1))
+    compile_c "$name" || return
+    bin="$BIN"
+
+    root="${WORK_DIR}/hostfs_ls"
+    rm -rf "$root"; mkdir -p "$root/ro"
+    printf 'x\n' > "$root/ro/payload.txt"
+    printf 'x\n' > "$root/ro/alpha.txt"
+    printf 'x\n' > "$root/ro/beta.txt"
+    nat=$(host_to_native "$root/ro")
+
+    set +e
+    actual=$("$MAIZE" --mount "${nat}=/ro:ro" "$bin" 2>/dev/null | grep -v '^$' | sort)
+    set -e
+    expected=$(printf 'alpha.txt\nbeta.txt\npayload.txt\n' | sort)
+
+    if [ "$actual" = "$expected" ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"${expected}\""
+        echo "        actual:   \"${actual}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_hostfs_escape() {
+    name="escape_hostfs"
+    TOTAL=$((TOTAL + 1))
+    compile_c "$name" || return
+    bin="$BIN"
+
+    root="${WORK_DIR}/hostfs_esc"
+    rm -rf "$root"; mkdir -p "$root/esc"
+    printf 'secret\n' > "$root/escape_target.txt"
+    # A host symlink inside the mount pointing OUTSIDE it (Linux/macOS). On Windows the
+    # symlink is simply absent, which the fixture still treats as a denied (ENOENT) path.
+    ln -s "$root/escape_target.txt" "$root/esc/esclink" 2>/dev/null || true
+    nat=$(host_to_native "$root/esc")
+
+    set +e
+    actual=$("$MAIZE" --mount "${nat}=/esc:ro" "$bin" 2>/dev/null | grep -v '^$')
+    set -e
+
+    if [ "$actual" = "escape: PASS" ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"escape: PASS\""
+        echo "        actual:   \"${actual}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_hostfs_stat() {
+    name="stat_hostfs"
+    TOTAL=$((TOTAL + 1))
+    compile_c "$name" || return
+    bin="$BIN"
+
+    root="${WORK_DIR}/hostfs_stat"
+    rm -rf "$root"; mkdir -p "$root/ro"
+    printf '0123456789\n' > "$root/ro/payload.txt"   # exactly 11 bytes
+    nat=$(host_to_native "$root/ro")
+
+    set +e
+    actual=$("$MAIZE" --mount "${nat}=/ro:ro" "$bin" 2>/dev/null | grep -v '^$')
+    set -e
+
+    if [ "$actual" = "stat: PASS" ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"stat: PASS\""
+        echo "        actual:   \"${actual}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_hostfs_rofs() {
+    name="rofs_hostfs"
+    TOTAL=$((TOTAL + 1))
+    compile_c "$name" || return
+    bin="$BIN"
+
+    root="${WORK_DIR}/hostfs_rofs"
+    rm -rf "$root"; mkdir -p "$root/ro"
+    printf 'payload\n' > "$root/ro/payload.txt"
+    nat=$(host_to_native "$root/ro")
+
+    set +e
+    actual=$("$MAIZE" --mount "${nat}=/ro:ro" "$bin" 2>/dev/null | grep -v '^$')
+    set -e
+
+    if [ "$actual" = "rofs: PASS" ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"rofs: PASS\""
+        echo "        actual:   \"${actual}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
 echo "=== C toolchain end-to-end (cproc -> qbe -t maize -> mazm -c -> mzld -> maize) ==="
 run_ctest "hello"
 run_ctest "capstone"
@@ -402,6 +557,14 @@ run_wx_reject_test
 # the driver -r run-and-propagate path.
 run_default_produce_test
 run_driver_run_mode_test
+
+# maize-114 hostfs acceptance scenarios (cat + ls on both hosts, ..-escape and
+# symlink-escape EACCES/ENOENT, :ro write EROFS).
+run_hostfs_cat
+run_hostfs_ls
+run_hostfs_stat
+run_hostfs_escape
+run_hostfs_rofs
 
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then

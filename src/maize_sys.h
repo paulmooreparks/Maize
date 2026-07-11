@@ -15,6 +15,11 @@
 
 #endif
 
+/* maize-114: forward-declared at global scope so the setter below binds to the
+   freestanding core's ::hostfs_table (src/hostfs/hostfs.h), not a namespace-local
+   incomplete type. */
+struct hostfs_table;
+
 namespace maize {
 	namespace sys {
 		void init();
@@ -29,6 +34,11 @@ namespace maize {
 		   process-start block is built; sets heap_base = current_brk =
 		   align_up(image_end, 16). */
 		void init_heap(u_word image_end);
+		/* maize-114: install the parsed hostfs mount table (built by maize.cpp
+		   from the --mount / --mount-home grants). NULL leaves hostfs inert
+		   (mazm never calls this). Forward-declared; the full type lives in the
+		   freestanding core header src/hostfs/hostfs.h. */
+		void set_hostfs_table(hostfs_table* table);
 	} // namespace sys
 
 	namespace syscall {

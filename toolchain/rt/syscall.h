@@ -30,6 +30,16 @@ long sys_read(int fd, void *buf, unsigned long count);
 long sys_write(int fd, const void *buf, unsigned long count);
 _Noreturn void _exit(int code);
 
+/* maize-114 hostfs raw stubs (SYS $02/$03/$05/$08/$D9). Each returns RV verbatim: a
+ * non-negative result, or a value in [-4095, -1] encoding -errno (test the band with
+ * `(unsigned long)r > -4096UL`). The POSIX-named, errno-translating wrappers are
+ * deferred to the libc-growth line; the acceptance fixtures call these raw stubs. */
+long sys_open(const char *path, int flags, int mode);
+long sys_close(int fd);
+long sys_fstat(int fd, void *statbuf);
+long sys_lseek(int fd, long offset, int whence);
+long sys_getdents64(int fd, void *dirp, unsigned long count);
+
 /* sys_brk (SYS $0C, maize-75): R0 = requested break (0 queries); returns the
  * new-or-current break in RV, NEVER -errno. sbrk (stdlib.c) wraps this. */
 void *sys_brk(void *addr);

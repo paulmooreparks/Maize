@@ -3,8 +3,19 @@ project(Maize)
 
 set(CMAKE_CXX_STANDARD 20)
 
-add_executable(maize "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp")
-add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp")
+# maize-114: the freestanding-C99 hostfs core plus both host backends. src/sys.cpp
+# (compiled into BOTH maize and mazm) calls the core; maize.cpp additionally calls the
+# backend acquisition hooks. Both backend TUs are guarded (#ifdef __linux__ / _WIN32)
+# so the non-matching one compiles to nothing; both are listed on both targets so the
+# build is platform-agnostic. mazm never installs a mount table, so its hostfs paths
+# stay inert (empty table).
+set(MAIZE_HOSTFS_SOURCES
+  "src/hostfs/hostfs_core.c"
+  "src/hostfs/hostfs_posix.c"
+  "src/hostfs/hostfs_win32.c")
+
+add_executable(maize "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" ${MAIZE_HOSTFS_SOURCES})
+add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp" ${MAIZE_HOSTFS_SOURCES})
 add_executable(mzld "src/mzld.cpp")
 add_executable(mzdis "src/mzdis.cpp")
 

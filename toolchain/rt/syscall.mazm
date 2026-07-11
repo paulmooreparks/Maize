@@ -41,6 +41,16 @@ GLOBAL sys_write
 GLOBAL sys_brk
 GLOBAL _exit
 
+; maize-114 hostfs: the five in-scope file syscalls. Each is a raw `SYS <n>; RET`
+; stub over the frozen number (SYSCALL-ABI.md), mirroring the Linux x86-64 numbers.
+; The acceptance fixtures call these directly and check the [-4095,-1] error band; the
+; POSIX-named errno-translating wrappers belong to the libc-growth line (maize-76/100).
+GLOBAL sys_open
+GLOBAL sys_close
+GLOBAL sys_lseek
+GLOBAL sys_fstat
+GLOBAL sys_getdents64
+
 sys_read:
     SYS $00                 ; fd/buf/count already in R0/R1/R2 per the C ABI
     RET
@@ -51,6 +61,26 @@ sys_write:
 
 sys_brk:
     SYS $0C                 ; R0 = requested break (0 = query); RV = new-or-current break
+    RET
+
+sys_open:
+    SYS $02                 ; R0=path, R1=flags, R2=mode; RV = fd or -errno
+    RET
+
+sys_close:
+    SYS $03                 ; R0=fd; RV = 0 or -errno
+    RET
+
+sys_fstat:
+    SYS $05                 ; R0=fd, R1=statbuf; RV = 0 or -errno
+    RET
+
+sys_lseek:
+    SYS $08                 ; R0=fd, R1=offset, R2=whence; RV = new offset or -errno
+    RET
+
+sys_getdents64:
+    SYS $D9                 ; R0=fd, R1=dirp, R2=count; RV = bytes / 0 (EOF) / -errno
     RET
 
 _exit:

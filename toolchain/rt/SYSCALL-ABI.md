@@ -88,9 +88,22 @@ Mirrors the Linux x86-64 table by construction. Frozen as of maize-74:
 |--------|--------|------|--------|
 | `$00` | `sys_read` | `R0`=fd, `R1`=buf, `R2`=count | `RV`=bytes read |
 | `$01` | `sys_write` | `R0`=fd, `R1`=buf, `R2`=count | `RV`=bytes written |
+| `$02` | `sys_open` | `R0`=path, `R1`=flags, `R2`=mode | `RV`=fd or `-errno` |
+| `$03` | `sys_close` | `R0`=fd | `RV`=0 or `-errno` |
+| `$05` | `sys_fstat` | `R0`=fd, `R1`=statbuf | `RV`=0 or `-errno` |
+| `$08` | `sys_lseek` | `R0`=fd, `R1`=offset, `R2`=whence | `RV`=new offset or `-errno` |
 | `$0C` | `sys_brk` | `R0`=new break (0=query) | `RV`=new (or current) break; never `-errno` |
 | `$3C` | `_exit` (`sys_exit`) | `R0`=code | does not return |
 | `$A9` | `sys_reboot` | reserved (VM stub) | reserved |
+| `$D9` | `sys_getdents64` | `R0`=fd, `R1`=dirp, `R2`=count | `RV`=bytes / 0 (EOF) / `-errno` |
+
+`$02`/`$03`/`$05`/`$08`/`$D9` are the maize-114 hostfs file syscalls (design of record
+`docs/design/hostfs.md`), each mirroring its Linux x86-64 number. They are guest-visible
+only when a `--mount` / `--mount-home` grant installs a mount table; `read`/`write` for a
+granted fd `>= 3` resolve through that table (lifting the M4 real-file restriction). The
+`*at` family (`$101`+) and the out-of-scope path-based / mutating numbers
+(`$04`/`$52`/`$53`/`$54`/`$57`) are NOT dispatched in this POC and stay reserved for
+later cards.
 
 ## Numbering policy
 

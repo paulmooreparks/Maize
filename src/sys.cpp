@@ -1,6 +1,8 @@
 #include "maize.h"
 // #include "maize_sys.h"
+#include "hostfs/hostfs_core.h"
 #include <cerrno>
+#include <string>
 
 /* This is all very broken right now, but I'm going to replace it with a sys_call architecture instead. */
 
@@ -356,6 +358,37 @@ namespace maize {
                brk request above this returns the current break unchanged, giving
                sbrk/malloc (maize-76) a real, detectable failure mode. */
             constexpr u_word HEAP_CEILING = 0xFFFFFFFF00000000ull;
+
+            /* maize-114: the active hostfs mount table, threaded in from maize.cpp
+               after it parses the --mount / --mount-home grants. NULL means hostfs
+               is inert (mazm never parses mounts; a bare `maize` with no grant sets
+               an empty table so the synthetic root is visible but holds no entries).
+               The open/close/fstat/lseek/getdents64 numbers and the fd >= 3 routing
+               of read/write dispatch against this table. */
+            hostfs_table* hostfs = nullptr;
+
+            /* maize-114: bounded guest-C-string copy-in (maize-79 trust boundary).
+               Reads NUL-terminated bytes from guest memory at addr, capped at
+               HOSTFS_PATH_MAX. Returns true on a NUL within the bound; false when
+               the bound is hit first (the caller then returns -ENAMETOOLONG). */
+            bool copy_in_path(u_word addr, std::string& out) {
+                out.clear();
+                for (u_word i = 0; i < HOSTFS_PATH_MAX; ++i) {
+                    u_byte b = cpu::mm.read_byte(addr + i);
+                    if (b == 0) {
+                        return true;
+                    }
+                    out.push_back(static_cast<char>(b));
+                }
+                return false;
+            }
+        }
+
+        /* maize-114: install the parsed mount table (maize.cpp calls this once at
+           startup). Resetting the fd table here keeps a reused process image clean. */
+        void set_hostfs_table(hostfs_table* table) {
+            hostfs = table;
+            hostfs_reset_fds();
         }
 
         int exit_code() {
@@ -390,7 +423,18 @@ namespace maize {
                     std::vector<u_byte> buf;
                     buf.resize(count);
                     u_byte* bufvec = buf.data();
-                    u_word retval = syscall::read(fd, reinterpret_cast<void*>(bufvec), count);
+
+                    /* maize-114: fd >= 3 routes through the hostfs guest fd table
+                       (lifting the M4 -EBADF restriction) when a mount table is
+                       installed; fds 0/1/2 stay the stdio reservations. */
+                    u_word retval;
+                    if (fd >= 3 && hostfs != nullptr) {
+                        int64_t rc = hostfs_read(hostfs, static_cast<int>(fd),
+                            reinterpret_cast<void*>(bufvec), count);
+                        retval = static_cast<u_word>(rc);
+                    } else {
+                        retval = syscall::read(fd, reinterpret_cast<void*>(bufvec), count);
+                    }
 
                     /* retval in [-4095,-1] is an -errno result (same predicate
                        __syscall_ret uses): return it and write nothing to guest
@@ -421,7 +465,91 @@ namespace maize {
 
                     std::vector<u_byte> str = mm.read(address, count);
                     u_byte const* buf {str.data()};
+
+                    /* maize-114: fd >= 3 routes through the hostfs guest fd table
+                       (a :ro mount returns -EROFS from the core); fds 0/1/2 stay
+                       the stdio reservations. */
+                    if (fd >= 3 && hostfs != nullptr) {
+                        int64_t rc = hostfs_write(hostfs, static_cast<int>(fd), buf, count);
+                        return static_cast<u_word>(rc);
+                    }
                     return syscall::write(fd, buf, count);
+                }
+
+                /* maize-114 sys_open: path R0 (full-64 pointer), flags R1, mode R2.
+                   Copy the path in (bounded), then let the hostfs core prefix-resolve
+                   the mount, apply the :ro write-intent gate, and confine+open via the
+                   backend. Returns the guest fd or -errno. */
+                case 0x0002U: {
+                    u_word address {regs::r0.w0};
+                    int flags {static_cast<int>(regs::r1.w0)};
+                    int mode {static_cast<int>(regs::r2.w0)};
+
+                    std::string path;
+                    if (!copy_in_path(address, path)) {
+                        return static_cast<u_word>(-static_cast<long>(HOSTFS_ENAMETOOLONG));
+                    }
+                    int64_t rc = hostfs_open(hostfs, path.c_str(), flags, mode);
+                    return static_cast<u_word>(rc);
+                }
+
+                /* maize-114 sys_close: fd R0.H0. Frees the guest fd and closes the
+                   backend handle. -EBADF on an unknown/closed fd. */
+                case 0x0003U: {
+                    u_word fd {regs::r0.h0};
+                    int64_t rc = hostfs_close(hostfs, static_cast<int>(fd));
+                    return static_cast<u_word>(rc);
+                }
+
+                /* maize-114 sys_fstat: fd R0.H0, statbuf R1. The core composes the
+                   144-byte section-2 struct stat image; copy it out to guest memory
+                   only on success. -EBADF on an unknown fd. */
+                case 0x0005U: {
+                    u_word fd {regs::r0.h0};
+                    u_word statbuf {regs::r1.w0};
+
+                    uint8_t img[HOSTFS_STAT_SIZE];
+                    int64_t rc = hostfs_fstat(hostfs, static_cast<int>(fd), img);
+                    if (rc < 0) {
+                        return static_cast<u_word>(rc);
+                    }
+                    for (u_word i = 0; i < HOSTFS_STAT_SIZE; ++i) {
+                        cpu::mm.write_byte(statbuf + i, img[i]);
+                    }
+                    return static_cast<u_word>(rc);
+                }
+
+                /* maize-114 sys_lseek: fd R0.H0, offset R1 (s64), whence R2. Returns
+                   the new offset, -EINVAL on a bad whence / negative result, -EBADF on
+                   an unknown fd. */
+                case 0x0008U: {
+                    u_word fd {regs::r0.h0};
+                    int64_t offset {static_cast<int64_t>(regs::r1.w0)};
+                    int whence {static_cast<int>(regs::r2.w0)};
+                    int64_t rc = hostfs_lseek(hostfs, static_cast<int>(fd), offset, whence);
+                    return static_cast<u_word>(rc);
+                }
+
+                /* maize-114 sys_getdents64: fd R0.H0, dirp R1, count R2. The core (or
+                   backend) packs linux_dirent64 records into a host buffer; copy out
+                   only the bytes written. Returns bytes / 0 at EOF / -EINVAL (buffer
+                   too small for one record) / -EBADF (unknown fd). */
+                case 0x00D9U: {
+                    u_word fd {regs::r0.h0};
+                    u_word dirp {regs::r1.w0};
+                    u_word count {regs::r2.w0};
+
+                    std::vector<u_byte> buf;
+                    buf.resize(count);
+                    int64_t rc = hostfs_getdents(hostfs, static_cast<int>(fd),
+                        buf.data(), count);
+                    if (rc <= 0) {
+                        return static_cast<u_word>(rc);   /* EOF (0) or -errno */
+                    }
+                    for (u_word i = 0; i < static_cast<u_word>(rc); ++i) {
+                        cpu::mm.write_byte(dirp + i, buf[i]);
+                    }
+                    return static_cast<u_word>(rc);
                 }
 
                 /* sys_exit: record main's status and terminate the VM. The exit

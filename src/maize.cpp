@@ -3,10 +3,12 @@
 #include <iostream>
 #include <fstream>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <cctype>
 #include "maize.h"
 #include "maize_obj.h"
+#include "hostfs/hostfs_core.h"
 
 #include "maize.h"
 using namespace maize;
@@ -84,10 +86,15 @@ static void print_usage(std::ostream &out) {
 		"      --env=KEY=VAL          same, inline form\n"
 		"      --env-file <path>      add variables from a KEY=VAL file (repeatable;\n"
 		"                             blank lines and #-comment lines are ignored)\n"
+		"      --mount HOST=/GUEST[:ro|:rw]  grant the guest a *nix view of a host\n"
+		"                             directory (repeatable; read-only unless :rw)\n"
+		"      --mount-home[=HOST]    map the host home to /home/user, read-write\n"
 		"  --                         end options; the next token is <image>\n"
 		"\n"
 		"The program's environment is built only from -e/--env and --env-file; the\n"
-		"host's own environment is never inherited.\n"
+		"host's own environment is never inherited. The guest filesystem is empty\n"
+		"unless a --mount / --mount-home grant is given (capability model): nothing\n"
+		"outside a granted mount is reachable.\n"
 		"\n"
 		"Example:\n"
 		"  maize --env GREETING=hi hello.mzb alpha beta\n";
@@ -160,6 +167,149 @@ static bool load_env_file(const std::string &path, std::vector<std::string> &env
 			return false;
 		}
 	}
+	return true;
+}
+
+/* maize-114: a parsed --mount / --mount-home grant, held in main's scope so the
+   hostfs_mount const char* views into these strings stay valid through cpu::run(). */
+struct mount_grant {
+	std::string host;
+	std::string guest;
+	hostfs_mode mode;
+};
+
+/* maize-114: a guest path must be a *nix absolute path under the synthetic root.
+   Rejects a non-'/' start, a drive letter or backslash (a Windows-shaped path), and
+   "/" itself (the root is synthetic and cannot be a mount target). Fail-closed. */
+static bool valid_guest_path(const std::string &guest, std::string &err) {
+	if (guest.empty() || guest[0] != '/') {
+		err = "guest path '" + guest + "' is not a *nix absolute path (must begin with '/')";
+		return false;
+	}
+	if (guest == "/") {
+		err = "guest path '/' is the synthetic root and cannot be a mount target";
+		return false;
+	}
+	if (guest.find('\\') != std::string::npos || guest.find(':') != std::string::npos) {
+		err = "guest path '" + guest + "' contains a drive letter or backslash";
+		return false;
+	}
+	return true;
+}
+
+/* maize-114: parse `<host-path>=<guest-path>[:ro|:rw]`. Split on the LAST '=' so a
+   Windows host path's drive colon stays on the host side; the optional :ro/:rw suffix
+   sets the posture (default :ro). Returns false with a diagnostic in err on a
+   malformed spec. */
+static bool parse_mount_spec(const std::string &spec, mount_grant &g, std::string &err) {
+	std::string::size_type eq = spec.rfind('=');
+	if (eq == std::string::npos) {
+		err = "malformed --mount '" + spec + "' (expected <host-path>=<guest-path>[:ro|:rw])";
+		return false;
+	}
+	g.host = spec.substr(0, eq);
+	std::string rest = spec.substr(eq + 1);
+	g.mode = HOSTFS_RO;
+	if (rest.size() >= 3 && rest.compare(rest.size() - 3, 3, ":ro") == 0) {
+		rest.erase(rest.size() - 3);
+	} else if (rest.size() >= 3 && rest.compare(rest.size() - 3, 3, ":rw") == 0) {
+		g.mode = HOSTFS_RW;
+		rest.erase(rest.size() - 3);
+	}
+	g.guest = rest;
+	if (g.host.empty()) {
+		err = "malformed --mount '" + spec + "' (empty host path)";
+		return false;
+	}
+	if (!valid_guest_path(g.guest, err)) {
+		return false;
+	}
+	return true;
+}
+
+/* maize-114: true if two guest paths are equal or one is a path-prefix of the other
+   (component-aware: "/a" overlaps "/a/b" but not "/ab"). Overlaps are rejected at
+   startup because resolution would be ambiguous. */
+static bool guest_paths_overlap(const std::string &a, const std::string &b) {
+	if (a == b) {
+		return true;
+	}
+	const std::string &shorter = (a.size() < b.size()) ? a : b;
+	const std::string &longer  = (a.size() < b.size()) ? b : a;
+	if (longer.compare(0, shorter.size(), shorter) == 0
+	    && longer[shorter.size()] == '/') {
+		return true;
+	}
+	return false;
+}
+
+/* maize-114: validate a fully-collected grant set and build the hostfs mount table.
+   Every failure here exits startup nonzero with a diagnostic (fail-closed, doc §1):
+   the guest never starts on a bad grant, and a bad grant never degrades to
+   mount-nothing or mount-rw. On success fills mounts[] (views into grants[]) and
+   returns true. */
+static bool build_mount_table(std::vector<mount_grant> &grants,
+	std::vector<hostfs_mount> &mounts) {
+	for (std::size_t i = 0; i < grants.size(); ++i) {
+		std::error_code ec;
+		if (!std::filesystem::is_directory(grants[i].host, ec)) {
+			std::cerr << "maize: --mount host path '" << grants[i].host
+				<< "' is missing or not a directory" << std::endl;
+			return false;
+		}
+	}
+	for (std::size_t i = 0; i < grants.size(); ++i) {
+		for (std::size_t j = i + 1; j < grants.size(); ++j) {
+			if (guest_paths_overlap(grants[i].guest, grants[j].guest)) {
+				std::cerr << "maize: --mount guest paths '" << grants[i].guest
+					<< "' and '" << grants[j].guest
+					<< "' are the same or overlap" << std::endl;
+				return false;
+			}
+		}
+	}
+
+	mounts.clear();
+	mounts.reserve(grants.size());
+	for (std::size_t i = 0; i < grants.size(); ++i) {
+		hostfs_mount m;
+		m.guest_prefix = grants[i].guest.c_str();
+		m.host_root = grants[i].host.c_str();
+		m.mode = grants[i].mode;
+		m.anchor = nullptr;
+		mounts.push_back(m);
+	}
+	for (std::size_t i = 0; i < mounts.size(); ++i) {
+		std::int64_t rc = hostfs_backend_anchor_open(&mounts[i]);
+		if (rc < 0) {
+			if (rc == -static_cast<std::int64_t>(HOSTFS_ENOSYS)) {
+				std::cerr << "maize: hostfs requires openat2 (Linux kernel >= 5.6); "
+					<< "cannot mount '" << grants[i].host << "'" << std::endl;
+			} else {
+				std::cerr << "maize: cannot mount '" << grants[i].host << "' at '"
+					<< grants[i].guest << "' (errno " << (-rc) << ")" << std::endl;
+			}
+			return false;
+		}
+	}
+	return true;
+}
+
+/* maize-114: resolve the host home for --mount-home. An explicit override wins;
+   otherwise HOME (POSIX) or USERPROFILE (Windows). Returns false if none is set. */
+static bool resolve_home(const std::string &override_path, std::string &home) {
+	if (!override_path.empty()) {
+		home = override_path;
+		return true;
+	}
+	const char *h = std::getenv("HOME");
+	if (h == nullptr || h[0] == '\0') {
+		h = std::getenv("USERPROFILE");
+	}
+	if (h == nullptr || h[0] == '\0') {
+		return false;
+	}
+	home = h;
 	return true;
 }
 
@@ -242,6 +392,7 @@ int main(int argc, char *argv[]) {
 	   behavior. The guest environment is built ONLY from -e/--env/--env-file below;
 	   the host's ambient environment is never inherited. */
 	std::vector<std::string> env_entries;
+	std::vector<mount_grant> grants;
 	int idx = 1;
 	while (idx < argc) {
 		std::string arg {argv[idx]};
@@ -294,6 +445,53 @@ int main(int argc, char *argv[]) {
 			++idx;
 			continue;
 		}
+		if (arg == "--mount") {
+			if (idx + 1 >= argc) {
+				std::cerr << "maize: option '--mount' requires a "
+					<< "<host-path>=<guest-path>[:ro|:rw] argument" << std::endl;
+				print_usage(std::cerr);
+				return 2;
+			}
+			mount_grant g;
+			std::string err;
+			if (!parse_mount_spec(argv[idx + 1], g, err)) {
+				std::cerr << "maize: " << err << std::endl;
+				return 2;
+			}
+			grants.push_back(g);
+			idx += 2;
+			continue;
+		}
+		if (arg.rfind("--mount=", 0) == 0) {
+			mount_grant g;
+			std::string err;
+			if (!parse_mount_spec(arg.substr(8), g, err)) {
+				std::cerr << "maize: " << err << std::endl;
+				return 2;
+			}
+			grants.push_back(g);
+			++idx;
+			continue;
+		}
+		if (arg == "--mount-home" || arg.rfind("--mount-home=", 0) == 0) {
+			std::string override_path;
+			if (arg.size() > 12) {           /* "--mount-home=" is 13 chars */
+				override_path = arg.substr(13);
+			}
+			std::string home;
+			if (!resolve_home(override_path, home)) {
+				std::cerr << "maize: --mount-home: no host home found "
+					<< "(set HOME/USERPROFILE or pass --mount-home=<path>)" << std::endl;
+				return 2;
+			}
+			mount_grant g;
+			g.host = home;
+			g.guest = "/home/user";
+			g.mode = HOSTFS_RW;   /* the one rw-by-default convenience (OQ 7790) */
+			grants.push_back(g);
+			++idx;
+			continue;
+		}
 		if (!arg.empty() && arg[0] == '-') {
 			/* Unrecognized leading-'-' flag before <image>: usage error. */
 			std::cerr << "maize: unknown option '" << arg << "'" << std::endl;
@@ -309,6 +507,23 @@ int main(int argc, char *argv[]) {
 		print_usage(std::cerr);
 		return 2;
 	}
+
+	/* card maize-114: validate the collected --mount / --mount-home grants and build
+	   the hostfs mount table BEFORE any VM setup (fail-closed: a bad grant exits
+	   nonzero here, before the guest is loaded or the VM's device/IO machinery is
+	   stood up). Even with zero grants an (empty) table is installed so the guest sees
+	   the synthetic read-only root with no entries (capability model). mounts + table
+	   live in main's scope so their const char* / pointer views stay valid for the
+	   whole cpu::run(); the table is installed via sys::set_hostfs_table just before
+	   the run below. */
+	std::vector<hostfs_mount> hostfs_mounts;
+	if (!build_mount_table(grants, hostfs_mounts)) {
+		return 2;
+	}
+	hostfs_table hostfs_tab;
+	hostfs_tab.mounts = hostfs_mounts.empty() ? nullptr : hostfs_mounts.data();
+	hostfs_tab.count = static_cast<unsigned>(hostfs_mounts.size());
+	hostfs_tab.ops = hostfs_backend_ops_get();
 
 	/* Guest argv: argv[0] = <image> as invoked; argv[1..] = the post-image tokens
 	   verbatim. The launcher/crt0 must NOT basename or rewrite argv[0]. */
@@ -367,6 +582,10 @@ int main(int argc, char *argv[]) {
 	   Port 1 is the fixed test port; asm/test_outr_in.mazm targets it directly. */
 	cpu::device loopback_test_device;
 	cpu::add_device(1, loopback_test_device);
+
+	/* card maize-114: install the mount table built and validated above (before the
+	   guest runs). mazm never calls this, so its hostfs paths stay inert. */
+	sys::set_hostfs_table(&hostfs_tab);
 
 	sys::init();
 	cpu::run();
