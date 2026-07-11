@@ -4,7 +4,7 @@
 #
 # Pipeline (maize-77 segmented .mzo -> mzld -> .mzx object model). The whole C
 # compile pipeline itself lives in scripts/cc-maize.sh (maize-96): the SINGLE
-# canonical driver both CI and the operator's ~/bin/maize-cc call, so what CI runs
+# canonical driver both CI and the operator's ~/bin/mzcc call, so what CI runs
 # is exactly what the operator acceptance-tests with. Per fixture:
 #
 #   ctest/<name>.c
@@ -15,7 +15,7 @@
 #     -> diff vs ctest/<name>.expected
 #
 # The normalize sed, the cpp flags, the RT object set, and the mzld link order are
-# defined in cc-maize.sh and NOWHERE ELSE, so CI and maize-cc cannot drift apart.
+# defined in cc-maize.sh and NOWHERE ELSE, so CI and mzcc cannot drift apart.
 #
 # This is kept DISTINCT from run-tests.{sh,ps1} (the asm/ corpus harness) so a
 # codegen regression reports separately from an asm-suite regression (maize-61

@@ -60,7 +60,7 @@ if [ "$ld_rc" -ne 1 ] || ! printf '%s' "$ld_out" | grep -q 'usage: mzld'; then
 fi
 
 # --- C cross-toolchain refresh (cproc/qbe + Maize target) -------------------------
-# Keeps `maize-cc` current after every build. Non-fatal: the native tools above are
+# Keeps `mzcc` current after every build. Non-fatal: the native tools above are
 # installed and smoke-checked, so a toolchain hiccup (e.g. no network for the
 # submodule fetch) only warns rather than failing the build task.
 set +e

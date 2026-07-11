@@ -14,7 +14,7 @@
 #
 # BOTH consumers of the C pipeline call this driver, so CI (scripts/run-ctest.sh,
 # via --compile-only) exercises the EXACT pipeline the operator acceptance-tests
-# with (the ~/bin/maize-cc forwarder execs this file). The normalize sed, the cpp
+# with (the ~/bin/mzcc forwarder execs this file). The normalize sed, the cpp
 # flags, the RT object set, and the mzld link order therefore live in EXACTLY ONE
 # place: here. Drift between CI and the operator's tool is structurally impossible.
 #
