@@ -126,10 +126,14 @@ selcall(Fn *fn, Ins *i0, Ins *i1)
 	/* Return value: copy RV into the call's destination temporary. */
 	if (KBASE(i1->cls) != 0)
 		err("maize abi: floating-point return is not supported (maize-63)");
-	if (!req(i1->to, R)) {
-		emit(Ocopy, i1->cls, i1->to, TMP(RV), R);
-		cty |= RcRetGp;
-	}
+	/* Always emit the RV result-copy and mark a GP return, mirroring amd64
+	 * sysv selcall. For a void call i1->to == R, producing a dead `copy R, RV`
+	 * that (1) keeps spill.c's dopm engaged so T.argregs()/T.retregs() are
+	 * applied to the call (without it the arg-register defs look dead ->
+	 * spill.c:431 assert "dead reg"), and (2) is consumed by rega's
+	 * parallel-move machinery, so it never reaches emit. */
+	emit(Ocopy, i1->cls, i1->to, TMP(RV), R);
+	cty |= RcRetGp;
 
 	emit(Ocall, 0, R, i1->arg[0], CALL(cty));
 

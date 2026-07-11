@@ -284,6 +284,10 @@ run_ctest "hello"
 run_ctest "capstone"
 run_ctest "globals"
 run_ctest "ptrdata"
+# maize-101 codegen-gap regressions: bug #1 (void call with args -> spill.c dead
+# reg) and bug #3 (&&/ternary phi cycle -> Oswap die), both overlay-only.
+run_ctest "voidcall"
+run_ctest "freelist"
 # maize-74 syscall C binding: raw stub direct (AC 7290), wrapper success returns the
 # byte count (AC 7291), and error-range translation sets errno + returns -1 (AC 7292).
 run_ctest "syscall_raw"

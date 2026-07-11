@@ -173,6 +173,20 @@ emitcopy(Ins *i, E *e)
 	cp(i->arg[0], i->to, clssz(i->cls), e);
 }
 
+/* XCHG ra rb: exchange two physical registers whole (maize $E0). rega's pmgen
+ * emits Oswap for a register cycle in a phi / parallel move (the &&/||/ternary
+ * fixtures); after rega both operands are physical registers. pmrec widens any
+ * cycle containing an `l` to class Kl, and XCHG exchanges whole registers, which
+ * is correct for Kl and acceptable for a pure-Kw cycle (a `w` value's upper bits
+ * are don't-care under the maize w-representation, decision 6406), so the swap is
+ * emitted at whole-register width with no sub-suffix. */
+static void
+emitswap(Ins *i, E *e)
+{
+	assert(isreg(i->arg[0]) && isreg(i->arg[1]));
+	fprintf(e->f, "\tXCHG\t%s %s\n", rname(i->arg[0].val), rname(i->arg[1].val));
+}
+
 static void
 emitcall(Ins *i, E *e)
 {
@@ -359,6 +373,7 @@ emitins(Ins *i, E *e)
 	switch (i->op) {
 	case Onop:  break;
 	case Ocopy: emitcopy(i, e); break;
+	case Oswap: emitswap(i, e); break;
 	case Ocall: emitcall(i, e); break;
 	case Oaddr: emitaddrslot(i, e); break;
 	case Oadd:  emitbinop(i, "ADD",  1, 0, e); break;
