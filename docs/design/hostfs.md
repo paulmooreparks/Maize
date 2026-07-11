@@ -282,7 +282,9 @@ small for even one record.
 
 The low two bits are the access mode (`O_RDONLY`/`O_WRONLY`/`O_RDWR`); the rest
 are OR'd flag bits. Any write-intent bit (`O_WRONLY`, `O_RDWR`, `O_CREAT`,
-`O_TRUNC`, `O_APPEND`) on a `:ro` mount fails with `EROFS` (section 4).
+`O_TRUNC`) on a `:ro` mount fails with `EROFS` (section 4). `O_APPEND` is not
+itself write-intent: `O_RDONLY|O_APPEND` succeeds on a read-only mount, matching
+Linux, so it is judged only via the access mode.
 
 **`lseek` whence**: `SEEK_SET` 0, `SEEK_CUR` 1, `SEEK_END` 2. An unknown whence
 returns `-EINVAL` (22); a resulting negative offset returns `-EINVAL`.
@@ -347,6 +349,13 @@ anchor fd opened once at mount time; every guest open is an `openat2` relative t
 that anchor with `RESOLVE_BENEATH`, so a `..` or symlink that would escape fails
 in the kernel rather than in a userspace check.
 
+The Linux backend must map the kernel's escape-violation errnos onto the
+contract's `EACCES` (13): a `RESOLVE_BENEATH` violation surfaces as `EXDEV` (18)
+and a symlink-loop / excessive-symlink escape surfaces as `ELOOP` (40), both of
+which the backend translates to `-EACCES` before returning, so the guest sees the
+single "escape attempt" code the errno contract (below) promises rather than the
+raw kernel code.
+
 On Windows the mount root is opened once; each resolution opens the target with
 `FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT` as needed, calls
 `GetFinalPathNameByHandle` to canonicalize, and verifies the canonical path is a
@@ -364,8 +373,9 @@ the root.
 | any write-intent op on a `:ro` mount | `EROFS` | 30 |
 
 Write-intent ops that trigger `EROFS` on a `:ro` mount: `write`; `open`/`openat`
-with `O_WRONLY`/`O_RDWR`/`O_CREAT`/`O_TRUNC`/`O_APPEND`; `mkdir`/`mkdirat`;
-`rmdir` (`unlinkat AT_REMOVEDIR`); `unlink`/`unlinkat`; `rename`/`renameat`.
+with `O_WRONLY`/`O_RDWR`/`O_CREAT`/`O_TRUNC` (not `O_APPEND`, which is inert on a
+read-only access mode); `mkdir`/`mkdirat`; `rmdir` (`unlinkat AT_REMOVEDIR`);
+`unlink`/`unlinkat`; `rename`/`renameat`.
 
 Guest-controlled paths are untrusted parser input: path copy-in (bounded length)
 and resolution inherit the maize-79 fuzzing discipline and trust-boundary
@@ -401,9 +411,15 @@ Comment 2226 is binding: a single **freestanding-C99 header** (proposed
 `hostfs.h`) defines the core. **No VM includes, no host includes** in this
 header. That is what lets the native C++ VM, the reference C VM (maize-87), and
 future firmware/quesito/quesOS providers all consume the identical core. Only
-fixed-width integer typedefs (a local `hostfs_u64` etc., or `<stdint.h>` if the
-freestanding target provides it) and the declarations below appear; no
-`<windows.h>`, no `<fcntl.h>`, no `maize.h`.
+fixed-width integer typedefs (a local `hostfs_i64` / `hostfs_u64`, or the
+`<stdint.h>` `int64_t` / `uint64_t` if the freestanding target provides them) and
+the declarations below appear; no `<windows.h>`, no `<fcntl.h>`, no `maize.h`.
+
+Every op signature below uses the fixed-width types deliberately: the native
+Windows consumer is LLP64, where `long` is 32-bit, so a `long` return would
+truncate the `[-4095, -1]` `-errno` band's sign-extension, cap `lseek` offsets at
+2 GiB, and clamp `read`/`write` counts. Results and offsets are `int64_t`; sizes
+and counts are `uint64_t`.
 
 The header declares three things:
 
@@ -414,7 +430,9 @@ hook the backend owns. The confine hook is where the host-specific escape defens
 of section 4 lives; the core calls it but never implements it.
 
 ```c
-/* hostfs.h -- freestanding C99; no VM or host headers. */
+/* hostfs.h: freestanding C99, no VM or host headers.
+   int64_t/uint64_t via <stdint.h>, or the local hostfs_i64/hostfs_u64
+   typedefs where the freestanding target lacks it. */
 
 typedef struct hostfs_mount hostfs_mount;   /* section (b) */
 typedef struct hostfs_stat  hostfs_stat;    /* the section-2 struct stat image */
@@ -422,29 +440,32 @@ typedef struct hostfs_dirent hostfs_dirent; /* the section-2 linux_dirent64 imag
 
 typedef struct hostfs_backend_ops {
     /* Resolve/confine: prove guest_path stays beneath mount->host_root and
-       hand back an opaque backend handle, or a negative errno. THIS is where
-       openat2(RESOLVE_BENEATH) / GetFinalPathNameByHandle live -- backend only. */
-    long (*confine)(hostfs_mount *mount, const char *guest_path,
-                    int flags, void **out_handle);
+       hand back an opaque backend handle, or a negative errno. This is the
+       one place openat2(RESOLVE_BENEATH) / GetFinalPathNameByHandle live
+       (backend only). */
+    int64_t (*confine)(hostfs_mount *mount, const char *guest_path,
+                       int flags, void **out_handle);
 
-    long (*open) (hostfs_mount *mount, const char *path, int flags, int mode);
-    long (*close)(void *handle);
-    long (*read) (void *handle, void *buf, unsigned long count);
-    long (*write)(void *handle, const void *buf, unsigned long count);
-    long (*lseek)(void *handle, long offset, int whence);
-    long (*stat) (hostfs_mount *mount, const char *path, hostfs_stat *out);
-    long (*fstat)(void *handle, hostfs_stat *out);
-    long (*getdents)(void *handle, void *buf, unsigned long count);
-    long (*mkdir) (hostfs_mount *mount, const char *path, int mode);
-    long (*rmdir) (hostfs_mount *mount, const char *path);
-    long (*unlink)(hostfs_mount *mount, const char *path);
-    long (*rename)(hostfs_mount *mount, const char *oldp, const char *newp);
+    int64_t (*open) (hostfs_mount *mount, const char *path, int flags, int mode);
+    int64_t (*close)(void *handle);
+    int64_t (*read) (void *handle, void *buf, uint64_t count);
+    int64_t (*write)(void *handle, const void *buf, uint64_t count);
+    int64_t (*lseek)(void *handle, int64_t offset, int whence);
+    int64_t (*stat) (hostfs_mount *mount, const char *path, hostfs_stat *out);
+    int64_t (*fstat)(void *handle, hostfs_stat *out);
+    int64_t (*getdents)(void *handle, void *buf, uint64_t count);
+    int64_t (*mkdir) (hostfs_mount *mount, const char *path, int mode);
+    int64_t (*rmdir) (hostfs_mount *mount, const char *path);
+    int64_t (*unlink)(hostfs_mount *mount, const char *path);
+    int64_t (*rename)(hostfs_mount *mount, const char *oldp, const char *newp);
 } hostfs_backend_ops;
 ```
 
-Every op returns a `long`: a non-negative result on success (fd, byte count, new
-offset, or 0), or a value in `[-4095, -1]` encoding `-errno`, matching the VM
-result convention exactly so the core can pass it straight back to `RV`.
+Every op returns an `int64_t`: a non-negative result on success (fd, byte count,
+new offset, or 0), or a value in `[-4095, -1]` encoding `-errno`, matching the VM
+result convention exactly so the core can pass it straight back to `RV`. The
+signed 64-bit width holds the full offset/count range and the sign-extended
+`-errno` band on both LP64 (Linux/macOS) and LLP64 (Windows) hosts.
 
 ### (b) Mount table shape
 
