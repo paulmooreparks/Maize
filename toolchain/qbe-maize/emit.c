@@ -25,6 +25,7 @@ struct E {
 	Fn *fn;
 	uint64_t frame;   /* bytes reserved by the prologue SUB */
 	uint nsaved;      /* callee-saved registers preserved */
+	uint64_t vabase;  /* variadic register save area (48) or 0 (maize-98) */
 };
 
 /* Sub-register size codes, low-field first. */
@@ -350,9 +351,35 @@ emitext(Ins *i, E *e)
 	fputc('\n', e->f);
 }
 
+/* Emit `LEA $-<off> BP <reg>` with the offset immediate sized so mazm reads it at
+ * a width that can hold -off. mazm sizes a hex literal by its digit count
+ * (mazm.cpp compile_hex_literal): <=2 digits is an 8-bit immediate, whose signed
+ * range is only -128..127. A frame offset >= 128 (reachable once the 48-byte
+ * variadic save area shifts the saved-register and locals blocks down, maize-98)
+ * printed as 2 digits would be truncated to 8 bits and sign-extended to the wrong
+ * value, so pad the hex to a width whose signed range holds -off. Offsets < 128
+ * still print as 2 digits, keeping non-variadic frame encodings byte-identical. */
+static void
+lea_negoff(E *e, uint64_t off, const char *reg)
+{
+	int digits;
+
+	if (off <= 0x7f)
+		digits = 2;
+	else if (off <= 0x7fff)
+		digits = 4;
+	else if (off <= 0x7fffffff)
+		digits = 8;
+	else
+		digits = 16;
+	fprintf(e->f, "\tLEA\t$-%0*"PRIx64" BP %s\n", digits, off, reg);
+}
+
 /* Frame-slot address materialization: LEA $-<off> BP <reg>. The locals region
  * sits just below the saved-register block the prologue reserved; slot s (a
- * 4-byte unit index) is at BP - (8*nsaved + 4*(fn->slot - s)). */
+ * 4-byte unit index) is at BP - (vabase + 8*nsaved + 4*(fn->slot - s)). For a
+ * variadic function vabase == 48 shifts everything below the register save area
+ * that occupies BP-48..BP-0 (maize-98). */
 static void
 emitaddrslot(Ins *i, E *e)
 {
@@ -361,8 +388,8 @@ emitaddrslot(Ins *i, E *e)
 
 	assert(rtype(i->arg[0]) == RSlot);
 	s = i->arg[0].val;
-	off = 8 * (uint64_t)e->nsaved + 4 * ((uint64_t)e->fn->slot - s);
-	fprintf(e->f, "\tLEA\t$-%02"PRIx64" BP %s\n", off, rname(i->to.val));
+	off = e->vabase + 8 * (uint64_t)e->nsaved + 4 * ((uint64_t)e->fn->slot - s);
+	lea_negoff(e, off, rname(i->to.val));
 }
 
 static void
@@ -399,14 +426,18 @@ emitins(Ins *i, E *e)
 }
 
 /* Reserved-frame layout (bytes below BP):
- *   [BP-8*1 .. BP-8*nsaved]   saved callee-saved registers
+ *   [BP-48 .. BP-0]           variadic register save area (only when fn->vararg)
+ *   [BP-vabase-8*1 .. ]       saved callee-saved registers
  *   [.. below ..]             spill slots / locals
- * A leaf with no saves and no locals has an empty frame, so the
- * prologue/epilogue reduce to exactly asm/hello.mazm:strlen's shape. */
+ * A non-variadic leaf with no saves and no locals has an empty frame, so the
+ * prologue/epilogue reduce to exactly asm/hello.mazm:strlen's shape. vabase is 48
+ * for a variadic function (the R0..R5 save area at BP-48..BP-0) else 0, and it
+ * shifts the saved-register and locals blocks down so the save-area base is the
+ * constant BP-48 selvastart hardcodes (maize-98, decisions 7537/7598). */
 static uint64_t
-savedoff(uint n)
+savedoff(E *e, uint n)
 {
-	return 8 * (n + 1);
+	return e->vabase + 8 * (n + 1);
 }
 
 static void
@@ -415,13 +446,15 @@ framelayout(E *e)
 	int *r;
 	uint64_t locals;
 
+	e->vabase = e->fn->vararg ? 48 : 0;
+
 	e->nsaved = 0;
 	for (r = maize_rclob; *r >= 0; r++)
 		e->nsaved += (e->fn->reg >> *r) & 1;
 
 	locals = 4 * (uint64_t)e->fn->slot;
 	locals = (locals + 7) & ~(uint64_t)7;   /* 8-byte alignment */
-	e->frame = locals + 8 * e->nsaved;
+	e->frame = locals + 8 * e->nsaved + e->vabase;
 }
 
 static void
@@ -429,15 +462,24 @@ prologue(E *e)
 {
 	int *r;
 	uint n;
+	int k;
 
 	fputs("\tPUSH\tBP\n", e->f);
 	fputs("\tCP\tSP BP\n", e->f);
 	if (e->frame)
 		fprintf(e->f, "\tSUB\t$%08"PRIx64" SP\n", e->frame);
+	/* Variadic register save area (decisions 7537/7598): spill all six GP
+	 * argument registers into BP-48..BP-0 (R0 at the lowest address, R5 at BP-8)
+	 * before the body can clobber them, so va_start / va_arg can walk them. */
+	if (e->fn->vararg)
+		for (k = 0; k < 6; k++) {
+			lea_negoff(e, 48 - 8 * k, "RT");
+			fprintf(e->f, "\tST\t%s @RT\n", rname(R0 + k));
+		}
 	n = 0;
 	for (r = maize_rclob; *r >= 0; r++)
 		if (e->fn->reg & BIT(*r)) {
-			fprintf(e->f, "\tLEA\t$-%02"PRIx64" BP RT\n", savedoff(n));
+			lea_negoff(e, savedoff(e, n), "RT");
 			fprintf(e->f, "\tST\t%s @RT\n", rname(*r));
 			n++;
 		}
@@ -452,7 +494,7 @@ epilogue(E *e)
 	n = 0;
 	for (r = maize_rclob; *r >= 0; r++)
 		if (e->fn->reg & BIT(*r)) {
-			fprintf(e->f, "\tLEA\t$-%02"PRIx64" BP RT\n", savedoff(n));
+			lea_negoff(e, savedoff(e, n), "RT");
 			fprintf(e->f, "\tLD\t@RT %s\n", rname(*r));
 			n++;
 		}

@@ -306,6 +306,10 @@ run_ctest "str"
 run_ctest "ctype"
 run_ctest "sbrk"
 run_ctest "malloc"
+# maize-98 varargs / stdarg ABI: a self-checking fixture exercising the register
+# save area, va_arg over mixed scalar classes, the register->overflow boundary,
+# and va_copy. Prints a single PASS line.
+run_ctest "varargs"
 run_exit_status_test "exitcode" 42
 # maize-76: abort() terminates with status 134 (128 + SIGABRT(6); no signals).
 run_exit_status_test "abort" 134
