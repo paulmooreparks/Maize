@@ -310,6 +310,11 @@ run_ctest "malloc"
 # save area, va_arg over mixed scalar classes, the register->overflow boundary,
 # and va_copy. Prints a single PASS line.
 run_ctest "varargs"
+# maize-99 variadic printf over the stdarg ABI: direct-emit correctness for every
+# conversion (%d %i %u %x %X %c %s %p %%, %ld/%lu/%lx, width + zero-pad, INT_MIN /
+# LONG_MIN) matched byte-for-byte, plus an snprintf return/truncation self-check
+# and a >256-byte line proving chunked flush. Ends in a single "selfcheck PASS".
+run_ctest "printf"
 run_exit_status_test "exitcode" 42
 # maize-76: abort() terminates with status 134 (128 + SIGABRT(6); no signals).
 run_exit_status_test "abort" 134
