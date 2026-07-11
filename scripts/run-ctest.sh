@@ -10,7 +10,7 @@
 #   ctest/<name>.c
 #     -> cc-maize.sh --compile-only -o <name>.mzx   (tr -> cpp -E -> cproc-qbe ->
 #                              normalize -> qbe -t maize -> mazm -c -> mzld over the
-#                              crt0/syscall/puts/errno runtime; entry _start; W^X)
+#                              crt0/syscall + C runtime (errno/string/ctype/stdio/stdlib); entry _start; W^X)
 #     -> maize                (load_mzx sets RP=_start; execute; capture stdout)
 #     -> diff vs ctest/<name>.expected
 #
@@ -102,7 +102,7 @@ TOTAL=0
 # Compile a C fixture to a runnable .mzx by delegating to the shared driver in
 # --compile-only mode (maize-96). cc-maize.sh owns the whole pipeline end to end
 # (tr -> cpp -> cproc-qbe -> normalize -> qbe -t maize -> mazm -c -> mzld over the
-# crt0/syscall/puts/errno runtime set); this harness just asks for the linked image
+# crt0/syscall + C runtime (errno/string/ctype/stdio/stdlib) set); this harness just asks for the linked image
 # and runs it. On success sets BIN to the linked .mzx and returns 0; on failure prints
 # a [FAIL] line, bumps FAIL_COUNT, and returns 1. Shared by the stdout runner
 # (run_ctest), the exit-status runner (run_exit_status_test), and the argv runner
@@ -293,7 +293,16 @@ run_ctest "freelist"
 run_ctest "syscall_raw"
 run_ctest "syscall_write"
 run_ctest "syscall_errno"
+# maize-76 freestanding libc slice: string.h (str), ctype.h (ctype), the malloc
+# family over the sbrk free-list allocator (malloc), and the sbrk wrapper itself
+# (sbrk). Each is a self-checking fixture printing a single PASS line.
+run_ctest "str"
+run_ctest "ctype"
+run_ctest "sbrk"
+run_ctest "malloc"
 run_exit_status_test "exitcode" 42
+# maize-76: abort() terminates with status 134 (128 + SIGABRT(6); no signals).
+run_exit_status_test "abort" 134
 run_args_test
 run_wx_reject_test
 

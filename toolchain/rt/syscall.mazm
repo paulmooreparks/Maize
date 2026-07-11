@@ -16,6 +16,7 @@
 ;
 ;   sys_read (R0=fd, R1=buf, R2=count) -> RV   SYS $00  (bytes read)
 ;   sys_write(R0=fd, R1=buf, R2=count) -> RV   SYS $01  (bytes written)
+;   sys_brk (R0=addr, 0=query)         -> RV   SYS $0C  (new-or-current break; maize-75/76)
 ;   _exit(R0=code)                             SYS $3C  (sys_exit: terminate w/ status)
 ;
 ; The frozen hosted syscall-number table (ABI as of maize-74; see
@@ -24,9 +25,9 @@
 ;
 ; Naming (maize-74 decision 7305): the raw stubs keep the sys_* names; the POSIX
 ; names (read, write) belong to the errno wrappers. The raw process-termination
-; stub is _exit (POSIX raw termination, no atexit/flush); the buffered stdlib exit()
-; is deferred to maize-76. crt0 inlines SYS $3C directly (it does not CALL _exit),
-; so _exit has no in-tree caller yet; it is exported for C programs that call it.
+; stub is _exit (POSIX raw termination, no atexit/flush); the stdlib exit()/abort()
+; funnel (maize-76, stdlib.c) calls it, as does crt0's main-return handoff via
+; CALL exit -> _exit.
 ;
 ; maize-77: assembled to syscall.mzo and linked by mzld. The stubs cross the object
 ; boundary (puts and the C body CALL them), so each is GLOBAL; nothing else is
@@ -37,6 +38,7 @@ SECTION CODE
 
 GLOBAL sys_read
 GLOBAL sys_write
+GLOBAL sys_brk
 GLOBAL _exit
 
 sys_read:
@@ -45,6 +47,10 @@ sys_read:
 
 sys_write:
     SYS $01                 ; fd/buf/count already in R0/R1/R2 per the C ABI
+    RET
+
+sys_brk:
+    SYS $0C                 ; R0 = requested break (0 = query); RV = new-or-current break
     RET
 
 _exit:

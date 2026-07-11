@@ -15,8 +15,8 @@
  * (the translation MECHANISM is correct; the specific code is approximate).
  *
  * Compiled through the same cproc -> normalize -> qbe -t maize -> mazm -c path as
- * the C fixtures and linked into every C image alongside crt0/syscall/puts
- * (scripts/run-ctest.sh RT_OBJS).
+ * the C fixtures and linked into every C image alongside crt0/syscall and the
+ * other C runtime modules (string/ctype/stdio/stdlib; cc-maize.sh RT set).
  */
 #include "syscall.h"
 

@@ -25,15 +25,20 @@
 ;
 ; main's return value becomes the observable process exit status (maize-58): after
 ; main returns, its value lands in RV (the C ABI return register); we copy it into R0
-; (sys_exit's first-argument register) and invoke SYS $3C (sys_exit), which records
-; the low 8 bits as the exit status and terminates the VM. maize then returns that
-; status as its own host-process exit code.
+; (exit's first-argument register) and CALL the library exit() funnel (maize-76
+; decision 7346) instead of inlining SYS $3C. Behavior is identical today (exit ==
+; _exit: no atexit registry, unbuffered stdio), but a normal `return` from main now
+; flows through the single exit() funnel, so a future atexit / stdio-flush hook is
+; honored. exit() ultimately reaches sys_exit (SYS $3C), which records the low 8 bits
+; as the exit status and terminates the VM; maize then returns that as its own
+; host-process exit code. exit is defined in stdlib.mzo (always linked into the RT set).
 ; ==================================================================================
 
 SECTION CODE
 
 GLOBAL _start
 EXTERN main                    ; main is defined in another object; declare the import (maize-71)
+EXTERN exit                    ; exit() funnel in stdlib.mzo (maize-76 decision 7346)
 _start:
     LD  @RS R0              ; R0 = argc            = [RS]
     LEA $08 RS R1           ; R1 = argv (&argv[0]) = RS + 8
@@ -43,4 +48,4 @@ _start:
     LEA R2 R1 R2          ; R2 = envp             = argv + (argc+1)*8
     CALL main              ; main(R0=argc, R1=argv, R2=envp)
     CP RV R0               ; main's return value (RV, C ABI) -> R0 (exit-code arg)
-    SYS $3C                ; sys_exit(R0): terminate, carrying main's status
+    CALL exit              ; exit(R0): terminate through the library funnel (never returns)

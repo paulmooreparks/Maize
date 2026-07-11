@@ -8,8 +8,8 @@
 #     -> normalize            (drop the `extern` linkage annotation; lower `neg`)
 #     -> qbe -t maize         (QBE IL -> mazm body, with SECTION/GLOBAL/ALIGN/DREF)
 #     -> mazm -c              (body.mazm -> body.mzo relocatable object)
-#     -> mzld                 (crt0 syscall puts errno body -> <base>.mzx; entry _start;
-#                              W^X, per-section alignment)
+#     -> mzld                 (crt0 syscall errno string ctype stdio stdlib body ->
+#                              <base>.mzx; entry _start; W^X, per-section alignment)
 #     -> maize                (load_mzx sets RP=_start; execute; propagate guest exit)
 #
 # BOTH consumers of the C pipeline call this driver, so CI (scripts/run-ctest.sh,
@@ -189,10 +189,12 @@ compile_tu() {
 }
 
 # Assemble the freestanding asm runtime as relocatable objects (maize-77 decision
-# 7168): crt0/syscall/puts each become a .mzo. mazm -c writes <input>.mzo beside its
+# 7168): crt0/syscall each become a .mzo. mazm -c writes <input>.mzo beside its
 # input, so the sources are copied into WORK first (keeping toolchain/rt clean).
+# puts.mazm was retired in maize-76 (decision 7345): puts now lives in C (stdio.c),
+# so the asm loop is crt0 + syscall only.
 RT_OBJS=""
-for rt in crt0 syscall puts; do
+for rt in crt0 syscall; do
     cp "${RT_DIR}/${rt}.mazm" "${WORK}/${rt}.mazm"
     if ! "$MAZM" -c "${WORK}/${rt}.mazm" >"${WORK}/${rt}.mazm.log" 2>&1 || [ ! -f "${WORK}/${rt}.mzo" ]; then
         echo "cc-maize.sh: failed to assemble runtime object ${rt}.mazm:" >&2
@@ -202,20 +204,25 @@ for rt in crt0 syscall puts; do
     RT_OBJS="${RT_OBJS} ${WORK}/${rt}.mzo"
 done
 
-# maize-74: errno storage + the errno-translating read/write wrappers are a C runtime
-# source, not asm. Compile it through the same segmented C pipeline and add its object
-# to the RT set, so every C image links errno + the wrappers alongside crt0/syscall/puts.
-ERRNO_MZO=$(compile_tu "${RT_DIR}/errno.c" "rt_errno") \
-    || die "failed to compile C runtime object errno.c"
-RT_OBJS="${RT_OBJS} ${ERRNO_MZO}"
+# The C runtime modules (maize-74 errno; maize-76 string/ctype/stdio/stdlib) are C
+# sources, not asm. Each is compiled through the SAME segmented C pipeline and its
+# object added to the RT set, so every C image links the freestanding libc slice
+# (errno + syscall wrappers, string, ctype, stdio's puts/fputs/putchar core, stdlib's
+# exit/abort/malloc family + sbrk) alongside crt0/syscall. Single-source per maize-96:
+# these are the ONLY place the RT object set is enumerated.
+for rt in errno string ctype stdio stdlib; do
+    RT_MZO=$(compile_tu "${RT_DIR}/${rt}.c" "rt_${rt}") \
+        || die "failed to compile C runtime object ${rt}.c"
+    RT_OBJS="${RT_OBJS} ${RT_MZO}"
+done
 
 # Compile the user body.
 base=$(basename "${SRC%.c}")
 BODY_MZO=$(compile_tu "$SRC" "$base") || exit 1
 
-# Link crt0 syscall puts errno body -> <base>.mzx (default entry _start; W^X +
-# per-section alignment via mzld). RT_OBJS already carries the crt0 syscall puts errno
-# order; the body goes last.
+# Link crt0 syscall errno string ctype stdio stdlib body -> <base>.mzx (default entry
+# _start; W^X + per-section alignment via mzld). RT_OBJS already carries the
+# crt0 syscall + C-runtime order; the body goes last.
 MZX="${WORK}/${base}.mzx"
 if ! "$MZLD" -o "$MZX" ${RT_OBJS} "$BODY_MZO" >"${WORK}/${base}.mzld.log" 2>&1 || [ ! -f "$MZX" ]; then
     echo "cc-maize.sh: mzld failed for ${base}" >&2; cat "${WORK}/${base}.mzld.log" >&2; exit 1

@@ -21,13 +21,20 @@
 #ifndef MAIZE_SYSCALL_H
 #define MAIZE_SYSCALL_H
 
+/* The E* table and `extern int errno` live in errno.h now (maize-76 decision
+ * 7348); syscall.h pulls them in so the wrappers below still see errno. */
+#include "errno.h"
+
 /* --- raw stubs (syscall.mazm) ---------------------------------------------- */
 long sys_read(int fd, void *buf, unsigned long count);
 long sys_write(int fd, const void *buf, unsigned long count);
 void _exit(int code);
 
+/* sys_brk (SYS $0C, maize-75): R0 = requested break (0 queries); returns the
+ * new-or-current break in RV, NEVER -errno. sbrk (stdlib.c) wraps this. */
+void *sys_brk(void *addr);
+
 /* --- errno + wrappers (errno.c) -------------------------------------------- */
-extern int errno;
 
 /* The musl error translator: a pure function of its input. A raw result in
  * [-4095, -1] (i.e. (unsigned long)r > -4096UL) is -errno; it sets errno and
@@ -36,13 +43,5 @@ long __syscall_ret(unsigned long r);
 
 long read(int fd, void *buf, unsigned long count);
 long write(int fd, const void *buf, unsigned long count);
-
-/* Minimal errno constants, Linux x86-64 numbering. The VM does not yet produce
- * real -errno codes: today a failing call returns a bare -1, so the wrapper sets
- * errno to 1 (== EPERM here by coincidence, not by diagnosis). maize-75 makes the
- * VM return the correct code; the full E* table is maize-76. */
-#define EPERM   1
-#define EBADF   9
-#define EINVAL 22
 
 #endif /* MAIZE_SYSCALL_H */
