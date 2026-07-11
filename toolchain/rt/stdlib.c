@@ -33,18 +33,18 @@
 #include "syscall.h"  /* sys_brk, _exit */
 
 /* --- termination -------------------------------------------------------------- */
-/* These are functionally noreturn: _exit issues SYS $3C, which halts the VM, so
- * control never reaches the fall-through `return`. The `_Noreturn` keyword is NOT
- * used (it makes cproc emit a `hlt` terminator the pinned qbe -t maize predates);
- * _exit is a plain `void` for the same reason. See stdlib.h. */
+/* These are noreturn: _exit issues SYS $3C, which halts the VM, so control never
+ * reaches the fall-through `return`. The `_Noreturn` keyword is honest here: cproc
+ * emits a `hlt` block terminator that the qbe -t maize backend now lowers to HALT
+ * (maize-102); _exit carries `_Noreturn` for the same reason. See stdlib.h. */
 
-void
+_Noreturn void
 _Exit(int status)
 {
     _exit(status);   /* raw SYS $3C; no atexit/flush */
 }
 
-void
+_Noreturn void
 exit(int status)
 {
     /* MVP: no atexit registry and unbuffered stdio, so exit == _exit today. The
@@ -52,7 +52,7 @@ exit(int status)
     _exit(status);
 }
 
-void
+_Noreturn void
 abort(void)
 {
     _exit(134);   /* 128 + SIGABRT(6); no signal delivery on Maize */

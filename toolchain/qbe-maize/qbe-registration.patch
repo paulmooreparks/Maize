@@ -33,7 +33,7 @@ index 1a0074f..5ae3a54 100644
  
  config.h:
 diff --git a/all.h b/all.h
-index f49b4ef..8abef69 100644
+index f49b4ef..31769dc 100644
 --- a/all.h
 +++ b/all.h
 @@ -53,6 +53,7 @@ struct Target {
@@ -44,6 +44,41 @@ index f49b4ef..8abef69 100644
  };
  
  #define BIT(n) ((bits)1 << (n))
+@@ -145,7 +146,7 @@ enum J {
+ 	X(jfisle) X(jfislt) X(jfiuge) X(jfiugt) \
+ 	X(jfiule) X(jfiult) X(jffeq)  X(jffge)  \
+ 	X(jffgt)  X(jffle)  X(jfflt)  X(jffne)  \
+-	X(jffo)   X(jffuo)
++	X(jffo)   X(jffuo)  X(hlt)
+ #define X(j) J##j,
+ 	JMPS(X)
+ #undef X
+diff --git a/cfg.c b/cfg.c
+index 81da842..7220466 100644
+--- a/cfg.c
++++ b/cfg.c
+@@ -323,7 +323,7 @@ simpljmp(Fn *fn)
+ 		if (b->s2)
+ 			uffind(&b->s2, uf);
+ 		c = b->jmp.type - Jjf;
+-		if (0 <= c && c <= NCmp)
++		if (0 <= c && c <= NCmp && b->jmp.type != Jhlt)
+ 		if (b->s1 == b->s2) {
+ 			b->jmp.type = Jjmp;
+ 			b->s2 = 0;
+diff --git a/fold.c b/fold.c
+index 50a862e..13d14f2 100644
+--- a/fold.c
++++ b/fold.c
+@@ -148,7 +148,7 @@ visitjmp(Blk *b, int n, Fn *fn)
+ 		flowrk = &edge[n][0];
+ 		break;
+ 	default:
+-		if (isret(b->jmp.type))
++		if (isret(b->jmp.type) || b->jmp.type == Jhlt)
+ 			break;
+ 		die("unreachable");
+ 	}
 diff --git a/main.c b/main.c
 index abef591..ea5e477 100644
 --- a/main.c
@@ -100,3 +135,43 @@ index abef591..ea5e477 100644
  		gasemitfin(outf);
  		if (asm == Gaself)
  			fprintf(outf, ".section .note.GNU-stack,\"\",@progbits\n");
+diff --git a/parse.c b/parse.c
+index 104ca1d..e431116 100644
+--- a/parse.c
++++ b/parse.c
+@@ -37,6 +37,7 @@ enum {
+ 	Tjmp,
+ 	Tjnz,
+ 	Tret,
++	Thlt,
+ 	Texport,
+ 	Tfunc,
+ 	Ttype,
+@@ -87,6 +88,7 @@ static char *kwmap[Ntok] = {
+ 	[Tjmp] = "jmp",
+ 	[Tjnz] = "jnz",
+ 	[Tret] = "ret",
++	[Thlt] = "hlt",
+ 	[Texport] = "export",
+ 	[Tfunc] = "function",
+ 	[Ttype] = "type",
+@@ -600,6 +602,9 @@ parseline(PState ps)
+ 			curb->jmp.arg = r;
+ 		}
+ 		goto Close;
++	case Thlt:
++		curb->jmp.type = Jhlt;
++		goto Close;
+ 	case Tjmp:
+ 		curb->jmp.type = Jjmp;
+ 		goto Jump;
+@@ -1277,6 +1282,9 @@ printfn(Fn *fn, FILE *f)
+ 			if (b->s1 != b->link)
+ 				fprintf(f, "\tjmp @%s\n", b->s1->name);
+ 			break;
++		case Jhlt:
++			fprintf(f, "\thlt\n");
++			break;
+ 		default:
+ 			fprintf(f, "\t%s ", jtoa[b->jmp.type]);
+ 			if (b->jmp.type == Jjnz) {

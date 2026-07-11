@@ -28,7 +28,7 @@
 /* --- raw stubs (syscall.mazm) ---------------------------------------------- */
 long sys_read(int fd, void *buf, unsigned long count);
 long sys_write(int fd, const void *buf, unsigned long count);
-void _exit(int code);
+_Noreturn void _exit(int code);
 
 /* sys_brk (SYS $0C, maize-75): R0 = requested break (0 queries); returns the
  * new-or-current break in RV, NEVER -errno. sbrk (stdlib.c) wraps this. */

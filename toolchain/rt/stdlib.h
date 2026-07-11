@@ -14,13 +14,14 @@
 
 #include "stddef.h"
 
-/* Functionally noreturn: each reaches _exit (SYS $3C), which halts the VM. The
- * standard C11 `_Noreturn` keyword is intentionally NOT used: it makes cproc emit
- * a `hlt` block terminator that the pinned qbe -t maize backend predates. _exit
- * itself (syscall.h) is likewise a plain `void` for the same reason. */
-void exit(int status);
-void _Exit(int status);
-void abort(void);
+/* Each reaches _exit (SYS $3C), which halts the VM, so control never returns. The
+ * C11 `_Noreturn` keyword is honest here: cproc emits a `hlt` block terminator for
+ * a _Noreturn definition (and for calls to a _Noreturn-declared function), and the
+ * qbe -t maize backend now parses and lowers `hlt` to HALT (maize-102). _exit
+ * (syscall.h) carries `_Noreturn` for the same reason. */
+_Noreturn void exit(int status);
+_Noreturn void _Exit(int status);
+_Noreturn void abort(void);
 
 void *malloc(size_t size);
 void  free(void *ptr);

@@ -309,6 +309,11 @@ run_ctest "malloc"
 run_exit_status_test "exitcode" 42
 # maize-76: abort() terminates with status 134 (128 + SIGABRT(6); no signals).
 run_exit_status_test "abort" 134
+# maize-102: an own-TU _Noreturn function (die) calls exit(57); its `hlt` end block
+# (and main's tail block, which calls the _Noreturn-declared die) traverse cfg.c
+# simpljmp before emit, so a regression in the hlt-guard hunk crashes this at
+# compile time rather than passing silently. Proves qbe -t maize parses/lowers hlt.
+run_exit_status_test "noreturn" 57
 run_args_test
 run_wx_reject_test
 

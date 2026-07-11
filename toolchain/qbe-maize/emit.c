@@ -546,6 +546,9 @@ maize_emitfn(Fn *fn, FILE *out)
 			if (b->s1 != b->link)
 				fprintf(e->f, "\tJMP\tLm%d\n", id0 + b->s1->id);
 			break;
+		case Jhlt:
+			fputs("\tHALT\n", e->f);
+			break;
 		default:
 			if (b->jmp.type >= Jjf && b->jmp.type < Jjf + NCmpI) {
 				c = b->jmp.type - Jjf;

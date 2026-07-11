@@ -149,6 +149,7 @@ seljmp(Blk *b, Fn *fn)
 	switch (b->jmp.type) {
 	case Jret0:
 	case Jjmp:
+	case Jhlt:
 		return;
 	case Jjnz:
 		break;
