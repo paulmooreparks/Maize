@@ -915,10 +915,14 @@ namespace maize {
                             u_byte dst_before = alu.op2_reg.b0;
                             u_byte src = alu.op1_reg.b0;
                             u_byte result = dst_before + src;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
-                            carryout_flag = result < dst_before;
-                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            bool c = result < dst_before;
+                            bool v = (~(dst_before ^ src) & (dst_before ^ result)) & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -927,10 +931,14 @@ namespace maize {
                             u_qword dst_before = alu.op2_reg.q0;
                             u_qword src = alu.op1_reg.q0;
                             u_qword result = dst_before + src;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
-                            carryout_flag = result < dst_before;
-                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            bool c = result < dst_before;
+                            bool v = (~(dst_before ^ src) & (dst_before ^ result)) & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -939,10 +947,14 @@ namespace maize {
                             u_hword dst_before = alu.op2_reg.h0;
                             u_hword src = alu.op1_reg.h0;
                             u_hword result = dst_before + src;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
-                            carryout_flag = result < dst_before;
-                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            bool c = result < dst_before;
+                            bool v = (~(dst_before ^ src) & (dst_before ^ result)) & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -951,10 +963,14 @@ namespace maize {
                             u_word dst_before = alu.op2_reg.w0;
                             u_word src = alu.op1_reg.w0;
                             u_word result = dst_before + src;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
-                            carryout_flag = result < dst_before;
-                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            bool c = result < dst_before;
+                            bool v = (~(dst_before ^ src) & (dst_before ^ result)) & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -974,10 +990,14 @@ namespace maize {
                             u_byte dst_before = alu.op2_reg.b0;
                             u_byte src = alu.op1_reg.b0;
                             u_byte result = dst_before - src;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
-                            carryout_flag = result > dst_before;
-                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            bool c = result > dst_before;
+                            bool v = ((dst_before ^ src) & (dst_before ^ result)) & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -986,10 +1006,14 @@ namespace maize {
                             u_qword dst_before = alu.op2_reg.q0;
                             u_qword src = alu.op1_reg.q0;
                             u_qword result = dst_before - src;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
-                            carryout_flag = result > dst_before;
-                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            bool c = result > dst_before;
+                            bool v = ((dst_before ^ src) & (dst_before ^ result)) & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -998,10 +1022,14 @@ namespace maize {
                             u_hword dst_before = alu.op2_reg.h0;
                             u_hword src = alu.op1_reg.h0;
                             u_hword result = dst_before - src;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
-                            carryout_flag = result > dst_before;
-                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            bool c = result > dst_before;
+                            bool v = ((dst_before ^ src) & (dst_before ^ result)) & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1010,10 +1038,14 @@ namespace maize {
                             u_word dst_before = alu.op2_reg.w0;
                             u_word src = alu.op1_reg.w0;
                             u_word result = dst_before - src;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
-                            carryout_flag = result > dst_before;
-                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            bool c = result > dst_before;
+                            bool v = ((dst_before ^ src) & (dst_before ^ result)) & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1035,10 +1067,14 @@ namespace maize {
                             u_byte src = alu.op1_reg.b0;
                             u_byte sum1 = dst_before + src;
                             u_byte result = sum1 + static_cast<u_byte>(carry_in);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
-                            carryout_flag = (sum1 < dst_before) || (result < sum1);
-                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            bool c = (sum1 < dst_before) || (result < sum1);
+                            bool v = (~(dst_before ^ src) & (dst_before ^ result)) & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1048,10 +1084,14 @@ namespace maize {
                             u_qword src = alu.op1_reg.q0;
                             u_qword sum1 = dst_before + src;
                             u_qword result = sum1 + static_cast<u_qword>(carry_in);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
-                            carryout_flag = (sum1 < dst_before) || (result < sum1);
-                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            bool c = (sum1 < dst_before) || (result < sum1);
+                            bool v = (~(dst_before ^ src) & (dst_before ^ result)) & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1061,10 +1101,14 @@ namespace maize {
                             u_hword src = alu.op1_reg.h0;
                             u_hword sum1 = dst_before + src;
                             u_hword result = sum1 + static_cast<u_hword>(carry_in);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
-                            carryout_flag = (sum1 < dst_before) || (result < sum1);
-                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            bool c = (sum1 < dst_before) || (result < sum1);
+                            bool v = (~(dst_before ^ src) & (dst_before ^ result)) & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1074,10 +1118,14 @@ namespace maize {
                             u_word src = alu.op1_reg.w0;
                             u_word sum1 = dst_before + src;
                             u_word result = sum1 + static_cast<u_word>(carry_in);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
-                            carryout_flag = (sum1 < dst_before) || (result < sum1);
-                            overflow_flag = (~(dst_before ^ src) & (dst_before ^ result)) & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            bool c = (sum1 < dst_before) || (result < sum1);
+                            bool v = (~(dst_before ^ src) & (dst_before ^ result)) & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1097,10 +1145,14 @@ namespace maize {
                             u_byte src = alu.op1_reg.b0;
                             u_byte diff1 = dst_before - src;
                             u_byte result = diff1 - static_cast<u_byte>(borrow_in);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
-                            carryout_flag = (diff1 > dst_before) || (result > diff1);
-                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            bool c = (diff1 > dst_before) || (result > diff1);
+                            bool v = ((dst_before ^ src) & (dst_before ^ result)) & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1110,10 +1162,14 @@ namespace maize {
                             u_qword src = alu.op1_reg.q0;
                             u_qword diff1 = dst_before - src;
                             u_qword result = diff1 - static_cast<u_qword>(borrow_in);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
-                            carryout_flag = (diff1 > dst_before) || (result > diff1);
-                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            bool c = (diff1 > dst_before) || (result > diff1);
+                            bool v = ((dst_before ^ src) & (dst_before ^ result)) & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1123,10 +1179,14 @@ namespace maize {
                             u_hword src = alu.op1_reg.h0;
                             u_hword diff1 = dst_before - src;
                             u_hword result = diff1 - static_cast<u_hword>(borrow_in);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
-                            carryout_flag = (diff1 > dst_before) || (result > diff1);
-                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            bool c = (diff1 > dst_before) || (result > diff1);
+                            bool v = ((dst_before ^ src) & (dst_before ^ result)) & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1136,10 +1196,14 @@ namespace maize {
                             u_word src = alu.op1_reg.w0;
                             u_word diff1 = dst_before - src;
                             u_word result = diff1 - static_cast<u_word>(borrow_in);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
-                            carryout_flag = (diff1 > dst_before) || (result > diff1);
-                            overflow_flag = ((dst_before ^ src) & (dst_before ^ result)) & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            bool c = (diff1 > dst_before) || (result > diff1);
+                            bool v = ((dst_before ^ src) & (dst_before ^ result)) & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1156,44 +1220,52 @@ namespace maize {
                     switch (op_size) {
                         case 1: {
                             u_byte result = alu.op2_reg.b0 * alu.op1_reg.b0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
                             bool ovf = is_mul_overflow(static_cast<u_byte>(alu.op1_reg.b0), static_cast<u_byte>(alu.op2_reg.b0)) || is_mul_underflow(static_cast<u_byte>(alu.op1_reg.b0), static_cast<u_byte>(alu.op2_reg.b0));
-                            overflow_flag = ovf;
-                            carryout_flag = ovf;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (ovf ? bit_carryout : 0) | (ovf ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
                             u_qword result = alu.op2_reg.q0 * alu.op1_reg.q0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
                             bool ovf = is_mul_overflow(static_cast<u_qword>(alu.op1_reg.q0), static_cast<u_qword>(alu.op2_reg.q0)) || is_mul_underflow(static_cast<u_qword>(alu.op1_reg.q0), static_cast<u_qword>(alu.op2_reg.q0));
-                            overflow_flag = ovf;
-                            carryout_flag = ovf;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (ovf ? bit_carryout : 0) | (ovf ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
                             u_hword result = alu.op2_reg.h0 * alu.op1_reg.h0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
                             bool ovf = is_mul_overflow(static_cast<u_hword>(alu.op1_reg.h0), static_cast<u_hword>(alu.op2_reg.h0)) || is_mul_underflow(static_cast<u_hword>(alu.op1_reg.h0), static_cast<u_hword>(alu.op2_reg.h0));
-                            overflow_flag = ovf;
-                            carryout_flag = ovf;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (ovf ? bit_carryout : 0) | (ovf ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
                             u_word result = alu.op2_reg.w0 * alu.op1_reg.w0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
                             bool ovf = is_mul_overflow(alu.op1_reg.w0, alu.op2_reg.w0) || is_mul_underflow(alu.op1_reg.w0, alu.op2_reg.w0);
-                            overflow_flag = ovf;
-                            carryout_flag = ovf;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (ovf ? bit_carryout : 0) | (ovf ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1216,10 +1288,14 @@ namespace maize {
                             u_qword up = static_cast<u_qword>(p);
                             u_word lo = up & 0xFF;
                             u_word hi = (up >> 8) & 0xFF;
-                            zero_flag = (lo == 0 && hi == 0);
-                            negative_flag = hi & 0x80;
-                            carryout_flag = hi != 0;
-                            overflow_flag = (p < -128 || p > 127);
+                            bool z = (lo == 0 && hi == 0);
+                            bool n = hi & 0x80;
+                            bool c = hi != 0;
+                            bool v = (p < -128 || p > 127);
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = lo;
                             alu.op1_reg.w0 = hi;
                             break;
@@ -1230,10 +1306,14 @@ namespace maize {
                             u_hword up = static_cast<u_hword>(p);
                             u_word lo = up & 0xFFFF;
                             u_word hi = (up >> 16) & 0xFFFF;
-                            zero_flag = (lo == 0 && hi == 0);
-                            negative_flag = hi & 0x8000;
-                            carryout_flag = hi != 0;
-                            overflow_flag = (p < -32768 || p > 32767);
+                            bool z = (lo == 0 && hi == 0);
+                            bool n = hi & 0x8000;
+                            bool c = hi != 0;
+                            bool v = (p < -32768 || p > 32767);
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = lo;
                             alu.op1_reg.w0 = hi;
                             break;
@@ -1244,10 +1324,14 @@ namespace maize {
                             u_word up = static_cast<u_word>(p);
                             u_word lo = up & 0xFFFFFFFF;
                             u_word hi = (up >> 32) & 0xFFFFFFFF;
-                            zero_flag = (lo == 0 && hi == 0);
-                            negative_flag = hi & 0x80000000;
-                            carryout_flag = hi != 0;
-                            overflow_flag = (p < INT32_MIN || p > INT32_MAX);
+                            bool z = (lo == 0 && hi == 0);
+                            bool n = hi & 0x80000000;
+                            bool c = hi != 0;
+                            bool v = (p < INT32_MIN || p > INT32_MAX);
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = lo;
                             alu.op1_reg.w0 = hi;
                             break;
@@ -1258,10 +1342,14 @@ namespace maize {
                             unsigned __int128 up = static_cast<unsigned __int128>(p);
                             u_word lo = static_cast<u_word>(up);
                             u_word hi = static_cast<u_word>(up >> 64);
-                            zero_flag = (lo == 0 && hi == 0);
-                            negative_flag = hi & 0x8000000000000000;
-                            carryout_flag = hi != 0;
-                            overflow_flag = (p < static_cast<__int128>(INT64_MIN) || p > static_cast<__int128>(INT64_MAX));
+                            bool z = (lo == 0 && hi == 0);
+                            bool n = hi & 0x8000000000000000;
+                            bool c = hi != 0;
+                            bool v = (p < static_cast<__int128>(INT64_MIN) || p > static_cast<__int128>(INT64_MAX));
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = lo;
                             alu.op1_reg.w0 = hi;
                             break;
@@ -1280,10 +1368,13 @@ namespace maize {
                             u_qword up = static_cast<u_qword>(alu.op2_reg.b0) * static_cast<u_qword>(alu.op1_reg.b0);
                             u_word lo = up & 0xFF;
                             u_word hi = (up >> 8) & 0xFF;
-                            zero_flag = (lo == 0 && hi == 0);
-                            negative_flag = hi & 0x80;
-                            carryout_flag = hi != 0;
-                            overflow_flag = hi != 0;
+                            bool z = (lo == 0 && hi == 0);
+                            bool n = hi & 0x80;
+                            bool c = hi != 0;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (c ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = lo;
                             alu.op1_reg.w0 = hi;
                             break;
@@ -1293,10 +1384,13 @@ namespace maize {
                             u_hword up = static_cast<u_hword>(alu.op2_reg.q0) * static_cast<u_hword>(alu.op1_reg.q0);
                             u_word lo = up & 0xFFFF;
                             u_word hi = (up >> 16) & 0xFFFF;
-                            zero_flag = (lo == 0 && hi == 0);
-                            negative_flag = hi & 0x8000;
-                            carryout_flag = hi != 0;
-                            overflow_flag = hi != 0;
+                            bool z = (lo == 0 && hi == 0);
+                            bool n = hi & 0x8000;
+                            bool c = hi != 0;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (c ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = lo;
                             alu.op1_reg.w0 = hi;
                             break;
@@ -1306,10 +1400,13 @@ namespace maize {
                             u_word up = static_cast<u_word>(alu.op2_reg.h0) * static_cast<u_word>(alu.op1_reg.h0);
                             u_word lo = up & 0xFFFFFFFF;
                             u_word hi = (up >> 32) & 0xFFFFFFFF;
-                            zero_flag = (lo == 0 && hi == 0);
-                            negative_flag = hi & 0x80000000;
-                            carryout_flag = hi != 0;
-                            overflow_flag = hi != 0;
+                            bool z = (lo == 0 && hi == 0);
+                            bool n = hi & 0x80000000;
+                            bool c = hi != 0;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (c ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = lo;
                             alu.op1_reg.w0 = hi;
                             break;
@@ -1319,10 +1416,13 @@ namespace maize {
                             unsigned __int128 up = static_cast<unsigned __int128>(alu.op2_reg.w0) * static_cast<unsigned __int128>(alu.op1_reg.w0);
                             u_word lo = static_cast<u_word>(up);
                             u_word hi = static_cast<u_word>(up >> 64);
-                            zero_flag = (lo == 0 && hi == 0);
-                            negative_flag = hi & 0x8000000000000000;
-                            carryout_flag = hi != 0;
-                            overflow_flag = hi != 0;
+                            bool z = (lo == 0 && hi == 0);
+                            bool n = hi & 0x8000000000000000;
+                            bool c = hi != 0;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (c ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = lo;
                             alu.op1_reg.w0 = hi;
                             break;
@@ -1335,9 +1435,6 @@ namespace maize {
                 case instr::div_opcode: {
                     /* Signed division (card maize-5). C and V are cleared; N and Z come from
                        the result. Divide-by-zero and the INT_MIN/-1 quotient overflow trap. */
-                    overflow_flag = false;
-                    carryout_flag = false;
-
                     switch (op_size) {
                         case 1: {
                             s_byte divisor = alu.op1_reg.b0;
@@ -1345,8 +1442,12 @@ namespace maize {
                             if (divisor == 0) { raise_divide_error("signed divide by zero"); }
                             if (divisor == -1 && dividend == std::numeric_limits<s_byte>::min()) { raise_divide_error("signed division overflow"); }
                             s_byte result = dividend / divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = static_cast<u_byte>(result);
                             break;
                         }
@@ -1357,8 +1458,12 @@ namespace maize {
                             if (divisor == 0) { raise_divide_error("signed divide by zero"); }
                             if (divisor == -1 && dividend == std::numeric_limits<s_qword>::min()) { raise_divide_error("signed division overflow"); }
                             s_qword result = dividend / divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = static_cast<u_qword>(result);
                             break;
                         }
@@ -1369,8 +1474,12 @@ namespace maize {
                             if (divisor == 0) { raise_divide_error("signed divide by zero"); }
                             if (divisor == -1 && dividend == std::numeric_limits<s_hword>::min()) { raise_divide_error("signed division overflow"); }
                             s_hword result = dividend / divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = static_cast<u_hword>(result);
                             break;
                         }
@@ -1381,8 +1490,12 @@ namespace maize {
                             if (divisor == 0) { raise_divide_error("signed divide by zero"); }
                             if (divisor == -1 && dividend == std::numeric_limits<s_word>::min()) { raise_divide_error("signed division overflow"); }
                             s_word result = dividend / divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = static_cast<u_word>(result);
                             break;
                         }
@@ -1394,9 +1507,6 @@ namespace maize {
                 case instr::mod_opcode: {
                     /* Signed remainder (card maize-5). Same trap cases as signed DIV; the C++
                        remainder takes the sign of the dividend (truncated division). */
-                    overflow_flag = false;
-                    carryout_flag = false;
-
                     switch (op_size) {
                         case 1: {
                             s_byte divisor = alu.op1_reg.b0;
@@ -1404,8 +1514,12 @@ namespace maize {
                             if (divisor == 0) { raise_divide_error("signed divide by zero"); }
                             if (divisor == -1 && dividend == std::numeric_limits<s_byte>::min()) { raise_divide_error("signed division overflow"); }
                             s_byte result = dividend % divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = static_cast<u_byte>(result);
                             break;
                         }
@@ -1416,8 +1530,12 @@ namespace maize {
                             if (divisor == 0) { raise_divide_error("signed divide by zero"); }
                             if (divisor == -1 && dividend == std::numeric_limits<s_qword>::min()) { raise_divide_error("signed division overflow"); }
                             s_qword result = dividend % divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = static_cast<u_qword>(result);
                             break;
                         }
@@ -1428,8 +1546,12 @@ namespace maize {
                             if (divisor == 0) { raise_divide_error("signed divide by zero"); }
                             if (divisor == -1 && dividend == std::numeric_limits<s_hword>::min()) { raise_divide_error("signed division overflow"); }
                             s_hword result = dividend % divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = static_cast<u_hword>(result);
                             break;
                         }
@@ -1440,8 +1562,12 @@ namespace maize {
                             if (divisor == 0) { raise_divide_error("signed divide by zero"); }
                             if (divisor == -1 && dividend == std::numeric_limits<s_word>::min()) { raise_divide_error("signed division overflow"); }
                             s_word result = dividend % divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = static_cast<u_word>(result);
                             break;
                         }
@@ -1452,16 +1578,17 @@ namespace maize {
 
                 case instr::udiv_opcode: {
                     /* Unsigned division (card maize-5). Divide-by-zero traps. */
-                    overflow_flag = false;
-                    carryout_flag = false;
-
                     switch (op_size) {
                         case 1: {
                             u_byte divisor = alu.op1_reg.b0;
                             if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
                             u_byte result = alu.op2_reg.b0 / divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1470,8 +1597,12 @@ namespace maize {
                             u_qword divisor = alu.op1_reg.q0;
                             if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
                             u_qword result = alu.op2_reg.q0 / divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1480,8 +1611,12 @@ namespace maize {
                             u_hword divisor = alu.op1_reg.h0;
                             if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
                             u_hword result = alu.op2_reg.h0 / divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1490,8 +1625,12 @@ namespace maize {
                             u_word divisor = alu.op1_reg.w0;
                             if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
                             u_word result = alu.op2_reg.w0 / divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1502,16 +1641,17 @@ namespace maize {
 
                 case instr::umod_opcode: {
                     /* Unsigned remainder (card maize-5). Divide-by-zero traps. */
-                    overflow_flag = false;
-                    carryout_flag = false;
-
                     switch (op_size) {
                         case 1: {
                             u_byte divisor = alu.op1_reg.b0;
                             if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
                             u_byte result = alu.op2_reg.b0 % divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1520,8 +1660,12 @@ namespace maize {
                             u_qword divisor = alu.op1_reg.q0;
                             if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
                             u_qword result = alu.op2_reg.q0 % divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1530,8 +1674,12 @@ namespace maize {
                             u_hword divisor = alu.op1_reg.h0;
                             if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
                             u_hword result = alu.op2_reg.h0 % divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1540,8 +1688,12 @@ namespace maize {
                             u_word divisor = alu.op1_reg.w0;
                             if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
                             u_word result = alu.op2_reg.w0 % divisor;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1553,38 +1705,51 @@ namespace maize {
                 case instr::test_opcode:
                 case instr::testind_opcode:
                 case instr::and_opcode: {
-                    overflow_flag = false;
-                    carryout_flag = false;
-
                     switch (op_size) {
                         case 1: {
                             u_byte result = alu.op2_reg.b0 & alu.op1_reg.b0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
                             u_qword result = alu.op2_reg.q0 & alu.op1_reg.q0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
                             u_hword result = alu.op2_reg.h0 & alu.op1_reg.h0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
                             u_word result = alu.op2_reg.w0 & alu.op1_reg.w0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1594,38 +1759,51 @@ namespace maize {
                 }
 
                 case instr::or_opcode: {
-                    overflow_flag = false;
-                    carryout_flag = false;
-
                     switch (op_size) {
                         case 1: {
                             u_byte result = alu.op2_reg.b0 | alu.op1_reg.b0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
                             u_qword result = alu.op2_reg.q0 | alu.op1_reg.q0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
                             u_hword result = alu.op2_reg.h0 | alu.op1_reg.h0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
                             u_word result = alu.op2_reg.w0 | alu.op1_reg.w0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1635,38 +1813,51 @@ namespace maize {
                 }
 
                 case instr::nor_opcode: {
-                    overflow_flag = false;
-                    carryout_flag = false;
-
                     switch (op_size) {
                         case 1: {
                             u_byte result = ~(alu.op2_reg.b0 | alu.op1_reg.b0);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
                             u_qword result = ~(alu.op2_reg.q0 | alu.op1_reg.q0);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
                             u_hword result = ~(alu.op2_reg.h0 | alu.op1_reg.h0);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
                             u_word result = ~(alu.op2_reg.w0 | alu.op1_reg.w0);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1676,38 +1867,51 @@ namespace maize {
                 }
 
                 case instr::nand_opcode: {
-                    overflow_flag = false;
-                    carryout_flag = false;
-
                     switch (op_size) {
                         case 1: {
                             u_byte result = ~(alu.op2_reg.b0 & alu.op1_reg.b0);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
                             u_qword result = ~(alu.op2_reg.q0 & alu.op1_reg.q0);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
                             u_hword result = ~(alu.op2_reg.h0 & alu.op1_reg.h0);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
                             u_word result = ~(alu.op2_reg.w0 & alu.op1_reg.w0);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1717,38 +1921,51 @@ namespace maize {
                 }
 
                 case instr::xor_opcode: {
-                    overflow_flag = false;
-                    carryout_flag = false;
-
                     switch (op_size) {
                         case 1: {
                             u_byte result = alu.op2_reg.b0 ^ alu.op1_reg.b0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
                             u_qword result = alu.op2_reg.q0 ^ alu.op1_reg.q0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
                             u_hword result = alu.op2_reg.h0 ^ alu.op1_reg.h0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
                             u_word result = alu.op2_reg.w0 ^ alu.op1_reg.w0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -1772,17 +1989,20 @@ namespace maize {
                             }
                             else if (n <= bits) {
                                 u_byte result = (n == bits) ? u_byte(0) : u_byte(dst_before << n);
-                                zero_flag = result == 0;
-                                negative_flag = result & 0x80;
-                                carryout_flag = (dst_before >> (bits - n)) & 1;
-                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != ((dst_before >> (bits - 2)) & 1));
+                                bool z = result == 0;
+                                bool nf = result & 0x80;
+                                bool c = (dst_before >> (bits - n)) & 1;
+                                bool v = (n == 1) && (((dst_before >> (bits - 1)) & 1) != ((dst_before >> (bits - 2)) & 1));
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (nf ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             else {
-                                zero_flag = true;
-                                negative_flag = false;
-                                carryout_flag = false;
-                                overflow_flag = false;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow)) | bit_zero;
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = 0;
                             }
                             break;
@@ -1797,17 +2017,20 @@ namespace maize {
                             }
                             else if (n <= bits) {
                                 u_qword result = (n == bits) ? u_qword(0) : u_qword(dst_before << n);
-                                zero_flag = result == 0;
-                                negative_flag = result & 0x8000;
-                                carryout_flag = (dst_before >> (bits - n)) & 1;
-                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != ((dst_before >> (bits - 2)) & 1));
+                                bool z = result == 0;
+                                bool nf = result & 0x8000;
+                                bool c = (dst_before >> (bits - n)) & 1;
+                                bool v = (n == 1) && (((dst_before >> (bits - 1)) & 1) != ((dst_before >> (bits - 2)) & 1));
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (nf ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             else {
-                                zero_flag = true;
-                                negative_flag = false;
-                                carryout_flag = false;
-                                overflow_flag = false;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow)) | bit_zero;
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = 0;
                             }
                             break;
@@ -1822,17 +2045,20 @@ namespace maize {
                             }
                             else if (n <= bits) {
                                 u_hword result = (n == bits) ? u_hword(0) : u_hword(dst_before << n);
-                                zero_flag = result == 0;
-                                negative_flag = result & 0x80000000;
-                                carryout_flag = (dst_before >> (bits - n)) & 1;
-                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != ((dst_before >> (bits - 2)) & 1));
+                                bool z = result == 0;
+                                bool nf = result & 0x80000000;
+                                bool c = (dst_before >> (bits - n)) & 1;
+                                bool v = (n == 1) && (((dst_before >> (bits - 1)) & 1) != ((dst_before >> (bits - 2)) & 1));
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (nf ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             else {
-                                zero_flag = true;
-                                negative_flag = false;
-                                carryout_flag = false;
-                                overflow_flag = false;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow)) | bit_zero;
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = 0;
                             }
                             break;
@@ -1847,17 +2073,20 @@ namespace maize {
                             }
                             else if (n <= bits) {
                                 u_word result = (n == bits) ? u_word(0) : u_word(dst_before << n);
-                                zero_flag = result == 0;
-                                negative_flag = result & 0x8000000000000000;
-                                carryout_flag = (dst_before >> (bits - n)) & 1;
-                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != ((dst_before >> (bits - 2)) & 1));
+                                bool z = result == 0;
+                                bool nf = result & 0x8000000000000000;
+                                bool c = (dst_before >> (bits - n)) & 1;
+                                bool v = (n == 1) && (((dst_before >> (bits - 1)) & 1) != ((dst_before >> (bits - 2)) & 1));
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (nf ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             else {
-                                zero_flag = true;
-                                negative_flag = false;
-                                carryout_flag = false;
-                                overflow_flag = false;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow)) | bit_zero;
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = 0;
                             }
                             break;
@@ -1883,17 +2112,20 @@ namespace maize {
                             }
                             else if (n <= bits) {
                                 u_byte result = (n == bits) ? u_byte(0) : u_byte(dst_before >> n);
-                                zero_flag = result == 0;
-                                negative_flag = result & 0x80;
-                                carryout_flag = (dst_before >> (n - 1)) & 1;
-                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != 0);
+                                bool z = result == 0;
+                                bool nf = result & 0x80;
+                                bool c = (dst_before >> (n - 1)) & 1;
+                                bool v = (n == 1) && (((dst_before >> (bits - 1)) & 1) != 0);
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (nf ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             else {
-                                zero_flag = true;
-                                negative_flag = false;
-                                carryout_flag = false;
-                                overflow_flag = false;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow)) | bit_zero;
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = 0;
                             }
                             break;
@@ -1908,17 +2140,20 @@ namespace maize {
                             }
                             else if (n <= bits) {
                                 u_qword result = (n == bits) ? u_qword(0) : u_qword(dst_before >> n);
-                                zero_flag = result == 0;
-                                negative_flag = result & 0x8000;
-                                carryout_flag = (dst_before >> (n - 1)) & 1;
-                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != 0);
+                                bool z = result == 0;
+                                bool nf = result & 0x8000;
+                                bool c = (dst_before >> (n - 1)) & 1;
+                                bool v = (n == 1) && (((dst_before >> (bits - 1)) & 1) != 0);
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (nf ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             else {
-                                zero_flag = true;
-                                negative_flag = false;
-                                carryout_flag = false;
-                                overflow_flag = false;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow)) | bit_zero;
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = 0;
                             }
                             break;
@@ -1933,17 +2168,20 @@ namespace maize {
                             }
                             else if (n <= bits) {
                                 u_hword result = (n == bits) ? u_hword(0) : u_hword(dst_before >> n);
-                                zero_flag = result == 0;
-                                negative_flag = result & 0x80000000;
-                                carryout_flag = (dst_before >> (n - 1)) & 1;
-                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != 0);
+                                bool z = result == 0;
+                                bool nf = result & 0x80000000;
+                                bool c = (dst_before >> (n - 1)) & 1;
+                                bool v = (n == 1) && (((dst_before >> (bits - 1)) & 1) != 0);
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (nf ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             else {
-                                zero_flag = true;
-                                negative_flag = false;
-                                carryout_flag = false;
-                                overflow_flag = false;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow)) | bit_zero;
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = 0;
                             }
                             break;
@@ -1958,17 +2196,20 @@ namespace maize {
                             }
                             else if (n <= bits) {
                                 u_word result = (n == bits) ? u_word(0) : u_word(dst_before >> n);
-                                zero_flag = result == 0;
-                                negative_flag = result & 0x8000000000000000;
-                                carryout_flag = (dst_before >> (n - 1)) & 1;
-                                overflow_flag = (n == 1) && (((dst_before >> (bits - 1)) & 1) != 0);
+                                bool z = result == 0;
+                                bool nf = result & 0x8000000000000000;
+                                bool c = (dst_before >> (n - 1)) & 1;
+                                bool v = (n == 1) && (((dst_before >> (bits - 1)) & 1) != 0);
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (nf ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             else {
-                                zero_flag = true;
-                                negative_flag = false;
-                                carryout_flag = false;
-                                overflow_flag = false;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow)) | bit_zero;
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = 0;
                             }
                             break;
@@ -1999,18 +2240,22 @@ namespace maize {
                             }
                             else if (n < bits) {
                                 u_byte result = u_byte(s_byte(dst_before) >> n);
-                                zero_flag = result == 0;
-                                negative_flag = result & 0x80;
-                                carryout_flag = (dst_before >> (n - 1)) & 1;
-                                overflow_flag = false;
+                                bool z = result == 0;
+                                bool nf = result & 0x80;
+                                bool c = (dst_before >> (n - 1)) & 1;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (nf ? bit_negative : 0) | (c ? bit_carryout : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             else {
                                 u_byte result = sign ? u_byte(0xFF) : u_byte(0);
-                                zero_flag = result == 0;
-                                negative_flag = sign;
-                                carryout_flag = sign;
-                                overflow_flag = false;
+                                bool z = result == 0;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (sign ? bit_negative : 0) | (sign ? bit_carryout : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             break;
@@ -2026,18 +2271,22 @@ namespace maize {
                             }
                             else if (n < bits) {
                                 u_qword result = u_qword(s_qword(dst_before) >> n);
-                                zero_flag = result == 0;
-                                negative_flag = result & 0x8000;
-                                carryout_flag = (dst_before >> (n - 1)) & 1;
-                                overflow_flag = false;
+                                bool z = result == 0;
+                                bool nf = result & 0x8000;
+                                bool c = (dst_before >> (n - 1)) & 1;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (nf ? bit_negative : 0) | (c ? bit_carryout : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             else {
                                 u_qword result = sign ? u_qword(0xFFFF) : u_qword(0);
-                                zero_flag = result == 0;
-                                negative_flag = sign;
-                                carryout_flag = sign;
-                                overflow_flag = false;
+                                bool z = result == 0;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (sign ? bit_negative : 0) | (sign ? bit_carryout : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             break;
@@ -2053,18 +2302,22 @@ namespace maize {
                             }
                             else if (n < bits) {
                                 u_hword result = u_hword(s_hword(dst_before) >> n);
-                                zero_flag = result == 0;
-                                negative_flag = result & 0x80000000;
-                                carryout_flag = (dst_before >> (n - 1)) & 1;
-                                overflow_flag = false;
+                                bool z = result == 0;
+                                bool nf = result & 0x80000000;
+                                bool c = (dst_before >> (n - 1)) & 1;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (nf ? bit_negative : 0) | (c ? bit_carryout : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             else {
                                 u_hword result = sign ? u_hword(0xFFFFFFFF) : u_hword(0);
-                                zero_flag = result == 0;
-                                negative_flag = sign;
-                                carryout_flag = sign;
-                                overflow_flag = false;
+                                bool z = result == 0;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (sign ? bit_negative : 0) | (sign ? bit_carryout : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             break;
@@ -2080,18 +2333,22 @@ namespace maize {
                             }
                             else if (n < bits) {
                                 u_word result = u_word(s_word(dst_before) >> n);
-                                zero_flag = result == 0;
-                                negative_flag = result & 0x8000000000000000;
-                                carryout_flag = (dst_before >> (n - 1)) & 1;
-                                overflow_flag = false;
+                                bool z = result == 0;
+                                bool nf = result & 0x8000000000000000;
+                                bool c = (dst_before >> (n - 1)) & 1;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (nf ? bit_negative : 0) | (c ? bit_carryout : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             else {
                                 u_word result = sign ? u_word(0xFFFFFFFFFFFFFFFF) : u_word(0);
-                                zero_flag = result == 0;
-                                negative_flag = sign;
-                                carryout_flag = sign;
-                                overflow_flag = false;
+                                bool z = result == 0;
+                                u_word f = regs::rf.w0;
+                                f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                    | (z ? bit_zero : 0) | (sign ? bit_negative : 0) | (sign ? bit_carryout : 0);
+                                regs::rf.w0 = f;
                                 alu.op2_reg.w0 = result;
                             }
                             break;
@@ -2107,10 +2364,14 @@ namespace maize {
                         case 1: {
                             u_byte dst_before = alu.op2_reg.b0;
                             u_byte result = dst_before + u_byte(1);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
-                            carryout_flag = result < dst_before;
-                            overflow_flag = (~(dst_before ^ u_byte(1)) & (dst_before ^ result)) & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            bool c = result < dst_before;
+                            bool v = (~(dst_before ^ u_byte(1)) & (dst_before ^ result)) & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -2118,10 +2379,14 @@ namespace maize {
                         case 2: {
                             u_qword dst_before = alu.op2_reg.q0;
                             u_qword result = dst_before + u_qword(1);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
-                            carryout_flag = result < dst_before;
-                            overflow_flag = (~(dst_before ^ u_qword(1)) & (dst_before ^ result)) & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            bool c = result < dst_before;
+                            bool v = (~(dst_before ^ u_qword(1)) & (dst_before ^ result)) & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -2129,10 +2394,14 @@ namespace maize {
                         case 4: {
                             u_hword dst_before = alu.op2_reg.h0;
                             u_hword result = dst_before + u_hword(1);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
-                            carryout_flag = result < dst_before;
-                            overflow_flag = (~(dst_before ^ u_hword(1)) & (dst_before ^ result)) & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            bool c = result < dst_before;
+                            bool v = (~(dst_before ^ u_hword(1)) & (dst_before ^ result)) & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -2140,10 +2409,14 @@ namespace maize {
                         case 8: {
                             u_word dst_before = alu.op2_reg.w0;
                             u_word result = dst_before + u_word(1);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
-                            carryout_flag = result < dst_before;
-                            overflow_flag = (~(dst_before ^ u_word(1)) & (dst_before ^ result)) & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            bool c = result < dst_before;
+                            bool v = (~(dst_before ^ u_word(1)) & (dst_before ^ result)) & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -2158,10 +2431,14 @@ namespace maize {
                         case 1: {
                             u_byte dst_before = alu.op2_reg.b0;
                             u_byte result = dst_before - u_byte(1);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
-                            carryout_flag = result > dst_before;
-                            overflow_flag = ((dst_before ^ u_byte(1)) & (dst_before ^ result)) & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            bool c = result > dst_before;
+                            bool v = ((dst_before ^ u_byte(1)) & (dst_before ^ result)) & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -2169,10 +2446,14 @@ namespace maize {
                         case 2: {
                             u_qword dst_before = alu.op2_reg.q0;
                             u_qword result = dst_before - u_qword(1);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
-                            carryout_flag = result > dst_before;
-                            overflow_flag = ((dst_before ^ u_qword(1)) & (dst_before ^ result)) & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            bool c = result > dst_before;
+                            bool v = ((dst_before ^ u_qword(1)) & (dst_before ^ result)) & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -2180,10 +2461,14 @@ namespace maize {
                         case 4: {
                             u_hword dst_before = alu.op2_reg.h0;
                             u_hword result = dst_before - u_hword(1);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
-                            carryout_flag = result > dst_before;
-                            overflow_flag = ((dst_before ^ u_hword(1)) & (dst_before ^ result)) & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            bool c = result > dst_before;
+                            bool v = ((dst_before ^ u_hword(1)) & (dst_before ^ result)) & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -2191,10 +2476,14 @@ namespace maize {
                         case 8: {
                             u_word dst_before = alu.op2_reg.w0;
                             u_word result = dst_before - u_word(1);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
-                            carryout_flag = result > dst_before;
-                            overflow_flag = ((dst_before ^ u_word(1)) & (dst_before ^ result)) & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            bool c = result > dst_before;
+                            bool v = ((dst_before ^ u_word(1)) & (dst_before ^ result)) & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -2204,38 +2493,51 @@ namespace maize {
                 }
 
                 case alu_uop_not: {
-                    overflow_flag = 0;
-                    carryout_flag = 0;
-
                     switch (op_size) {
                         case 1: {
                             u_byte result = ~alu.op2_reg.b0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 2: {
                             u_qword result = ~alu.op2_reg.q0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 4: {
                             u_hword result = ~alu.op2_reg.h0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
 
                         case 8: {
                             u_word result = ~alu.op2_reg.w0;
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -2253,10 +2555,14 @@ namespace maize {
                         case 1: {
                             u_byte x = alu.op2_reg.b0;
                             u_byte result = static_cast<u_byte>(u_byte(0) - x);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80;
-                            carryout_flag = result != 0;
-                            overflow_flag = (x & result) & 0x80;
+                            bool z = result == 0;
+                            bool n = result & 0x80;
+                            bool c = result != 0;
+                            bool v = (x & result) & 0x80;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -2264,10 +2570,14 @@ namespace maize {
                         case 2: {
                             u_qword x = alu.op2_reg.q0;
                             u_qword result = static_cast<u_qword>(u_qword(0) - x);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000;
-                            carryout_flag = result != 0;
-                            overflow_flag = (x & result) & 0x8000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000;
+                            bool c = result != 0;
+                            bool v = (x & result) & 0x8000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -2275,10 +2585,14 @@ namespace maize {
                         case 4: {
                             u_hword x = alu.op2_reg.h0;
                             u_hword result = static_cast<u_hword>(u_hword(0) - x);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x80000000;
-                            carryout_flag = result != 0;
-                            overflow_flag = (x & result) & 0x80000000;
+                            bool z = result == 0;
+                            bool n = result & 0x80000000;
+                            bool c = result != 0;
+                            bool v = (x & result) & 0x80000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
@@ -2286,10 +2600,14 @@ namespace maize {
                         case 8: {
                             u_word x = alu.op2_reg.w0;
                             u_word result = static_cast<u_word>(u_word(0) - x);
-                            zero_flag = result == 0;
-                            negative_flag = result & 0x8000000000000000;
-                            carryout_flag = result != 0;
-                            overflow_flag = (x & result) & 0x8000000000000000;
+                            bool z = result == 0;
+                            bool n = result & 0x8000000000000000;
+                            bool c = result != 0;
+                            bool v = (x & result) & 0x8000000000000000;
+                            u_word f = regs::rf.w0;
+                            f = (f & ~(bit_zero | bit_negative | bit_carryout | bit_overflow))
+                                | (z ? bit_zero : 0) | (n ? bit_negative : 0) | (c ? bit_carryout : 0) | (v ? bit_overflow : 0);
+                            regs::rf.w0 = f;
                             alu.op2_reg.w0 = result;
                             break;
                         }
