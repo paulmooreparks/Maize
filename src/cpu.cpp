@@ -1,7 +1,6 @@
 #include "maize_cpu.h"
 #include "maize_cpu.h"
 #include "maize_sys.h"
-#include <unordered_map>
 #include <sstream>
 #include <exception>
 
@@ -64,104 +63,96 @@ namespace maize {
             };
 
             /* Maps the value of a subreg_enum to the size, in bytes, of the corresponding subregister. */
-            std::unordered_map<subreg_enum, u_byte> subreg_size_map {
-                {subreg_enum::b0, 1},
-                {subreg_enum::b1, 1},
-                {subreg_enum::b2, 1},
-                {subreg_enum::b3, 1},
-                {subreg_enum::b4, 1},
-                {subreg_enum::b5, 1},
-                {subreg_enum::b6, 1},
-                {subreg_enum::b7, 1},
-                {subreg_enum::q0, 2},
-                {subreg_enum::q1, 2},
-                {subreg_enum::q2, 2},
-                {subreg_enum::q3, 2},
-                {subreg_enum::h0, 4},
-                {subreg_enum::h1, 4},
-                {subreg_enum::w0, 8}
+            constexpr std::array<u_byte, 15> subreg_size_map {
+                1, // b0
+                1, // b1
+                1, // b2
+                1, // b3
+                1, // b4
+                1, // b5
+                1, // b6
+                1, // b7
+                2, // q0
+                2, // q1
+                2, // q2
+                2, // q3
+                4, // h0
+                4, // h1
+                8  // w0
             };
 
             /* Maps the value of a subreg_enum to the offset of the corresponding subregister in the register's 64-bit value. */
-            std::unordered_map<subreg_enum, maize::u_byte> subreg_offset_map {
-                {subreg_enum::b0,  0}, // b0
-                {subreg_enum::b1,  8}, // b1
-                {subreg_enum::b2, 16}, // b2
-                {subreg_enum::b3, 24}, // b3
-                {subreg_enum::b4, 32}, // b4
-                {subreg_enum::b5, 40}, // b5
-                {subreg_enum::b6, 48}, // b6
-                {subreg_enum::b7, 56}, // b7
-                {subreg_enum::q0,  0}, // q0
-                {subreg_enum::q1, 16}, // q1
-                {subreg_enum::q2, 32}, // q2
-                {subreg_enum::q3, 48}, // q3
-                {subreg_enum::h0,  0}, // h0
-                {subreg_enum::h1, 32}, // h1
-                {subreg_enum::w0,  0}  // w0
+            constexpr std::array<maize::u_byte, 15> subreg_offset_map {
+                 0, // b0
+                 8, // b1
+                16, // b2
+                24, // b3
+                32, // b4
+                40, // b5
+                48, // b6
+                56, // b7
+                 0, // q0
+                16, // q1
+                32, // q2
+                48, // q3
+                 0, // h0
+                32, // h1
+                 0  // w0
             };
 
-            std::unordered_map<subreg_enum, maize::u_byte> subreg_index_map {
-                {subreg_enum::b0, 0}, // b0
-                {subreg_enum::b1, 1}, // b1
-                {subreg_enum::b2, 2}, // b2
-                {subreg_enum::b3, 3}, // b3
-                {subreg_enum::b4, 4}, // b4
-                {subreg_enum::b5, 5}, // b5
-                {subreg_enum::b6, 6}, // b6
-                {subreg_enum::b7, 7}, // b7
-                {subreg_enum::q0, 0}, // q0
-                {subreg_enum::q1, 2}, // q1
-                {subreg_enum::q2, 4}, // q2
-                {subreg_enum::q3, 6}, // q3
-                {subreg_enum::h0, 0}, // h0
-                {subreg_enum::h1, 4}, // h1
-                {subreg_enum::w0, 0}  // w0
+            constexpr std::array<maize::u_byte, 15> subreg_index_map {
+                0, // b0
+                1, // b1
+                2, // b2
+                3, // b3
+                4, // b4
+                5, // b5
+                6, // b6
+                7, // b7
+                0, // q0
+                2, // q1
+                4, // q2
+                6, // q3
+                0, // h0
+                4, // h1
+                0  // w0
             };
 
-            std::unordered_map<maize::u_byte, subreg_enum> imm_size_subreg_mask_map = {
-                {1, subreg_enum::b0},
-                {1, subreg_enum::b1},
-                {1, subreg_enum::b2},
-                {1, subreg_enum::b3},
-                {1, subreg_enum::b4},
-                {1, subreg_enum::b5},
-                {1, subreg_enum::b6},
-                {1, subreg_enum::b7},
-                {2, subreg_enum::q0},
-                {2, subreg_enum::q1},
-                {2, subreg_enum::q2},
-                {2, subreg_enum::q3},
-                {4, subreg_enum::h0},
-                {4, subreg_enum::h1},
-                {8, subreg_enum::w0}
-            };
-
-            /* Maps an instruction's immediate-size flag to a subreg_enum for the subregister that will contain the immediate value. */
-            std::unordered_map <size_t, subreg_enum> imm_size_subreg_map = {
-                {1, subreg_enum::b0}, // flag is 0x00 for 1-byte immediate size
-                {2, subreg_enum::q0}, // flag is 0x01 for 2-byte immediate size
-                {4, subreg_enum::h0}, // flag is 0x02 for 4-byte immediate size
-                {8, subreg_enum::w0}  // flag is 0x03 for 8-byte immediate size
+            /* Maps an instruction's immediate byte-size (1/2/4/8) to a subreg_enum for the
+               subregister that will contain the immediate value. Indexed directly by the
+               byte-size value (not by subreg_enum), so the array is sized to the max key
+               (8) + 1; indices 0,3,5,6,7 are unused and default-initialize to subreg_enum{}
+               = b0, reproducing the prior map's default-insert-on-miss result for the same
+               unreachable/dead-path keys (see card decisions). */
+            constexpr std::array<subreg_enum, 9> imm_size_subreg_map {
+                subreg_enum::b0, // [0] unused
+                subreg_enum::b0, // [1] 1-byte immediate size
+                subreg_enum::q0, // [2] 2-byte immediate size
+                subreg_enum::b0, // [3] unused
+                subreg_enum::h0, // [4] 4-byte immediate size
+                subreg_enum::b0, // [5] unused
+                subreg_enum::b0, // [6] unused
+                subreg_enum::b0, // [7] unused
+                subreg_enum::w0  // [8] 8-byte immediate size
             };
 
             /* Maps a subreg_enum value to a mask for the value of that register.  */
-            std::unordered_map<subreg_enum, subreg_mask_enum> subreg_mask_map {
-                {subreg_enum::b0, subreg_mask_enum::b0},
-                {subreg_enum::b1, subreg_mask_enum::b1},
-                {subreg_enum::b2, subreg_mask_enum::b2},
-                {subreg_enum::b3, subreg_mask_enum::b3},
-                {subreg_enum::b4, subreg_mask_enum::b4},
-                {subreg_enum::b5, subreg_mask_enum::b5},
-                {subreg_enum::b6, subreg_mask_enum::b6},
-                {subreg_enum::b7, subreg_mask_enum::b7},
-                {subreg_enum::q0, subreg_mask_enum::q0},
-                {subreg_enum::q1, subreg_mask_enum::q1},
-                {subreg_enum::q2, subreg_mask_enum::q2},
-                {subreg_enum::q3, subreg_mask_enum::q3},
-                {subreg_enum::h0, subreg_mask_enum::h0},
-                {subreg_enum::h1, subreg_mask_enum::h1},
-                {subreg_enum::w0, subreg_mask_enum::w0}
+            constexpr std::array<subreg_mask_enum, 15> subreg_mask_map {
+                subreg_mask_enum::b0,
+                subreg_mask_enum::b1,
+                subreg_mask_enum::b2,
+                subreg_mask_enum::b3,
+                subreg_mask_enum::b4,
+                subreg_mask_enum::b5,
+                subreg_mask_enum::b6,
+                subreg_mask_enum::b7,
+                subreg_mask_enum::q0,
+                subreg_mask_enum::q1,
+                subreg_mask_enum::q2,
+                subreg_mask_enum::q3,
+                subreg_mask_enum::h0,
+                subreg_mask_enum::h1,
+                subreg_mask_enum::w0
             };
 
             struct reg_op_info {
@@ -300,14 +291,14 @@ namespace maize {
         }
 
         size_t memory_module::read(u_word address, reg_value &reg, subreg_enum subreg) {
-            auto count = subreg_size_map[subreg];
-            size_t dst_idx {subreg_index_map[subreg]};
+            auto count = subreg_size_map[static_cast<size_t>(subreg)];
+            size_t dst_idx {subreg_index_map[static_cast<size_t>(subreg)]};
             return read(address, reg, count, dst_idx);
         }
 
         size_t memory_module::read(reg_value const &address, reg_value &reg, subreg_enum subreg) {
-            auto count = subreg_size_map[subreg];
-            size_t dst_idx {subreg_index_map[subreg]};
+            auto count = subreg_size_map[static_cast<size_t>(subreg)];
+            size_t dst_idx {subreg_index_map[static_cast<size_t>(subreg)]};
             return read(address.w0, reg, count, dst_idx);
         }
 
@@ -502,7 +493,7 @@ namespace maize {
             }
 
             u_byte op1_subreg_size() {
-                return subreg_size_map[static_cast<subreg_enum>(regs::ri.b1 & opflag_subreg)];
+                return subreg_size_map[static_cast<size_t>(static_cast<subreg_enum>(regs::ri.b1 & opflag_subreg))];
             }
 
             reg& op1_reg() {
@@ -534,7 +525,7 @@ namespace maize {
             }
 
             u_byte op2_subreg_size() {
-                return subreg_size_map[static_cast<subreg_enum>(regs::ri.b2 & opflag_subreg)];
+                return subreg_size_map[static_cast<size_t>(static_cast<subreg_enum>(regs::ri.b2 & opflag_subreg))];
             }
 
             reg& op2_reg() {
@@ -558,7 +549,7 @@ namespace maize {
             }
 
             u_byte op3_subreg_size() {
-                return subreg_size_map[static_cast<subreg_enum>(regs::ri.b3 & opflag_subreg)];
+                return subreg_size_map[static_cast<size_t>(static_cast<subreg_enum>(regs::ri.b3 & opflag_subreg))];
             }
 
             reg &op3_reg() {
@@ -566,16 +557,16 @@ namespace maize {
             }
 
             subreg_enum pc_src_imm_subreg_flag() {
-                return imm_size_subreg_map[op1_imm_size_flag()];
+                return imm_size_subreg_map[static_cast<size_t>(op1_imm_size_flag())];
             }
 
             subreg_enum pc_dst_imm_subreg_flag() {
-                return imm_size_subreg_map[op2_imm_size_flag()];
+                return imm_size_subreg_map[static_cast<size_t>(op2_imm_size_flag())];
             }
 
             void clr_reg(reg_value &dst, subreg_enum dst_subreg) {
-                auto dst_offset = subreg_offset_map[dst_subreg];
-                auto dst_mask = subreg_mask_map[dst_subreg];
+                auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
+                auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
                 u_word src_value = 0;
                 dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask);
@@ -586,19 +577,19 @@ namespace maize {
                named destination subregister field becomes 0/1 and the rest of the
                register is preserved. Flag-neutral: RF is never touched here. */
             void set_reg(reg_value &dst, subreg_enum dst_subreg, bool condition) {
-                auto dst_offset = subreg_offset_map[dst_subreg];
-                auto dst_mask = subreg_mask_map[dst_subreg];
+                auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
+                auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
                 u_word src_value = condition ? 1 : 0;
                 dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask);
             }
 
             bool cmp_regval_reg(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
-                auto src_offset = subreg_offset_map[src_subreg];
-                auto src_mask = subreg_mask_map[src_subreg];
+                auto src_offset = subreg_offset_map[static_cast<size_t>(src_subreg)];
+                auto src_mask = subreg_mask_map[static_cast<size_t>(src_subreg)];
 
-                auto dst_offset = subreg_offset_map[dst_subreg];
-                auto dst_mask = subreg_mask_map[dst_subreg];
+                auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
+                auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
                 u_word src_value = (src.w0 & static_cast<u_word>(src_mask)) >> src_offset;
                 u_word dst_value = (dst.w0 & static_cast<u_word>(dst_mask)) >> dst_offset;
@@ -612,11 +603,11 @@ namespace maize {
                local rather than the negative flag. */
 
             void copy_regval_reg(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
-                auto src_offset = subreg_offset_map[src_subreg];
-                auto src_mask = subreg_mask_map[src_subreg];
+                auto src_offset = subreg_offset_map[static_cast<size_t>(src_subreg)];
+                auto src_mask = subreg_mask_map[static_cast<size_t>(src_subreg)];
 
-                auto dst_offset = subreg_offset_map[dst_subreg];
-                auto dst_mask = subreg_mask_map[dst_subreg];
+                auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
+                auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
                 u_word src_value = (src.w0 & static_cast<u_word>(src_mask)) >> src_offset;
 
@@ -630,11 +621,11 @@ namespace maize {
             }
 
             void copy_regval_reg_zext(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
-                auto src_offset = subreg_offset_map[src_subreg];
-                auto src_mask = subreg_mask_map[src_subreg];
+                auto src_offset = subreg_offset_map[static_cast<size_t>(src_subreg)];
+                auto src_mask = subreg_mask_map[static_cast<size_t>(src_subreg)];
 
-                auto dst_offset = subreg_offset_map[dst_subreg];
-                auto dst_mask = subreg_mask_map[dst_subreg];
+                auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
+                auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
                 u_word src_value = (src.w0 & static_cast<u_word>(src_mask)) >> src_offset;
 
@@ -653,7 +644,7 @@ namespace maize {
                 reg_value src_data;
                 src_data.w0 = 0;
                 mm.read(address, src_data, size, 0);
-                copy_regval_reg(src_data, imm_size_subreg_map[size], op2_reg, dst_subreg);
+                copy_regval_reg(src_data, imm_size_subreg_map[static_cast<size_t>(size)], op2_reg, dst_subreg);
             }
 
             void copy_memval_reg_zext(u_word address, size_t size, reg_value &op2_reg, subreg_enum dst_subreg) {
@@ -664,7 +655,7 @@ namespace maize {
                 reg_value src_data;
                 src_data.w0 = 0;
                 mm.read(address, src_data, size, 0);
-                copy_regval_reg_zext(src_data, imm_size_subreg_map[size], op2_reg, dst_subreg);
+                copy_regval_reg_zext(src_data, imm_size_subreg_map[static_cast<size_t>(size)], op2_reg, dst_subreg);
             }
 
             void copy_regaddr_reg(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
@@ -673,16 +664,16 @@ namespace maize {
                    one byte, `LD @Rn R0.H0` reads four. The bytes land in the destination field and
                    the rest of the register is preserved. Reading exactly the destination width
                    (rather than a fixed 8) avoids over-reading past the intended address. */
-                auto src_offset = subreg_offset_map[src_subreg];
-                auto src_mask = subreg_mask_map[src_subreg];
+                auto src_offset = subreg_offset_map[static_cast<size_t>(src_subreg)];
+                auto src_mask = subreg_mask_map[static_cast<size_t>(src_subreg)];
 
-                auto dst_offset = subreg_offset_map[dst_subreg];
-                auto dst_mask = subreg_mask_map[dst_subreg];
+                auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
+                auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
                 u_word src_address = (static_cast<u_word>(src_mask) & src.w0) >> src_offset;
                 reg src_data;
                 src_data.w0 = 0;
-                mm.read(src_address, src_data, subreg_size_map[dst_subreg], 0);
+                mm.read(src_address, src_data, subreg_size_map[static_cast<size_t>(dst_subreg)], 0);
 
                 dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_data.w0 << dst_offset) & static_cast<u_word>(dst_mask);
             }
@@ -701,10 +692,10 @@ namespace maize {
                    holds, so `LD @imm R0.B0` reads one byte and the rest of R0 is preserved. */
                 reg src_data;
                 src_data.w0 = 0;
-                mm.read(src_address.w0, src_data, subreg_size_map[dst_subreg], 0);
+                mm.read(src_address.w0, src_data, subreg_size_map[static_cast<size_t>(dst_subreg)], 0);
 
-                auto dst_offset = subreg_offset_map[dst_subreg];
-                auto dst_mask = subreg_mask_map[dst_subreg];
+                auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
+                auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
                 dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_data.w0 << dst_offset) & static_cast<u_word>(dst_mask);
 
@@ -765,12 +756,12 @@ namespace maize {
             const u_byte alu_uop_neg {0x2A};
 
             void copy_regval_regaddr(reg_value const &src, subreg_enum src_subreg, reg_value const &dst, subreg_enum dst_subreg) {
-                auto src_offset = subreg_offset_map[src_subreg];
-                auto src_mask = subreg_mask_map[src_subreg];
-                auto size = subreg_size_map[src_subreg];
+                auto src_offset = subreg_offset_map[static_cast<size_t>(src_subreg)];
+                auto src_mask = subreg_mask_map[static_cast<size_t>(src_subreg)];
+                auto size = subreg_size_map[static_cast<size_t>(src_subreg)];
 
-                auto dst_offset = subreg_offset_map[dst_subreg];
-                auto dst_mask = subreg_mask_map[dst_subreg];
+                auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
+                auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
                 reg_value src_data;
                 src_data.w0 = static_cast<s_word>((src.w0 & static_cast<u_word>(src_mask)) >> src_offset);
@@ -803,8 +794,8 @@ namespace maize {
             }
 
             void copy_memval_regaddr(u_word address, size_t size, reg_value const &dst, subreg_enum dst_subreg) {
-                auto dst_offset = subreg_offset_map[dst_subreg];
-                auto dst_mask = subreg_mask_map[dst_subreg];
+                auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
+                auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
                 reg_value src_data;
                 mm.read(address, src_data, size, 0);
@@ -2960,7 +2951,7 @@ namespace maize {
                     case instr::call_regVal: {
                         /* Push the full 64-bit return address, then jump (maize-41). */
                         regs::rp.w0 += 1;                                          // past the register param -> return address
-                        regs::rs.w0 -= subreg_size_map[subreg_enum::w0];           // 8-byte return slot
+                        regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
                         copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
                         break;
@@ -2974,7 +2965,7 @@ namespace maize {
                         reg target;
                         mm.read(regs::rp.w0, target, src_size, 0);
                         regs::rp.w0 += src_size;                                   // PC now at the return address
-                        regs::rs.w0 -= subreg_size_map[subreg_enum::w0];           // 8-byte return slot
+                        regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
                         regs::rp.w0 = target.w0;
                         break;
@@ -2985,7 +2976,7 @@ namespace maize {
                        already in jmp_regAddr/jmp_immAddr (below). */
                     case instr::call_regAddr: {
                         regs::rp.w0 += 1;                                          // past the register param -> return address
-                        regs::rs.w0 -= subreg_size_map[subreg_enum::w0];           // 8-byte return slot
+                        regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
                         break;
@@ -3000,24 +2991,24 @@ namespace maize {
                         reg addr_literal;
                         mm.read(regs::rp.w0, addr_literal, src_size, 0);
                         regs::rp.w0 += src_size;                                   // PC now at the return address
-                        regs::rs.w0 -= subreg_size_map[subreg_enum::w0];           // 8-byte return slot
+                        regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
                         reg target;
-                        mm.read(addr_literal.w0, target, subreg_size_map[subreg_enum::w0], 0);
+                        mm.read(addr_literal.w0, target, subreg_size_map[static_cast<size_t>(subreg_enum::w0)], 0);
                         regs::rp.w0 = target.w0;
                         break;
                     }
 
                     case instr::ret_opcode: {
                         /* Pop the full 64-bit return address (maize-41). */
-                        u_byte src_size = subreg_size_map[subreg_enum::w0];
+                        u_byte src_size = subreg_size_map[static_cast<size_t>(subreg_enum::w0)];
                         copy_memval_reg(regs::rs.w0, src_size, regs::rp, subreg_enum::w0);
                         regs::rs.w0 += src_size;
                         break;
                     }
 
                     case instr::iret_opcode: {
-                        auto src_size = subreg_size_map[subreg_enum::w0];
+                        auto src_size = subreg_size_map[static_cast<size_t>(subreg_enum::w0)];
                         copy_memval_reg(regs::rs.w0, src_size, regs::rf, subreg_enum::w0);
                         regs::rs.w0 += src_size;
                         copy_memval_reg(regs::rs.w0, src_size, regs::rp, subreg_enum::w0);
