@@ -246,6 +246,7 @@ run_test "test_widecount"    "test_widecount.mazm"    "widecount: PASS"         
 run_test "test_crossblock"   "test_crossblock.mazm"   "crossblk: PASS"                0
 run_test "test_adc"          "test_adc.mazm"          "adc: PASS"                     0
 run_test "test_copywidth"    "test_copywidth.mazm"    "copywidth: PASS"               0
+run_test "oob_subreg_guard"  "test_oob_subreg.mazm"   "oob subreg: PASS"              0
 run_test "reject_ld_value"   "test_reject_ldval.mazm" "reads from a memory address"   0 1
 run_test "reject_ldz"        "test_reject_ldz.mazm"   "unknown keyword or opcode 'LDZ'" 0 1
 run_test "test_call_ind"     "test_call_ind.mazm"     "call ind: PASS"                0

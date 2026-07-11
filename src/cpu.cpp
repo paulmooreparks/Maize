@@ -62,8 +62,14 @@ namespace maize {
                 0x0000000000000000
             };
 
-            /* Maps the value of a subreg_enum to the size, in bytes, of the corresponding subregister. */
-            constexpr std::array<u_byte, 15> subreg_size_map {
+            /* Maps the value of a subreg_enum to the size, in bytes, of the corresponding subregister.
+               opflag_subreg is a 4-bit field (0x0F), so a decoded-but-undefined subreg encoding of
+               15 is reachable on the VM hot path even though no assembler ever emits it. Sized to 16
+               (not 15) so index 15 lands in-bounds; the trailing element is left off the initializer
+               list and value-initializes to 0, exactly matching what the old
+               std::unordered_map::operator[] returned on a miss for that key (card-115 review
+               follow-forward: OOB read on subreg field 0x0F). */
+            constexpr std::array<u_byte, 16> subreg_size_map {
                 1, // b0
                 1, // b1
                 1, // b2
@@ -79,10 +85,13 @@ namespace maize {
                 4, // h0
                 4, // h1
                 8  // w0
+                   // [15] unused/undefined subreg encoding: value-initializes to 0 (old map's miss default)
             };
 
-            /* Maps the value of a subreg_enum to the offset of the corresponding subregister in the register's 64-bit value. */
-            constexpr std::array<maize::u_byte, 15> subreg_offset_map {
+            /* Maps the value of a subreg_enum to the offset of the corresponding subregister in the
+               register's 64-bit value. Sized to 16 for the same 4-bit-field reachability reason as
+               subreg_size_map above; index 15 value-initializes to 0. */
+            constexpr std::array<maize::u_byte, 16> subreg_offset_map {
                  0, // b0
                  8, // b1
                 16, // b2
@@ -98,9 +107,12 @@ namespace maize {
                  0, // h0
                 32, // h1
                  0  // w0
+                    // [15] unused/undefined subreg encoding: value-initializes to 0 (old map's miss default)
             };
 
-            constexpr std::array<maize::u_byte, 15> subreg_index_map {
+            /* Sized to 16 for the same 4-bit-field reachability reason as subreg_size_map above;
+               index 15 value-initializes to 0. */
+            constexpr std::array<maize::u_byte, 16> subreg_index_map {
                 0, // b0
                 1, // b1
                 2, // b2
@@ -116,15 +128,21 @@ namespace maize {
                 0, // h0
                 4, // h1
                 0  // w0
+                   // [15] unused/undefined subreg encoding: value-initializes to 0 (old map's miss default)
             };
 
-            /* Maps an instruction's immediate byte-size (1/2/4/8) to a subreg_enum for the
-               subregister that will contain the immediate value. Indexed directly by the
-               byte-size value (not by subreg_enum), so the array is sized to the max key
-               (8) + 1; indices 0,3,5,6,7 are unused and default-initialize to subreg_enum{}
-               = b0, reproducing the prior map's default-insert-on-miss result for the same
-               unreachable/dead-path keys (see card decisions). */
-            constexpr std::array<subreg_enum, 9> imm_size_subreg_map {
+            /* Maps an instruction's immediate byte-size to a subreg_enum for the subregister that
+               will contain the immediate value. Indexed directly by the byte-size value (not by
+               subreg_enum). opflag_imm_size is a 3-bit field (0x07); live call sites compute the
+               byte-size as 1 << flag, so a decoded-but-undefined imm-size flag of 4..7 yields a
+               byte-size of 16/32/64/128, all reachable on the VM hot path even though no assembler
+               ever emits them. Sized to 129 (covers every 1 << flag value for flag in 0..7, plus the
+               two dead call sites that index directly by the raw 0..7 flag) rather than 9; indices
+               2,3,5..8,10..128 are left off the initializer list and value-initialize to
+               subreg_enum{} = b0, exactly matching what the old std::unordered_map::operator[]
+               returned on a miss for those keys (card-115 review follow-forward: OOB read on
+               imm-size flags 4..7). */
+            constexpr std::array<subreg_enum, 129> imm_size_subreg_map {
                 subreg_enum::b0, // [0] unused
                 subreg_enum::b0, // [1] 1-byte immediate size
                 subreg_enum::q0, // [2] 2-byte immediate size
@@ -134,10 +152,16 @@ namespace maize {
                 subreg_enum::b0, // [6] unused
                 subreg_enum::b0, // [7] unused
                 subreg_enum::w0  // [8] 8-byte immediate size
+                                 // [9..128] unused/undefined (incl. 16/32/64/128 from imm-size flags
+                                 // 4..7): value-initialize to subreg_enum{} = b0 (old map's miss default)
             };
 
-            /* Maps a subreg_enum value to a mask for the value of that register.  */
-            constexpr std::array<subreg_mask_enum, 15> subreg_mask_map {
+            /* Maps a subreg_enum value to a mask for the value of that register. Sized to 16 for
+               the same 4-bit-field reachability reason as subreg_size_map above; index 15
+               value-initializes to subreg_mask_enum{} (numeric 0, no named enumerator holds this
+               value), exactly matching the old map's miss default (NOT subreg_mask_enum::b0,
+               which is 0xFF and would be the wrong default). */
+            constexpr std::array<subreg_mask_enum, 16> subreg_mask_map {
                 subreg_mask_enum::b0,
                 subreg_mask_enum::b1,
                 subreg_mask_enum::b2,
@@ -153,6 +177,8 @@ namespace maize {
                 subreg_mask_enum::h0,
                 subreg_mask_enum::h1,
                 subreg_mask_enum::w0
+                                    // [15] unused/undefined subreg encoding: value-initializes to
+                                    // subreg_mask_enum{} = 0 (old map's miss default)
             };
 
             struct reg_op_info {
