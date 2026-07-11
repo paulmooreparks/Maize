@@ -38,12 +38,19 @@ for f in all.h targ.c abi.c isel.c emit.c data.c; do
     cp "${SRC_DIR}/${f}" "${QBE_DIR}/maize/${f}"
 done
 
-# 2. Apply the registration patch, idempotently.
-if git -C "${QBE_DIR}" apply --reverse --check "${PATCH}" >/dev/null 2>&1; then
-    echo "apply-maize-qbe-target.sh: registration patch already applied."
-elif git -C "${QBE_DIR}" apply --check "${PATCH}" >/dev/null 2>&1; then
+# 2. Apply the registration patch, robustly and idempotently.
+# Restore the submodule's TRACKED files to their pinned state first, so the patch
+# always applies to a pristine checkout. This keeps the overlay robust to a CHANGED
+# registration patch: a checkout still carrying an OLDER version of the patch (e.g.
+# a local clone patched before maize-102 grew the patch with the hlt hunks) would
+# otherwise fail BOTH the reverse-check (new hunks absent) AND the forward-check
+# (old hunks already present) and abort. Only tracked files are reset; the untracked
+# maize/ overlay (copied above) and obj/ build artifacts are preserved. A fresh
+# checkout has nothing to restore, so this is a no-op there (matching CI).
+git -C "${QBE_DIR}" checkout -- . 2>/dev/null || true
+if git -C "${QBE_DIR}" apply --check "${PATCH}" >/dev/null 2>&1; then
     git -C "${QBE_DIR}" apply "${PATCH}"
-    echo "apply-maize-qbe-target.sh: registration patch applied."
+    echo "apply-maize-qbe-target.sh: registration patch applied (pinned checkout restored first)."
 else
     echo "apply-maize-qbe-target.sh: registration patch does not apply to this qbe checkout." >&2
     echo "  the submodule may not be pinned at the expected commit; see toolchain/qbe-maize/README.md." >&2
