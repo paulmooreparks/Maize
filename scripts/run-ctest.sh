@@ -8,7 +8,7 @@
 # is exactly what the operator acceptance-tests with. Per fixture:
 #
 #   ctest/<name>.c
-#     -> cc-maize.sh --compile-only -o <name>.mzx   (tr -> cpp -E -> cproc-qbe ->
+#     -> cc-maize.sh -o <name>.mzx   (new no-run default; tr -> cpp -E -> cproc-qbe ->
 #                              normalize -> qbe -t maize -> mazm -c -> mzld over the
 #                              crt0/syscall + C runtime (errno/string/ctype/stdio/stdlib); entry _start; W^X)
 #     -> maize                (load_mzx sets RP=_start; execute; capture stdout)
@@ -80,8 +80,8 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
 fi
 
 # The whole C compile pipeline (tr -> cpp -> cproc-qbe -> normalize -> qbe -> mazm -c
-# -> mzld) lives in scripts/cc-maize.sh (maize-96); this harness drives it via
-# --compile-only so CI exercises the EXACT pipeline the operator acceptance-tests with.
+# -> mzld) lives in scripts/cc-maize.sh (maize-96); this harness drives it via the
+# no-run default (`-o <path>`) so CI exercises the EXACT pipeline the operator uses.
 # run-ctest therefore no longer resolves cproc-qbe / qbe / the system cpp itself: the
 # driver owns those. It still needs mazm (to re-assemble the W^X probe's crt0.mzo),
 # maize (to run each linked image), and mzld (the W^X negative case).
@@ -99,8 +99,8 @@ mkdir -p "${WORK_DIR}"
 FAIL_COUNT=0
 TOTAL=0
 
-# Compile a C fixture to a runnable .mzx by delegating to the shared driver in
-# --compile-only mode (maize-96). cc-maize.sh owns the whole pipeline end to end
+# Compile a C fixture to a runnable .mzx by delegating to the shared driver via its
+# no-run default with an explicit `-o <path>` (maize-96). cc-maize.sh owns the whole pipeline end to end
 # (tr -> cpp -> cproc-qbe -> normalize -> qbe -t maize -> mazm -c -> mzld over the
 # crt0/syscall + C runtime (errno/string/ctype/stdio/stdlib) set); this harness just asks for the linked image
 # and runs it. On success sets BIN to the linked .mzx and returns 0; on failure prints
@@ -118,7 +118,7 @@ compile_c() {
     fi
 
     mzx="${WORK_DIR}/${name}.mzx"
-    if ! "$CC_MAIZE" --preset "$PRESET" --compile-only -o "$mzx" "$src" \
+    if ! "$CC_MAIZE" --preset "$PRESET" -o "$mzx" "$src" \
         >"${WORK_DIR}/${name}.cc.log" 2>&1 || [ ! -f "$mzx" ]; then
         echo "[FAIL] ${name}: C compile failed"; cat "${WORK_DIR}/${name}.cc.log" >&2
         FAIL_COUNT=$((FAIL_COUNT + 1)); return 1
@@ -279,6 +279,79 @@ run_wx_reject_test() {
     fi
 }
 
+# maize-111 default-produce self-check. Exercises the reworked no-run DEFAULT (a bare
+# `cc-maize.sh <file.c>` with no -r and no -o): it must (a) exit 0, (b) leave
+# <base>.mzx beside the source copy, and (c) NOT run the program (no guest stdout on the
+# driver's stdout). A known-good fixture (hello.c) is copied into WORK_DIR so the
+# beside-source produce lands in the scratch dir, not the tracked ctest/ tree. The
+# produced image is then run through maize to confirm it is a valid, runnable .mzx.
+run_default_produce_test() {
+    name="default_produce"
+    TOTAL=$((TOTAL + 1))
+
+    copy="${WORK_DIR}/dp_hello.c"
+    cp "${CTEST_DIR}/hello.c" "$copy"
+    produced="${copy%.c}.mzx"
+    rm -f "$produced"
+
+    set +e
+    drv_out=$("$CC_MAIZE" --preset "$PRESET" "$copy" 2>"${WORK_DIR}/dp.err")
+    drv_rc=$?
+    set -e
+
+    if [ "$drv_rc" -ne 0 ]; then
+        echo "[FAIL] ${name}: driver exited ${drv_rc}"; cat "${WORK_DIR}/dp.err" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    if [ ! -f "$produced" ]; then
+        echo "[FAIL] ${name}: no ${produced} produced beside the source"
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    if [ -n "$drv_out" ]; then
+        echo "[FAIL] ${name}: default produce ran the program (unexpected stdout)"
+        echo "        stdout: \"${drv_out}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    # Confirm the produced image is a valid, runnable .mzx.
+    if ! "$MAIZE" "$produced" >/dev/null 2>&1; then
+        echo "[FAIL] ${name}: produced image did not run under maize"
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    echo "[PASS] ${name} (produced ${produced##*/}, did not run)"
+}
+
+# maize-111 driver -r self-check. Exercises the reworked RUN axis THROUGH the driver
+# (distinct from run_exit_status_test, which compiles then runs maize directly): a bare
+# `cc-maize.sh -r exitcode.c` must run the linked image from scratch and propagate the
+# guest exit code (42). Captured under set +e with $? on the very next line (same
+# discipline as run_exit_status_test) so the status under test survives set -eu. Also
+# asserts no .mzx is left beside ctest/exitcode.c (-r runs from scratch, no persist).
+run_driver_run_mode_test() {
+    name="driver_run"
+    TOTAL=$((TOTAL + 1))
+
+    stray="${CTEST_DIR}/exitcode.mzx"
+    rm -f "$stray"
+
+    set +e
+    "$CC_MAIZE" --preset "$PRESET" -r "${CTEST_DIR}/exitcode.c" >/dev/null 2>"${WORK_DIR}/dr.err"
+    status=$?
+    set -e
+
+    if [ "$status" -ne 42 ]; then
+        echo "[FAIL] ${name}: driver -r exit status"
+        echo "        expected: 42"
+        echo "        actual:   ${status}"; cat "${WORK_DIR}/dr.err" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    if [ -f "$stray" ]; then
+        echo "[FAIL] ${name}: -r left a persistent ${stray} (should run from scratch)"
+        rm -f "$stray"
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    echo "[PASS] ${name} (driver -r propagated exit ${status}, left no .mzx)"
+}
+
 echo "=== C toolchain end-to-end (cproc -> qbe -t maize -> mazm -c -> mzld -> maize) ==="
 run_ctest "hello"
 run_ctest "capstone"
@@ -325,6 +398,10 @@ run_exit_status_test "abort" 134
 run_exit_status_test "noreturn" 57
 run_args_test
 run_wx_reject_test
+# maize-111 CLI-rework self-checks: the new no-run default (produce beside source) and
+# the driver -r run-and-propagate path.
+run_default_produce_test
+run_driver_run_mode_test
 
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then

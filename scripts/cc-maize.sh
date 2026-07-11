@@ -13,7 +13,7 @@
 #     -> maize                (load_mzx sets RP=_start; execute; propagate guest exit)
 #
 # BOTH consumers of the C pipeline call this driver, so CI (scripts/run-ctest.sh,
-# via --compile-only) exercises the EXACT pipeline the operator acceptance-tests
+# via `-o <path>`) exercises the EXACT pipeline the operator acceptance-tests
 # with (the ~/bin/mzcc forwarder execs this file). The normalize sed, the cpp
 # flags, the RT object set, and the mzld link order therefore live in EXACTLY ONE
 # place: here. Drift between CI and the operator's tool is structurally impossible.
@@ -26,16 +26,25 @@
 # pinned qbe's parser predates; `sub 0, X` is the identity lowering (same class /
 # semantics).
 #
-# Modes:
+# Modes (three orthogonal axes: RUN via -r/--run, EMIT via --emit, OUT via -o):
 #   cc-maize.sh [--preset <name>] <file.c>
-#       compile + link + run, propagating the guest exit code.
+#       DEFAULT: compile + link to <base>.mzx beside the source; do NOT run (exit 0).
+#   cc-maize.sh [--preset <name>] -r|--run <file.c>
+#       compile + run, propagating the guest exit code; runs from scratch, leaving NO
+#       persistent .mzx unless -o is also given.
 #   cc-maize.sh [--preset <name>] --emit <file.c>
-#       as default, plus drop <base>.mazm (the qbe body) and <base>.mzx (the linked
-#       image) beside the source; all other intermediates stay in a scratch dir.
-#   cc-maize.sh [--preset <name>] --compile-only -o <path> <file.c>
-#       produce the linked <path>.mzx and exit WITHOUT running (run-ctest's mode).
+#       also drop <base>.mazm (the qbe body) beside the source. --emit governs ONLY
+#       the .mazm; the .mzx still follows the produce rule (default/-o/-r) above.
+#   cc-maize.sh [--preset <name>] -o <path> <file.c>
+#       write the linked image to <path> (suppresses the beside-source default); add
+#       -r to produce AND run.
 #   cc-maize.sh --build
 #       (re)build the vendored cproc/qbe toolchain, then exit.
+#   --compile-only is retained as a back-compat no-op alias of the new no-run default.
+#
+# `*.mzx` is globally gitignored, so the beside-source produce never dirties the tree.
+# `*.mazm` is gitignored only under ctest/ (.gitignore line 65); an --emit .mazm dropped
+# beside a non-ctest/ C source is an explicit, opt-in debug artifact the user cleans up.
 #
 # A source given as a Windows path (C:\... or C:/...) is translated with wslpath, so
 # the tool works from a Windows shell forwarder as well as from a WSL/Linux shell.
@@ -44,9 +53,9 @@
 # `int puts(const char *);`); the declaration only satisfies the front-end, the
 # symbol still resolves to the runtime's definition in mazm's shared label table.
 #
-# Exit codes: the guest's exit code in run mode; 0 on success in --compile-only /
-# --emit-without-run paths; 2 for a usage or environment/setup failure; a nonzero
-# pipeline-stage failure is reported with context and propagated.
+# Exit codes: the guest's exit code under -r/--run; 0 on any produce-only path
+# (default, --emit, -o without -r); 2 for a usage or environment/setup failure; a
+# nonzero pipeline-stage failure is reported with context and propagated.
 set -eu
 
 # --- Paths resolved relative to THIS script, not the caller's CWD ----------------
@@ -68,16 +77,20 @@ case "$UNAME" in
 esac
 
 # --- Parse arguments (flags accepted in any position) ----------------------------
+# Three orthogonal axes govern the compile path (RUN / EMIT / OUT); `build` is the
+# one special mode. See the Modes block above for the authoritative matrix.
 PRESET="$DEFAULT_PRESET"
-MODE="run"          # run | compile-only | build
-EMIT=0
+MODE="compile"      # compile | build
+RUN=0               # -r / --run
+EMIT=0              # --emit
 OUT=""
 SRC=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --build) MODE="build"; shift ;;
+        -r|--run) RUN=1; shift ;;
         --emit) EMIT=1; shift ;;
-        --compile-only) MODE="compile-only"; shift ;;
+        --compile-only) RUN=0; shift ;;   # back-compat: no-op alias of new default (D3)
         -o) OUT="${2:-}"; shift 2 ;;
         -o*) OUT="${1#-o}"; shift ;;
         --preset) PRESET="${2:-}"; shift 2 ;;
@@ -93,8 +106,8 @@ if [ "$MODE" = "build" ]; then
     exec "${SCRIPT_DIR}/build-toolchain.sh"
 fi
 
-[ -n "$SRC" ] || die "usage: cc-maize.sh [--preset <name>] <file.c> [--emit] | --compile-only -o <path> <file.c> | --build"
-[ "$MODE" = "compile-only" ] && [ -z "$OUT" ] && die "--compile-only requires -o <path>"
+[ -n "$SRC" ] || die "usage: cc-maize.sh [--preset <name>] [-r|--run] [--emit] [-o <path>] <file.c>
+       cc-maize.sh --build"
 
 # Accept a Windows path (C:\... or C:/...) as well as a WSL/Linux path.
 case "$SRC" in
@@ -228,28 +241,36 @@ if ! "$MZLD" -o "$MZX" ${RT_OBJS} "$BODY_MZO" >"${WORK}/${base}.mzld.log" 2>&1 |
     echo "cc-maize.sh: mzld failed for ${base}" >&2; cat "${WORK}/${base}.mzld.log" >&2; exit 1
 fi
 
-# --- Emit intermediates beside the source, when asked -----------------------------
+# Ordering (load-bearing, D6): emit + produce happen BEFORE the run step, so both
+# artifacts land even when the guest exits nonzero and the EXIT trap re-exits with
+# that status.
+
+# --- Emit the qbe body beside the source, when asked (independent of run/produce) --
 if [ "$EMIT" -eq 1 ]; then
     dst=$(dirname "$SRC")
     cp "${WORK}/${base}.body.mazm" "${dst}/${base}.mazm"
-    cp "$MZX" "${dst}/${base}.mzx"
-    echo "cc-maize.sh: emitted ${dst}/${base}.mazm (qbe body) and ${dst}/${base}.mzx (linked image)" >&2
+    echo "cc-maize.sh: emitted ${dst}/${base}.mazm (qbe body)" >&2
 fi
 
-# --- Compile-only: copy the image to -o <path> and stop (no run) ------------------
-if [ "$MODE" = "compile-only" ]; then
-    out_dir=$(dirname "$OUT")
-    [ -d "$out_dir" ] || mkdir -p "$out_dir"
+# --- Produce the linked image: -o wins; else beside-source unless running from scratch
+if [ -n "$OUT" ]; then
+    out_dir=$(dirname "$OUT"); [ -d "$out_dir" ] || mkdir -p "$out_dir"
     cp "$MZX" "$OUT"
-    exit 0
+elif [ "$RUN" -eq 0 ]; then
+    dst=$(dirname "$SRC")
+    cp "$MZX" "${dst}/${base}.mzx"
+    echo "cc-maize.sh: produced ${dst}/${base}.mzx" >&2
 fi
 
-# --- Default: run, propagating the guest exit code --------------------------------
+# --- Run + propagate the guest exit code only when asked --------------------------
 # `exec` cannot be used (the EXIT trap must still clean WORK). Capture the guest status
 # and `exit` with it: that sets $? for the EXIT trap, and cleanup() re-exits with that
 # captured status, so the guest exit code propagates unchanged.
-set +e
-"$MAIZE" "$MZX"
-rc=$?
-set -e
-exit "$rc"
+if [ "$RUN" -eq 1 ]; then
+    set +e
+    "$MAIZE" "$MZX"
+    rc=$?
+    set -e
+    exit "$rc"
+fi
+exit 0

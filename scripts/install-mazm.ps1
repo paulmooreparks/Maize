@@ -85,16 +85,17 @@ foreach ($tool in 'maize', 'mazm', 'mzld', 'mzdis') {
 # below so two names cannot drift.
 $mzccCmd = @'
 @echo off
-rem mzcc: compile a C source through the Maize C toolchain and run it.
+rem mzcc: compile a C source through the Maize C toolchain (gcc-like CLI).
 rem cproc/qbe are POSIX-only, so the pipeline runs in WSL; this forwarder
 rem translates the Windows path and invokes ~/bin/mzcc inside WSL, which
 rem execs scripts/cc-maize.sh (the single canonical C driver).
-rem   mzcc <file.c>          compile and run
-rem   mzcc <file.c> --emit   also leave <file>.mazm / <file>.mzx beside the source
+rem   mzcc <file.c>          compile+link to <file>.mzx beside the source (no run)
+rem   mzcc <file.c> -r       compile and run, propagating the guest exit code
+rem   mzcc <file.c> --emit   also leave <file>.mazm (qbe body) beside the source
 rem   mzcc --build           rebuild the cproc/qbe toolchain
 setlocal enabledelayedexpansion
 if "%~1"=="" (
-  echo usage: mzcc ^<file.c^> [--emit]   ^(also: mzcc --build^)
+  echo usage: mzcc ^<file.c^> [-r ^| --emit]   ^(also: mzcc --build^)
   exit /b 2
 )
 if /I "%~1"=="--build" (
