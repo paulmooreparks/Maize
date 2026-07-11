@@ -1,9 +1,10 @@
-# Vendored C toolchain (maize-61, wave 1 of maize-11)
+# Vendored C toolchain
 
 This directory vendors the two upstream tools that the Maize C toolchain is built
-on. They are pinned as git submodules (per maize-11 decision 6409). No Maize target
-is added yet; wave 1 only makes stock cproc and stock qbe build green from a clean
-checkout on Linux and Windows CI.
+on. They are pinned as git submodules. The Maize code-generation target lives
+in-repo under `toolchain/qbe-maize/` and is overlaid onto the qbe checkout at build
+time (`scripts/apply-maize-qbe-target.sh`), so the submodules stay pristine
+upstream.
 
 ## Pins
 
@@ -27,7 +28,7 @@ so there is no license-driven reason to prefer an in-tree copy over a submodule.
 
 ## Why GitHub mirrors rather than the canonical sr.ht / c9x.me hosts
 
-The submodule mechanism (decision 6409) requires a clean recursive checkout so that a
+The submodule mechanism requires a clean recursive checkout so that a
 fresh clone plus one command builds both tools. The canonical hosts introduce checkout
 friction that undermines that goal:
 
@@ -44,8 +45,8 @@ friction-free `actions/checkout` recursive submodule checkout with the workflow 
 This keeps the primary mechanism (submodules) intact rather than falling back to
 in-tree vendored copies.
 
-The qbe pin (`4420727`, master) is a stable snapshot; a later maize-11 wave that adds
-the Maize target can bump the pin when it needs a newer qbe.
+The qbe pin (`4420727`, master) is a stable snapshot; bump it when the Maize target
+needs a newer qbe.
 
 ## Fresh-clone / build
 

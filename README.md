@@ -10,15 +10,19 @@
 This project implements a 64-bit virtual machine called "Maize." This is an outgrowth of my [Tortilla](https://github.com/paulmooreparks/Tortilla)
 project, which began life as an x86 emulator implemented in C# on .NET and then later became a virtual CPU of my own making.
 
-The near-term goal for the Maize project is to implement a set of devices to bridge from the virtual environment to the host machine,
-create a "BIOS" layer above the virtual devices, and implement a simple OS and a subset of Unix/Linux system calls (interrupt $80),
+Maize today is a complete toolchain: an assembler, a linker, a disassembler, and a C compiler
+that targets the VM, with a small set of Unix-style system calls already implemented. The next
+milestones are devices bridging the virtual environment to the host machine, a "BIOS" layer above
+the virtual devices, and a simple OS; see [ROADMAP.md](ROADMAP.md) for the sequencing.
 
 ## What It Is, Basically
 
 * A 64-bit virtual machine implemented in C++ that executes a custom byte code
 * An assembly language that represents the byte code
-* An assembler implemented in C++ that generates byte code from the assembly language
-* A very simple BIOS and OS that bridges the VM and the underlying machine
+* An assembler (`mazm`), a linker (`mzld`), and a disassembler (`mzdis`), with a relocatable
+  object format (`.mzo`) and a linked executable format (`.mzx`)
+* A C compiler pipeline (`mzcc`) built on vendored [cproc](https://sr.ht/~mcf/cproc/) and
+  [QBE](https://c9x.me/compile/) with a Maize code-generation target and a freestanding C runtime
 * An execution environment implemented in C++ that so far runs on Windows and Linux and could easily be ported to other platforms
 
 ## Yeah, but... WHY?
@@ -62,6 +66,11 @@ it anywhere that can run the Maize VM.
 Maize builds with CMake + Ninja and either Clang or GCC. On Windows, the primary compiler is a pinned
 llvm-mingw toolchain fetched by a small bootstrap script, no installer or admin rights
 required.
+
+The core VM and tools build from a plain checkout. The C toolchain additionally vendors
+cproc and QBE as pinned git submodules, so clone with `git clone --recurse-submodules`
+(or run `git submodule update --init --recursive` after a plain clone) if you want `mzcc`.
+See [toolchain/VENDORING.md](toolchain/VENDORING.md) for the pins and build environments.
 
 ### Prerequisites (all platforms)
 
@@ -124,11 +133,16 @@ Should print "Hello, world!". Every preset's build directory lives under build/<
     scripts\run-tests.ps1        Windows
     scripts/run-tests.sh         Linux
 
-Each script builds both binaries, then assembles and runs every in-scope test
-under asm/, comparing captured output against the expected result for each.
-Prints a per-test PASS/FAIL report plus a summary line. Exits 0 if all tests
-pass, 1 if any test fails, 2 if the environment isn't set up correctly
-(missing CMake or Ninja, or a build failure).
+Each script builds the four tools (maize, mazm, mzld, mzdis), then assembles and
+runs every in-scope test under asm/, comparing captured output against the
+expected result for each. Prints a per-test PASS/FAIL report plus a summary line.
+Exits 0 if all tests pass, 1 if any test fails, 2 if the environment isn't set up
+correctly (missing CMake or Ninja, or a build failure).
+
+A separate harness, `scripts/run-ctest.sh`, compiles and runs the C corpus under
+ctest/ through the full mzcc pipeline and diffs each program's output against its
+committed fixture, so a codegen regression reports separately from an asm-suite
+regression.
 
 ### Editor setup (VS Code)
 
@@ -143,16 +157,24 @@ All presets currently build Debug.
 
 ## How To Use Maize
 
-Maize is implemented in standard C++ and will run on Windows and Linux. The primary executable is
-[maize](https://github.com/paulmooreparks/Maize/blob/master/src/maize.cpp), which accepts a path to a binary file to execute. You may generate a
-binary from Maize assembly with the [mazm](https://github.com/paulmooreparks/Maize/blob/master/src/mazm.cpp) executable, which accepts a path to
-an assembly file and outputs a BIN file that can then be executed with maize.
+Maize is implemented in standard C++ and runs on Windows and Linux. The toolchain is five tools:
 
-I haven't finished porting all of the instructions from the .NET implementation yet, but now that I've finished restructuring the
-code it shouldn't take too long to complete them.
-
-The [assembler](https://github.com/paulmooreparks/Maize/blob/master/src/mazm.cpp) is still VERY bare-bones, but it's enough to generate
-usable executables.
+* **maize** ([src/maize.cpp](src/maize.cpp)) runs a program image: a flat `.mzb` memory image
+  or a linked `.mzx` executable. See "Running Maize programs directly" below for the full
+  command line.
+* **mazm** ([src/mazm.cpp](src/mazm.cpp)) assembles a `.mazm` source to a flat `.mzb` image,
+  or to a relocatable `.mzo` object with `-c`. It reports `file:line` diagnostics, exits
+  nonzero on error without leaving a stale binary, and has editor-integration modes
+  (`--check`, `--stdin`); run `mazm --help` for the full flag list. The language
+  and directive reference is [ASSEMBLER.md](ASSEMBLER.md).
+* **mzld** ([src/mzld.cpp](src/mzld.cpp)) links `.mzo` objects into a `.mzx` executable.
+  See "Object Files, Linking, and Executables" below.
+* **mzdis** ([src/mzdis.cpp](src/mzdis.cpp)) disassembles a `.mzb` or `.mzx` back to
+  assembly; a flat `.mzb` listing reassembles through mazm back to the exact original
+  bytes, with synthesized `fn_`/`loc_` labels at call and branch targets so the listing
+  reads like a normal program.
+* **mzcc** compiles C11 to a runnable `.mzx` through the vendored cproc/QBE pipeline.
+  See "The C Toolchain (mzcc)" below.
 
 ## Running Maize programs directly
 
@@ -196,6 +218,32 @@ environment.
 maize --env GREETING=hi --env TARGET=world hello.mzb alpha beta
 maize --env-file run.env prog.mzb
 ```
+
+### Mounting host directories
+
+By default the guest filesystem is empty: nothing is mounted, no host file is
+reachable, and only the stdio fds exist. Each mount is an explicit grant (a
+WASI-preopen-style capability model), read-only unless opted into read-write:
+
+- `--mount HOST=/GUEST[:ro|:rw]` grants the guest a *nix view of one host
+  directory. Repeatable. `HOST` may be a native Windows path (`C:\work`,
+  `C:/work`) or a POSIX path; `/GUEST` is always a *nix absolute path under the
+  guest's synthetic root and cannot be `/` itself. `:ro` is the explicit
+  default; `:rw` opts into writes.
+- `--mount-home[=HOST]` is sugar mapping the host home directory to
+  `/home/user`, read-write.
+
+```sh
+maize --mount C:/work=/proj:rw prog.mzx
+maize --mount /home/paul/data=/data --mount-home prog.mzx
+```
+
+Within a granted mount the guest uses the Linux-mirroring file syscalls (open,
+close, fstat, lseek, getdents64, plus read/write on the granted fds; see the
+syscall table below). Every path resolution is confined to its mount root, and
+startup fails closed on a malformed or unreachable grant. The full contract,
+including the binary-ABI structures, lives in
+[docs/design/hostfs.md](docs/design/hostfs.md).
 
 The scripts below are documented, user-run tools. They are **not** run by the
 build, and they change OS state, so run them yourself and reverse them with the
@@ -260,27 +308,20 @@ to append them to your user `PATHEXT` automatically (also reversed by
 
 ## Project Status
 
-As I said in the original [.NET implementation](https://github.com/paulmooreparks/Tortilla/), it's very early days for Maize, so don't
-expect too much in the way of application usability... yet! I'm still porting the basic text-mode console for input and output.
-Next, I'll start creating a file-system device. I am currently porting [QBE](https://c9x.me/compile/) to output Maize assembly so that I can
-write Maize binaries with standard C and eventually port Linux to the virtual CPU.
+The instruction set documented below is implemented and CI-tested on Windows and Linux. The
+toolchain is complete end to end: mazm assembles flat images and relocatable objects, mzld
+links executables, mzdis round-trips flat images byte for byte, and mzcc compiles C11
+programs that run against a small Unix-style syscall surface (read, write, exit, brk) with
+real errno reporting, a brk-backed heap, and a variadic printf.
 
-In the short term, I'm implementing a very basic OS over a simple BIOS ([core.mazm](https://github.com/paulmooreparks/Maize/blob/master/asm/core.mazm)).
-It will provide a basic character-mode [CLI](https://github.com/paulmooreparks/Maize/blob/master/asm/cli.mazm) to allow building and running simple
-Maize programs from within the virtual CPU environment.
+This implementation in C++ is MUCH faster and MUCH tighter than the .NET version.
 
-So far, this implementation in C++ is MUCH faster and MUCH tighter than the .NET version.
+The near-term road map (see [ROADMAP.md](ROADMAP.md), the sequencing source of truth):
 
-The near-term road map is as follows:
-
-* Finish implementing all of the instructions documented below (in progress)
-* Add a Maize back end to [CProc](https://sr.ht/~mcf/cproc/) and build Maize BIOS & OS in standard C (in progress)
-* Implement a linker so that binaries can be built independently and linked together
-* Introduce "devices," which were partially implemented in the .NET version
-* Clean up the assembler (mazm) and introduce some proper error checking
-* Make the assembler read Unicode source files
+* Introduce "devices" bridging the VM to the host machine
+* Build a BIOS layer above the devices, then a simple OS with a character-mode CLI
 * Implement floating-point arithmetic
-* Add a Maize backend to GCC and port GNU tools to Maize.
+* Make the assembler read Unicode source files
 
 ## Hello, World!
 
@@ -1112,9 +1153,13 @@ x86 PCs. The x86 registers used in BIOS calls will map to Maize registers as fol
 
 ## OS ABI
 
-The first ten arguments to OS-level routines will be placed, from left to right, into the
-R0, R1, R2, R3, R4, R5, R6, R7, R8, and R9 registers. Any remaining arguments will be pushed
-onto the stack.
+The C calling convention, implemented by the QBE Maize target and documented authoritatively
+in [toolchain/qbe-maize/CALLING-CONVENTION.md](toolchain/qbe-maize/CALLING-CONVENTION.md),
+passes the first six integer/pointer arguments, from left to right, in R0 through R5; any
+further arguments are pushed onto the stack right to left in 8-byte slots. R0..R5 are
+caller-saved, R6..R9 are callee-saved, RT is reserved as back-end scratch, and return
+values are placed in RV. A variadic callee spills R0..R5 into a register save area, SysV
+style. OS-level routines follow the same convention.
 
 For example:
 
@@ -1132,10 +1177,12 @@ Return values will placed into the RV register. For example:
     ADD R1 RV
     RET
 
-The same standard will be followed for syscall parameters. The syscall number will be placed
-into the R9 register prior to calling the interrupt.
+Syscall parameters follow the same argument convention (R0, R1, R2, ...), with the result in
+RV. The implemented path is the SYS instruction, whose operand carries the syscall number
+directly. The INT $80 path, with the syscall number placed in R9 before raising the
+interrupt, is the planned OS-level surface and is not implemented yet.
 
-    ; Output a string using sys_write
+    ; Output a string using sys_write via the planned INT $80 path
     CP $01 R0               ; file descriptor 1 (STDOUT) in register R0
     CP hello_world R1.H0    ; string address in register R1
     CP hello_world_end R2
@@ -1143,7 +1190,7 @@ into the R9 register prior to calling the interrupt.
     CP $01 R9               ; syscall 1 = sys_write
     INT $80                 ; call sys_write
 
-The same syscall may be made with the SYS instruction, which will execute the syscall directly.
+The same syscall may be made with the SYS instruction, which executes the syscall directly.
 
     ; Output a string using sys_write, calling directly via SYS instruction
     CP $01 R0               ; file descriptor 1 (STDOUT) in register G
@@ -1172,39 +1219,46 @@ behavior (stdout plus a clean stop) is unchanged by the sys_exit path.
 
 The syscall id is a single byte: `SYS` passes `operand1.b0` to the dispatcher, so the id
 space is `$00`-`$FF`. Maize mirrors Linux x86-64 numbers where an analog exists (read=`$00`,
-write=`$01`, exit=`$3C`, reboot=`$A9`).
+write=`$01`, brk=`$0C`, exit=`$3C`, reboot=`$A9`).
 
 | SYS | name | args | returns |
 | --- | --- | --- | --- |
-| `$00` | `sys_read` | R0=fd, R1=buf, R2=count | RV=bytes read |
-| `$01` | `sys_write` | R0=fd, R1=buf, R2=count | RV=bytes written, `(u_word)-1` on error |
+| `$00` | `sys_read` | R0=fd, R1=buf, R2=count | RV=bytes read, `-errno` on error |
+| `$01` | `sys_write` | R0=fd, R1=buf, R2=count | RV=bytes written, `-errno` on error |
+| `$02` | `sys_open` | R0=path, R1=flags, R2=mode | RV=fd, `-errno` on error |
+| `$03` | `sys_close` | R0=fd | RV=0, `-errno` on error |
+| `$05` | `sys_fstat` | R0=fd, R1=statbuf | RV=0, `-errno` on error |
+| `$08` | `sys_lseek` | R0=fd, R1=offset, R2=whence | RV=new offset, `-errno` on error |
+| `$0C` | `sys_brk` | R0=requested break (0 queries) | RV=the current break (never `-errno`; an out-of-range request leaves the break unchanged) |
 | `$3C` | `sys_exit` | R0=code | (does not return; low 8 bits become exit status) |
 | `$A9` | `sys_reboot` | (none) | (reserved) |
+| `$D9` | `sys_getdents64` | R0=fd, R1=dirp, R2=count | RV=bytes read, 0 at end of directory, `-errno` on error |
+
+The file syscalls (`$02`/`$03`/`$05`/`$08`/`$D9`, and `read`/`write` on fds >= 3) are
+guest-visible only when the program was started with a `--mount` or `--mount-home`
+grant (see "Mounting host directories" above). Without a grant the guest filesystem
+is empty and only the stdio fds exist.
+
+Errors follow the Linux/musl convention: a result in the range `[-4095, -1]` encodes
+`-errno`, and everything else is a valid result. The C runtime's wrapper layer translates
+that into the familiar `errno` + `-1` contract. The full C-callable binding, including the
+error convention and per-call semantics, is documented in
+[toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md).
 
 
 ## Assembler Syntax
 
-(This section is incomplete and a bit of a work in progress. For working, tested examples see
-[asm/hello.mazm](asm/hello.mazm) and the `test_*.mazm` programs under [asm/](asm/), all of which
-assemble and run as part of the test suite.)
+Maize assembly is line-oriented: comments run from `;` to the end of the line,
+numeric literals carry a `$`/`#`/`%` base prefix, a token ending in `:` opens a
+labelled block (or, for a numeric header like `$0000,0000:`, sets the
+assembly address), and directives (`INCLUDE`, `LABEL`, `DATA`, `STRING`,
+`ADDRESS`, plus the object-mode set) cover everything an instruction doesn't.
 
-    %00000001   binary
-    #123        decimal
-    $FFFE1000   hexadecimal
-
-Other syntax, to be described more fully later:
-
-    LABEL labelName labelData
-
-(`LABEL name AUTO` is not implemented; `AUTO` has no auto-assignment semantics
-anywhere in the assembler today, so it is not valid syntax here. `labelData` must
-be an explicit `$`/`#`/`%`-prefixed literal.)
-
-    DATA dataValue [dataValue] [dataValue] [...]
-
-    STRING "stringvalue"
-
-    ADDRESS address | labelName
+[ASSEMBLER.md](ASSEMBLER.md) is the complete reference: the assembler's command
+line, the source syntax, and every directive with its parameters and examples.
+For working, tested examples see [asm/hello.mazm](asm/hello.mazm) and the
+`test_*.mazm` programs under [asm/](asm/), all of which assemble and run as part
+of the test suite.
 
 
 ## Object Files, Linking, and Executables
@@ -1228,65 +1282,22 @@ object or executable with nothing but this section.
 ### Object-mode assembler directives
 
 In object mode (`-c`) the assembler never resolves a symbolic operand inline: every
-label reference becomes a relocation the linker fills in. Object mode uses **strict
-declared interfaces**: a reference to a symbol this unit neither defines nor declares
-`EXTERN` is an error, so a typo is caught at assembly time rather than deferred to the
-linker. Content is partitioned into sections with these directives:
+label reference becomes a relocation the linker fills in, and content is partitioned
+into CODE, RODATA, DATA, and BSS sections. Object mode uses **strict declared
+interfaces**: a reference to a symbol the unit neither defines nor declares `EXTERN`
+is an error, so a typo is caught at assembly time rather than deferred to the linker.
 
-    SECTION CODE | RODATA | DATA | BSS   ; select the section subsequent content lands in
-    GLOBAL name                          ; export `name` (GLOBAL binding); default is LOCAL
-    PUBLIC name                          ; export `name`; a co-equal alias of GLOBAL
-    EXTERN name                          ; declare `name` as an import defined in another unit
-    ZERO n                               ; reserve n uninitialised bytes (only in BSS)
-    DREF bytes label[+/-offset]          ; embed a relocatable pointer to `label` in data
-    ALIGN n                              ; pad the section to an n-byte boundary (n a power of two)
-
-Defaults when no `SECTION` directive has been seen: content lands in CODE. Function
-labels (in CODE) get symbol type FUNC; data labels (in RODATA/DATA/BSS) get OBJECT.
-
-`GLOBAL` and `PUBLIC` are the same directive under two names: each exports the named
-symbol with GLOBAL binding, and both assemble to byte-identical object output. Use
-whichever reads better; `PUBLIC`/`EXTERN` mirror the familiar export/import pairing.
-
-`EXTERN name` declares that `name` is defined in another translation unit. A reference
-to an `EXTERN`'d symbol that this unit does not define becomes an import (an undefined
-symbol the linker resolves against a matching `GLOBAL`/`PUBLIC` export). `EXTERN` emits
-no bytes and opens no section; an `EXTERN`'d name that is never referenced emits no
-symbol at all. Declaring `EXTERN` for a name this unit *does* define is harmless (the
-local definition wins and the declaration is a no-op), so an interface fragment can be
-shared by every unit, including the one that defines the symbol. An export directive
-(`GLOBAL`/`PUBLIC`) naming a symbol the unit never defines is an error
-(`cannot export undefined symbol`).
-
-In flat (`-c` absent) assembly `GLOBAL`, `PUBLIC`, and `EXTERN` are inert no-ops and the
-`.mzb` output is byte-identical, with one refinement: flat mode has no linker, so a
-reference to an `EXTERN`'d symbol that is never defined in the same file is reported as
-`unresolved external 'name'`. The `--check` mode (used by the editor's live check)
-accepts an `EXTERN`'d-but-undefined reference silently, since a later link will satisfy
-it, but still reports an *undeclared* undefined reference as `undefined label 'name'`
-so typos stay visible while editing.
-
-`DREF` writes a data-resident pointer to `label`: `bytes` is 4 or 8, choosing a 32-bit
-(`R_MAIZE_ABS32`) or 64-bit (`R_MAIZE_ABS64`) reference. The assembler emits that many
-placeholder zero bytes and records a relocation, so the linker patches the slot to the
-label's linked address plus the optional signed `offset` (an addend). Use it for a
-pointer-in-data such as a jump table entry or the address of another object. `label`
-may be defined later in the same unit, or imported from another unit.
-
-`ALIGN n` pads the current section with zero bytes so the next datum starts on an
-`n`-byte boundary, and records `n` as the section's required alignment; the linker
-places the section on a matching boundary, so the alignment holds in the linked image.
-`n` must be a power of two (a non-power-of-two is a hard error) and at most 128.
-
-`DREF` and `ALIGN` apply only in object mode; in flat (`-c` absent) assembly both are
-inert no-ops, and the flat `.mzb` output is unchanged.
+The directives that drive this (`SECTION`, `GLOBAL`, `PUBLIC`, `EXTERN`, `ZERO`,
+`DREF`, `ALIGN`) are documented, with parameters and examples, in
+[ASSEMBLER.md](ASSEMBLER.md); in flat (`-c` absent) assembly they are inert no-ops
+and the `.mzb` output is byte-identical.
 
 A label reference's relocation width follows the immediate width the operand encodes.
 For a two-operand data move the width is the destination sub-register width, so
 `CP label Rn` materialises a full 64-bit address (`R_MAIZE_ABS64`) and
 `CP label Rn.H0` a 32-bit address (`R_MAIZE_ABS32`). Single-operand control-transfer
 targets (`CALL label`, `JMP label`) use a 32-bit target (`R_MAIZE_ABS32`). (The
-The QBE backend materialises addresses full-width, i.e. `R_MAIZE_ABS64`; the
+QBE backend materialises addresses full-width, i.e. `R_MAIZE_ABS64`; the
 narrow forms are a `mazm` hand-assembly convenience.)
 
 ### Object format `.mzo`
@@ -1389,6 +1400,39 @@ bytes to `vaddr`, zero-fills the `mem_size - file_size` (NOBITS) tail, and sets 
 address 0, exactly as before. RO/EXEC enforcement of the segment attributes is deferred
 until the VM has memory-protection hardware; today they are honest, load-bearing
 metadata that the linker's hygiene pass already validates.
+
+
+## The C Toolchain (mzcc)
+
+Maize has a working C11 compiler pipeline. [cproc](https://sr.ht/~mcf/cproc/) (the C11
+front end) and [QBE](https://c9x.me/compile/) (the back end) are vendored as pinned git
+submodules under `toolchain/` (see [toolchain/VENDORING.md](toolchain/VENDORING.md)), QBE
+carries a Maize code-generation target, and a freestanding C runtime under `toolchain/rt`
+(crt0, errno, string/ctype/stdio/stdlib, a brk-backed heap, variadic printf) is linked
+into every program. The pipeline is:
+
+    file.c -> cpp -> cproc (C11 -> QBE IL) -> qbe -t maize (IL -> .mazm)
+           -> mazm -c (.mzo) -> mzld (+ C runtime) -> file.mzx
+
+`scripts/cc-maize.sh` is the single canonical driver: CI (`scripts/run-ctest.sh`) and the
+installed `mzcc` command both exec it, so what CI tests is exactly what the tool runs.
+
+- `mzcc file.c` compiles and links to `file.mzx` beside the source.
+- `mzcc file.c -r` compiles and runs, propagating the guest exit code.
+- `mzcc file.c --emit` also leaves `file.mazm` (the generated assembly) beside
+  the source.
+- `mzcc -o out.mzx file.c` writes the linked image to an explicit path.
+- `mzcc --build` rebuilds the vendored cproc/qbe toolchain.
+
+cproc and QBE are POSIX-only, so on Windows `mzcc` is a small forwarder (`mzcc.cmd`,
+installed by `scripts/install-mazm.ps1`) that translates the source path and runs the
+pipeline under WSL; on Linux and WSL `mzcc` runs it directly.
+
+cproc is strict C11: declare any libc-style function you call. Aggregates
+(struct-by-value) and floating point are not implemented yet; the ABI lowering reports an
+error rather than miscompiling silently. The C register/frame ABI is documented in
+[toolchain/qbe-maize/CALLING-CONVENTION.md](toolchain/qbe-maize/CALLING-CONVENTION.md) and
+the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md).
 
 
 ## Opcodes Sorted Numerically

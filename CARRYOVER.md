@@ -4,21 +4,17 @@ Working state for picking up development. Positioning and milestone sequencing l
 
 ## Where things stand
 
-The M0.5 stabilization foundation is complete and on `origin/master`. Maize builds natively on Windows with no Visual Studio, is clang-clean and optimization-safe, has a hardened assembler, produces redirectable/pipeable output, ships a one-command test runner, and runs CI on every push.
+Milestone 0 (ISA repairs), Milestone 0.5 (stabilization), and the bulk of Milestone 1 (C toolchain) are complete and on `origin/master`. The toolchain runs end to end: C11 source compiles through mzcc, links against the freestanding runtime, and runs on the VM with a working heap, variadic printf, and real errno reporting. CI runs the asm corpus and the C corpus on every push, Linux and Windows, plus a sanitizer leg.
 
 Landed:
-- Flag model with separate carry and overflow, per operand width; signed/unsigned branches wired.
-- MUL corrected (was subtracting).
-- Register/flag storage redesigned: single-word backing store with shift/mask sub-register proxies (no type-punning union). Compiles under clang and GCC; correct under optimization.
-- Assembler (mazm): file:line diagnostics with nonzero exit and no stale binary, ctype UB fixed, UTF-8/BOM safe, duplicate-label corruption fixed.
-- VM syscall I/O uses WriteFile/ReadFile, so stdout/stdin survive redirection and pipes.
-- Portable toolchain: `scripts/bootstrap-toolchain.{ps1,sh}` fetches a pinned llvm-mingw (checksum-verified); CMake presets per platform; no MSVC dependency.
-- Test runner: `scripts/run-tests.{ps1,sh}` builds both binaries and runs the suite, exit 0/1/2.
-- CI: `.github/workflows/ci.yml`, Linux and Windows jobs, green, red-on-failure verified.
+- ISA: separate carry/overflow flags per operand width; signed and unsigned div/mod; ADC/SBB; MULW/UMULW; the full branch-complement set; the SETcc family with C-friendly synonyms; SAR; NEG; flat-64 pointer model; guaranteed process-start register/stack contract with a System V-style argc/argv/envp block.
+- Formats and tools: flat `.mzb` images, relocatable `.mzo` objects (SECTION/GLOBAL/PUBLIC/EXTERN/ZERO/DREF/ALIGN, maize-71/maize-89), linked `.mzx` executables (segmented model, maize-77). mazm (file:line diagnostics, `--check`/`--stdin` editor modes, `--help`), mzld (hygiene pass: W^X, overlap, fit checks), mzdis (byte-exact flat round-trip with synthesized fn_/loc_ labels, maize-70). maize loads both image formats and registers as an OS-level handler (binfmt_misc on Linux, file associations on Windows).
+- C toolchain: vendored cproc/qbe submodules with a Maize QBE target; `scripts/cc-maize.sh` is the single canonical driver that both CI and the installed `mzcc` exec, so they cannot drift (maize-96). mzcc has a gcc-like CLI (compile-to-`.mzx` default, `-r` run, `--emit`, `-o`, `--build`; maize-111). C ABI: six argument registers R0..R5 plus stack overflow and varargs per maize-98 ([toolchain/qbe-maize/CALLING-CONVENTION.md](toolchain/qbe-maize/CALLING-CONVENTION.md)). Runtime: crt0, string/ctype/stdio/stdlib slice with a brk-backed heap (maize-76), syscalls read/write/exit/brk with `-errno` results (maize-75, [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md)).
+- Infrastructure: pinned llvm-mingw bootstrap (no MSVC), CMake presets per platform, `scripts/install-mazm.{ps1,sh}` installs maize/mazm/mzld/mzdis to `~/bin` and refreshes the mzcc forwarder (WSL-backed on Windows).
 
 ## Build and test
 
-Prereqs: CMake 3.21+ and Ninja. On Windows the compiler is fetched by the bootstrap script; on Linux use system GCC/Clang.
+Prereqs: CMake 3.21+ and Ninja. On Windows the compiler is fetched by the bootstrap script; on Linux use system GCC/Clang. The C toolchain additionally needs the submodules (`git submodule update --init --recursive`).
 
     # Windows (from repo root, no Visual Studio needed)
     scripts\bootstrap-toolchain.ps1
@@ -27,26 +23,19 @@ Prereqs: CMake 3.21+ and Ninja. On Windows the compiler is fetched by the bootst
     # Linux / WSL (needs ninja on PATH)
     scripts/run-tests.sh
 
-Manual smoke test: `mazm asm/hello.mazm` then `maize asm/hello.mzb` prints "Hello, world!".
+`run-tests.{ps1,sh}` builds the four tools (maize, mazm, mzld, mzdis) and runs the asm/ corpus, exit 0/1/2. `scripts/run-ctest.sh` compiles and runs the ctest/ C corpus through the full mzcc pipeline and diffs each program's output (and exit status, where asserted) against its committed fixture. Manual smoke test: `mazm asm/hello.mazm` then `maize asm/hello.mzb` prints "Hello, world!".
 
 ## Environment notes and gotchas
 
-- This dev host has cmake 4.3.4 (installed at `C:\Program Files\CMake\bin`, not always on the shell PATH) and ninja 1.13.2. The runner locates cmake robustly.
-- WSL Ubuntu-22.04 has cmake and g++ but no ninja and no passwordless sudo, so the `linux-debug` CMake preset is not runnable there; build Linux directly with `g++ -std=c++20 -o /tmp/maize src/maize.cpp src/cpu.cpp src/sys.cpp` (mazm links the same three plus mazm.cpp). CI covers the real Linux preset run.
+- This dev host has cmake (installed at `C:\Program Files\CMake\bin`, not always on the shell PATH) and ninja. The runners locate cmake robustly.
+- The default WSL distro is Ubuntu-24.04 with cmake, ninja, and g++ preinstalled, so the `linux-debug` preset loop runs unmodified: `wsl.exe bash -lc 'cd /mnt/c/Users/paul/source/repos/Maize && bash scripts/run-tests.sh'`.
 - WSL exit-code artifact: chaining `cmd; echo $?` inside a single `wsl.exe bash -lc '...'` from Windows misreports the exit code as 0. Capture exit codes in the outer shell or a script file.
-- `asm/hello.mzb` is committed and is the byte-identical baseline (md5 `067d225eb695b8efcbb752190a657fdc`). Any ISA-visible change must keep it identical unless the change is meant to alter output. (Rebaselined for maize-64, the opcode-map consolidation: JZ/CLR/POP re-encoded so hello's bytes change; program output is unchanged. Prior baseline `9633f915dc75786f693b53d1a228f4c6` retired.)
+- `asm/hello.mzb` is committed and is the byte-identical baseline (md5 `067d225eb695b8efcbb752190a657fdc`). Any ISA-visible change must keep it identical unless the change is meant to alter output. (Renamed from hello.bin by maize-65, byte-neutral. Rebaselined for maize-64, the opcode-map consolidation: JZ/CLR/POP re-encoded so hello's bytes change; program output is unchanged. Prior baselines: `9633f915dc75786f693b53d1a228f4c6` (maize-41 flat-64), `04e09a107df2577cbeee3e53ce8b64a5` (maize-4), `ad818f96bde3c15769f8350fc24d247c` (original).)
 
 ## What is next
 
-The M0 semantic ISA cards are the next roadmap block, now cheap to build and verify via the runner and CI:
-- Pointer width and segment model decision.
-- Flags-on-load decision.
-- Signed division and modulo.
-- Add-with-carry / subtract-with-borrow.
-- Wide multiply with high-half result.
-- Branch complements (JGE, JLE, JBE, JAE).
-- Immediate-math operand field: implement or delete.
-
-Remaining stabilization ergonomics (non-blocking): string-output syscall, then a Maize assembly test library. Follow-ups: further assembler hardening (register validation, numeric-literal diagnostics, circular-INCLUDE, the mazm `-Wswitch` cleanup) and optimized/Release CMake presets.
+- The Milestone 1 tail: Unicode source files in the assembler.
+- Milestone 2: the per-instruction specification v1.0 and the cycle cost model, the flagship artifact.
+- Non-blocking ergonomics: the mazm `-Wswitch` cleanup and optimized/Release CMake presets.
 
 Task-level detail, priorities, and dependencies live on the `maize` Andoneer workbench.

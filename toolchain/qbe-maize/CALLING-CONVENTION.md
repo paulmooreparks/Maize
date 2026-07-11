@@ -1,8 +1,7 @@
 # Maize C calling convention
 
-The C ABI the QBE Maize target implements (maize-62, satisfying maize-11 AC 6401 /
-decision 6416). This documents the **final** register partition and the frame
-shape the back-end actually emits; it is the contract maize-63 builds on.
+The C ABI the QBE Maize target implements. This documents the register partition
+and the frame shape the back-end actually emits.
 
 ## Register partition
 
@@ -12,16 +11,15 @@ Sub-registers: `B*` = 8-bit, `Q*` = 16-bit, `H*` = 32-bit, `W0`/`W` = 64-bit.
 | Register | Role | Preservation |
 |----------|------|--------------|
 | R0..R5 | integer/pointer args 1-6; general allocatable | caller-saved |
-| R6..R9 | integer/pointer args 7-10; general allocatable | callee-saved |
-| RV | return value (narrow returns per the `w` idiom, maize-11 decision 6406) | caller-saved |
+| R6..R9 | general allocatable (never carry arguments) | callee-saved |
+| RV | return value (narrow returns per the `w` idiom) | caller-saved |
 | RT | back-end scratch (isel/addressing temporaries) | not RA-allocatable (globally reserved) |
 | RB (BP) | frame pointer | callee-saved (established by the standard prologue) |
 | RS (SP) | stack pointer; grows down; 8-byte slots | fixed |
 | RP (PC), RF (flags) | fixed-role | not allocatable |
 
-The partition is exactly maize-11 decision 6416's proposal: **no tuning of the
-caller/callee-saved split was needed** to satisfy QBE's register allocator for the
-hello-world slice. Recorded so maize-63 inherits a settled contract.
+Call arguments only ever occupy caller-saved registers, and the variadic register
+save area stays a constant 48 bytes, matching x86-64 SysV.
 
 In QBE-internal terms (`toolchain/qbe-maize/targ.c`):
 
@@ -31,25 +29,35 @@ In QBE-internal terms (`toolchain/qbe-maize/targ.c`):
 - `rglob` (never allocated) = `{RT, RB, RS}`.
 
 Unlike some targets, the return register **RV is distinct from the first argument
-register R0**: arguments arrive in `R0..R9` and results leave in `RV`.
+register R0**: arguments arrive in `R0..R5` and results leave in `RV`.
 
 ## Argument passing
 
-- The first ten integer/pointer arguments go in `R0..R9`, left to right.
-- Arguments past `R9` are pushed on the stack right-to-left by the caller
-  (**not reached by hello world; maize-63 exercises the overflow path**).
+- The first six integer/pointer arguments go in `R0..R5`, left to right.
+- Arguments past `R5` (arg 7 onward) are pushed on the stack right-to-left by the
+  caller in 8-byte slots, so arg 7 sits at the lowest address:
+  after the callee's `PUSH BP`, overflow args land at `[BP+16]`, `[BP+24]`, ...
+  (`BP+0` = saved BP, `BP+8` = return address). The caller reserves and releases
+  the slots.
 - `CALL` pushes an 8-byte return address onto the `RS` stack.
-- Aggregates (struct-by-value), varargs, and environment/closure calls are **not
-  yet implemented** and the ABI lowering `err()`s on them (maize-63 surface),
-  rather than miscompiling silently.
+- Variadic functions: a variadic callee
+  spills all six argument registers `R0..R5` into a 48-byte register save area at
+  `BP-48..BP-0`, and `va_list` is the 24-byte SysV gp-subset
+  `{gp_offset:u32 @0, reserved:u32 @4, overflow_arg_area:ptr @8,
+  reg_save_area:ptr @16}`. `va_start`/`va_arg` lowering is a port of QBE's
+  amd64/sysv.c with the floating-point branch dropped (Maize has no FP register
+  file).
+- Aggregates (struct-by-value) and environment/closure calls are **not yet
+  implemented** and the ABI lowering `err()`s on them, rather than miscompiling
+  silently.
 
 ## Return values
 
 - Integer/pointer results are returned in `RV`.
 - Floating-point and aggregate returns are **not yet implemented** (`err()`).
-- For the hello-world slice `main`'s `return 0;` materializes the `w` constant `0`
-  into `RV` (`CP $00000000 RV`); the value is currently unobserved because `crt0`
-  `HALT`s after `CALL main` (maize-11 decision 6408 / maize-62 decision 6638).
+- `main`'s return value is observed: `crt0` routes it through `exit()` to
+  `sys_exit` (`SYS $3C`), which records the low 8 bits as the host process exit
+  status.
 
 ## Frame layout and prologue/epilogue
 
@@ -84,8 +92,6 @@ main:
     RET
 ```
 
-The runtime's hand-written `puts` (`toolchain/rt/puts.mazm`) preserves `R6` across
-its `sys_write` call, demonstrating the callee-saved store/restore contract.
 
 ## Syscall ABI
 
@@ -93,6 +99,6 @@ The C-to-syscall boundary (the `SYS` instruction's argument/result registers, th
 `-errno` error convention, the raw-stub / errno-wrapper split, and the frozen hosted
 syscall-number table) is a separate contract, recorded in
 [`../rt/SYSCALL-ABI.md`](../rt/SYSCALL-ABI.md). In brief: `SYS` reads arguments from
-the same `R0..R9` this document assigns and writes its result to `RV`; a result in
-`[-4095, -1]` is `-errno`, which the C wrapper layer (`toolchain/rt/errno.c`) flips
-into `errno` + a `-1` return.
+the same argument registers this document assigns (`R0..R2` for every call in scope
+today) and writes its result to `RV`; a result in `[-4095, -1]` is `-errno`, which
+the C wrapper layer (`toolchain/rt/errno.c`) flips into `errno` + a `-1` return.

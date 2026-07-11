@@ -1,8 +1,8 @@
 # Maize syscall ABI (hosted)
 
-The C-callable binding for Maize syscalls (maize-74). This is the contract the C
+The C-callable binding for Maize syscalls. This is the contract the C
 runtime and every C program compile against; the numbers and the error convention
-below are **binary ABI** as of maize-74. It is scoped to the runtime (`toolchain/rt`)
+below are **binary ABI**. It is scoped to the runtime (`toolchain/rt`)
 and the VM's SYS dispatch; the C-language register/frame ABI lives in
 [`../qbe-maize/CALLING-CONVENTION.md`](../qbe-maize/CALLING-CONVENTION.md).
 
@@ -20,11 +20,10 @@ nothing more than `SYS <number>; RET`:
 | arg 3 (count) | `R2` |
 | result | `RV` |
 
-Arguments continue in `R3..R9` for calls that take more (none in scope today).
-`count`/size arguments are full 64-bit (`regs::r2.w0`, maize-56); buffers are full-64
-addresses. The VM already lands the result in `RV` (`src/cpu.cpp`:
-`regs::rv.w0 = sys::call(...)`), which is also the C return register, so adopting `RV`
-is zero-cost (maize-74, OQ1).
+Arguments continue in the remaining argument registers for calls that take more (none
+in scope today). `count`/size arguments are full 64-bit (`regs::r2.w0`); buffers are
+full-64 addresses. The VM lands the result in `RV` (`src/cpu.cpp`:
+`regs::rv.w0 = sys::call(...)`), which is also the C return register.
 
 ## Error convention: negative result is `-errno`
 
@@ -33,7 +32,7 @@ Linux/musl convention, a result in the range **`[-4095, -1]`** encodes `-errno`;
 `MAX_ERRNO` is `4095`. Everything else is a valid result.
 
 The POSIX-named wrapper layer turns that into the familiar `errno` + `-1` contract via
-the musl `__syscall_ret` translator (maize-74 decision 7306):
+the musl `__syscall_ret` translator:
 
 ```c
 long __syscall_ret(unsigned long r) {
@@ -45,23 +44,21 @@ long __syscall_ret(unsigned long r) {
 }
 ```
 
-`errno` is a plain global `int` (the VM is single-threaded; TLS is reserved for a
-future threading card, maize-74 OQ3). The wrapper signature does not change if `errno`
+`errno` is a plain global `int` (the VM is single-threaded; TLS is reserved for
+future threading work). The wrapper signature does not change if `errno`
 later becomes thread-local.
 
-**Closed by maize-75:** the VM now produces real `-errno` codes in the `[-4095, -1]`
-band. A wrong-direction or nonexistent fd (`write` to fd 0, `read` from fd 1/2, either
-to fd >= 3) returns `-EBADF` (9); a real host I/O failure on the in-scope stdio fds
-returns the host errno verbatim on Linux (numerically identical to the ABI) and a
-synthesized `-EIO` (5) on Windows. `sys_read` (`case $00`) now returns the byte count
-(it previously fell through to `return 0`) and copies only the bytes actually read, so
-a short read no longer spills the uninitialized buffer tail into guest memory. The
-wrapper layer (`__syscall_ret`) is unchanged.
+The VM produces real `-errno` codes in the `[-4095, -1]` band. A wrong-direction or
+nonexistent fd (`write` to fd 0, `read` from fd 1/2, either to fd >= 3) returns
+`-EBADF` (9); a real host I/O failure on the in-scope stdio fds returns the host
+errno verbatim on Linux (numerically identical to the ABI) and a synthesized `-EIO`
+(5) on Windows. `sys_read` returns the byte count and copies only the bytes actually
+read, so a short read never spills an uninitialized buffer tail into guest memory.
 
 **`brk` is exempt from the errno convention.** `sys_brk` ($0C) always returns the
 current (possibly unchanged) break, never `-errno`: the break is a low address that
 cannot land in the `[-4095, -1]` band, and failure is detected by the caller comparing
-the returned break to the requested one (the libc `sbrk` wrapper, maize-76).
+the returned break to the requested one (the libc `sbrk` wrapper).
 
 **EFAULT is never produced.** Maize memory is sparse and lazily zero-filled, so every
 guest address is physically valid and a bad-pointer syscall cannot fault. This is an
@@ -77,12 +74,13 @@ honest deviation from Linux, recorded rather than faked.
 | header | all of the above | `toolchain/rt/syscall.h` | C declarations |
 
 The raw process-termination stub is `_exit` (POSIX raw termination: no `atexit`/flush).
-Buffered stdlib `exit()` is deferred to maize-76. `crt0` inlines `SYS $3C` directly
-rather than calling `_exit`.
+The stdlib `exit()` (`toolchain/rt/stdlib.c`) currently delegates to `_exit`; there is
+no `atexit` registry yet and stdio is unbuffered, but `crt0` routes `main`'s return
+value through `exit()` so a future `atexit`/flush hook will be honored.
 
 ## Frozen number table (hosted ABI)
 
-Mirrors the Linux x86-64 table by construction. Frozen as of maize-74:
+Mirrors the Linux x86-64 table by construction. Frozen:
 
 | Number | Symbol | Args | Result |
 |--------|--------|------|--------|
@@ -108,7 +106,7 @@ later cards.
 ## Numbering policy
 
 - Mirror the Linux x86-64 number for any call that has a Linux equivalent (for
-  example `brk=$0C`, the heap primitive landed by maize-75).
+  example `brk=$0C`, the heap primitive).
 - Reserve a Maize-private high block for calls with no Linux equivalent.
 - This hosted SYS table (the VM acting as kernel) is a namespace **distinct** from the
   eventual guest-OS `INT $80` table. Freezing the SYS numbers here does not bind that
@@ -116,4 +114,4 @@ later cards.
 
 Once C compiles against these stubs, the numbers are ABI. The convention frozen here
 (RV result, the `[-4095, -1]` errno range, the raw/wrapper split, Linux-mirrored
-numbers) is inherited by maize-75, maize-76, and the eventual Doom-demo chain.
+numbers) is binding for everything built on top.
