@@ -200,6 +200,14 @@ namespace maize {
 
         }
 
+        memory_module::~memory_module() {
+            for (auto &[base, ptr] : memory_map) {
+                delete[] ptr;
+            }
+
+            memory_map.clear();
+        }
+
         u_hword memory_module::write_byte(reg_value address, u_byte value) {
             set_cache_address(address);
             cache[cache_address.b0] = value;

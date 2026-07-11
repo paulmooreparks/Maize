@@ -371,6 +371,8 @@ namespace maize {
 		};
 
 		struct memory_module : public reg {
+			~memory_module();
+
 			u_hword write_byte(reg_value address, u_byte value);
 			u_hword write_qword(reg_value address, u_qword value);
 			u_hword write_hword(reg_value address, u_hword value);
