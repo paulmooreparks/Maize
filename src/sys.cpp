@@ -261,7 +261,18 @@ namespace maize {
                     DWORD bytes_read {0};
 
                     if (!ReadFile(hStdin, cursor, this_chunk, &bytes_read, nullptr)) {
-                        // No host errno; synthesize the ABI I/O-failure code.
+                        // A redirected stdin (anonymous pipe, or a regular file
+                        // read past its end on some Windows versions) surfaces
+                        // EOF as a FAILED ReadFile call with ERROR_BROKEN_PIPE or
+                        // ERROR_HANDLE_EOF, unlike POSIX read() which returns 0
+                        // on EOF without an error. Fold both into the same
+                        // zero-bytes-read EOF the ABI promises on every host
+                        // (maize-75); any OTHER failure still synthesizes the
+                        // ABI I/O-failure code.
+                        DWORD err {GetLastError()};
+                        if (err == ERROR_BROKEN_PIPE || err == ERROR_HANDLE_EOF) {
+                            break;
+                        }
                         return neg_errno(abi_eio);
                     }
 

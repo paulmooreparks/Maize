@@ -72,12 +72,14 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_crossblock';    File = 'test_crossblock.mazm';    Expected = 'crossblk: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_adc';           File = 'test_adc.mazm';           Expected = 'adc: PASS';                     Golden = $false }
     [pscustomobject]@{ Name = 'test_copywidth';     File = 'test_copywidth.mazm';     Expected = 'copywidth: PASS';               Golden = $false }
+    [pscustomobject]@{ Name = 'oob_subreg_guard';   File = 'test_oob_subreg.mazm';    Expected = 'oob subreg: PASS';              Golden = $false }
     [pscustomobject]@{ Name = 'reject_ld_value';    File = 'test_reject_ldval.mazm';   Expected = 'reads from a memory address';   Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'reject_ldz';         File = 'test_reject_ldz.mazm';     Expected = "unknown keyword or opcode 'LDZ'"; Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'test_call_ind';      File = 'test_call_ind.mazm';      Expected = 'call ind: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_setint';        File = 'test_setint.mazm';        Expected = 'setint: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_outr_in';       File = 'test_outr_in.mazm';       Expected = 'outr/in: PASS';                 Golden = $false }
-    [pscustomobject]@{ Name = 'test_brk';           File = 'test_brk.mazm';           Expected = 'brk: PASS';                     Golden = $false }
+    [pscustomobject]@{ Name = 'test_sysbrk';        File = 'test_sysbrk.mazm';        Expected = 'sysbrk: PASS';                  Golden = $false }
+    [pscustomobject]@{ Name = 'test_syserrno';      File = 'test_syserrno.mazm';      Expected = 'syserrno: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_tstind';        File = 'test_tstind.mazm';        Expected = 'tstind: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'reject_bad_register'; File = 'test_reject_badreg.mazm';     Expected = "unknown register 'R99'";      Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'reject_bad_literal';  File = 'test_reject_badliteral.mazm'; Expected = 'malformed hex literal';       Golden = $false; ExpectAsmError = $true }
@@ -86,6 +88,9 @@ $Tests = @(
     [pscustomobject]@{ Name = 'reject_address_trunc'; File = 'test_reject_address_trunc.mazm'; Expected = 'unexpected end of file';  Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'reject_jcc_reg';      File = 'test_reject_jcc_reg.mazm';    Expected = 'immediate target only';       Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'reject_jmp_subreg';   File = 'test_reject_jmp_subreg.mazm'; Expected = 'full 64-bit width';           Golden = $false; ExpectAsmError = $true }
+    [pscustomobject]@{ Name = 'test_fp';             File = 'test_fp.mazm';                 Expected = 'fp: PASS';                    Golden = $false }
+    [pscustomobject]@{ Name = 'reject_fp_subreg';    File = 'test_fp_reject_subreg.mazm';   Expected = 'B* or Q* subregister';        Golden = $false; ExpectAsmError = $true }
+    [pscustomobject]@{ Name = 'reject_fp_mixwidth';  File = 'test_fp_reject_mixwidth.mazm'; Expected = 'same floating-point width';   Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'nested_include';      File = 'test_nested_include.mazm';    Expected = 'nested include: PASS';        Golden = $true }
     [pscustomobject]@{ Name = 'address_fwdlabel';    File = 'test_address_fwdlabel.mazm';  Expected = 'address fwd-ref: PASS';       Golden = $false }
     # maize-71: flat-mode EXTERN'd-but-undefined reference has no linker to resolve it.
@@ -281,6 +286,127 @@ foreach ($t in $Tests) {
     $results += Invoke-Test $t
 }
 
+# --- maize-72: per-reference undefined-label diagnostics --------------------------
+# Several distinct undefined labels referenced from distinct lines must each report
+# at their OWN file:line, and a label referenced from TWO different lines
+# (undefined_beta, lines 14 and 19) must report on BOTH lines rather than twice on
+# the first and never on the second. The generic Invoke-Test negative form only
+# greps for a single substring, so this fixture gets a bespoke check that asserts
+# each expected file:line diagnostic is present.
+function Invoke-UndefMultirefTest {
+    $name = 'undef_multiref'
+    $srcPath = Join-Path $AsmDir 'test_reject_undef_multiref.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_reject_undef_multiref.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+
+    $log = [System.IO.Path]::GetTempFileName()
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $MazmExe $asmPath *> $log
+    $ec = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    $actual = Get-Content -Raw -Path $log -ErrorAction SilentlyContinue
+    Remove-Item -Force $log -ErrorAction SilentlyContinue
+    if ($null -eq $actual) { $actual = '' }
+
+    $pass = ($ec -ne 0) `
+        -and ($actual -match ":14: error: undefined label 'undefined_beta'") `
+        -and ($actual -match ":15: error: undefined label 'undefined_alpha'") `
+        -and ($actual -match ":19: error: undefined label 'undefined_beta'") `
+        -and ($actual -match ":20: error: undefined label 'undefined_gamma'")
+    return [pscustomobject]@{
+        Name     = $name
+        Pass     = $pass
+        Expected = 'nonzero exit; diagnostics at lines 14, 15, 19, 20, each on its own site'
+        Actual   = "exit ${ec}; $(Trim-TrailingNewlines $actual)"
+    }
+}
+
+# --- maize-78: BRK is a defined breakpoint trap, not a no-op ----------------------
+# BRK ($FF) raises a breakpoint trap (cause 3). With no handler installed (the
+# maize-21 vector table does not exist yet) an unhandled synchronous trap halts the
+# VM deterministically with the cause surfaced. test_brk.mazm places an unreachable
+# "brk: FAIL" marker right after BRK; the generic Invoke-Test cannot express
+# "expected to trap", so this bespoke runner asserts the VM exits nonzero, surfaces
+# a "breakpoint" diagnostic on stderr, and never reaches the fall-through marker
+# (which the old no-op behavior would have printed). Mirrors run-tests.sh's
+# run_brk_trap_test.
+function Invoke-BrkTrapTest {
+    $name = 'brk_trap'
+    $srcPath = Join-Path $AsmDir 'test_brk.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_brk.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to assemble' }
+    }
+
+    $stdoutFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $MaizeExe $binPath > $stdoutFile 2> $stderrFile
+    $maizeExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    $out = Get-Content -Raw -Path $stdoutFile -ErrorAction SilentlyContinue
+    $err = Get-Content -Raw -Path $stderrFile -ErrorAction SilentlyContinue
+    Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
+    if ($null -eq $out) { $out = '' }
+    if ($null -eq $err) { $err = '' }
+
+    $pass = ($maizeExit -ne 0) -and ($err -like '*breakpoint*') -and ($out -notlike '*FAIL*')
+    return [pscustomobject]@{
+        Name     = $name
+        Pass     = $pass
+        Expected = "nonzero exit, 'breakpoint' on stderr, no fall-through marker on stdout"
+        Actual   = "exit ${maizeExit}; stdout=`"$(Trim-TrailingNewlines $out)`"; stderr=`"$(Trim-TrailingNewlines $err)`""
+    }
+}
+
+# --- maize-75: sys_read byte-count fix (needs a known stdin) ----------------------
+# Invoke-Test gives no stdin, so this bespoke runner pipes "hello" and checks the
+# program echoes exactly the bytes read plus an EOF marker: "hello|EOF". The old
+# fall-through-to-0 bug (and any short-read tail spill or nonzero EOF return)
+# produces different output, so a byte-exact match gates the fix.
+function Invoke-SysreadTest {
+    $name = 'sysread_count'
+    $expected = 'hello|EOF'
+    $srcPath = Join-Path $AsmDir 'test_sysread.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_sysread.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'mazm failed to assemble' }
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $MaizeExe
+    $psi.Arguments = "`"$binPath`""
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $proc.StandardInput.Write('hello')
+    $proc.StandardInput.Close()
+    $stdout = $proc.StandardOutput.ReadToEnd()
+    $null = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    $maizeExit = $proc.ExitCode
+
+    $actual = Trim-TrailingNewlines $stdout
+    $pass = ($maizeExit -eq 0) -and ($actual -eq $expected)
+    return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = $expected; Actual = $actual }
+}
+
+$results += Invoke-UndefMultirefTest
+$results += Invoke-BrkTrapTest
+$results += Invoke-SysreadTest
+
 # --- maize-12: multi-TU assemble -> link -> run -----------------------------------
 # Assemble two objects with `mazm -c`, link them with mzld into one .mzx, and run
 # it under maize. Also exercises two hard link-error paths.
@@ -425,18 +551,26 @@ function Invoke-ObjBackjmpTest {
     }
     Remove-Item -Force $log -ErrorAction SilentlyContinue
 
-    $stdoutFile = [System.IO.Path]::GetTempFileName()
-    $stderrFile = [System.IO.Path]::GetTempFileName()
-    $proc = Start-Process -FilePath $MaizeExe -ArgumentList $mzx -PassThru -NoNewWindow `
-        -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+    # Use the raw .NET Process API rather than the Start-Process cmdlet: under
+    # Windows PowerShell 5.1, Start-Process -PassThru combined with
+    # -RedirectStandardOutput/-RedirectStandardError to FILE paths leaves
+    # $proc.ExitCode empty even after WaitForExit(timeout) returns true (pwsh 7
+    # is unaffected). Process.Start with stream redirection does not have this
+    # problem under either edition; the bounded WaitForExit still guards a
+    # mis-targeted backward JMP that spins instead of printing and exiting.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $MaizeExe
+    $psi.Arguments = "`"$mzx`""
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $proc = [System.Diagnostics.Process]::Start($psi)
     if (-not $proc.WaitForExit(10000)) {
         try { $proc.Kill() } catch { }
-        Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
         return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'timed out (mis-targeted backward JMP?)' }
     }
     $me = $proc.ExitCode
-    $actualRaw = Get-Content -Raw -Path $stdoutFile -ErrorAction SilentlyContinue
-    Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
+    $actualRaw = $proc.StandardOutput.ReadToEnd()
     $actual = Trim-TrailingNewlines $actualRaw
     return [pscustomobject]@{ Name = $name; Pass = (($me -eq 0) -and ($actual -eq $expected)); Expected = $expected; Actual = $actual }
 }
@@ -560,12 +694,12 @@ function Invoke-MzdisReservedTest {
 
     # Reserved-byte resyncs alone must NOT force exit 1 (spec: "Exit codes").
     $decodePass = ($disExit -eq 0) `
-        -and ($text -match [regex]::Escape('DATA $21') + '.*unknown opcode') `
+        -and ($text -match [regex]::Escape('DATA $37') + '.*unknown opcode') `
         -and ($text -match [regex]::Escape('DATA $93') + '.*unknown opcode') `
         -and ($text -match '(?m)^\s+NOP\b') `
         -and ($text -notmatch '(?i)TRUNCATED')
     if (-not $decodePass) {
-        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'DATA $21/$93 unknown-opcode lines, NOP decodes correctly after, exit 0'; Actual = "exit $disExit; see $disPath" }
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'DATA $37/$93 unknown-opcode lines, NOP decodes correctly after, exit 0'; Actual = "exit $disExit; see $disPath" }
     }
 
     $reasmBin = [System.IO.Path]::ChangeExtension($disPath, 'mzb')
@@ -672,8 +806,17 @@ function Invoke-MzdisMzoRejectTest {
 
     $stdoutFile = Join-Path $TestRunDir 'test_mzdis_mzo.out'
     $stderrFile = Join-Path $TestRunDir 'test_mzdis_mzo.err'
+    # mzdis writes its rejection diagnostic to stderr on purpose here (exit 1 is
+    # expected). Under Windows PowerShell 5.1, ErrorActionPreference = Stop turns
+    # that redirected native stderr write into a terminating NativeCommandError even
+    # though the 2> redirect still captures it fine; pwsh 7 is unaffected either way.
+    # Relax it for exactly this invocation, then restore (same idiom as the mazm and
+    # maize calls above).
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & $MzdisExe $mzoPath > $stdoutFile 2> $stderrFile
     $disExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
     $stdoutText = Get-Content -Raw -Path $stdoutFile -ErrorAction SilentlyContinue
     $stderrText = Get-Content -Raw -Path $stderrFile -ErrorAction SilentlyContinue
 
