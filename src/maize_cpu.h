@@ -424,8 +424,10 @@ namespace maize {
 		   intentionally left unassigned, reserving a slot for a future debug / single-step
 		   trap. Vector 4 reserves privileged-op-in-user (candidate set finalized with
 		   maize-21 / maize-92); vectors 5 and 6 reserve segment/bounds and stack-fault,
-		   whose enforcement mechanism ships with maize-92. These numbers are frozen ISA
-		   contract; see docs/spec/trap-model.md for the full model. */
+		   whose enforcement mechanism ships with maize-92; vector 7 reserves SYS / syscall
+		   entry (a deliberate synchronous software trap, ABI owned by maize-82 / maize-21).
+		   These numbers are frozen ISA contract; see docs/spec/trap-model.md for the full
+		   model. */
 		namespace trap {
 			const u_byte cause_illegal_instruction	{0}; // unknown opcode or unallocated condition encoding
 			const u_byte cause_divide_error			{2}; // divide-by-zero or signed INT_MIN/-1 quotient overflow
@@ -433,6 +435,7 @@ namespace maize {
 			const u_byte cause_privileged_op		{4}; // reserved: privileged instruction executed in user mode
 			const u_byte cause_segment_bounds		{5}; // reserved (maize-92): segment / bounds violation
 			const u_byte cause_stack_fault			{6}; // reserved (maize-92): stack-limit violation
+			const u_byte cause_syscall				{7}; // reserved: SYS / syscall entry (deliberate software trap; ABI owned by maize-82 / maize-21)
 		}
 
 

@@ -811,22 +811,24 @@ surfaced.
 
 Trap taxonomy and reserved cause / vector numbers:
 
-    Cause  Name                              Class  Notes
-    -----  --------------------------------  -----  -------------------------------------------------------
-    0      Illegal instruction               Fault  Unknown opcode or unallocated condition encoding
-    1      (reserved)                         n/a    Reserved for a future debug / single-step trap
-    2      Divide error                       Fault  Divide-by-zero, or signed INT_MIN / -1 quotient overflow
-    3      Breakpoint (BRK)                   Trap   BRK ($FF); captures the following-instruction PC
-    4      Privileged operation in user mode  Fault  Reserved number; enforcement deferred (privilege bit)
-    5      Segment / bounds violation         Fault  Reserved number; mechanism ships with segments
-    6      Stack fault                        Fault  Reserved number; mechanism ships with segments
-    7      (reserved)                         n/a    Not spent on misaligned access (defined-allow)
-    8..31  (reserved)                         n/a    Future synchronous traps
-    32..   External / device interrupts       Intr   Device / timer sources (the timer is the first)
+    Cause  Name                                 Class  Notes
+    -----  -----------------------------------  -----  -------------------------------------------------------
+    0      Illegal instruction / illegal operand  Fault  Unknown opcode, unallocated condition encoding, or illegal FP encoding (subreg / width / rounding-mode / opcode form)
+    1      (reserved)                             n/a    Reserved for a future debug / single-step trap
+    2      Divide error                           Fault  Divide-by-zero, or signed INT_MIN / -1 quotient overflow
+    3      Breakpoint (BRK)                       Trap   BRK ($FF); captures the following-instruction PC
+    4      Privileged operation in user mode      Fault  Reserved number; enforcement deferred (privilege bit)
+    5      Segment / bounds violation             Fault  Reserved number; mechanism ships with segments
+    6      Stack fault                            Fault  Reserved number; mechanism ships with segments
+    7      SYS / syscall entry                    Trap   Reserved number; SYS dispatches directly today, trap-vector delivery + ABI owned by maize-82 / maize-21
+    8..31  (reserved)                             n/a    Future synchronous traps
+    32..   External / device interrupts           Intr   Device / timer sources (the timer is the first)
 
 The cause number is also the vector-table index. A cause that multiplexes conditions carries a
 subcode: divide error uses 0 for divide-by-zero and 1 for quotient overflow; illegal instruction
-uses 0 for an unknown opcode and 1 for an unallocated condition encoding.
+uses 0 for an unknown opcode, 1 for an unallocated condition encoding, and 2 for an illegal FP
+encoding / operand. The cause word packs the cause number in the low byte (bits 7:0), the subcode
+in the next byte (bits 15:8), and the rest (bits 63:16) reserved-zero.
 
 Explicitly defined, non-trapping behaviors (defined outcomes, not gaps in the taxonomy):
 
@@ -841,6 +843,10 @@ Explicitly defined, non-trapping behaviors (defined outcomes, not gaps in the ta
 - **Decoded-but-undefined operand-field encodings decode to a defined default**: sub-register
   `$F` decodes to `b0`; immediate-size 4..7 decodes to the value-initialized default. These are
   operand fields, not opcodes, so they never raise the illegal-instruction trap.
+- **Floating-point arithmetic exceptions are sticky, never trapping**: an FP invalid operation,
+  divide-by-zero, overflow, underflow, or inexact result produces its IEEE-754 result (quiet NaN,
+  signed infinity, correctly rounded value) and sets the corresponding sticky FCSR FFLAGS bit; the
+  machine never traps on it. Only illegal FP *encodings / operands* trap (cause 0, above).
 
 
 ## Opcode Bytes
