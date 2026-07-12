@@ -885,6 +885,39 @@ a v1.0 instruction, register, or semantic; every reserved encoding already decod
   paging, and thread-pointer state that cannot fit the operand field.
 
 
+## Devices and port I/O
+
+Maize reaches devices through a **port space** disjoint from memory: there is no MMIO, so no
+device register is mapped into the memory address space and no device state is reachable via
+`LD` / `ST` / `CP`. The full normative contract (the port-I/O model, external-interrupt
+vectoring, and the standard device set) lives in
+[docs/spec/device-surface.md](docs/spec/device-surface.md); this section is the summary. The
+contract freezes existing and reserved surface and adds no v1.0 encoding; the code that
+enforces it (privilege gating, the unpopulated-port outcome) is delivered by the implementing
+card against this frozen contract.
+
+- **Port space.** A flat 16-bit namespace of 65,536 ports (`$0000`..`$FFFF`), disjoint from
+  memory. The port id is always the low 16 bits (`.q0`) of the port operand.
+- **Instructions.** `OUT` (`$14`, immediate port), `OUTR` (`$1E`, register port), and `IN`
+  (`$1F`, register or immediate port), each with the four operand forms. `IN` transfers
+  device-to-register; `OUT` / `OUTR` transfer register-to-device. Each device presents an
+  abstract (address, data) register pair. These three instructions are **privileged**:
+  executed with the RF privilege bit clear they raise the cause-4 privileged-operation fault.
+- **Unpopulated port.** A defined, non-trapping outcome: an `IN` from a port with no device
+  reads 0, and an `OUT` / `OUTR` to it is discarded. This mirrors the sparse-memory no-fault
+  model.
+- **External interrupts.** IRQs vector through the trap model's shared table in the high range
+  (vectors 32..255, 224 IRQ vectors in a 256-entry table; the vector index is the cause).
+  They reuse the shared saved-state frame (aux, cause, RF, PC) and the shipped `IRET` return.
+  Delivery is maskable via the RF interrupt-enable bit (`SETINT` / `CLRINT`); on delivery the
+  enable bit clears and `IRET` restores it. The model is flat: a single pending source, no
+  preemptive nesting, the handler runs masked until `IRET`.
+- **Standard device set.** Five mandatory devices form the conformance baseline (console /
+  terminal, block, timer, framebuffer, keyboard), with console and framebuffer required
+  interrupt-capable. A reserved device-class / port-range convention lets future optional
+  devices attach without an ISA revision.
+
+
 ## Opcode Bytes
 
 Opcodes are defined in an 8-bit byte separated into two flag bits and six opcode bits.
@@ -1006,10 +1039,10 @@ bit 7 is interpreted as follows:
     %1001`0011  $93                             reserved
     %1101`0011  $D3                             reserved
 
-    %0001`0100  $14   OUT       regVal  imm     Output value in source register to destination port
-    %0101`0100  $54   OUT       immVal  imm     Output immediate value to destination port
-    %1001`0100  $94   OUT       regAddr imm     Output value at address in source register to destination port
-    %1101`0100  $D4   OUT       immAddr imm     Output value at immediate address to destination port
+    %0001`0100  $14   OUT       regVal  imm     Output value in source register to destination port (privileged)
+    %0101`0100  $54   OUT       immVal  imm     Output immediate value to destination port (privileged)
+    %1001`0100  $94   OUT       regAddr imm     Output value at address in source register to destination port (privileged)
+    %1101`0100  $D4   OUT       immAddr imm     Output value at immediate address to destination port (privileged)
 
     %0001`0101  $15   FGETCSR   reg             Copy the FP control/status register (FCSR: FRM + FFLAGS) into the operand register
     %0101`0101  $55   FSETCSR   reg             Copy the operand register (low 8 bits) into FCSR; also clears the sticky FFLAGS
@@ -1056,15 +1089,15 @@ bit 7 is interpreted as follows:
     %1001`1101  $9D   CALL      regAddr         Push the return address to the stack, jump to address pointed to by source register and continue execution until RET is executed
     %1101`1101  $DD   CALL      immAddr         Push the return address to the stack, jump to address pointed to by immediate value and continue execution until RET is executed
 
-    %0001`1110  $1E   OUTR      regVal  reg     Output value in source register to port in destination register
-    %0101`1110  $5E   OUTR      immVal  reg     Output immediate value to port in destination register
-    %1001`1110  $9E   OUTR      regAddr reg     Output value at address in source register to port in destination register
-    %1101`1110  $DE   OUTR      immAddr reg     Output value at immediate address to port in destination register
+    %0001`1110  $1E   OUTR      regVal  reg     Output value in source register to port in destination register (privileged)
+    %0101`1110  $5E   OUTR      immVal  reg     Output immediate value to port in destination register (privileged)
+    %1001`1110  $9E   OUTR      regAddr reg     Output value at address in source register to port in destination register (privileged)
+    %1101`1110  $DE   OUTR      immAddr reg     Output value at immediate address to port in destination register (privileged)
 
-    %0001`1111  $1F   IN        regVal  reg     Read value from port in source register into destination register
-    %0101`1111  $5F   IN        immVal  reg     Read value from port in immediate value into destination register
-    %1001`1111  $9F   IN        regAddr reg     Read value from port at address in source register into destination register
-    %1101`1111  $DF   IN        immAddr reg     Read value from port at immediate address into destination register
+    %0001`1111  $1F   IN        regVal  reg     Read value from port in source register into destination register (privileged)
+    %0101`1111  $5F   IN        immVal  reg     Read value from port in immediate value into destination register (privileged)
+    %1001`1111  $9F   IN        regAddr reg     Read value from port at address in source register into destination register (privileged)
+    %1101`1111  $DF   IN        immAddr reg     Read value from port at immediate address into destination register (privileged)
 
     %0010`0000  $20   PUSH      regVal          Copy register value into memory at the stack pointer (SP), decrement SP by size of register
     %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at the stack pointer (SP), decrement SP by size of immediate value
