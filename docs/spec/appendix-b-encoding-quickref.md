@@ -45,7 +45,7 @@ Subregister selector (low nibble):
     $C      H0       (4 bytes, low half)
     $D      H1       (4 bytes, high half)
     $E      W0       (8 bytes, full register; a bare Rn means Rn.W0)
-    $F      -> B0    (defined default; not an error)
+    $F      illegal  (undefined selector; deterministic illegal-operand trap, cause 0)
 
 Byte/field positions in the 64-bit register (low to high):
 

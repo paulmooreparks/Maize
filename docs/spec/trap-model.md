@@ -82,10 +82,13 @@ FP operand (FP operands must select H0 / H1 for binary32 or W0 for binary64), an
 operand-width mismatch (mixing binary32 and binary64 on a same-format op), a reserved or
 unsupported FCSR rounding mode on a rounding op, or a reserved FP opcode form. All of
 these are illegal-encoding / illegal-operand conditions, distinct from FP arithmetic
-exceptions, which never trap (see "Defined non-trapping behavior"). The trap captures the
-faulting instruction's PC (a handler may rewrite the encoding and retry) and the
-offending instruction byte as aux; the cause subcode is 0 for an unknown opcode, 1 for an
-unallocated condition encoding, and 2 for an illegal FP encoding / operand.
+exceptions, which never trap (see "Defined non-trapping behavior"). The undefined
+sub-register selector `$F` on any operand is also an illegal-operand case here (it is the
+one operand field that traps; the undefined immediate-size field, by contrast, has a defined
+default). The trap captures the faulting instruction's PC (a handler may rewrite the
+encoding and retry) and the offending instruction byte as aux; the cause subcode is 0 for an
+unknown opcode, 1 for an unallocated condition encoding, and 2 for an illegal FP or operand
+encoding (the FP encodings and the undefined `$F` selector).
 
 **Cause 2, Divide error (fault).** Fires on signed or unsigned divide-by-zero and on the
 one signed quotient overflow (`INT_MIN / -1`, whose true quotient is not representable),
@@ -141,7 +144,8 @@ gap in the taxonomy.
   trap.
 - **Out-of-range shift count is defined.** For a shift of width `bits`: `n == 0` leaves
   the flags unaffected; `1 <= n <= bits` shifts normally; `n > bits` yields a result of
-  0 with C, V, N, and Z cleared. Never a trap, never host undefined behavior.
+  0 with C, V, and N cleared and Z set (Z = 1, since the result is zero). Never a trap,
+  never host undefined behavior.
 - **Unmapped / sparse memory access is defined.** Memory is sparse: a read of
   never-written memory returns 0, and a write allocates a zero-filled block on first
   touch. There is no EFAULT and no page fault in the v1.0 flat model. The absence of a
@@ -150,12 +154,11 @@ gap in the taxonomy.
 - **Misaligned multi-byte access is defined-allow.** A multi-byte load or store may sit
   at any address; it is stitched byte-wise across the 256-byte allocation blocks with no
   alignment requirement and no trap. No vector is spent on alignment.
-- **Decoded-but-undefined operand-field encodings decode to a defined default.** An
-  undefined sub-register selector (`$F`) decodes to `b0`; an undefined immediate-size
-  encoding (4..7) decodes to the value-initialized default. These are operand-field
-  encodings, not opcodes, so they never raise the illegal-instruction trap (whose
-  triggers are the unknown opcodes, unallocated condition encodings, and illegal FP
-  encodings enumerated under cause 0).
+- **An undefined immediate-size field decodes to a defined default.** An undefined
+  immediate-size encoding (4..7) decodes to the value-initialized default and does not
+  trap; it is an operand field, not an opcode. (The undefined sub-register selector `$F`,
+  by contrast, is an illegal-operand trap, cause 0, enumerated above; it is the one operand
+  field that does trap.)
 - **Floating-point arithmetic exceptions are sticky, never trapping.** An FP invalid
   operation, divide-by-zero, overflow, underflow, or inexact result does not trap: the
   operation produces its IEEE-754 defined result (a quiet NaN, a signed infinity, the

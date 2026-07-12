@@ -23,9 +23,10 @@ divergence is always a defect in one of them, never a permitted latitude.
 - **Flag effects.** The C / N / V / Z / P effects of every instruction, exactly as Chapter
   7 and Chapter 8 pin them, including the FCMP-only production of P and the explicit
   "unaffected" for every other instruction.
-- **Encoding.** The opcode and operand-byte decode, the immediate placement, and the
-  defined defaults for decoded-but-undefined operand fields (subregister `$F` to B0,
-  immediate-size 4..7 to the value-initialized default), per Chapters 5 and 6.
+- **Encoding.** The opcode and operand-byte decode, the immediate placement, the defined
+  default for the undefined immediate-size field (4..7 to the value-initialized default),
+  and the illegal-operand trap on the undefined subregister selector `$F` (cause 0), per
+  Chapters 5 and 6.
 - **Memory model.** Flat 64-bit, little-endian, sparse read-zero / allocate-on-write,
   misaligned defined-allow, per Chapter 4.
 - **Traps.** The trap taxonomy, cause / subcode numbering, precise delivery, the fault vs

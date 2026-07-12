@@ -53,12 +53,16 @@ grounded in the shipped dispatch (`src/cpu.cpp`) and the opcode/register model
 (`src/maize_cpu.h`), with the repository `README.md` tables as the human cross-check.
 Each chapter names its sources in a **Sourcing** section.
 
-Three narrow points where the shipped code does not yet match the frozen *contract* are
-called out explicitly in Chapters 10 and 11 (the reference VM's throw-and-exit trap
-delivery, the `$94` OUT form, the unpopulated-port dereference, and the not-yet-enforced
-privilege gate). Those are known deferred code fixes against a frozen contract, delivered
-by later cards; they are not spec defects, and the conformance suite tests the contract,
-not the current code in those spots.
+A few narrow points where the shipped code does not yet match the frozen *contract* are
+called out explicitly in the relevant chapters. They are: the reference VM's throw-and-exit
+trap delivery in place of in-guest vector delivery (Chapter 10); the `$94` OUT form writing
+the raw source register rather than the loaded value (Chapter 11); the unpopulated-port
+dereference in place of the read-0 / write-discard outcome (Chapter 11); the not-yet-enforced
+privilege gate on the port-I/O instructions (Chapter 11); and the undefined subregister
+selector `$F`, which the reference VM currently reads as zero rather than raising the
+illegal-operand trap the contract requires (Chapter 3). Each of these is a known deferred
+code fix against a frozen contract, tracked separately as reference-VM work; none is a spec
+defect, and the conformance suite tests the contract, not the current code in those spots.
 
 ## 1.4 Scope of v1.0
 

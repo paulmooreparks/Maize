@@ -777,10 +777,12 @@ Special-purpose Registers):
 
 - The program counter (RP/PC) is set to the program entry: the recorded entry point for a .mzx
   executable, or address $0000,0000,0000,0000 for a flat image.
-- The stack pointer (RS/SP) is set to 0xFFFFFFFFFFFFFFF8, the highest 8-byte-aligned address in
-  the flat 64-bit space. The stack grows downward: PUSH and CALL pre-decrement RS before writing,
-  so the first 8-byte push lands at 0xFFFFFFFFFFFFFFF0. The initial stack is empty. No
-  stack-pointer wraparound is relied upon.
+- The stack pointer (RS/SP) is set to the base of the process-start block, so RS points at
+  argc (see "Process start" above). The block ends at 0xFFFFFFFFFFFFFFF8, the highest
+  8-byte-aligned address in the flat 64-bit space; that address is the top of the block, not
+  the initial RS. The stack grows downward: PUSH and CALL pre-decrement RS before writing, so
+  the first guest push lands in the free region just below the block. No stack-pointer
+  wraparound is relied upon.
 - The base pointer (RB/BP) is 0, the general registers R0..R9, RT, and RV are 0, and the
   arithmetic/logic flags (RF.H0) are clear with interrupts disabled. This lets crt0 CALL into the
   program with a usable stack from the very first instruction.
@@ -835,14 +837,16 @@ Explicitly defined, non-trapping behaviors (defined outcomes, not gaps in the ta
 - **Integer overflow wraps** two's-complement and sets C / V per the flags model. There is no
   trap-on-overflow mode; JO / JNO and SETO / SETNO stay reserved condition encodings.
 - **Out-of-range shift count is defined**: `n == 0` leaves flags unaffected; `1 <= n <= bits`
-  shifts normally; `n > bits` yields result 0 with C / V / N / Z cleared.
+  shifts normally; `n > bits` yields result 0 with C / V / N cleared and Z set (Z = 1).
 - **Unmapped / sparse memory access is defined**: a read of never-written memory returns 0; a
   write allocates a zero-filled block. No EFAULT, no page fault in the flat v1.0 model.
 - **Misaligned multi-byte access is defined-allow**: stitched byte-wise across blocks, no
   alignment requirement, no trap, no vector spent.
-- **Decoded-but-undefined operand-field encodings decode to a defined default**: sub-register
-  `$F` decodes to `b0`; immediate-size 4..7 decodes to the value-initialized default. These are
-  operand fields, not opcodes, so they never raise the illegal-instruction trap.
+- **Undefined immediate-size field decodes to a defined default**: immediate-size 4..7 decodes
+  to the value-initialized default and does not trap. The undefined sub-register selector `$F`,
+  by contrast, is a deterministic illegal-operand trap (cause 0); it is the one operand field
+  that traps. (The reference VM does not yet raise the `$F` trap; a correction is tracked
+  separately.)
 - **Floating-point arithmetic exceptions are sticky, never trapping**: an FP invalid operation,
   divide-by-zero, overflow, underflow, or inexact result produces its IEEE-754 result (quiet NaN,
   signed infinity, correctly rounded value) and sets the corresponding sticky FCSR FFLAGS bit; the
@@ -1227,8 +1231,8 @@ bit 7 is interpreted as follows:
     %1011`0011  $B3                             reserved (FMIN/FMAX slot, row 2)
     %1111`0011  $F3                             reserved (FMIN/FMAX slot, row 3)
 
-    %0011`0100  $34   SYS       regVal          Execute a system call using the system-call index stored in register (privileged)
-    %0111`0100  $74   SYS       immVal          Execute a system call using the immediate index (privileged)
+    %0011`0100  $34   SYS       regVal          Execute a system call using the system-call index stored in register
+    %0111`0100  $74   SYS       immVal          Execute a system call using the immediate index
 
     %1110`0000  $E0   XCHG      reg     reg     Atomically exchange the values in two registers
 
@@ -1826,7 +1830,7 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %0011`0001  $31   INC       regVal          Increment register by 1.
     %0011`0010  $32   CLR       regVal          Set register to zero (0).
     %0011`0011  $33   FMIN      reg     reg     FP minimum of destination and source registers (RISC-V NaN/signed-zero rules)
-    %0011`0100  $34   SYS       regVal          Execute a system call using the system-call index stored in register (privileged)
+    %0011`0100  $34   SYS       regVal          Execute a system call using the system-call index stored in register
     %0011`0101  $35   UDIV      regVal  reg     Unsigned-divide destination register by source register value
     %0011`0110  $36   UMOD      regVal  reg     Unsigned remainder of destination register divided by source register value
     %0011`0111  $37                             reserved (v1.x SMP / memory-ordering primitives)
@@ -1890,7 +1894,7 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %0111`0001  $71   DEC       regVal          Decrement register by 1.
     %0111`0010  $72   POP       regVal          Increment SP by size of register, copy value at SP into register
     %0111`0011  $73   FMAX      reg     reg     FP maximum of destination and source registers (RISC-V NaN/signed-zero rules)
-    %0111`0100  $74   SYS       immVal          Execute a system call using the immediate index (privileged)
+    %0111`0100  $74   SYS       immVal          Execute a system call using the immediate index
     %0111`0101  $75   UDIV      immVal  reg     Unsigned-divide destination register by immediate value
     %0111`0110  $76   UMOD      immVal  reg     Unsigned remainder of destination register divided by immediate value
     %0111`0111  $77                             reserved

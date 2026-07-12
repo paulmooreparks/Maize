@@ -53,8 +53,9 @@ listed here only so the count is complete; software cannot read or write it.
 - **RB / BP (base pointer).** The frame (base) pointer for the current stack frame, a full
   64-bit address. `BP` is an assembler alias for `RB`.
 - **RP / PC (program counter).** The full 64-bit address of the next instruction to be
-  decoded. `PC` is an alias for `RP`. Control-transfer instructions target the full 64-bit
-  width; any subregister selection on a jump/call target is ignored (Chapter 7).
+  decoded. `PC` is an alias for `RP`. JMP always targets the full 64-bit width and ignores
+  any subregister selection on its operand; CALL, by contrast, honors the operand
+  subregister and zero-extends the selected field into PC (Chapter 7 sections 7.7).
 - **RS / SP (stack pointer).** The full 64-bit address of the top of the stack. `SP` is an
   alias for `RS`. The stack is **full-descending**: PUSH and CALL pre-decrement RS before
   writing, so RS always points at the last value pushed. See section 2.6 and Chapter 9 for
@@ -123,9 +124,10 @@ defaults (crt0 and the C calling convention depend on it from the first instruct
 
 - **RP / PC** = the program entry: the recorded entry point for a `.mzx` executable, or
   address `$0` for a flat `.mzb` image.
-- **RS / SP** = `$FFFF_FFFF_FFFF_FFF8`, the highest 8-byte-aligned address, the base of the
-  process-start block (argc/argv/envp; Chapter 4). The stack is empty and grows downward;
-  the first 8-byte push pre-decrements RS to `$FFFF_FFFF_FFFF_FFF0`.
+- **RS / SP** = the base of the process-start block, so RS points at argc (Chapter 4 section
+  4.5). The block occupies the top of the address space and ends at `$FFFF_FFFF_FFFF_FFF8`
+  (the top of the block, not RS). The stack grows downward; the first guest push
+  pre-decrements RS into the free region just below the block.
 - **RB / BP** = 0.
 - **R0..R9, RT, RV** = 0.
 - **RF**: the arithmetic/logic flags (RF.H0) are clear; the privilege bit is set (execution

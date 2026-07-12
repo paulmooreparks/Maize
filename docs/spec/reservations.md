@@ -103,8 +103,9 @@ already-defined row-packed families provide headroom for extensions that fit an 
 instruction's shape, at no cost to the free-slot count. These stay `reserved` and are listed
 so the inventory is complete: the spare condition encodings `$D9` (Jcc) and `$ED` (SETcc),
 reserved for a future integer-overflow JO / JNO and SETO / SETNO; the reserved zero-operand
-row `$E7`; the freed CPZ address-form rows `$93` and `$D3`; the FGETCSR / FSETCSR upper rows
-`$95` and `$D5`; and the reserved FP rows `$E2`, `$F9`, `$BA`, `$FA`, `$B3`, `$F3`.
+row `$E7`; the reserved CPZ address-form rows `$93` and `$D3`; the FGETCSR / FSETCSR upper
+rows `$95` and `$D5`; the reserved FP rows `$E2`, `$F9`, `$BA`, `$FA`, `$B3`, `$F3`; and the
+reserved standalone byte `$E4`.
 
 ## 2. Memory-ordering and atomics contract
 

@@ -18,8 +18,8 @@ is defined against behavior alone.
 
 Each chapter is a single Markdown file. This index assigns the chapter numbers and the
 reading order; the chapter files themselves are the normative text. The three chapters
-marked **EXISTS** were ratified and merged ahead of this document and are incorporated
-**by reference**: their files are canonical and are not restated here.
+marked **EXISTS** are incorporated **by reference**: their files are canonical and are not
+restated here.
 
 **Normative vs informative.** Unless a passage is explicitly marked *informative* (or
 sits under a heading named "Rationale", "Note", or "Positioning"), it is normative: a
@@ -50,7 +50,7 @@ Numeric radix prefixes, used throughout Maize source and documentation:
 
 The separators `` ` `` (back-tick), `_` (underscore), and `,` (comma) are all legal
 inside any numeric literal and carry no value; group digits however reads best
-(`$FEDC`BA98`, `%0100_0001`, `#1,000,000`). A bare token with no prefix is decimal.
+(``$FEDC`BA98``, `%0100_0001`, `#1,000,000`). A bare token with no prefix is decimal.
 An operand written with a leading `@` is a **memory address** that gets dereferenced;
 without `@` it is a plain value (Chapter 5).
 

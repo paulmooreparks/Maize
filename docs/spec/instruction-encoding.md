@@ -22,8 +22,8 @@ entry in Chapter 7 gives.
 
 The opcode byte is two flag (mode) bits plus a six-bit base opcode:
 
-    %BBxx`xxxx   bits 7,6   mode bits (Chapter 5 section 5.1)
-    %xxBB`BBBB   bits 5,0   base opcode (0..63)
+    %BBxx`xxxx   bits 7,6    mode bits (Chapter 5 section 5.1)
+    %xxBB`BBBB   bits 5..0   base opcode (0..63)
 
 The six base-opcode bits give **64 base slots**. Most instructions occupy one base slot and
 use the two mode bits to select the addressing-mode form (regVal `$0x`, immVal `$4x`,
@@ -36,8 +36,9 @@ than as addressing-mode bits:
   table (Chapter 7 section 7.6/7.7).
 - **Row-packed unary families**: for example base `$31` packs INC (`$31`), DEC (`$71`),
   NOT (`$B1`), NEG (`$F1`); base `$29` packs SETINT / CLRINT / SETCRY / CLRCRY; base `$27`
-  packs RET / IRET / NOP / BRK. The FP unary/min-max/convert families are row-packed the
-  same way (Chapter 8).
+  packs RET (`$27`), IRET (`$67`), NOP (`$A7`), with row 3 (`$E7`) reserved. (BRK is the
+  standalone byte `$FF`, not a member of base `$27`.) The FP unary/min-max/convert families
+  are row-packed the same way (Chapter 8).
 
 Which interpretation applies is fixed per base slot by the instruction map (Appendix A);
 the decoder does not choose.
@@ -78,11 +79,12 @@ destination (R3.W0, 64-bit), the value is sign-extended (Chapter 5 section 5.6).
 
 ## 6.6 Decoded-but-undefined fields
 
-Undefined *operand-field* encodings decode to defined defaults, never a trap: subregister
-`$F` decodes to B0 (Chapter 3 section 3.3), and immediate-size 4..7 decodes to the
-value-initialized default (Chapter 5 section 5.4). An undefined *opcode* byte, by contrast,
-is the illegal-instruction trap (cause 0; Chapter 10). The distinction is exact: operand
-fields never trap, opcodes do.
+Operand-field encodings split into two cases. The undefined **immediate-size** encoding
+4..7 decodes to the value-initialized default and never traps (Chapter 5 section 5.4). The
+undefined **subregister** selector `$F`, by contrast, is a deterministic illegal-operand
+trap (cause 0; Chapter 3 section 3.3, Chapter 10). An undefined *opcode* byte is likewise
+the illegal-instruction trap (cause 0). So an undefined opcode and an undefined subregister
+both trap; only the undefined immediate-size field has a defined non-trapping default.
 
 ## Sourcing
 

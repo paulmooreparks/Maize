@@ -54,13 +54,16 @@ Chapter 5). The fifteen defined selectors:
 | `$D` | H1 | 4 bytes |
 | `$E` | W0 | 8 bytes |
 
-## 3.3 The `$F` selector: defined default
+## 3.3 The `$F` selector: illegal operand
 
-Selector `$F` is **not** an undefined encoding: it decodes to a defined default of **B0**.
-This is one of the enumerated defined, non-trapping outcomes (Chapter 10): a
-decoded-but-undefined *operand field* never raises the illegal-instruction trap, because
-it is an operand field, not an opcode. An assembler will not emit `$F`; a hand-crafted or
-corrupt image that carries it reads and writes B0.
+Selector `$F` is an undefined subregister encoding. It is a **deterministic illegal-operand
+trap** (cause 0; Chapter 10): an operand naming subregister `$F` raises the
+illegal-instruction / illegal-operand fault rather than accessing any field. An assembler
+will not emit `$F`; a hand-crafted or corrupt image that carries it traps.
+
+The reference VM does not yet trap this encoding (it currently reads zero through an
+out-of-range table access); a VM correction to raise the trap is tracked separately. The
+frozen contract is the trap, and a conforming implementation must raise it.
 
 ## 3.4 Write-merge semantics
 
@@ -92,9 +95,10 @@ carries a type rather than merely a width; see Chapter 8.
 - Field layout and numbering: README "Sub-registers" and the graphical map; `src/maize_cpu.h`
   `subreg_enum` (lines 112-128), `subreg_mask_enum` (lines 131-147), and the `subword_ref`
   view (lines 155-181).
-- Selector encoding and the `$F`->B0 default: README "Sub-register bit field"; the reference
-  decode maps in `src/cpu.cpp` (`subreg_*_map` tables) and the defined-default note in
-  `docs/spec/trap-model.md` "Defined non-trapping behavior".
+- Selector encoding: README "Sub-register bit field"; the reference decode maps in
+  `src/cpu.cpp` (`subreg_*_map` tables). The undefined `$F` selector is a frozen
+  illegal-operand trap (Chapter 10); the reference VM's current out-of-range read is a known
+  divergence corrected separately.
 - Write-merge: `src/cpu.cpp` `write_subreg_bits` / `copy_regval_reg` / `copy_regval_reg_zext`
   (lines ~615-688); README "Copy width".
 - FP width selection: `src/cpu.cpp` `fp_width_from_subreg` (lines ~979-989); Chapter 8.

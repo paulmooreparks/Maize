@@ -60,9 +60,8 @@ stream, little-endian:
     %xxxx`x011   $x3   8-byte immediate  (64 bits)
 
 Bits 0..2 select the width. **Bit 3 and bits 4..7 are reserved** (must be zero) and carry
-no operation; a previously documented immediate math-operation mode was never implemented
-and is withdrawn. An immediate-size encoding of 4..7 is a decoded-but-undefined operand
-field and decodes to the value-initialized default (Chapter 10), not a trap.
+no operation. An immediate-size encoding of 4..7 is a decoded-but-undefined operand field
+and decodes to the value-initialized default (Chapter 10), not a trap.
 
 ## 5.5 The `@` memory-access marker and the CP/LD/ST boundary
 

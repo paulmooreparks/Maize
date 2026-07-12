@@ -25,10 +25,11 @@ are computed over the **destination operand's selected subregister width** (byte
 hword / word), and the sign bit N, the overflow test V, and the zero test Z are taken at
 that width.
 
-**Common trap facts.** An undefined opcode byte is the illegal-instruction trap (cause 0).
-Decoded-but-undefined operand fields (subregister `$F`, immediate-size 4..7) do not trap
-(Chapter 6 section 6.6). Where an entry says "Traps: none", the instruction raises no
-synchronous trap for any operand or value.
+**Common trap facts.** An undefined opcode byte is the illegal-instruction trap (cause 0),
+as is the undefined subregister selector `$F` on any operand (illegal-operand trap, cause 0;
+Chapter 3 section 3.3). The undefined immediate-size field 4..7 does not trap; it decodes to
+the value-initialized default (Chapter 6 section 6.6). Where an entry says "Traps: none", the
+instruction raises no synchronous trap for any defined operand encoding or value.
 
 ---
 
@@ -52,8 +53,8 @@ branch may be separated by data moves. CP / CPZ / LD / ST are the enforced memor
 ### CPZ (copy, zero-extended)
 - **Operation:** copy the source value into the destination register, **zero-extended** to
   the destination width. Never touches memory.
-- **Forms:** `$13` CPZ regVal reg; `$53` CPZ immVal reg. (The former address forms `$93` /
-  `$D3` were the removed LDZ and are reserved.)
+- **Forms:** `$13` CPZ regVal reg; `$53` CPZ immVal reg. (The address forms `$93` / `$D3`
+  are reserved; there is no zero-extending load.)
 - **Flags:** C/N/V/Z/P unaffected.
 - **Encoding:** as CP.
 - **Traps:** none.
@@ -477,8 +478,13 @@ any flag** (C/N/V/Z/P unaffected); the conditional branches *read* flags but wri
   1). JP (`$D8`) is defined and reads P; `$D9` stays reserved.
 
 ### CALL
-- **Operation:** push the return address (the address of the following instruction) onto the
-  stack (pre-decrementing RS), then jump to the target. Execution continues until a RET.
+- **Operation:** push the return address (the address of the following instruction, a full
+  64-bit value) onto the stack (pre-decrementing RS), then jump to the target. Execution
+  continues until a RET. Unlike JMP (which always reads the whole target register), CALL
+  **honors the operand subregister**: the register form reads the operand's selected
+  subregister and **zero-extends** it into the full-width PC, and the immediate form
+  zero-extends the immediate at its encoded width. The address forms dereference a full
+  64-bit target from memory.
 - **Forms:** `$1D` regVal, `$5D` immVal, `$9D` regAddr, `$DD` immAddr.
 - **Flags:** C/N/V/Z/P unaffected.
 - **Traps:** none.
@@ -527,29 +533,33 @@ control-register and segment writes.
 ### SYS (system call)
 - **Operation:** enter the kernel syscall dispatcher with the syscall index in the operand.
   A deliberate synchronous software trap; trap-class (captures the following-instruction PC,
-  so IRET resumes after SYS). The syscall number and arguments travel in registers per the
-  syscall ABI (Appendix C). Today the reference VM dispatches SYS directly to the
-  BIOS/syscall surface; routing it through the shared trap table at vector 7 is the future
-  path (Chapter 10). Privileged.
+  so IRET resumes after SYS). SYS is **not privileged**: it is the deliberate
+  user-to-supervisor entry, so user-mode code calls it to request kernel service. The
+  syscall number and arguments travel in registers per the syscall ABI (Appendix C). Today
+  the reference VM dispatches SYS directly to the BIOS/syscall surface; routing it through
+  the shared trap table at vector 7 is the future path (Chapter 10).
 - **Forms:** `$34` regVal (index in a register), `$74` immVal (immediate index). The index
   is a single byte (`operand.b0`).
 - **Flags:** the instruction itself sets no arithmetic/logic flag (a syscall's effects on RV
   and errno are the ABI's, not a flag effect). C/N/V/Z/P unaffected by the dispatch.
-- **Traps:** reserved as **cause 7** (SYS / syscall entry); privileged-operation fault
-  (cause 4) if executed in user mode once enforcement lands.
+- **Traps:** reserved as **cause 7** (SYS / syscall entry). Not a privileged instruction, so
+  it never raises the cause-4 privileged-operation fault.
 
 ### INT (software interrupt)
-- **Operation:** push FL and PC and raise a software interrupt at the given vector index.
-  Privileged. The dispatch is deferred until the vector-table format exists (co-authored
-  with the interrupt card); INT has no active dispatch case in v1.0.
+- **Operation:** raise a software interrupt at the given vector index, entering through the
+  shared trap frame (Chapter 10): the entry sequence pushes PC, then the full RF word, then
+  the cause and aux words. Privileged. The dispatch is deferred until the vector-table format
+  exists; INT has no active dispatch case in v1.0.
 - **Forms:** `$24` regVal (index in a register), `$64` immVal (immediate index).
 - **Flags:** C/N/V/Z/P unaffected.
 - **Traps:** privileged-operation fault (cause 4) in user mode once enforced.
 
 ### IRET (interrupt return)
-- **Operation:** pop FL and PC from the stack and continue at PC. The shared return path for
-  both traps and interrupts (there is no TRET). Restores the pre-interrupt RF, including the
-  interrupt-enable bit, so a normal handler return re-enables interrupts. Privileged.
+- **Operation:** the shared return path for both traps and interrupts (there is no TRET).
+  IRET pops the **full RF word** (`RF.w0`, including the privileged RF.H1 bits) and then PC,
+  the two low words of the shared aux/cause/RF/PC trap frame (the handler having already
+  removed aux and cause). Restoring the full RF, including the interrupt-enable bit,
+  re-enables interrupts on a normal handler return. Privileged.
 - **Forms:** `$67` (zero-operand; row 1 of base `$27`).
 - **Flags:** RF (and thus C/N/V/Z/P) is **restored** from the saved frame, not computed.
 - **Traps:** privileged-operation fault (cause 4) in user mode once enforced.

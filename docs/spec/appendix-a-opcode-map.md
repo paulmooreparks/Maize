@@ -40,8 +40,8 @@ slot; consult Chapter 7 or Chapter 8 for each instruction's full entry.
 | `$15` | FGETCSR / FSETCSR | FP reg | FGETCSR `$15`, FSETCSR `$55` (`$95`/`$D5` reserved) |
 | `$16` | JMP | jump | `$16` `$56` `$96` `$D6` |
 | `$17` | Jcc column 0 | branch | JZ `$17`, JB `$57`, JGE `$97`, JAE `$D7` |
-| `$18` | Jcc column 1 | branch | JNZ `$18`, JGT `$58`, JLE `$98`, JP `$D8` (`$D9` reserved) |
-| `$19` | Jcc column 2 | branch | JLT `$19`, JA `$59`, JBE `$99` |
+| `$18` | Jcc column 1 | branch | JNZ `$18`, JGT `$58`, JLE `$98`, JP `$D8` |
+| `$19` | Jcc column 2 | branch | JLT `$19`, JA `$59`, JBE `$99` (`$D9` reserved) |
 | `$1A` | FADD | FP ALU | `$1A` `$5A` `$9A` `$DA` |
 | `$1B` | FSUB | FP ALU | `$1B` `$5B` `$9B` `$DB` |
 | `$1C` | FMUL | FP ALU | `$1C` `$5C` `$9C` `$DC` |
@@ -60,15 +60,15 @@ slot; consult Chapter 7 or Chapter 8 for each instruction's full entry.
 | `$29` | SETINT / CLRINT / SETCRY / CLRCRY | zero-op | `$29` / `$69` / `$A9` / `$E9` |
 | `$2A` | FCMP | FP compare | `$2A` `$6A` `$AA` `$EA` |
 | `$2B` | SETcc column 0 | set | SETZ `$2B`, SETB `$6B`, SETGE `$AB`, SETAE `$EB` |
-| `$2C` | SETcc column 1 | set | SETNZ `$2C`, SETGT `$6C`, SETLE `$AC`, SETP `$EC` (`$ED` reserved) |
-| `$2D` | SETcc column 2 | set | SETLT `$2D`, SETA `$6D`, SETBE `$AD` |
+| `$2C` | SETcc column 1 | set | SETNZ `$2C`, SETGT `$6C`, SETLE `$AC`, SETP `$EC` |
+| `$2D` | SETcc column 2 | set | SETLT `$2D`, SETA `$6D`, SETBE `$AD` (`$ED` reserved) |
 | `$2E` | SAR | ALU | `$2E` `$6E` `$AE` `$EE` |
 | `$2F` | CMPIND | compare-ind | `$2F` regVal regAddr, `$6F` immVal regAddr |
 | `$30` | TSTIND | test-ind | `$30` regVal regAddr, `$70` immVal regAddr |
 | `$31` | INC / DEC / NOT / NEG | unary | INC `$31`, DEC `$71`, NOT `$B1`, NEG `$F1` |
 | `$32` | CLR / POP | unary | CLR `$32`, POP `$72` (`$B2`/`$F2` reserved) |
 | `$33` | FMIN / FMAX | FP min/max | FMIN `$33`, FMAX `$73` (`$B3`/`$F3` reserved) |
-| `$34` | SYS | syscall | `$34` regVal, `$74` immVal (privileged) |
+| `$34` | SYS | syscall | `$34` regVal, `$74` immVal (user-callable; trap cause 7) |
 | `$35` | UDIV | ALU | `$35` `$75` `$B5` `$F5` |
 | `$36` | UMOD | ALU | `$36` `$76` `$B6` `$F6` |
 | `$37` | reserved | - | SMP / memory-ordering primitives (reserved) |

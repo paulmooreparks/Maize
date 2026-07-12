@@ -26,8 +26,9 @@ are `toolchain/qbe-maize/CALLING-CONVENTION.md` (the C calling convention) and
 `SYS` executes a system call with the syscall index in its operand (`SYS $01` or `SYS Rn`).
 The index is a single byte (`operand.b0`), so the id space is `$00`..`$FF`. Syscall arguments
 follow the same register convention (R0, R1, R2, ...), and the result is placed in RV.
-`SYS` is privileged and is trap-class (Chapter 10 reserves it as cause 7); today the
-reference VM dispatches it directly to the BIOS / syscall surface.
+`SYS` is **not privileged**: it is the deliberate user-to-supervisor entry, user-callable
+and trap-class (Chapter 10 reserves it as cause 7). Today the reference VM dispatches it
+directly to the BIOS / syscall surface.
 
 An alternative `INT $80` path (syscall number in R9, raise the interrupt) is the planned
 OS-level surface and is not implemented yet; the implemented path is `SYS`.

@@ -42,8 +42,10 @@ At power-on / reset the machine comes up in a fully defined state:
 - **Paging off.** No MMU is armed; the machine runs in the flat 64-bit model. Paging-off is
   the permanent reset state and a first-class mode: every future MMU extension is disabled at
   reset, so a v1.0 image sees the v1.0 machine on any conforming VM (Chapter 12).
-- **Stack pointer at top of space.** RS (SP) = `$FFFF_FFFF_FFFF_FFF8`, the highest
-  8-byte-aligned address, the base of the process-start block.
+- **Stack pointer at the process-start block.** RS (SP) = the base of the process-start
+  block, so RS points at argc (Chapter 4 section 4.5). The block ends at
+  `$FFFF_FFFF_FFFF_FFF8`, the highest 8-byte-aligned address; that is the top of the block,
+  not RS. The stack grows downward from there.
 - **Entry point.** RP (PC) = the recorded entry point of a `.mzx` executable, or `$0` for a
   flat `.mzb` image.
 - **Registers zero.** RB (BP) = 0; R0..R9, RT, RV = 0.

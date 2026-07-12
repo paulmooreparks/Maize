@@ -129,10 +129,13 @@ P flag survives across integer work between an FCMP and its JP / SETP exactly as
 - **Unary** (`FSQRT` `$22`, `FNEG` `$62`, `FABS` `$A2`): register-only, `MNEMONIC src dst`
   computing `dst = f(src)`. FSQRT is correctly rounded; FNEG / FABS are exact sign-bit ops
   that raise no flags and do not round.
-- **Fused multiply-add** (`FMADD` `$23`, `FMSUB` `$25`): three registers, single-rounded
+- **Fused multiply-add** (`FMADD`, `FMSUB`): three operands, single-rounded
   `dst = a*b (+/-) c` where the third operand is both the addend `c` and the destination.
-  `FNMADD` = `FNEG(FMADD(...))` and `FNMSUB` = `FNEG(FMSUB(...))` are synthesized via the
-  exact FNEG (no dedicated opcode), so they remain single-rounded.
+  Like the wide-multiply family, operand 1 has all four addressing-mode source forms:
+  FMADD `$23` regVal, `$63` immVal, `$A3` regAddr, `$E3` immAddr; FMSUB `$25` regVal, `$65`
+  immVal, `$A5` regAddr, `$E5` immAddr (operands 2 and 3 are always registers). `FNMADD` =
+  `FNEG(FMADD(...))` and `FNMSUB` = `FNEG(FMSUB(...))` are synthesized via the exact FNEG (no
+  dedicated opcode), so they remain single-rounded.
 - **Min / max** (`FMIN` `$33`, `FMAX` `$73`): RISC-V semantics. A quiet-NaN operand returns
   the non-NaN operand; both-NaN returns the canonical qNaN; a signaling NaN raises NV;
   `-0 < +0`.
