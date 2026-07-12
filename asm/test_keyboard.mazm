@@ -1,0 +1,115 @@
+; **********************************************************************************
+; Headless regression test for the keyboard device (0x10 data / 0x11 status).
+;
+; The keyboard emits raw PC scancodes (Set-1 / XT). In headless mode each injected
+; stdin byte IS a scancode: the device latches it at 0x10, sets 0x11 bit0, and raises
+; IRQ 34; reading 0x10 clears key-available. scripts/run-tests.sh pipes a known four-byte
+; scancode sequence (make codes for A, B, C, D = $1E $30 $2E $20) and runs maize with
+; --input=keyboard so the keyboard is the sole stdin consumer.
+;
+; The guest installs an IRQ-34 handler at entry[34] ($1000 + 34*8 = $1110), unmasks
+; interrupts, and spins until four scancodes have been serviced. Each handler invocation
+; reads one scancode and appends it to a buffer. When four are collected the guest checks
+; the buffer equals the injected sequence (little-endian $202E301E) and prints
+; "keyboard: PASS".
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- install the keyboard handler at entry[34] ($1110) ----
+    CLR R0
+    CP kbd_handler R0.H0
+    CLR R1
+    CP $1110 R1
+    ST R0 @R1              ; entry[34] = kbd_handler (full 64-bit address)
+
+    ; ---- zero the serviced-scancode counter ----
+    CLR R0
+    CLR R1
+    CP kbd_count R1.H0
+    ST R0 @R1
+
+    SETINT                ; unmask interrupts
+
+wait_loop:
+    CLR R1
+    CP kbd_count R1.H0
+    CLR R2
+    LD @R1 R2             ; R2 = serviced-scancode count
+    CMP $04 R2            ; want four scancodes
+    JGE check
+    JMP wait_loop         ; spin; each instruction ticks the keyboard injector
+
+check:
+    CLRINT
+    ; ---- compare the collected four bytes to the injected sequence ----
+    CLR R1
+    CP kbd_buf R1.H0
+    CLR R3
+    LD @R1 R3.H0          ; R3.H0 = buf[0..3] as a little-endian word
+    CP $202E301E R4.H0    ; $1E,$30,$2E,$20 packed little-endian
+    CMP R3.H0 R4.H0
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1
+    CP $0F R2             ; 15 bytes
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $0F R2             ; 15 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+; Keyboard interrupt handler. On entry SP points at aux (the four-word frame is, from SP
+; upward: aux, cause, RF, PC). Discard the two trap-only words, read the scancode from
+; 0x10 (which clears key-available), append it to kbd_buf, bump kbd_count, and IRET.
+kbd_handler:
+    ADD $10 SP            ; discard aux + cause (2 words); SP now at the saved RF
+    PUSH R6
+    PUSH R7
+    PUSH R8
+    PUSH R9
+
+    IN $10 R7.B0          ; read the scancode (clears key-available)
+
+    CLR R8
+    CP kbd_count R8.H0
+    LD @R8 R9             ; R9 = current count
+
+    CLR R6
+    CP kbd_buf R6.H0
+    ADD R9 R6             ; R6 = kbd_buf + count
+    ST R7.B0 @R6          ; buf[count] = scancode (1 byte)
+
+    INC R9
+    ST R9 @R8             ; ++count
+
+    POP R9
+    POP R8
+    POP R7
+    POP R6
+    IRET                 ; pop RF (re-enables interrupts), pop PC (resume the spin)
+
+; **********************************************************************************
+kbd_count:
+    DATA $00 $00 $00 $00 $00 $00 $00 $00   ; 8-byte serviced-scancode counter
+
+kbd_buf:
+    DATA $00 $00 $00 $00 $00 $00 $00 $00   ; collected scancodes
+
+pass_string:
+    STRING "keyboard: PASS\n\0"
+
+fail_string:
+    STRING "keyboard: FAIL\n\0"

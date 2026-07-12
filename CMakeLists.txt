@@ -14,7 +14,9 @@ set(MAIZE_HOSTFS_SOURCES
   "src/hostfs/hostfs_posix.c"
   "src/hostfs/hostfs_win32.c")
 
-add_executable(maize "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" ${MAIZE_HOSTFS_SOURCES})
+# src/devices.cpp carries the host-backed standard device models (console, keyboard, the
+# memory-backed framebuffer). It is linked into `maize` only; mazm never attaches devices.
+add_executable(maize "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" ${MAIZE_HOSTFS_SOURCES})
 add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp" ${MAIZE_HOSTFS_SOURCES})
 add_executable(mzld "src/mzld.cpp")
 add_executable(mzdis "src/mzdis.cpp")
@@ -46,4 +48,17 @@ if (MAIZE_SANITIZE)
     target_compile_options(${_t} PRIVATE ${_maize_san_flags})
     target_link_options(${_t}    PRIVATE -fsanitize=address,undefined)
   endforeach()
+endif()
+
+# Opt-in SDL2 window backend for the framebuffer + keyboard (device set). OFF by default:
+# the default build, linux-debug, the Windows presets, and MAIZE_SANITIZE all configure,
+# build, and link with NO new mandatory external dependency and run headless. SDL2 is
+# found and linked ONLY when MAIZE_DISPLAY=ON, and only src/devices.cpp's guarded window
+# backend references it; the headless device model has zero SDL dependency.
+option(MAIZE_DISPLAY "Build the opt-in SDL2 host window backend (framebuffer + keyboard)" OFF)
+
+if (MAIZE_DISPLAY)
+  find_package(SDL2 REQUIRED)
+  target_compile_definitions(maize PRIVATE MAIZE_DISPLAY)
+  target_link_libraries(maize PRIVATE SDL2::SDL2)
 endif()

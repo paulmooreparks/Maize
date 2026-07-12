@@ -364,10 +364,34 @@ namespace maize {
 			reg& flag_reg;
 		};
 
+		/* Device base. A device is the shipped (address, data) register pair PLUS two
+		   behavioral hooks. The base hooks are the passive-register passthrough shipped
+		   before: on_port_write copies the CPU-side value into the backing reg's w0, and
+		   on_port_read returns that w0. A plain `device` (the loopback scratch port, the
+		   timer's three registers, the reserved block ports) therefore keeps identical
+		   behavior. A host-backed device (console, keyboard, framebuffer) overrides the two
+		   hooks to act at the moment of the port access. Adding virtuals gives `device` a
+		   vtable, an internal layout change with no ISA or binary-format impact (the reg
+		   data members are still accessed the same way). */
 		class device : public reg {
 		public:
 			device() = default;
+			virtual ~device() = default;
 			reg address_reg;
+
+			virtual void      on_port_write(reg_value const& value, subreg_enum value_subreg);
+			virtual reg_value on_port_read(subreg_enum dst_subreg);
+		};
+
+		/* An instruction-boundary input source. At most one is active per run (the single
+		   stdin consumer): the run loop calls on_input_tick() once per executed instruction,
+		   mirroring the timer's on_instruction_tick, so a host input device pulls its bytes
+		   and raises its IRQ on the CPU thread and never races the CPU thread's unsynchronized
+		   RF accesses. */
+		class input_device {
+		public:
+			virtual ~input_device() = default;
+			virtual void on_input_tick() = 0;
 		};
 
 		/* Timer device (card maize-21): the first interrupt source and the end-to-end
@@ -489,6 +513,37 @@ namespace maize {
 		const u_qword timer_port_control		{0x0041};
 		const u_qword timer_port_status			{0x0042};
 		const u_byte  timer_irq_vector			{32};
+
+		/* Concrete standard-device pinout (ratified). All standard devices sit in a
+		   reserved low-port block below 0x80 so a natural 8-bit immediate port operand
+		   reaches them without the frozen .q0 truncation + immediate sign-extension gotcha.
+		   IRQ vectors are external-interrupt vectors (32..255). Block ports are reserved on
+		   this card (no backend). The framebuffer is memory-backed: pixels live in ordinary
+		   guest RAM and are presented through the base-address + present control ports, not
+		   a per-pixel data port. */
+		const u_qword console_port_data			{0x0000};   // R: input byte   W: output byte
+		const u_qword console_port_status		{0x0001};   // R: bit0 input-available, bit1 output-ready
+		const u_byte  console_irq_vector		{33};
+
+		const u_qword loopback_test_port		{0x000F};   // R/W passive scratch (relocated from port 1)
+
+		const u_qword keyboard_port_data		{0x0010};   // R: scancode (read clears key-available)
+		const u_qword keyboard_port_status		{0x0011};   // R: bit0 key-available
+		const u_byte  keyboard_irq_vector		{34};
+
+		const u_qword block_port_lba			{0x0020};   // reserved: no backend this card
+		const u_qword block_port_data			{0x0021};
+		const u_qword block_port_control		{0x0022};
+		const u_byte  block_irq_vector			{35};
+
+		const u_qword fb_port_width				{0x0050};   // R: pixels (host config)
+		const u_qword fb_port_height			{0x0051};   // R: pixels (host config)
+		const u_qword fb_port_format			{0x0052};   // R: format id (1 = XRGB8888)
+		const u_qword fb_port_base				{0x0053};   // R/W: guest address of the pixel buffer
+		const u_qword fb_port_present			{0x0054};   // W: present a frame; R: bit0 last-present-valid
+		const u_qword fb_port_status			{0x0055};   // R: bit0 vsync-pending; W bit1 vsync-IRQ-enable / ack
+		const u_byte  fb_irq_vector				{36};
+		const u_hword fb_format_xrgb8888		{1};
 
 
 		namespace instr {
@@ -928,6 +983,16 @@ namespace maize {
 		void add_device(u_qword id, device& new_device);
 		void run();
 		void power_off();
+
+		/* Extract the zero-extended value of a named subregister from a port operand.
+		   Host-backed device hooks call this to read the guest's written value as a plain
+		   u_word (the CPU-side operand, per the shipped .q0 / sub-register selection). */
+		u_word port_value_bits(reg_value const& value, subreg_enum value_subreg);
+
+		/* Install the single active instruction-tick input source (the single stdin
+		   consumer). null means no host input device drives stdin: the SYS console path
+		   reads stdin on demand, the default. */
+		void set_active_input(input_device* src);
 
 		/* Interrupt controller seam (card maize-21). A device raises an IRQ by making a
 		   vector pending through raise_irq; the flat controller coalesces multiple raises

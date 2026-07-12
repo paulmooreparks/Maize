@@ -255,6 +255,7 @@ run_test "test_outr_in"      "test_outr_in.mazm"      "outr/in: PASS"           
 run_test "test_unpop_port"   "test_unpop_port.mazm"   "unpop: PASS"                   0
 run_test "test_portio"       "test_portio.mazm"       "portio: PASS"                  0
 run_test "test_timer"        "test_timer.mazm"        "timer: PASS"                   0
+run_test "test_framebuffer"  "test_framebuffer.mazm"  "framebuffer: PASS"             0
 run_test "test_sysbrk"       "test_sysbrk.mazm"       "sysbrk: PASS"                  0
 run_test "test_syserrno"     "test_syserrno.mazm"     "syserrno: PASS"                0
 run_test "test_tstind"       "test_tstind.mazm"       "tstind: PASS"                  0
@@ -469,6 +470,42 @@ run_sysread_test() {
 }
 
 run_sysread_test
+
+# --- keyboard device: injected-scancode round trip (needs a known piped stdin) --------
+# The generic run_test gives no stdin, so this bespoke runner pipes a known four-byte
+# Set-1 scancode sequence (make codes for A, B, C, D) and runs maize with
+# --input=keyboard so the keyboard is the sole stdin consumer. The guest installs an
+# IRQ-34 handler, collects the four scancodes, verifies them, and prints "keyboard: PASS".
+run_keyboard_test() {
+    name="keyboard"
+    expected="keyboard: PASS"
+    TOTAL=$((TOTAL + 1))
+    src="test_keyboard.mazm"
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+    # Inject scancodes $1E $30 $2E $20 (octal 036 060 056 040).
+    if out=$(printf '\036\060\056\040' | "$MAIZE_EXE" --input=keyboard "$bin_path" 2>/dev/null); then
+        me=0
+    else
+        me=$?
+    fi
+    if [ "$me" -eq 0 ] && [ "$out" = "$expected" ]; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: \"${expected}\""
+        echo "        actual:   \"${out}\" (exit ${me})"
+    fi
+}
+
+run_keyboard_test
 
 # --- maize-12: multi-TU assemble -> link -> run --------------------------------------
 # Two separately-assembled objects (link_a defines _start and imports from link_b)

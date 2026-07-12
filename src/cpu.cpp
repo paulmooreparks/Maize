@@ -918,6 +918,12 @@ namespace maize {
             std::atomic<bool> irq_pending {false};
             u_byte irq_pending_vector = 0;
             timer_device* active_timer_ptr = nullptr;
+
+            /* The single active instruction-tick input source (device-plugin API). null
+               unless a host input device is selected as the sole stdin consumer; the run
+               loop calls its on_input_tick() once per executed instruction so it pulls its
+               bytes and raises its IRQ on the CPU thread. */
+            input_device* active_input_ptr = nullptr;
         }
 
         bus address_bus;
@@ -930,6 +936,29 @@ namespace maize {
 
         void add_device(u_qword id, device& new_device) {
             devices[id] = &new_device;
+        }
+
+        /* Device base hooks (device-plugin API). The defaults reproduce the shipped
+           passive-register passthrough exactly: on_port_write does the sign-extending copy
+           of the CPU-side value into the backing reg's w0, and on_port_read returns that
+           w0. A plain `device` (loopback, the timer's three registers, the reserved block
+           ports) therefore behaves identically to before this seam existed; a host-backed
+           device overrides these to act at the port access. */
+        void device::on_port_write(reg_value const& value, subreg_enum value_subreg) {
+            copy_regval_reg(value, value_subreg, *this, subreg_enum::w0);
+        }
+
+        reg_value device::on_port_read(subreg_enum /*dst_subreg*/) {
+            reg_value out;
+            out.w0 = this->w0;
+            return out;
+        }
+
+        /* Zero-extended value of a named subregister from a port operand. Exposed so a
+           host-backed device hook can read the guest's written value as a plain u_word
+           without reaching into cpu.cpp's private subreg helpers. */
+        u_word port_value_bits(reg_value const& value, subreg_enum value_subreg) {
+            return read_subreg_bits(value, value_subreg);
         }
 
         /* Single shared port-table lookup (card maize-21). Every IN / OUT / OUTR
@@ -952,7 +981,7 @@ namespace maize {
             if (pdev == nullptr) {
                 return;
             }
-            copy_regval_reg(value, value_subreg, *pdev, subreg_enum::w0);
+            pdev->on_port_write(value, value_subreg);
         }
 
         /* IN data transfer (card maize-21). Reads the selected device's data register
@@ -964,7 +993,8 @@ namespace maize {
                 clr_reg(dst, dst_subreg);
                 return;
             }
-            copy_regval_reg(*pdev, subreg_enum::w0, dst, dst_subreg);
+            reg_value v = pdev->on_port_read(dst_subreg);
+            copy_regval_reg(v, subreg_enum::w0, dst, dst_subreg);
         }
 
         /* Deterministic no-handler halt for a vectored interrupt (card maize-21). An
@@ -1059,6 +1089,10 @@ namespace maize {
 
         void set_active_timer(timer_device* timer) {
             active_timer_ptr = timer;
+        }
+
+        void set_active_input(input_device* src) {
+            active_input_ptr = src;
         }
 
         /* A device raises an IRQ by making a vector pending (card maize-21). The flat
@@ -3012,6 +3046,15 @@ namespace maize {
                    are unaffected. */
                 if (active_timer_ptr != nullptr) {
                     active_timer_ptr->on_instruction_tick();
+                }
+
+                /* Advance the single active host input source once per executed
+                   instruction (device-plugin API). It pulls a byte from its host source
+                   and raises its IRQ on the CPU thread when it has room, so a headless
+                   keyboard/console injects deterministically with no cross-thread RF race.
+                   null (the default) is a cheap early skip. */
+                if (active_input_ptr != nullptr) {
+                    active_input_ptr->on_input_tick();
                 }
 
                 /* Decode next instruction */

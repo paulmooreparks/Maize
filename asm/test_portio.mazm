@@ -6,18 +6,18 @@
 ; temporary but then wrote the raw source register to the device, so the load was dead
 ; and the wrong value was transferred. The sibling address forms ($D4 / $9E / $DE)
 ; already wrote the loaded value; this fixture regression-guards the $94 fix by
-; round-tripping a value through the loopback device (port 1) with the $94 form and
+; round-tripping a value through the loopback device (port 0x0F) with the $94 form and
 ; asserting the LOADED byte ($CD), not the address low byte ($00), landed.
 ;
 ; The assembler has no surface syntax for the OUT/OUTR/IN memory-address forms (the OUT
 ; compiler emits only the register-value and immediate-value forms), so the $94
 ; instruction is hand-encoded here as raw bytes:
 ;
-;   $94 $5E $00 $01  =  OUT @R5 $01
+;   $94 $5E $00 $0F  =  OUT @R5 $0F
 ;     $94  out_regAddr_imm
 ;     $5E  op1 = R5.w0  (the register holding the source address)
 ;     $00  op2 = 8-bit immediate port operand
-;     $01  the port literal (the loopback device)
+;     $0F  the port literal (the loopback device)
 ; **********************************************************************************
 
 $0000`0000:
@@ -32,12 +32,12 @@ $0000`0000:
     CLR R5
     CP $2000 R5
 
-    ; ---- $94: OUT the value AT the address in R5 to port 1 (hand-encoded) ----
-    DATA $94 $5E $00 $01   ; OUT @R5 $01: device <- mem[R5] ($CD), NOT R5 ($2000)
+    ; ---- $94: OUT the value AT the address in R5 to port 0x0F (hand-encoded) ----
+    DATA $94 $5E $00 $0F   ; OUT @R5 $0F: device <- mem[R5] ($CD), NOT R5 ($2000)
 
     ; ---- read the loopback device back and assert the LOADED value landed ----
     CLR R6
-    IN $01 R6.B0
+    IN $0F R6.B0
     CMP $CD R6.B0          ; the fix transfers $CD; the old bug transferred $00
     JNZ fail
 

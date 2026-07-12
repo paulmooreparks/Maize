@@ -9,9 +9,38 @@
 #include "maize.h"
 #include "maize_obj.h"
 #include "hostfs/hostfs_core.h"
+#include "devices.h"
 
 #include "maize.h"
 using namespace maize;
+
+/* Parse a `<width>x<height>` resolution spec (e.g. "320x200") into positive 16-bit
+   dimensions. Returns false on a malformed or zero/overflowing value so the caller can
+   fail closed with a diagnostic. */
+static bool parse_resolution(const std::string &spec, maize::u_hword &width, maize::u_hword &height) {
+	std::string::size_type x = spec.find_first_of("xX");
+	if (x == std::string::npos || x == 0 || x + 1 >= spec.size()) {
+		return false;
+	}
+	std::string w_str = spec.substr(0, x);
+	std::string h_str = spec.substr(x + 1);
+	for (char c : w_str) { if (!std::isdigit(static_cast<unsigned char>(c))) { return false; } }
+	for (char c : h_str) { if (!std::isdigit(static_cast<unsigned char>(c))) { return false; } }
+	unsigned long w = 0;
+	unsigned long h = 0;
+	try {
+		w = std::stoul(w_str);
+		h = std::stoul(h_str);
+	} catch (...) {
+		return false;
+	}
+	if (w == 0 || h == 0 || w > 0xFFFF || h > 0xFFFF) {
+		return false;
+	}
+	width = static_cast<maize::u_hword>(w);
+	height = static_cast<maize::u_hword>(h);
+	return true;
+}
 
 /* maize-12: load a linked .mzx executable. Walk the segment table, copy each
    segment's file bytes to its load address, zero-fill NOBITS/uninitialized
@@ -393,6 +422,10 @@ int main(int argc, char *argv[]) {
 	   the host's ambient environment is never inherited. */
 	std::vector<std::string> env_entries;
 	std::vector<mount_grant> grants;
+	bool display_requested = false;
+	maize::u_hword fb_width = 320;   // framebuffer host config (OQ: default 320x200)
+	maize::u_hword fb_height = 200;
+	std::string input_source;        // "" = SYS console (default); "keyboard" | "console"
 	int idx = 1;
 	while (idx < argc) {
 		std::string arg {argv[idx]};
@@ -492,6 +525,60 @@ int main(int argc, char *argv[]) {
 			++idx;
 			continue;
 		}
+		if (arg == "--display") {
+			/* Opt-in host window. Only honored when a display backend is compiled in
+			   (MAIZE_DISPLAY); otherwise the run stays headless with a note. */
+			display_requested = true;
+			++idx;
+			continue;
+		}
+		if (arg == "--resolution" || arg.rfind("--resolution=", 0) == 0) {
+			std::string spec;
+			if (arg.rfind("--resolution=", 0) == 0) {
+				spec = arg.substr(13);
+				++idx;
+			}
+			else {
+				if (idx + 1 >= argc) {
+					std::cerr << "maize: option '--resolution' requires a <width>x<height> argument"
+						<< std::endl;
+					print_usage(std::cerr);
+					return 2;
+				}
+				spec = argv[idx + 1];
+				idx += 2;
+			}
+			if (!parse_resolution(spec, fb_width, fb_height)) {
+				std::cerr << "maize: invalid --resolution '" << spec
+					<< "' (expected <width>x<height>, e.g. 320x200)" << std::endl;
+				return 2;
+			}
+			continue;
+		}
+		if (arg == "--input" || arg.rfind("--input=", 0) == 0) {
+			std::string src;
+			if (arg.rfind("--input=", 0) == 0) {
+				src = arg.substr(8);
+				++idx;
+			}
+			else {
+				if (idx + 1 >= argc) {
+					std::cerr << "maize: option '--input' requires a source argument "
+						<< "(sys | keyboard | console)" << std::endl;
+					print_usage(std::cerr);
+					return 2;
+				}
+				src = argv[idx + 1];
+				idx += 2;
+			}
+			if (src != "sys" && src != "keyboard" && src != "console") {
+				std::cerr << "maize: invalid --input '" << src
+					<< "' (expected sys | keyboard | console)" << std::endl;
+				return 2;
+			}
+			input_source = (src == "sys") ? std::string() : src;
+			continue;
+		}
 		if (!arg.empty() && arg[0] == '-') {
 			/* Unrecognized leading-'-' flag before <image>: usage error. */
 			std::cerr << "maize: unknown option '" << arg << "'" << std::endl;
@@ -576,12 +663,13 @@ int main(int argc, char *argv[]) {
 
 	build_process_start_block(guest_argv, env_entries);
 
-	/* card maize-10, Decision D6465: a single always-registered loopback test device,
-	   solely so OUT/OUTR/IN have a real port to exercise in regression tests. Bare
-	   `device` instance with no specialized behavior (src/maize_cpu.h class device).
-	   Port 1 is the fixed test port; asm/test_outr_in.mazm targets it directly. */
+	/* A single always-registered loopback test device, solely so OUT/OUTR/IN have a real
+	   port to exercise in regression tests. Bare `device` instance with no specialized
+	   behavior (src/maize_cpu.h class device). It sits at the documented scratch/test port
+	   0x0F (relocated from port 1, which is now the console status port); asm/test_outr_in
+	   and asm/test_portio target it directly. */
 	cpu::device loopback_test_device;
-	cpu::add_device(1, loopback_test_device);
+	cpu::add_device(cpu::loopback_test_port, loopback_test_device);
 
 	/* card maize-21: the system timer, the first interrupt source and the end-to-end
 	   proof of the interrupt mechanism. Its three registers attach as separate ports in
@@ -597,12 +685,63 @@ int main(int argc, char *argv[]) {
 	cpu::add_device(cpu::timer_port_status, system_timer.status_reg);
 	cpu::set_active_timer(&system_timer);
 
+	/* Standard host-backed device set (device-plugin API). These are compile-time,
+	   statically-linked device models attached at their ratified low-block ports. The
+	   console and framebuffer are always present; the framebuffer is memory-backed (pixels
+	   live in guest RAM, presented through the control ports). The three block-device ports
+	   (0x20-0x22, IRQ 35) are reserved with no backend on this milestone: they are attached
+	   as plain passthrough devices so a reachable-but-unbacked access is a defined
+	   read-back-last-written outcome rather than a surprise. */
+	devices::console_device console;
+	console.attach();
+
+	devices::keyboard_device keyboard;
+	keyboard.attach();
+
+	devices::framebuffer_device framebuffer(fb_width, fb_height);
+	framebuffer.attach();
+
+	cpu::device block_lba;
+	cpu::device block_data;
+	cpu::device block_control;
+	cpu::add_device(cpu::block_port_lba, block_lba);
+	cpu::add_device(cpu::block_port_data, block_data);
+	cpu::add_device(cpu::block_port_control, block_control);
+
+	/* Single active stdin consumer (OQ): exactly one host input device drives stdin per
+	   run so the SYS console, the console port device, and the keyboard never race the same
+	   fd. Default (empty): no injector runs and the SYS console path reads stdin on demand.
+	   A windowed run always sources keyboard events from the window, not stdin. */
+	if (input_source == "keyboard") {
+		cpu::set_active_input(&keyboard);
+	}
+	else if (input_source == "console") {
+		cpu::set_active_input(&console);
+	}
+
 	/* card maize-114: install the mount table built and validated above (before the
 	   guest runs). mazm never calls this, so its hostfs paths stay inert. */
 	sys::set_hostfs_table(&hostfs_tab);
 
 	sys::init();
-	cpu::run();
+
+	/* Headless by default (no window, no display dependency). A window is created only
+	   when --display is passed AND a display backend is compiled in (MAIZE_DISPLAY);
+	   otherwise the run stays headless with a one-line note. In windowed mode the guest
+	   runs on a background thread while the SDL2 event loop presents frames and feeds the
+	   keyboard. */
+	if (display_requested) {
+#ifdef MAIZE_DISPLAY
+		devices::display::run(framebuffer, keyboard);
+#else
+		std::cerr << "maize: --display requested but no display backend was compiled in "
+			<< "(build with -DMAIZE_DISPLAY=ON); running headless" << std::endl;
+		cpu::run();
+#endif
+	}
+	else {
+		cpu::run();
+	}
 #ifdef __linux__
 	std::cout << std::endl;
 #endif

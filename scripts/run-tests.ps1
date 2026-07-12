@@ -81,6 +81,7 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_unpop_port';     File = 'test_unpop_port.mazm';     Expected = 'unpop: PASS';                   Golden = $false }
     [pscustomobject]@{ Name = 'test_portio';         File = 'test_portio.mazm';         Expected = 'portio: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_timer';          File = 'test_timer.mazm';          Expected = 'timer: PASS';                   Golden = $false }
+    [pscustomobject]@{ Name = 'test_framebuffer';    File = 'test_framebuffer.mazm';    Expected = 'framebuffer: PASS';             Golden = $false }
     [pscustomobject]@{ Name = 'test_sysbrk';        File = 'test_sysbrk.mazm';        Expected = 'sysbrk: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_syserrno';      File = 'test_syserrno.mazm';      Expected = 'syserrno: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_tstind';        File = 'test_tstind.mazm';        Expected = 'tstind: PASS';                  Golden = $false }
@@ -443,11 +444,54 @@ function Invoke-TimerPeriod1Test {
     return [pscustomobject]@{ Name = $name; Pass = (($me -eq 0) -and ($actual -eq $expected)); Expected = $expected; Actual = $actual }
 }
 
+# --- keyboard device: injected-scancode round trip (needs a known piped stdin) --------
+# Invoke-Test gives no stdin, so this bespoke runner pipes a known four-byte Set-1
+# scancode sequence (make codes for A, B, C, D) and runs maize with --input=keyboard so
+# the keyboard is the sole stdin consumer. The guest installs an IRQ-34 handler, collects
+# the four scancodes, verifies them, and prints "keyboard: PASS". Same raw Process API +
+# byte-stream stdin idiom as Invoke-SysreadTest.
+function Invoke-KeyboardTest {
+    $name = 'keyboard'
+    $expected = 'keyboard: PASS'
+    $srcPath = Join-Path $AsmDir 'test_keyboard.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_keyboard.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'mazm failed to assemble' }
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $MaizeExe
+    $psi.Arguments = "--input=keyboard `"$binPath`""
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    # Inject scancodes 0x1E 0x30 0x2E 0x20 (make codes for A, B, C, D).
+    $bytes = [byte[]](0x1E, 0x30, 0x2E, 0x20)
+    $stdin = $proc.StandardInput.BaseStream
+    $stdin.Write($bytes, 0, $bytes.Length)
+    $stdin.Close()
+    $stdout = $proc.StandardOutput.ReadToEnd()
+    $null = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    $me = $proc.ExitCode
+
+    $actual = Trim-TrailingNewlines $stdout
+    $pass = ($me -eq 0) -and ($actual -eq $expected)
+    return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = $expected; Actual = $actual }
+}
+
 $results += Invoke-UndefMultirefTest
 $results += Invoke-TrapTest 'brk_trap'        'test_brk.mazm'        'breakpoint'
 $results += Invoke-TrapTest 'priv_fault_trap' 'test_priv_fault.mazm' 'privileg'
 $results += Invoke-TimerPeriod1Test
 $results += Invoke-SysreadTest
+$results += Invoke-KeyboardTest
 
 # --- maize-12: multi-TU assemble -> link -> run -----------------------------------
 # Assemble two objects with `mazm -c`, link them with mzld into one .mzx, and run

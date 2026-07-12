@@ -1,6 +1,6 @@
 ; **********************************************************************************
 ; Regression test for card maize-10: OUTR / IN dispatch against the loopback test
-; device (Decision D6465, registered at port 1 in src/maize.cpp).
+; device (Decision D6465, registered at port 0x0F in src/maize.cpp).
 ;
 ; Exercises both operand-source paths into the same devices[] entry:
 ;   - register-specified port: OUTR writes through a register holding the port id,
@@ -15,22 +15,22 @@ $0000`0000:
     CLR R0
     CP $AB R0.B0             ; value to output
     CLR R1
-    CP $01 R1.B0             ; R1 = loopback test port id
+    CP $0F R1.B0             ; R1 = loopback test port id
 
-    OUTR R0.B0 R1            ; devices[1] = $AB
+    OUTR R0.B0 R1            ; devices[0x0F] = $AB
 
     CLR R2
-    IN R1 R2.B0               ; R2.B0 = devices[1], port id read from R1
+    IN R1 R2.B0               ; R2.B0 = devices[0x0F], port id read from R1
     CMP $AB R2.B0
     JNZ fail
 
     ; ---- immediate-port path: OUT then IN with the port id as a literal ----
     CLR R3
     CP $CD R3.B0
-    OUT R3.B0 $01              ; devices[1] = $CD
+    OUT R3.B0 $0F              ; devices[0x0F] = $CD
 
     CLR R4
-    IN $01 R4.B0                ; R4.B0 = devices[1], port id as a literal
+    IN $0F R4.B0                ; R4.B0 = devices[0x0F], port id as a literal
     CMP $CD R4.B0
     JNZ fail
 
