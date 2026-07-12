@@ -1,4 +1,4 @@
-# Self-hosted framebuffer terminal (maize-121)
+# Self-hosted framebuffer terminal
 
 A guest program that turns Maize into a visible text terminal: an 8x8-font 40x25
 character grid blitted into the memory-backed framebuffer, a minimal ANSI/VT escape
@@ -6,7 +6,7 @@ subset, and shift-aware Set-1 keyboard input echoed to the screen (a typewriter 
 It is written in guest C and compiled through the `cc-maize.sh` pipeline; the only
 non-C piece is the small device-access asm shim `toolchain/rt/mzdev.{mazm,h}`, which
 exports the `IN`/`OUT` port stubs C cannot emit. That shim is the shared guest-C device
-foundation DOOM (maize-85) reuses.
+foundation a future DOOM port reuses.
 
 ## Files
 
@@ -34,7 +34,8 @@ foundation DOOM (maize-85) reuses.
   releases clear it; Enter emits CR then LF; Backspace, Tab, Space handled; other break
   codes ignored.
 
-Out of scope (first cut): no fork/exec/pty/shell (oksh is maize-94), no scrollback, no
+Out of scope (first cut): no fork/exec/pty/shell (hosting a real shell like oksh is a later
+step), no scrollback, no
 alternate screen, no UTF-8, no full VT100, no mouse, no IRQ-driven input (polled).
 
 ## Headless self-check (the CI gate)
