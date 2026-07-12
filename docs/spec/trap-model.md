@@ -123,7 +123,7 @@ delivery mechanism and the syscall ABI are owned by maize-82 and maize-21. `SYS`
 deliberate synchronous software trap: unlike the fault causes, it is requested by the
 program, so it vectors through the shared trap table at index 7 into the kernel syscall
 dispatcher, uses the corrected capture layout below, and returns via the shared IRET
-(consistent with the ratified maize-84 model that SYS $34 is syscall entry with a
+(consistent with the ratified maize-82 model that SYS $34 is syscall entry with a
 saved-state contract and IRET return). Like every synchronous trap it is unmaskable. It
 is trap-class: it captures the address of the **following** instruction, so IRET resumes
 the program at the instruction after `SYS`. The syscall number and arguments travel in
@@ -302,7 +302,7 @@ card.
   stack bound, so neither fires yet.
 - **SYS / syscall entry (cause 7)**: reserved number, trap-vector delivery deferred.
   `SYS` ($34) today dispatches directly to the BIOS / syscall surface (src/sys.cpp); the
-  ratified maize-84 model routes it through the shared trap table with a saved-state
+  ratified maize-82 model routes it through the shared trap table with a saved-state
   contract and IRET return. This chapter reserves the vector and names `SYS` as its
   source; the syscall ABI and the trap-vector delivery are owned by maize-82 / maize-21.
 - **Interrupt delivery substrate**: present but inert. RF carries the interrupt-enable

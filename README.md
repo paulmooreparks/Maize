@@ -1901,7 +1901,7 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %0111`1100  $7C   SBB       immVal  reg     Subtract immediate value plus Carry (borrow) from destination register
     %0111`1101  $7D   MULW      immVal  reg reg Signed wide multiply: full product of operand 2 by immediate value; low half to operand 2, high half to operand 3
     %0111`1110  $7E   UMULW     immVal  reg reg Unsigned wide multiply: full product of operand 2 by immediate value; low half to operand 2, high half to operand 3
-    %0111`1111  $7F
+    %0111`1111  $7F                             reserved (full-byte-dispatch band $3F/$7F/$BF; escape-prefix carrier, see docs/spec/reservations.md; $FF is BRK)
     %1000`0000  $80
     %1000`0001  $81   LD        regAddr reg     Load value at address in source register into destination register
     %1000`0010  $82
@@ -1965,7 +1965,7 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %1011`1100  $BC   SBB       regAddr reg     Subtract value at address in source register plus Carry (borrow) from destination register
     %1011`1101  $BD   MULW      regAddr reg reg Signed wide multiply: full product of operand 2 by value at address in source register; low half to operand 2, high half to operand 3
     %1011`1110  $BE   UMULW     regAddr reg reg Unsigned wide multiply: full product of operand 2 by value at address in source register; low half to operand 2, high half to operand 3
-    %1011`1111  $BF
+    %1011`1111  $BF                             reserved (full-byte-dispatch band $3F/$7F/$BF; escape-prefix carrier, see docs/spec/reservations.md; $FF is BRK)
     %1100`0000  $C0
     %1100`0001  $C1   LD        immAddr reg     Load value at immediate address into destination register
     %1100`0010  $C2
