@@ -529,6 +529,12 @@ run_ctest "freelist"
 # edge became a plain slot MOVE of the local's contents instead of a LEA of its
 # address: a silent wrong answer. Overlay-only fix in qbe-maize/isel.c.
 run_ctest "addrlocalphi"
+# maize-136 spilled-operand regression: >11 simultaneously-live values force QBE to
+# spill to frame slots, and a loop rotating eight loop-carried values drives the
+# block-edge slot->slot Ocopy (the PUSH/POP register borrow). Pre-fix the emitter
+# die()d on any spilled operand; post-fix it emits the reload / spill-store / slot
+# copy paths. Overlay-only fix in qbe-maize/emit.c. Self-checks against 118.
+run_ctest "spill"
 # maize-74 syscall C binding: raw stub direct (AC 7290), wrapper success returns the
 # byte count (AC 7291), and error-range translation sets errno + returns -1 (AC 7292).
 run_ctest "syscall_raw"

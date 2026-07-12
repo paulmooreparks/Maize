@@ -112,6 +112,20 @@ regw(Ref r, int sz, E *e)
 	fprintf(e->f, "%s%s", rname(r.val), subsuf[sz]);
 }
 
+static void lea_negoff(E *e, uint64_t off, const char *reg);
+
+/* Byte offset below BP of frame slot s (a 4-byte unit index): the spill/local
+ * region sits just below the saved-register block (8*nsaved) and, for a variadic
+ * function, the register save area (vabase). Shared verbatim by emitaddrslot(),
+ * memaddrreg()'s slot case (reload / spill store), and emitcopy()'s slot cases
+ * so a given slot always resolves to the identical address regardless of which
+ * instruction form references it. */
+static uint64_t
+slotoff(E *e, int s)
+{
+	return e->vabase + 8 * (uint64_t)e->nsaved + 4 * ((uint64_t)e->fn->slot - s);
+}
+
 /* Resolve a memory-address operand to a register for `@reg` addressing, and
  * return that register's name. A register address is used directly. A label
  * (or other constant) address is first materialized into the RT scratch with a
@@ -136,6 +150,12 @@ memaddrreg(Ref r, E *e)
 		if (c->type != CAddr || c->bits.i != 0)
 			die("maize emit: unsupported memory address");
 		fprintf(e->f, "\tCP\t%s RT\n", maize_sym(str(c->label)));
+		return "RT";
+	case RSlot:
+		/* Spill reload (Oload) / spill store (Ostore) address a frame slot:
+		 * materialize its address in the RT scratch, then LD/ST @RT. RT is the
+		 * rglob scratch and never holds a live value, so it is free here. */
+		lea_negoff(e, slotoff(e, r.val), "RT");
 		return "RT";
 	default:
 		die("maize emit: unsupported memory address");
@@ -165,13 +185,94 @@ alu(const char *mnem, Ref src, int ssz, Ref dst, int dsz, E *e)
 	fputc('\n', e->f);
 }
 
+/* Ocopy lowering, including spilled (RSlot) src and/or dst. Because
+ * maize_memargs() returns 0, a slot never appears inline in any other operand,
+ * so a slot reaches emit only here and as a load/store address. A same-ref copy
+ * is a no-op. Otherwise the cases are:
+ *   reg / CBits / CAddr -> reg : plain CP (unchanged path).
+ *   slot               -> reg : LEA the slot into RT, then LD @RT into the reg.
+ *   reg / CBits        -> slot: LEA the dst slot into RT, then ST the value @RT.
+ *   CAddr (label)      -> slot: borrow R0 (PUSH/POP) to hold the whole-register
+ *                               label, then ST it @RT (mazm rejects a bare label
+ *                               as a store immediate; decision 6415).
+ *   slot               -> slot: borrow R0 (PUSH/POP) as the value register while
+ *                               RT carries the address; LD src @RT, then ST @RT.
+ * The mem-to-mem and label->slot cases need a value register and an address
+ * register at once, which the single RT scratch cannot supply, so one
+ * allocatable register (R0) is borrowed across the move. The borrow is correct
+ * irrespective of R0's liveness: it is saved and restored, and PUSH/POP move SP,
+ * never BP, so every BP-relative slot offset is invariant across the borrow. */
 static void
 emitcopy(Ins *i, E *e)
 {
-	if (req(i->to, i->arg[0]))
+	Ref src, dst, rb;
+	Con *c;
+	int sz;
+
+	src = i->arg[0];
+	dst = i->to;
+	if (req(dst, src))
 		return;
-	assert(isreg(i->to));
-	cp(i->arg[0], i->to, clssz(i->cls), e);
+	sz = clssz(i->cls);
+	rb = TMP(R0);   /* borrowed value register for mem-to-mem / label->slot */
+
+	if (rtype(dst) != RSlot) {
+		assert(isreg(dst));
+		if (rtype(src) == RSlot) {
+			lea_negoff(e, slotoff(e, src.val), "RT");
+			fputs("\tLD\t@RT ", e->f);
+			regw(dst, sz, e);
+			fputc('\n', e->f);
+		} else {
+			cp(src, dst, sz, e);
+		}
+		return;
+	}
+
+	/* Destination is a spill slot; address it in RT and store the value. */
+	switch (rtype(src)) {
+	case RTmp:
+		assert(isreg(src));
+		lea_negoff(e, slotoff(e, dst.val), "RT");
+		fputs("\tST\t", e->f);
+		opnd(src, sz, e);
+		fputs(" @RT\n", e->f);
+		break;
+	case RCon:
+		c = &e->fn->con[src.val];
+		if (c->type == CAddr) {
+			if (c->bits.i != 0)
+				die("maize emit: nonzero address offset is not supported");
+			fprintf(e->f, "\tPUSH\t%s\n", rname(R0));
+			cp(src, rb, sz, e);
+			lea_negoff(e, slotoff(e, dst.val), "RT");
+			fputs("\tST\t", e->f);
+			opnd(rb, sz, e);
+			fputs(" @RT\n", e->f);
+			fprintf(e->f, "\tPOP\t%s\n", rname(R0));
+			break;
+		}
+		/* CBits immediate stores directly (ST immVal regAddr). */
+		lea_negoff(e, slotoff(e, dst.val), "RT");
+		fputs("\tST\t", e->f);
+		opnd(src, sz, e);
+		fputs(" @RT\n", e->f);
+		break;
+	case RSlot:
+		fprintf(e->f, "\tPUSH\t%s\n", rname(R0));
+		lea_negoff(e, slotoff(e, src.val), "RT");
+		fputs("\tLD\t@RT ", e->f);
+		regw(rb, sz, e);
+		fputc('\n', e->f);
+		lea_negoff(e, slotoff(e, dst.val), "RT");
+		fputs("\tST\t", e->f);
+		opnd(rb, sz, e);
+		fputs(" @RT\n", e->f);
+		fprintf(e->f, "\tPOP\t%s\n", rname(R0));
+		break;
+	default:
+		die("maize emit: unsupported copy source");
+	}
 }
 
 /* XCHG ra rb: exchange two physical registers whole (maize $E0). rega's pmgen
@@ -383,13 +484,8 @@ lea_negoff(E *e, uint64_t off, const char *reg)
 static void
 emitaddrslot(Ins *i, E *e)
 {
-	int s;
-	uint64_t off;
-
 	assert(rtype(i->arg[0]) == RSlot);
-	s = i->arg[0].val;
-	off = e->vabase + 8 * (uint64_t)e->nsaved + 4 * ((uint64_t)e->fn->slot - s);
-	lea_negoff(e, off, rname(i->to.val));
+	lea_negoff(e, slotoff(e, i->arg[0].val), rname(i->to.val));
 }
 
 static void
