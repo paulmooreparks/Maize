@@ -849,6 +849,42 @@ Explicitly defined, non-trapping behaviors (defined outcomes, not gaps in the ta
   machine never traps on it. Only illegal FP *encodings / operands* trap (cause 0, above).
 
 
+## Forward compatibility and reserved space
+
+The v1.0 freeze holds encoding space and states contracts so that a paging MMU, atomics and
+threads, base-and-bounds segments, and eventually a nommu-Linux (uClinux) port can arrive as
+v1.x extensions without breaking any v1.0 binary. The full normative schedule lives in
+[docs/spec/reservations.md](docs/spec/reservations.md); this is the summary. Nothing here adds
+a v1.0 instruction, register, or semantic; every reserved encoding already decodes as
+`reserved`.
+
+- **Guarantee.** Every reserved extension is disabled at reset (paging off, no segment limit
+  armed, machine privileged in the flat model), and extensions come only from reserved space,
+  so a v1.0 binary uses no reserved encoding and nothing can collide with it.
+- **Free base slots.** After the maize-122 floating-point claim of twelve base slots, four
+  fully-free base slots remain: `$26`, `$28`, `$37`, `$38`. Each is earmarked to a v1.x
+  claimant class (see the opcode tables below): `$26` privileged control-register access, `$28`
+  paging / MMU control, `$37` SMP and memory-ordering primitives, `$38` versioning and
+  capability query.
+- **Escape prefix.** The full-byte-dispatch band `$3F` / `$7F` / `$BF` (`$FF` is BRK) is the
+  reserved carrier for a future escape prefix that opens a second 256-entry opcode plane;
+  v1.0 reserves the page but names no prefix byte and defines no second-plane content.
+- **Atomics.** v1.0 baseline is single-hart sequential consistency. `CMPXCHG` (`$11`) is the
+  frozen compare-and-swap: it sets the Zero flag to 1 and swaps on success, sets Zero to 0 and
+  returns the observed value on failure, and leaves C / N / V unchanged. SMP ordering
+  primitives (fences, acquire-release, LL-SC) are reserved at `$37`.
+- **Privilege and syscalls.** The RF.H1 privilege bit gates user versus supervisor mode; `SYS`
+  (`$34`) is syscall entry (trap cause 7) with the shared trap frame and `IRET` return; the
+  bounds (cause 5), stack (cause 6), and a future page-fault trap class are reserved.
+- **Thread pointer.** The 4-bit operand register field is full (16 of 16), so v1.0 pins **R9**
+  as the thread pointer by C-ABI convention (callee-saved, never an argument, the highest
+  general register) and reserves a future system-register path behind the control-register
+  mechanism.
+- **Control-register mechanism.** The privileged move-to / move-from control-register mechanism
+  (`$26`) and its register-numbering space are reserved as the shared door for segment,
+  paging, and thread-pointer state that cannot fit the operand field.
+
+
 ## Opcode Bytes
 
 Opcodes are defined in an 8-bit byte separated into two flag bits and six opcode bits.
@@ -1061,14 +1097,14 @@ bit 7 is interpreted as follows:
     %0010`0100  $24   INT       regVal          Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
     %0110`0100  $64   INT       immVal          Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
 
-    %0010`0110  $26                             reserved
+    %0010`0110  $26                             reserved (v1.x privileged control-register access; see docs/spec/reservations.md)
 
     %0010`0111  $27   RET                       Pop the return address from the stack and continue execution at that address. Used to return from CALL.
     %0110`0111  $67   IRET                      Pop FL and PC from the stack and continue execution at the address in PC. Used to return from interrupt (privileged).
     %1010`0111  $A7   NOP                       No operation. Used as an instruction placeholder.
     %1110`0111  $E7                             reserved
 
-    %0010`1000  $28                             reserved
+    %0010`1000  $28                             reserved (v1.x paging / MMU control; see docs/spec/reservations.md)
 
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
     %0110`1001  $69   CLRINT                    Clear the Interrupt flag, thereby disabling hardware interrupts (privileged)
@@ -1105,9 +1141,9 @@ bit 7 is interpreted as follows:
     %1011`0110  $B6   UMOD      regAddr reg     Unsigned remainder of destination register divided by value at address in source register
     %1111`0110  $F6   UMOD      immAddr reg     Unsigned remainder of destination register divided by value at immediate address
 
-    %0011`0111  $37                             reserved
+    %0011`0111  $37                             reserved (v1.x SMP / memory-ordering primitives; see docs/spec/reservations.md)
 
-    %0011`1000  $38                             reserved
+    %0011`1000  $38                             reserved (v1.x versioning / capability query; see docs/spec/reservations.md)
 
     %0011`1001  $39   FCVTFF    reg     reg     FP convert float to float between binary32 and binary64 (widths from the two subregisters); rounds per FRM (row 0)
     %0111`1001  $79   FCVTFS    reg     reg     FP convert float to signed integer (saturating; NaN/overflow -> NV); rounds per FRM (row 1)
@@ -1743,9 +1779,9 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %0010`0011  $23   FMADD     regVal  reg reg FP fused multiply-add (single-rounded): operand-3 = operand-1 * operand-2 + operand-3
     %0010`0100  $24   INT       regVal          Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
     %0010`0101  $25   FMSUB     regVal  reg reg FP fused multiply-subtract (single-rounded): operand-3 = operand-1 * operand-2 - operand-3
-    %0010`0110  $26                             reserved
+    %0010`0110  $26                             reserved (v1.x privileged control-register access)
     %0010`0111  $27   RET                       Pop the return address from the stack and continue execution at that address. Used to return from CALL.
-    %0010`1000  $28                             reserved
+    %0010`1000  $28                             reserved (v1.x paging / MMU control)
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
     %0010`1010  $2A   FCMP      regVal  reg     FP quiet compare: set integer flags C/Z/P comparing destination against source (unordered -> C=Z=P=1)
     %0010`1011  $2B   SETZ      regVal          Set destination register to 1 if Zero flag is set, else 0 (reads flags; flag-neutral)
@@ -1760,15 +1796,15 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %0011`0100  $34   SYS       regVal          Execute a system call using the system-call index stored in register (privileged)
     %0011`0101  $35   UDIV      regVal  reg     Unsigned-divide destination register by source register value
     %0011`0110  $36   UMOD      regVal  reg     Unsigned remainder of destination register divided by source register value
-    %0011`0111  $37                             reserved
-    %0011`1000  $38                             reserved
+    %0011`0111  $37                             reserved (v1.x SMP / memory-ordering primitives)
+    %0011`1000  $38                             reserved (v1.x versioning / capability query)
     %0011`1001  $39   FCVTFF    reg     reg     FP convert float to float between binary32 and binary64 (widths from subregisters)
     %0011`1010  $3A   FCVTSF    reg     reg     FP convert signed integer to float
     %0011`1011  $3B   ADC       regVal  reg     Add source register value plus Carry to destination register
     %0011`1100  $3C   SBB       regVal  reg     Subtract source register value plus Carry (borrow) from destination register
     %0011`1101  $3D   MULW      regVal  reg reg Signed wide multiply: full product of operand 2 by source register value; low half to operand 2, high half to operand 3
     %0011`1110  $3E   UMULW     regVal  reg reg Unsigned wide multiply: full product of operand 2 by source register value; low half to operand 2, high half to operand 3
-    %0011`1111  $3F
+    %0011`1111  $3F                             reserved (full-byte-dispatch band $3F/$7F/$BF; escape-prefix carrier, see docs/spec/reservations.md; $FF is BRK)
     %0100`0000  $40
     %0100`0001  $41   CP        immVal  reg     Copy immediate value into destination register with sign extension
     %0100`0010  $42   ST        immVal  regAddr Store immediate value at address in destination register
