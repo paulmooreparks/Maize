@@ -55,10 +55,21 @@ inherits from the Trap Model chapter:
 
 Devices are reached only through a dedicated **port space**, never through the memory
 address space. No device register is mapped into memory. A conformant VM MUST NOT expose
-any device state through `LD`, `ST`, or `CP` memory access, and MUST NOT allow a port
-access to read or write ordinary memory. Keeping the two spaces disjoint is what leaves the
-flat 64-bit memory model, and the future paging sketch in the Reserved Space chapter, free
-of device carve-outs: memory is uniformly sparse RAM, and devices are uniformly ports.
+any device state through `LD`, `ST`, or `CP` memory access: a port access reads or writes
+device state, not ordinary memory, and a memory access never touches a device register.
+Keeping the two spaces disjoint is what leaves the flat 64-bit memory model, and the future
+paging sketch in the Reserved Space chapter, free of device carve-outs: memory is uniformly
+sparse RAM, and devices are uniformly ports.
+
+This no-MMIO rule governs device *registers*, not a device's own use of guest memory as a
+bulk data buffer. A device MAY, on an explicit port command, perform a bounded transfer
+between the device and a region of ordinary guest RAM whose base address the guest
+registered through a port, DMA-style. This is distinct from MMIO: no device register is
+mapped into memory, the buffer is ordinary sparse RAM with no device side effects on a
+`LD` / `ST` / `CP` to it, and the transfer happens only when the guest writes the command
+port, never implicitly on a memory access. The memory-backed framebuffer's present command
+(Surface 3) is the first such transfer; the control plane stays in ports while the bulk data
+plane lives in RAM.
 
 In the reference VM the two spaces are structurally distinct: memory is the sparse
 allocate-on-touch block store, and the port space is a separate table (`std::map<u_qword,
@@ -296,12 +307,20 @@ The first interrupt source and the end-to-end proof of the interrupt mechanism.
 
 Display output.
 
-- **Register skeleton:** dimension and format registers (width, height, pixel format) and a
-  pixel-write path.
-- **Port access:** because there is **no MMIO**, pixel data reaches the framebuffer through
-  the port model, not a mapped memory region: either an (address_reg = pixel or scanline
-  offset, data = pixel value) window or a bulk data port. A program never writes pixels
-  through `ST`.
+- **Register skeleton:** dimension and format registers (width, height, pixel format), a
+  base-address register, and a present command register.
+- **Port access:** the framebuffer is **memory-backed**, not register-per-pixel. The pixel
+  buffer lives in a region of ordinary guest RAM: the program writes pixels with normal
+  `ST` / `CP` stores at full speed, with no per-pixel port traffic. The control plane is
+  ports. The program reads the host-configured width, height, and pixel format (read-only
+  per-run host configuration), writes the guest base address of its pixel buffer to the
+  base register, fills the buffer, and writes the present register to signal a completed
+  frame. On present the device reads the buffer, `[base, base + width * height *
+  bytes_per_pixel)`, from guest memory and displays it. This is **not** MMIO: the pixel
+  memory has no device side effects (a store there is an ordinary store), and the device
+  reads it only on the explicit present command (Surface 1's DMA carve-out). A present
+  with an unregistered or out-of-range base is a defined, non-trapping invalid present. The
+  buffer size is fixed by the host resolution, never guest-controlled.
 - **IRQ:** an optional vsync / frame IRQ (the framebuffer is required interrupt-capable, so
   the vsync path exists; a program that does not use it simply leaves it masked).
 
@@ -324,8 +343,63 @@ held for future device classes assigned by later spec work. Reserving the conven
 and defining only the five-device floor, is what lets the device set grow within v1.x
 without a binary-compatibility break: a v1.0 program that uses only the five mandatory
 devices is unaffected by any later device class, because those classes attach in reserved
-port ranges the program never touches. The concrete port-range assignment is settled with
-the device-plugin work alongside the full per-device register maps.
+port ranges the program never touches. The concrete port-range assignment and per-device
+register maps are given below.
+
+### Concrete pinout and per-device register maps (v1.0)
+
+The five mandatory devices occupy a reserved low-port block below `$0080`, so a natural
+8-bit immediate port operand reaches them without the immediate sign-extension that would
+push the low-16-bit port id (the `.q0` field) into the high range. Ports at or above
+`$0080` remain reachable only via a 16-bit immediate or a register-named port. The ratified
+pinout:
+
+    Port         Device / register           R / W meaning
+    ----         -------------------------   ------------------------------------------
+    $00          console data                R: next input byte    W: output byte
+    $01          console status              R: bit0 input-available, bit1 output-ready
+    $10          keyboard data               R: scancode (read clears key-available)
+    $11          keyboard status             R: bit0 key-available
+    $20 - $22    block device                reserved (no backend in this revision)
+    $40          timer period                W: reload value (instruction ticks)
+    $41          timer control               W: bit0 enable, bit1 periodic
+    $42          timer status / ack          R: bit0 tick-pending;  W: ack
+    $50          framebuffer width           R: pixels (host config)
+    $51          framebuffer height          R: pixels (host config)
+    $52          framebuffer format          R: format id (1 = XRGB8888)
+    $53          framebuffer base            R/W: guest address of the pixel buffer
+    $54          framebuffer present         W: present a frame;  R: bit0 last-present-valid
+    $55          framebuffer status          R: bit0 vsync-pending;  W: vsync-IRQ-enable / ack
+
+    IRQ vectors: timer 32, console input-available 33, keyboard key-available 34,
+                 block transfer-complete 35 (reserved), framebuffer vsync/refresh 36.
+
+**Console.** `OUT $00` emits a byte to the output stream; `IN $00` reads a byte from the
+input stream; `$01` reports output-ready and input-available; input-available raises IRQ
+33, and reading `$00` clears it.
+
+**Keyboard.** The scancode register carries raw PC hardware scancodes: the **Set-1 (XT)**
+code set. A key press delivers the key's make code; a key release delivers the same code
+with bit 7 set (`make | $80`), the break code. A key event latches a scancode at `$10`,
+sets `$11` bit0, and raises IRQ 34; reading `$10` consumes the scancode and clears
+key-available.
+
+**Block device.** Ports `$20`-`$22` and IRQ 35 are reserved as the block-device range; no
+storage backend, logical block size, or filesystem is defined in this revision. A
+reachable-but-unbacked access is a defined, non-trapping outcome.
+
+**Timer.** The period, control, and status/ack registers at `$40`-`$42` with IRQ 32, as
+already specified: a program programs the period, sets enable and periodic in the control
+register, and services and acknowledges ticks through the status/ack register.
+
+**Framebuffer.** Memory-backed (see Surface 3, device 4): `$50`/`$51`/`$52` are the
+read-only host-configured width, height, and pixel format (format id 1 is XRGB8888,
+`0x00RRGGBB`, 4 bytes per pixel). The program writes the guest base address of its pixel
+buffer to `$53`, writes the pixels into that buffer with ordinary stores, and writes `$54`
+to present a completed frame; on present the device reads `[base, base + width * height *
+4)` from guest memory. Reading `$54` returns whether the last present was valid (bit0). The
+resolution is host configuration for the run; the vsync/refresh IRQ (vector 36) exists at
+`$55` but generation is disabled by default.
 
 ## Explicitly out of scope
 
@@ -337,11 +411,12 @@ this frozen contract. Stating them here keeps the contract's boundary sharp.
   delivery against the four-word frame, and the timer as the first live source are
   realized; a prioritized per-line controller stays a downstream implementation detail
   that is not an ISA-visible promise.
-- **The device plugin API:** the host-side device-model API, port-range registration, the
-  shim / passthrough shape, native-code plugin loading, and the fuzzing and trust-boundary
-  discipline. The concrete port-number and IRQ-vector pinout for the standard devices is
-  settled here; the timer runs on a provisional low-port block and IRQ vector 32 until
-  then.
+- **The device plugin API:** native-code (dynamic-load) plugin loading and the associated
+  native-code trust boundary. The compile-time, statically-linked host device-model API
+  (the port-access hooks, port-range registration, and the shim / passthrough shape) and
+  the concrete port-number and IRQ-vector pinout are settled and published above; the timer
+  keeps its `$40`-`$42` / vector 32 assignment. Dynamic native-plugin loading stays out of
+  scope.
 - **The host-backed devices:** the real framebuffer, keyboard, timer, and block backends and
   the built-in native terminal. The instruction-tick timer is deterministic; a real
   host-time backend is part of this work.

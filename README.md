@@ -921,6 +921,56 @@ card against this frozen contract.
   interrupt-capable. A reserved device-class / port-range convention lets future optional
   devices attach without an ISA revision.
 
+### Standard device pinout
+
+The standard devices occupy a reserved low-port block below `$0080`, so a natural 8-bit
+immediate port operand reaches them without the immediate sign-extension that would push
+the low-16-bit port id into the high range. The ratified pinout:
+
+    Port         Device / register           R / W meaning
+    ----         -------------------------   ------------------------------------------
+    $00          console data                R: next input byte    W: output byte
+    $01          console status              R: bit0 input-available, bit1 output-ready
+    $0F          loopback (test scratch)     R/W passive round-trip register
+    $10          keyboard data               R: scancode (read clears key-available)
+    $11          keyboard status             R: bit0 key-available
+    $20 - $22    block device                reserved (no backend yet)
+    $40          timer period                W: reload value (instruction ticks)
+    $41          timer control               W: bit0 enable, bit1 periodic
+    $42          timer status / ack          R: bit0 tick-pending;  W: ack
+    $50          framebuffer width           R: pixels (host config)
+    $51          framebuffer height          R: pixels (host config)
+    $52          framebuffer format          R: format id (1 = XRGB8888)
+    $53          framebuffer base            R/W: guest address of the pixel buffer
+    $54          framebuffer present         W: present a frame;  R: bit0 last-present-valid
+    $55          framebuffer status          R: bit0 vsync-pending;  W: vsync-IRQ-enable / ack
+
+    IRQ vectors: timer 32, console input-available 33, keyboard key-available 34,
+                 block transfer-complete 35 (reserved), framebuffer vsync/refresh 36.
+
+- **Console.** `OUT $00` emits a byte to host stdout; `IN $00` reads a byte from host
+  stdin; `$01` reports output-ready and input-available; input-available raises IRQ 33. The
+  built-in SYS-based terminal is unaffected and remains the default I/O path.
+- **Keyboard.** Emits raw PC hardware scancodes: the Set-1 (XT) code set, with a make code
+  on press and the make code with bit 7 set (`make | $80`) as the break code on release. A
+  key event latches a scancode at `$10`, sets `$11` bit0, and raises IRQ 34; reading `$10`
+  clears key-available. In headless runs each injected stdin byte is taken as a scancode; a
+  windowed run maps host keys to Set-1 scancodes.
+- **Block device.** Ports `$20`-`$22` and IRQ 35 are reserved with no backend yet; the
+  storage backend, the fixed logical block size, and the filesystem land later.
+- **Framebuffer.** Memory-backed, not register-per-pixel: the pixel buffer lives in
+  ordinary guest RAM, written with normal `ST` / `CP` stores at full speed. This is **not**
+  MMIO, the pixel memory has no device side effects, the device only reads it on present.
+  The guest reads the host-configured geometry from `$50`/`$51`/`$52`, writes the guest
+  address of its pixel buffer to the base register `$53`, fills the buffer with stores, and
+  writes the present port `$54` to signal a completed frame; on present the device reads
+  `[base, base + width*height*4)` from guest memory and displays it. The resolution is
+  host-configurable with `--resolution WxH` (default 320x200); the format is XRGB8888
+  (`0x00RRGGBB`, id 1). A vsync/refresh IRQ (vector 36) exists but is disabled by default.
+- **Host window.** The framebuffer and keyboard drive a real host window only under the
+  opt-in `--display` flag of a build compiled with the SDL2 backend enabled; the default
+  build runs headless with no display dependency.
+
 
 ## Opcode Bytes
 
