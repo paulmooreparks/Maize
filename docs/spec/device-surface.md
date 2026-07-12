@@ -71,10 +71,10 @@ dispatch. There is no path from a memory address to a device or from a port to m
 
 The port space is a flat numeric namespace of **65,536 ports**, `$0000` through `$FFFF`,
 disjoint from memory addresses. A port id is a 16-bit value. This freezes the shipped
-convention: the port table is keyed by a 16-bit id, and every dispatch site takes the port
-id from the low 16 bits (the `.q0` field) of the port operand, regardless of the encoded
-operand width. An implementation MUST mask the port operand to 16 bits; the high 48 bits of
-a register-named port are ignored, not an error.
+convention: the port table's key type is a 64-bit word (`u_qword`), but every dispatch site
+truncates the port operand to its low 16 bits (the `.q0` field) regardless of the encoded
+operand width, so the effective port id is 16-bit. An implementation MUST mask the port
+operand to 16 bits; the high 48 bits of a register-named port are ignored, not an error.
 
 ### Instruction set
 
@@ -91,9 +91,13 @@ CPU side of the transfer.
 - **OUTR (`$1E`)** is OUT with the port named by a **register** operand rather than an
   immediate. Forms: `$1E` regVal, `$5E` immVal, `$9E` regAddr, `$DE` immAddr. The port id
   is the port register's `.q0`.
-- **IN (`$1F`)** transfers a value from the selected device to a register. The port may be
-  named by a register or an immediate. Forms: `$1F` regVal, `$5F` immVal, `$9F` regAddr,
-  `$DF` immAddr. The transfer direction is device-to-register, the mirror of OUT.
+- **IN (`$1F`)** transfers a value from the selected device into a register; the four forms
+  vary how the **port** is named, and the data destination is always a register. Forms:
+  `$1F` regVal (the port id is a register value), `$5F` immVal (the port id is an
+  immediate), `$9F` regAddr (the port id is fetched from memory at the address in a
+  register), `$DF` immAddr (the port id is fetched from memory at an immediate address). In
+  the two address forms the port id is the value read from memory, not the address itself.
+  The transfer direction is device-to-register, the mirror of OUT.
 
 In all twelve forms the port id is the low 16 bits (`.q0`) of the port operand. This
 12-form surface (four forms each of OUT, OUTR, and IN) is the frozen v1.0 port-I/O
@@ -120,6 +124,18 @@ that selects an internal offset or sub-function.
 A device is free to give a port read and a port write to the same port id different
 meanings (for example, reading a status register where writing sends a command); the
 per-device register model in Surface 3 states the read and write meaning of each port.
+
+**Shipped-versus-contract note (maize-21).** The transfer semantics above are what a
+conformant VM must implement; the reference VM's `$94` OUT form (out_regAddr_imm, "value at
+the address in the source register") does not yet match them. That form loads the value
+from the source address into a temporary but then writes the raw source register to the
+device instead of the loaded value, so the memory load is dead and the wrong value is
+transferred. The sibling address forms write the loaded value correctly (`$D4` OUT immAddr,
+and `$9E` / `$DE` OUTR regAddr / immAddr), so the defect is isolated to `$94`. Correcting
+`$94` to write the loaded value is a deferred code fix for the implementing card (maize-21);
+the conformance suite (maize-18) MUST test against the contract, not the current `$94`
+behavior, so the shipped defect is not canonized. See the binary-compatibility statement for
+the full list of deferred code fixes.
 
 ### Privilege
 
@@ -353,11 +369,21 @@ already-dispatched opcodes (`$14` / `$1E` / `$1F` for OUT / OUTR / IN), the ship
 flag bits (privilege, interrupt-enabled, interrupt-set, running), the shipped IRET / SETINT
 / CLRINT semantics, the shipped `device` (address_reg, data) shape, and the shared vector
 table the trap model defines. It is a specification of existing and reserved surface, not a
-compatibility break, and it requires no change to `src/`, `mazm`, or `mzdis`. The one code
-change this surface implies, applying the read-0 / write-discard unpopulated-port outcome at
-the twelve dispatch sites and gating IN / OUT / OUTR on the privilege bit, is behavior the
-reference VM does not yet exhibit and is delivered by the implementing card (maize-21)
-against this frozen contract, not on this card.
+compatibility break, and it requires no change to `src/`, `mazm`, or `mzdis` on this card.
+The code changes this surface implies are behavior the reference VM does not yet exhibit and
+are delivered by the implementing card (maize-21) against this frozen contract, not here.
+There are three, and none of them alters an encoding:
+
+1. Gating IN / OUT / OUTR on the RF privilege bit, so executing them in user mode raises the
+   cause-4 privileged-operation fault.
+2. Applying the read-0 / write-discard unpopulated-port outcome at all twelve dispatch
+   sites, closing the `devices[id]` value-initialize-null-then-dereference crash.
+3. Correcting the `$94` OUT form (out_regAddr_imm) so it writes the value loaded from the
+   source address rather than the raw source register, matching the transfer semantics and
+   its sibling address forms.
+
+Because all three are contract-conforming fixes to behavior a v1.0 binary cannot yet rely
+on, none is a compatibility break.
 
 Any change that would alter an encoding, for example a different port-space width, would be
 a binary-compatibility break and would have to be flagged as such when the decision lands.
