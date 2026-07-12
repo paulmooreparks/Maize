@@ -1,0 +1,25 @@
+# mdBook configuration for the Maize ISA specification site.
+#
+# Build with `mdbook build` (output to ./book/), preview with `mdbook serve`.
+# CI publishes to GitHub Pages on every push to master via
+# .github/workflows/docs.yml.
+#
+# src points directly at docs/spec: the chapters there are already authored
+# as book chapters, so the published book IS the spec, with zero drift.
+
+[book]
+title = "Maize: The v1.0 ISA Reference"
+description = "Normative instruction set architecture specification for the Maize virtual machine"
+authors = ["Paul Parks"]
+language = "en"
+multilingual = false
+src = "docs/spec"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/paulmooreparks/Maize"
+edit-url-template = "https://github.com/paulmooreparks/Maize/edit/master/{path}"
+
+[output.html.search]
+enable = true

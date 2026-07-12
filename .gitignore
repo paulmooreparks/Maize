@@ -67,3 +67,7 @@ ctest/*.body.mazm
 ctest/*.lf.c
 ctest/*.ssa
 ctest/*.norm.ssa
+
+# mdBook build output (book.toml build-dir); the site is built and deployed
+# by CI, never committed.
+/book/
