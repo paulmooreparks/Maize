@@ -252,6 +252,9 @@ run_test "reject_ldz"        "test_reject_ldz.mazm"   "unknown keyword or opcode
 run_test "test_call_ind"     "test_call_ind.mazm"     "call ind: PASS"                0
 run_test "test_setint"       "test_setint.mazm"       "setint: PASS"                  0
 run_test "test_outr_in"      "test_outr_in.mazm"      "outr/in: PASS"                 0
+run_test "test_unpop_port"   "test_unpop_port.mazm"   "unpop: PASS"                   0
+run_test "test_portio"       "test_portio.mazm"       "portio: PASS"                  0
+run_test "test_timer"        "test_timer.mazm"        "timer: PASS"                   0
 run_test "test_sysbrk"       "test_sysbrk.mazm"       "sysbrk: PASS"                  0
 run_test "test_syserrno"     "test_syserrno.mazm"     "syserrno: PASS"                0
 run_test "test_tstind"       "test_tstind.mazm"       "tstind: PASS"                  0
@@ -349,6 +352,48 @@ run_brk_trap_test() {
 }
 
 run_brk_trap_test
+
+# --- maize-21: IN / OUT / OUTR are privileged (cause-4 fault in user mode) -------------
+# test_priv_fault.mazm drops to user mode via the IRET trampoline, executes an IN, and
+# takes the cause-4 privileged-operation fault. With no handler installed this keeps the
+# frozen throw-and-exit behavior, so (like the breakpoint trap) it cannot be expressed
+# with the generic run_test. This bespoke runner asserts the VM exits nonzero, surfaces a
+# "privileg" diagnostic on stderr, and never reaches the fall-through "priv: FAIL" marker.
+run_priv_fault_trap_test() {
+    name="priv_fault_trap"
+    TOTAL=$((TOTAL + 1))
+    src="test_priv_fault.mazm"
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+    out_file=$(mktemp)
+    err_file=$(mktemp)
+    if "$MAIZE_EXE" "$bin_path" >"$out_file" 2>"$err_file"; then
+        me=0
+    else
+        me=$?
+    fi
+    out=$(cat "$out_file")
+    err=$(cat "$err_file")
+    rm -f "$out_file" "$err_file"
+    if [ "$me" -ne 0 ] \
+        && printf '%s' "$err" | grep -qiF "privileg" \
+        && ! printf '%s' "$out" | grep -qF "FAIL"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: nonzero exit, 'privileg' on stderr, no fall-through marker on stdout"
+        echo "        actual:   exit ${me}; stdout=\"${out}\"; stderr=\"${err}\""
+    fi
+}
+
+run_priv_fault_trap_test
 
 # --- maize-75: sys_read byte-count fix (needs a known stdin) --------------------------
 # The generic run_test gives no stdin, so this bespoke runner pipes "hello" and

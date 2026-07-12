@@ -370,6 +370,32 @@ namespace maize {
 			reg address_reg;
 		};
 
+		/* Timer device (card maize-21): the first interrupt source and the end-to-end
+		   proof of the interrupt mechanism. Time base is instruction-tick counting: the
+		   active timer's on_instruction_tick() runs once per executed instruction and
+		   fires its IRQ when the countdown reaches zero (deterministic and reproducible;
+		   the host-time backend is deferred to the device-plugin work). The three
+		   registers are reached as separate ports in a reserved low-port block; the
+		   concrete pinout below is PROVISIONAL and is finalized with the device pinout.
+
+		   Register model:
+		     period_reg  (port timer_port_period):  reload value, in instruction ticks.
+		     control_reg (port timer_port_control): bit 0 = enable, bit 1 = periodic.
+		     status_reg  (port timer_port_status):  bit 0 = tick-pending. The handler
+		       acknowledges by writing a value with bit 0 clear, which clears the source
+		       and (periodic mode) re-arms the countdown. */
+		class timer_device {
+		public:
+			timer_device() = default;
+			device period_reg;
+			device control_reg;
+			device status_reg;
+			u_word counter {0};
+			u_byte irq_vector {32};
+
+			void on_instruction_tick();
+		};
+
 		struct memory_module : public reg {
 			~memory_module();
 
@@ -437,6 +463,32 @@ namespace maize {
 			const u_byte cause_stack_fault			{6}; // reserved (maize-92): stack-limit violation
 			const u_byte cause_syscall				{7}; // reserved: SYS / syscall entry (deliberate software trap; ABI owned by maize-82 / maize-21)
 		}
+
+		/* Shared trap / interrupt vector table format (card maize-21, co-authored with
+		   docs/spec/trap-model.md and docs/spec/device-surface.md). Fixed low base, 256
+		   entries of 8 bytes each (2 KiB), indexed by cause number: entry[cause] holds a
+		   full 64-bit handler address (synchronous traps 0..31, external interrupts
+		   32..255). The base is pinned at 0x1000, one 4 KiB page above the null/zero
+		   location, so the "null pointer reads 0" convention stays clean and an
+		   uninstalled (zero) entry is unambiguous. An out-of-range vector or a zero
+		   entry is a deterministic halt with the cause surfaced, never an out-of-bounds
+		   read or a map-miss dereference. A relocatable base via the reserved control
+		   register is a deferred v1.x extension. */
+		const u_word trap_vector_table_base		{0x0000000000001000};
+		const u_word trap_vector_entry_size		{8};
+		const u_word trap_vector_entry_count	{256};
+
+		/* Provisional timer pinout (card maize-21). A reserved low-port block and IRQ
+		   vector 32 (the first index above the synchronous-trap range) so the end-to-end
+		   timer proof runs without blocking on the device-pinout work, which finalizes
+		   the concrete port assignments. The block sits below port 0x80 so a natural
+		   8-bit immediate port operand reaches it without the shipped immediate
+		   sign-extension pushing the low-16-bit port id (the frozen .q0 field) into the
+		   high port range. */
+		const u_qword timer_port_period			{0x0040};
+		const u_qword timer_port_control		{0x0041};
+		const u_qword timer_port_status			{0x0042};
+		const u_byte  timer_irq_vector			{32};
 
 
 		namespace instr {
@@ -876,6 +928,13 @@ namespace maize {
 		void add_device(u_qword id, device& new_device);
 		void run();
 		void power_off();
+
+		/* Interrupt controller seam (card maize-21). A device raises an IRQ by making a
+		   vector pending through raise_irq; the flat controller coalesces multiple raises
+		   to a single pending-vector latch. set_active_timer installs the instruction-tick
+		   timer the run loop advances once per executed instruction. */
+		void raise_irq(u_byte vector);
+		void set_active_timer(timer_device* timer);
 
 
 	} // namespace cpu; 

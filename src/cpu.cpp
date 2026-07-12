@@ -901,6 +901,17 @@ namespace maize {
             reg operand2;
 
             bool is_power_on = false;
+
+            /* Flat interrupt controller state (card maize-21). A single pending-vector
+               latch, guarded by int_mutex, alongside the shipped interrupt_set_flag (RF
+               bit_interrupt_set). Multiple raises coalesce to this one latch (the flat
+               model promises no queue). active_timer_ptr is the instruction-tick timer
+               the run loop advances once per executed instruction; it is null until a
+               timer is installed, so the machine and every existing fixture run with no
+               interrupt source. */
+            bool irq_pending = false;
+            u_byte irq_pending_vector = 0;
+            timer_device* active_timer_ptr = nullptr;
         }
 
         bus address_bus;
@@ -913,6 +924,177 @@ namespace maize {
 
         void add_device(u_qword id, device& new_device) {
             devices[id] = &new_device;
+        }
+
+        /* Single shared port-table lookup (card maize-21). Every IN / OUT / OUTR
+           dispatch site routes through this one helper so no form retains the old
+           devices[id] value-initialize-null-then-dereference path. The port operand is
+           masked to the 16-bit port space in one place; a map miss returns nullptr, and
+           the caller applies the frozen read-0 (IN) / write-discard (OUT/OUTR) outcome
+           for an unpopulated port. */
+        device* find_device(u_word port) {
+            auto it = devices.find(static_cast<u_qword>(port & 0xFFFF));
+            return it == devices.end() ? nullptr : it->second;
+        }
+
+        /* OUT / OUTR data transfer (card maize-21). Writes the CPU-side operand value
+           into the selected device's data register (the full w0 width per the shipped
+           dispatch). An unpopulated port is the frozen write-discard no-op; the caller
+           still advances PC past its operands exactly as the populated path does. */
+        void port_write(u_word port, reg_value const& value, subreg_enum value_subreg) {
+            device* pdev = find_device(port);
+            if (pdev == nullptr) {
+                return;
+            }
+            copy_regval_reg(value, value_subreg, *pdev, subreg_enum::w0);
+        }
+
+        /* IN data transfer (card maize-21). Reads the selected device's data register
+           into the destination sub-register. An unpopulated port yields the frozen
+           read-0 outcome (the destination receives 0; no device is touched). */
+        void port_read(u_word port, reg_value& dst, subreg_enum dst_subreg) {
+            device* pdev = find_device(port);
+            if (pdev == nullptr) {
+                clr_reg(dst, dst_subreg);
+                return;
+            }
+            copy_regval_reg(*pdev, subreg_enum::w0, dst, dst_subreg);
+        }
+
+        /* Deterministic no-handler halt for a vectored interrupt (card maize-21). An
+           enabled IRQ whose table entry is zero (uninstalled) halts the VM with the
+           cause surfaced, mirroring the no-handler synchronous-trap rule, never a silent
+           ignore or an out-of-bounds read. */
+        [[noreturn]] void halt_no_interrupt_handler(u_byte vector) {
+            throw std::logic_error(std::string("unhandled interrupt: vector ")
+                + std::to_string(static_cast<int>(vector)) + ", no handler installed");
+        }
+
+        /* Read entry[vector] from the shared vector table. The index is a u_byte, so it
+           is always within the 256-entry table (the index-bounds guarantee); each entry
+           is a full 64-bit handler address. A zero entry means uninstalled. */
+        u_word read_vector_entry(u_byte vector) {
+            u_word addr = trap_vector_table_base + static_cast<u_word>(vector) * trap_vector_entry_size;
+            reg entry;
+            entry.w0 = 0;
+            mm.read(addr, entry, static_cast<size_t>(trap_vector_entry_size), 0);
+            return entry.w0;
+        }
+
+        /* Push a full 64-bit word onto the full-descending stack (pre-decrement RS by 8,
+           then store), matching the PUSH instruction's convention. */
+        void push_word(u_word value) {
+            regs::rs.w0 -= trap_vector_entry_size;
+            reg tmp;
+            tmp.w0 = value;
+            copy_regval_regaddr(tmp, subreg_enum::w0, regs::rs, subreg_enum::w0);
+        }
+
+        /* Build the shared four-word trap/interrupt frame and enter the handler (card
+           maize-21). Push order is PC, then RF, then cause, then aux, so the frame reads
+           from SP upward: aux, cause, RF, PC. cause packs the vector index in the low
+           byte and the subcode in the next byte (bits 63:16 reserved-zero); aux is the
+           source subcode word (0 for the timer). The saved RF is the pre-interrupt RF,
+           captured before interrupts are masked, so a normal IRET return re-enables
+           interrupts automatically. */
+        void deliver_vectored(u_byte vector, u_byte subcode, u_word aux, u_word saved_pc) {
+            u_word handler = read_vector_entry(vector);
+            if (handler == 0) {
+                halt_no_interrupt_handler(vector);
+            }
+            u_word saved_rf = regs::rf.w0;
+            u_word cause = static_cast<u_word>(vector) | (static_cast<u_word>(subcode) << 8);
+
+            push_word(saved_pc);   // SP + 24
+            push_word(saved_rf);   // SP + 16
+            push_word(cause);      // SP + 8
+            push_word(aux);        // SP + 0  (RS points here on handler entry)
+
+            /* Mask: the handler runs with interrupts disabled until IRET restores the
+               saved RF (or an explicit SETINT). Cleared after the frame is built so the
+               saved RF above still carries the pre-interrupt enable bit. */
+            interrupt_enabled_flag = false;
+
+            regs::rp.w0 = handler;
+        }
+
+        /* Single delivery seam (card maize-21). Checked at the instruction boundary in
+           the run loop. The fast path is two RF-bit reads: only when an IRQ is actually
+           pending AND interrupts are enabled does it take int_mutex. Acknowledge-on-
+           delivery clears the pending latch BEFORE handler entry, so the same IRQ is not
+           re-delivered on IRET. Returns true when an interrupt was delivered (the run
+           loop then continues to the handler's first instruction). */
+        bool try_deliver_interrupt() {
+            if (!interrupt_set_flag || !interrupt_enabled_flag) {
+                return false;
+            }
+            u_byte vector;
+            {
+                std::lock_guard<std::mutex> lk(int_mutex);
+                if (!irq_pending || !interrupt_enabled_flag) {
+                    return false;
+                }
+                vector = irq_pending_vector;
+                irq_pending = false;
+                interrupt_set_flag = false;
+            }
+            /* External interrupts resume at the boundary instruction, so the saved PC is
+               the next instruction that would have run (no faulting-instruction stash). */
+            deliver_vectored(vector, 0, 0, regs::rp.w0);
+            return true;
+        }
+
+        void set_active_timer(timer_device* timer) {
+            active_timer_ptr = timer;
+        }
+
+        /* A device raises an IRQ by making a vector pending (card maize-21). The flat
+           controller coalesces multiple raises to the single pending-vector latch
+           (last-raise-wins). Taking int_mutex and notifying int_event makes delivery
+           race-free for both a running core (checked at the instruction boundary) and a
+           core waiting on int_event. */
+        void raise_irq(u_byte vector) {
+            std::lock_guard<std::mutex> lk(int_mutex);
+            irq_pending_vector = vector;
+            irq_pending = true;
+            interrupt_set_flag = true;
+            int_event.notify_all();
+        }
+
+        /* Advance the instruction-tick timer one tick (card maize-21). Called once per
+           executed instruction from the run loop. While a tick is pending (awaiting the
+           handler's acknowledge), the countdown is paused so handler instructions do not
+           over-count. On reaching zero it sets the tick-pending status bit and raises its
+           IRQ; a periodic timer re-arms after the acknowledge clears the pending bit,
+           while a one-shot timer clears its own enable bit. */
+        void timer_device::on_instruction_tick() {
+            bool enable = (control_reg.w0 & 0x1) != 0;
+            if (!enable) {
+                return;
+            }
+            if ((status_reg.w0 & 0x1) != 0) {
+                /* Tick pending, waiting for the handler's ack: paused. */
+                return;
+            }
+            if (counter == 0) {
+                /* Freshly programmed or re-armed after an ack: (re)load the period. A
+                   zero period is inert (an unprogrammed / disabled countdown). */
+                counter = period_reg.w0;
+                if (counter == 0) {
+                    return;
+                }
+            }
+            --counter;
+            if (counter == 0) {
+                status_reg.w0 |= 0x1;   // set tick-pending
+                raise_irq(irq_vector);
+                bool periodic = (control_reg.w0 & 0x2) != 0;
+                if (!periodic) {
+                    control_reg.w0 &= ~static_cast<u_word>(0x1);   // one-shot: disable
+                }
+                /* Periodic: counter stays 0 and reloads on the tick after the ack clears
+                   the pending bit. */
+            }
         }
 
         /* Divide-by-zero and signed INT_MIN/-1 overflow are divide-error traps (card maize-5).
@@ -944,6 +1126,17 @@ namespace maize {
            and unknown-opcode handlers until the interrupt mechanism exists. */
         [[noreturn]] void raise_illegal_fp(const char* detail) {
             throw std::logic_error(std::string("illegal floating-point instruction: ") + detail);
+        }
+
+        /* Privileged-operation fault (card maize-21, cause trap::cause_privileged_op (4)).
+           IN / OUT / OUTR executed with the RF privilege bit clear (user mode) raise this
+           fault. Per the external-interrupts-only scope, the synchronous cause-4 fault
+           keeps the frozen throw-and-exit / deterministic-halt behavior for the
+           no-handler case (as BRK does today); it does not vector through the table here.
+           The diagnostic carries "privileged" so the no-handler test can assert it. */
+        [[noreturn]] void raise_privileged_op() {
+            throw std::logic_error(std::string("privileged operation in user mode: cause ")
+                + std::to_string(static_cast<int>(trap::cause_privileged_op)));
         }
 
         namespace {
@@ -2780,6 +2973,22 @@ namespace maize {
             running_flag = true;
 
             while (running_flag) {
+                /* Interrupt delivery is checked at the instruction boundary (card
+                   maize-21). A pending, enabled IRQ is delivered before the next
+                   instruction decodes; the handler's first instruction runs on the next
+                   iteration. The fast path is two RF-bit reads, so an idle machine pays
+                   almost nothing. */
+                if (try_deliver_interrupt()) {
+                    continue;
+                }
+
+                /* Advance the instruction-tick timer once per executed instruction
+                   (OQ3). Disabled/absent timer is an early return, so existing fixtures
+                   are unaffected. */
+                if (active_timer_ptr != nullptr) {
+                    active_timer_ptr->on_instruction_tick();
+                }
+
                 /* Decode next instruction */
                 mm.read(regs::rp.w0, regs::ri, subreg_enum::w0);
                 ++regs::rp.w0;
@@ -3273,139 +3482,140 @@ namespace maize {
                         break;
                     }
 
+                    /* OUT / OUTR / IN (card maize-21): all twelve dispatch sites are
+                       privileged and route their device access through the single shared
+                       find_device helper (via port_write / port_read), which applies the
+                       frozen read-0 / write-discard outcome on an unpopulated port instead
+                       of the old devices[id] value-initialize-null-then-dereference crash.
+                       The privilege gate is at the head of each case: executed with the RF
+                       privilege bit clear (user mode) the instruction raises the cause-4
+                       privileged-op fault before any device access. */
                     case instr::out_regVal_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte dst_size = op2_imm_size();
                         copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
-                        device *pdst_dev = devices[operand2.q0];
-                        device &dst_dev = *(pdst_dev);
-                        copy_regval_reg(op1_reg(), op1_subreg_flag(), dst_dev, subreg_enum::w0);
+                        port_write(operand2.q0, op1_reg(), op1_subreg_flag());
                         regs::rp.w0 += dst_size;
                         break;
                     }
 
                     case instr::out_immVal_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
                         copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
                         u_byte dst_size = op2_imm_size();
                         copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
-                        device *pdst_dev = devices[operand2.q0];
-                        device &dst_dev = *(pdst_dev);
-                        copy_regval_reg(operand1, subreg_enum::w0, dst_dev, subreg_enum::w0);
+                        port_write(operand2.q0, operand1, subreg_enum::w0);
                         regs::rp.w0 += dst_size;
                         break;
                     }
 
+                    /* $94 out_regAddr_imm (card maize-21): write operand1 (the value
+                       loaded from the source address at line above) to the device, NOT
+                       op1_reg() (the raw source address). This corrects the dead-load
+                       defect isolated to this form; the sibling address forms already
+                       write operand1. */
                     case instr::out_regAddr_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), operand1, subreg_enum::w0);
                         u_byte dst_size = op2_imm_size();
                         copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
-                        device *pdst_dev = devices[operand2.q0];
-                        device &dst_dev = *(pdst_dev);
-                        copy_regval_reg(op1_reg(), op1_subreg_flag(), dst_dev, subreg_enum::w0);
+                        port_write(operand2.q0, operand1, subreg_enum::w0);
                         regs::rp.w0 += dst_size;
                         break;
                     }
 
                     case instr::out_immAddr_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
                         copy_memaddr_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
                         u_byte dst_size = op2_imm_size();
                         copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
-                        device *pdst_dev = devices[operand2.q0];
-                        device &dst_dev = *(pdst_dev);
-                        copy_regval_reg(operand1, subreg_enum::w0, dst_dev, subreg_enum::w0);
+                        port_write(operand2.q0, operand1, subreg_enum::w0);
                         regs::rp.w0 += dst_size;
                         break;
                     }
 
                     /* OUTR/IN (card maize-10, Decision D6464): mirror OUT's four-case pattern
-                       against the same devices[] port table, but the port is a register
-                       operand (op2 for OUTR, op1 for IN) rather than an immediate literal.
-                       The port id is always the register's/temp's .q0 field, matching OUT's
-                       own immediate-port convention of using only the low 16 bits regardless
-                       of the encoded field width. IN's copy direction is device-to-register,
+                       against the same port table, but the port is a register operand (op2
+                       for OUTR, op1 for IN) rather than an immediate literal. The port id is
+                       always the register's/temp's .q0 field, matching OUT's own
+                       immediate-port convention of using only the low 16 bits regardless of
+                       the encoded field width. IN's copy direction is device-to-register,
                        the mirror image of OUT's register-to-device direction. */
                     case instr::outr_regVal_reg: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
-                        device *pdst_dev = devices[op2_reg().q0];
-                        device &dst_dev = *(pdst_dev);
-                        copy_regval_reg(op1_reg(), op1_subreg_flag(), dst_dev, subreg_enum::w0);
+                        port_write(op2_reg().q0, op1_reg(), op1_subreg_flag());
                         break;
                     }
 
                     case instr::outr_immVal_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
                         copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
-                        device *pdst_dev = devices[op2_reg().q0];
-                        device &dst_dev = *(pdst_dev);
-                        copy_regval_reg(operand1, subreg_enum::w0, dst_dev, subreg_enum::w0);
+                        port_write(op2_reg().q0, operand1, subreg_enum::w0);
                         break;
                     }
 
                     case instr::outr_regAddr_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), operand1, subreg_enum::w0);
-                        device *pdst_dev = devices[op2_reg().q0];
-                        device &dst_dev = *(pdst_dev);
-                        copy_regval_reg(operand1, subreg_enum::w0, dst_dev, subreg_enum::w0);
+                        port_write(op2_reg().q0, operand1, subreg_enum::w0);
                         break;
                     }
 
                     case instr::outr_immAddr_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
                         copy_memaddr_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
-                        device *pdst_dev = devices[op2_reg().q0];
-                        device &dst_dev = *(pdst_dev);
-                        copy_regval_reg(operand1, subreg_enum::w0, dst_dev, subreg_enum::w0);
+                        port_write(op2_reg().q0, operand1, subreg_enum::w0);
                         break;
                     }
 
                     case instr::in_regVal_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
-                        device *psrc_dev = devices[op1_reg().q0];
-                        device &src_dev = *(psrc_dev);
-                        copy_regval_reg(src_dev, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        port_read(op1_reg().q0, op2_reg(), op2_subreg_flag());
                         break;
                     }
 
                     case instr::in_immVal_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
                         copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
-                        device *psrc_dev = devices[operand1.q0];
-                        device &src_dev = *(psrc_dev);
-                        copy_regval_reg(src_dev, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        port_read(operand1.q0, op2_reg(), op2_subreg_flag());
                         break;
                     }
 
                     case instr::in_regAddr_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), operand1, subreg_enum::w0);
-                        device *psrc_dev = devices[operand1.q0];
-                        device &src_dev = *(psrc_dev);
-                        copy_regval_reg(src_dev, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        port_read(operand1.q0, op2_reg(), op2_subreg_flag());
                         break;
                     }
 
                     case instr::in_immAddr_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
                         copy_memaddr_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
-                        device *psrc_dev = devices[operand1.q0];
-                        device &src_dev = *(psrc_dev);
-                        copy_regval_reg(src_dev, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        port_read(operand1.q0, op2_reg(), op2_subreg_flag());
                         break;
                     }
 
@@ -3995,17 +4205,28 @@ namespace maize {
                     std::unique_lock<std::mutex> lk(int_mutex);
 
                     if (is_power_on) {
-                        /* Wait for interrupt */
-                        int_event.wait(lk);
+                        /* Wait-for-interrupt: a core that dropped out of tick() with power
+                           still on (running_flag clear, is_power_on set) is parked here
+                           until an IRQ arrives. raise_irq latches the pending vector and
+                           notifies int_event; on wake, delivery runs against the shared
+                           four-word aux / cause / RF / PC frame (card maize-21, replacing
+                           the stale two-word RP/RF sketch) and tick() is re-entered so the
+                           handler executes. The predicate guards against spurious wakeups.
 
-                        /*
-                        If interrupt set
-                            look up interrupt handler
-                            push regs::rp
-                            push regs::rf
-                            regs::rp.w0 = interrupt handler address (full 64-bit; maize-41)
-                            running_flag = true
-                        */
+                           Existing fixtures never reach this park: HALT calls power_off(),
+                           which clears is_power_on, so the machine exits rather than
+                           waiting. A wait-for-interrupt HALT that keeps power on is a
+                           future path; the delivery seam here is ready for it. */
+                        int_event.wait(lk, [] { return irq_pending || !is_power_on; });
+
+                        if (is_power_on && irq_pending && interrupt_enabled_flag) {
+                            u_byte vector = irq_pending_vector;
+                            irq_pending = false;
+                            interrupt_set_flag = false;
+                            lk.unlock();
+                            deliver_vectored(vector, 0, 0, regs::rp.w0);
+                            running_flag = true;
+                        }
                     }
                 }
             }

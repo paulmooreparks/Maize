@@ -43,10 +43,11 @@ inherits from the Trap Model chapter:
 - The privileged-operation fault is cause 4 ("privileged operation in user mode"), whose
   candidate privileged set includes IN / OUT. This chapter pins that membership for port
   I/O; the trap model owns the vector number and the enforcement mechanism.
-- The vector-table base address, the per-entry width, and the index-bounds check are the
-  one part of the format the trap model does not freeze; they are settled with the
-  interrupt delivery mechanism before v1.0. This chapter fixes only that interrupt vectors
-  live in the high range and how many are reserved.
+- The vector-table format is pinned with the interrupt delivery mechanism: a fixed base
+  at `0x1000`, 8-byte entries holding a full 64-bit handler address, 256 entries (2 KiB)
+  indexed 0..255 by cause number. This chapter fixes that interrupt vectors live in the
+  high range 32..255; the trap model owns the full format. An out-of-range or uninstalled
+  (zero) entry is a deterministic halt with the cause surfaced.
 
 ## Surface 1: the port-I/O model
 
@@ -122,16 +123,12 @@ A device is free to give a port read and a port write to the same port id differ
 meanings (for example, reading a status register where writing sends a command); the
 per-device register model in Surface 3 states the read and write meaning of each port.
 
-**Reference-VM note.** The transfer semantics above are what a conformant VM must
-implement; the reference VM's `$94` OUT form (out_regAddr_imm, "value at the address in the
-source register") does not yet match them. That form loads the value from the source
-address into a temporary but then writes the raw source register to the device instead of
-the loaded value, so the memory load is dead and the wrong value is transferred. The
-sibling address forms write the loaded value correctly (`$D4` OUT immAddr, and `$9E` /
-`$DE` OUTR regAddr / immAddr), so the defect is isolated to `$94`. Correcting `$94` to
-write the loaded value is a known reference-VM fix; the conformance suite MUST test against
-the contract, not the current `$94` behavior, so the shipped defect is not canonized. See
-the binary-compatibility statement for the full list of pending reference-VM fixes.
+**Reference-VM note.** The `$94` OUT form (out_regAddr_imm, "value at the address in the
+source register") writes the value loaded from the source address, matching the transfer
+semantics above and its sibling address forms (`$D4` OUT immAddr, and `$9E` / `$DE` OUTR
+regAddr / immAddr). An earlier reference-VM revision wrote the raw source register instead,
+so the memory load was dead; that defect is corrected. The conformance suite tests against
+the contract, so the corrected behavior is the canonical one.
 
 ### Privilege
 
@@ -140,9 +137,9 @@ IN, OUT, and OUTR are **privileged** instructions. Executed with the RF privileg
 operation in user mode"** fault. This chapter fixes only the membership: port I/O is not
 available to unprivileged code, so a user-mode program cannot touch a device directly and
 must go through the kernel. The trap model owns the cause-4 vector number and the general
-enforcement mechanism; the enforcement itself (gating the dispatch on the privilege bit) is
-a pending reference-VM fix, which must apply it to all three instructions. The RF privilege
-bit exists today and the machine starts privileged, but no instruction gates on it yet.
+enforcement mechanism. The reference VM enforces the gate on all three instructions: the
+machine starts privileged, and user mode is reached only by an IRET that restores an RF
+word with the privilege bit clear.
 
 ### Unpopulated port
 
@@ -161,14 +158,11 @@ Neither traps. This is a conformance-visible defined-behavior guarantee: a third
 MUST return 0 and discard writes on an unpopulated port, so a program that probes the port
 space behaves identically on every conforming VM.
 
-The reference VM does not yet satisfy this. Each of the twelve dispatch cases currently
-indexes the port table with `devices[id]`, which on a map miss default-constructs a null
-`device*` and then dereferences it, a latent crash rather than the defined outcome. Closing
-this is a pending reference-VM fix, which MUST apply the read-0 / write-discard outcome at
-**all twelve** port-I/O dispatch sites (the four forms each of OUT, OUTR, and IN),
-preferably through a single shared lookup helper, so no form retains the raw
-value-initialize-null-then-dereference path. This chapter freezes the outcome; the code fix
-is downstream.
+The reference VM satisfies this at all twelve dispatch sites (the four forms each of OUT,
+OUTR, and IN) through a single shared port-table lookup helper: a map miss returns a null
+device and the caller applies read-0 (IN) or write-discard (OUT / OUTR), so no form retains
+the earlier value-initialize-null-then-dereference path that crashed on an unpopulated
+port.
 
 ## Surface 2: external-interrupt vectoring
 
@@ -226,10 +220,11 @@ richer per-line controller is a downstream implementation detail:
    status port to clear the source) is expressed through the device's own port registers
    (Surface 3) and is settled with the controller.
 
-The reference VM holds the delivery seam as a commented skeleton in `run()` that sketches a
-two-word (RP, RF) push. A downstream extension fills that seam and MUST align it to the
-four-word aux / cause / RF / PC push order this chapter and the trap model fix, not the
-skeleton's older two-word sketch.
+The reference VM realizes this delivery seam at the instruction boundary in `run()`,
+against the four-word aux / cause / RF / PC push order this chapter and the trap model fix.
+A pending, enabled IRQ is acknowledged before the frame is built, so the same IRQ is not
+re-delivered on IRET; delivery clears the interrupt-enable bit, and the saved RF restores
+it on return.
 
 ### Interrupt model: flat
 
@@ -339,21 +334,23 @@ the device-plugin work alongside the full per-device register maps.
 The following stay in downstream implementation work, post-freeze, and are built against
 this frozen contract. Stating them here keeps the contract's boundary sharp.
 
-- **The interrupt-controller implementation:** per-line pending, mask, and priority
-  registers, the concrete IRQ-line wiring, the timer as a live source, and filling the
-  `run()` delivery skeleton against the four-word aux / cause / RF / PC frame.
+- **A richer interrupt controller:** per-line pending, mask, and priority registers and
+  concrete multi-line IRQ wiring. The flat single-latch controller, instruction-boundary
+  delivery against the four-word frame, and the timer as the first live source are
+  realized; a prioritized per-line controller stays a downstream implementation detail
+  that is not an ISA-visible promise.
 - **The device plugin API:** the host-side device-model API, port-range registration, the
   shim / passthrough shape, native-code plugin loading, and the fuzzing and trust-boundary
-  discipline.
+  discipline. The concrete port-number and IRQ-vector pinout for the standard devices is
+  settled here; the timer runs on a provisional low-port block and IRQ vector 32 until
+  then.
 - **The host-backed devices:** the real framebuffer, keyboard, timer, and block backends and
-  the built-in native terminal.
-- **The vector-table base, entry-width, and index-bounds freeze** (jointly owned with the
-  trap model): this chapter only places IRQ vectors in the high range and reserves their
-  count and start.
+  the built-in native terminal. The instruction-tick timer is deterministic; a real
+  host-time backend is part of this work.
 - **Closing INT (`$24`) dispatch** and any privileged control-register encoding: the trap
   model and the Reserved Space chapter (the reserved control-register mechanism at base slot
-  `$26`) own that surface. This chapter reserves the privileged port-I/O and
-  interrupt-control instructions but does not land their enforcement.
+  `$26`) own that surface. Port-I/O privilege enforcement is landed; the INT software-trap
+  dispatch and any privileged control-register encoding remain reserved.
 
 ## Binary-compatibility statement
 
@@ -362,9 +359,8 @@ already-dispatched opcodes (`$14` / `$1E` / `$1F` for OUT / OUTR / IN), the ship
 flag bits (privilege, interrupt-enabled, interrupt-set, running), the shipped IRET / SETINT
 / CLRINT semantics, the shipped `device` (address_reg, data) shape, and the shared vector
 table the trap model defines. It is a specification of existing and reserved surface, not a
-compatibility break. The code changes this surface implies are behavior the reference VM
-does not yet exhibit and are delivered downstream against this frozen contract, not here.
-There are three, and none of them alters an encoding:
+compatibility break. The three code changes this surface implies are realized in the
+reference VM against this frozen contract, and none of them alters an encoding:
 
 1. Gating IN / OUT / OUTR on the RF privilege bit, so executing them in user mode raises the
    cause-4 privileged-operation fault.
@@ -374,8 +370,8 @@ There are three, and none of them alters an encoding:
    source address rather than the raw source register, matching the transfer semantics and
    its sibling address forms.
 
-Because all three are contract-conforming fixes to behavior a v1.0 binary cannot yet rely
-on, none is a compatibility break.
+Because all three are contract-conforming fixes to behavior a v1.0 binary cannot rely on
+being different, none is a compatibility break.
 
 Any change that would alter an encoding, for example a different port-space width, would be
 a binary-compatibility break and would have to be flagged as such when the decision lands.

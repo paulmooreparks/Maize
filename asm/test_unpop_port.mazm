@@ -1,0 +1,58 @@
+; **********************************************************************************
+; Regression test for card maize-21: unpopulated-port access is a DEFINED outcome,
+; never a crash.
+;
+; An IN from a port with no attached device must yield 0 (read-0); an OUT or OUTR to
+; one must be discarded (write-discard, a quiet no-op). Before the shared find_device
+; helper, every dispatch site indexed devices[id], which default-constructs a null
+; device* on a map miss and then dereferences it: a latent crash. The whole point of
+; this fixture is that it runs to a "unpop: PASS" completion instead of crashing.
+;
+; Port $7000 is never registered (the loopback device is at port 1; the timer sits in
+; the reserved low-port block), so it exercises the unpopulated path.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- IN from an unpopulated port yields 0 ----
+    CLR R2
+    CP $FF R2.B0            ; seed a nonzero sentinel
+    IN $7000 R2.B0         ; unpopulated -> R2.B0 must become 0
+    CMP $00 R2.B0
+    JNZ fail
+
+    ; ---- OUT to an unpopulated port is discarded (must not crash) ----
+    CLR R3
+    CP $AB R3.B0
+    OUT R3.B0 $7000        ; discarded, quiet no-op
+
+    ; ---- OUTR to an unpopulated port is discarded too ----
+    CLR R4
+    CP $7001 R4            ; port id in a register
+    OUTR R3.B0 R4          ; discarded, quiet no-op
+
+    ; ---- reached here without crashing -> PASS ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1
+    CP $0C R2              ; 12 bytes
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $0C R2              ; 12 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "unpop: PASS\n\0"
+
+fail_string:
+    STRING "unpop: FAIL\n\0"

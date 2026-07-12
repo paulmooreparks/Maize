@@ -1,0 +1,49 @@
+; **********************************************************************************
+; Regression test for card maize-21: IN / OUT / OUTR are privileged. Executed with the
+; RF privilege bit clear (user mode), each raises the cause-4 "privileged operation in
+; user mode" fault.
+;
+; There is no privilege-drop instruction; the only way to clear the privilege bit is an
+; IRET that restores an RF word with the bit clear. This fixture uses that IRET
+; trampoline (the real supervisor->user transition an OS will use): it builds an
+; RF + PC frame with the privilege bit clear (but the running bit set, so the core
+; keeps executing) and IRETs into a user-mode code path that then executes an IN.
+;
+; With no handler installed the cause-4 fault keeps the frozen throw-and-exit behavior:
+; the VM exits nonzero with a "privileged" diagnostic and never reaches the fall-through
+; "priv: FAIL" marker. The trap-style runner asserts exactly that.
+;
+; RF bit layout (src/cpu.cpp): bit_privilege = bit 32, bit_running = bit 35. The
+; user-mode RF is therefore $0000000800000000: running set, privilege clear.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- build the IRET frame: [SP] = user RF, [SP+8] = user PC ----
+    CLR R0
+    CP user_mode R0.H0     ; R0 = address of the user-mode code path
+    PUSH R0                ; [SP] = user_mode  (becomes the restored PC)
+
+    CLR R1
+    CP $08 R1.B4           ; R1 = $0000000800000000: bit_running set, bit_privilege clear
+    PUSH R1                ; [SP] = user RF     (becomes the restored RF)
+
+    IRET                   ; pop RF (privilege clear), pop PC (user_mode): enter user mode
+
+user_mode:
+    ; ---- now unprivileged: this IN must raise the cause-4 fault and exit the VM ----
+    CLR R2
+    IN $01 R2.B0           ; privileged instruction in user mode -> cause-4 fault
+
+    ; ---- unreachable: only runs if the privilege gate wrongly let the IN through ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $0B R2              ; 11 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+fail_string:
+    STRING "priv: FAIL\n\0"

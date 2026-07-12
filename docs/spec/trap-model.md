@@ -207,10 +207,17 @@ pointing at the saved RF. It then returns with **IRET**, which pops RF and then 
 restoring the interrupted context. This is the shared return path for both traps and
 interrupts; there is no TRET.
 
-(The vector-table base address, the per-entry width, and the index-bounds check are the
-one part of the format not frozen in this chapter; they are settled with the interrupt
-delivery mechanism before v1.0. This chapter freezes the taxonomy, the cause / subcode
-numbering, and the capture layout above.)
+The vector-table format is now pinned. The table has a fixed low base address of
+`0x1000`, one 4 KiB page above the null/zero location, so the "a null pointer reads 0"
+convention stays clean and an uninstalled entry reads as an unambiguous zero. Each entry
+is 8 bytes wide and holds a full 64-bit handler address; the table has 256 entries
+(2 KiB), indexed 0..255 by cause number (synchronous traps 0..31, external interrupts
+32..255). The index is a cause byte, so it is always within the table. An out-of-range
+vector or a zero (uninstalled) entry is a deterministic halt with the cause surfaced,
+never an out-of-bounds read or a stray dereference. A relocatable base, held in the
+reserved privileged control register, is a deferred extension; v1.0 fixes the base. This
+chapter freezes the taxonomy, the cause / subcode numbering, the capture layout above,
+and this table format.
 
 ## Vector table and delivery
 
@@ -219,7 +226,9 @@ return instruction (IRET). This single-table design is the coherence requirement
 the interrupt model.
 
 - **Indexing.** The table is indexed by cause number: entry[cause] holds the handler.
-  Synchronous traps occupy indices 0..31; external interrupts occupy 32 and above.
+  It lives at the fixed base `0x1000` with 8-byte entries, so entry[cause] is at
+  `0x1000 + cause * 8`. Synchronous traps occupy indices 0..31; external interrupts
+  occupy 32 and above, through 255 (256 entries, 2 KiB).
 - **Handler entry.** On a fired trap the machine looks up entry[cause], captures the
   state described above onto the stack, and loads the handler address into PC. The
   handler address is a full 64-bit value. The interrupt-enable state on handler entry is
@@ -287,19 +296,25 @@ The reference VM (`src/cpu.cpp`, `src/maize_cpu.h`) grounds this chapter:
   MOD / UDIV / UMOD widths rather than letting the host divide fault.
 - **Breakpoint (cause 3)** is `raise_breakpoint`: `BRK` (`$FF`) is a defined breakpoint
   trap, not a no-op.
-- Where no in-guest handler is installed, these paths halt the VM deterministically with
-  the cause surfaced. The full in-guest vector-table delivery (vector lookup, capture,
-  handler entry) is a future path built against the layout this chapter fixes.
-- **Privileged operation (cause 4)**: the RF privilege bit exists and is set on power-up,
-  but no instruction enforces it in the flat v1.0 model.
+- Where no in-guest handler is installed, these synchronous-trap paths halt the VM
+  deterministically with the cause surfaced. In-guest vector-table delivery (vector
+  lookup, four-word capture, handler entry) is realized for external interrupts, which
+  vector through the table at 32..255; the synchronous faults keep the throw-and-exit
+  no-handler behavior until an OS handler-install path exists.
+- **Privileged operation (cause 4)**: the RF privilege bit is set on power-up, and IN /
+  OUT / OUTR enforce it: executed with the bit clear they raise cause 4. User mode is
+  reached only by an IRET that restores an RF word with the privilege bit clear.
 - **Segment / bounds (cause 5) and stack fault (cause 6)**: reserved numbers; the flat
   sparse memory model has no out-of-bounds access and no stack bound, so neither fires.
 - **SYS / syscall entry (cause 7)**: reserved number; `SYS` ($34) dispatches directly to
   the BIOS / syscall surface today, with trap-vector delivery reserved.
-- **Interrupt delivery substrate**: present but inert. RF carries the interrupt-enable and
-  interrupt-set bits; SETINT / CLRINT toggle the enable bit; IRET pops RF then PC; `run()`
-  holds a commented-out delivery skeleton. **INT (`$24` / `$64`)** has no dispatch case yet
-  and is deferred until the vector-table format exists.
+- **Interrupt delivery substrate**: live for external interrupts. RF carries the
+  interrupt-enable and interrupt-set bits; SETINT / CLRINT toggle the enable bit; IRET
+  pops RF then PC. At each instruction boundary the run loop delivers a pending, enabled
+  IRQ: it acknowledges (clears the pending latch), pushes the four-word aux / cause / RF /
+  PC frame, masks interrupts, and loads the handler from entry[vector]. The timer is the
+  first interrupt source. **INT (`$24` / `$64`)** has no dispatch case yet and is deferred
+  as a guest-requested software-trap path.
 
 The defined non-trapping behaviors are all shipped: overflow wrap and flags, out-of-range
 shift result-0, sparse allocate-on-touch memory, byte-wise misaligned access, the

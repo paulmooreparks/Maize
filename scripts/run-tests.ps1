@@ -78,6 +78,9 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_call_ind';      File = 'test_call_ind.mazm';      Expected = 'call ind: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_setint';        File = 'test_setint.mazm';        Expected = 'setint: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_outr_in';       File = 'test_outr_in.mazm';       Expected = 'outr/in: PASS';                 Golden = $false }
+    [pscustomobject]@{ Name = 'test_unpop_port';     File = 'test_unpop_port.mazm';     Expected = 'unpop: PASS';                   Golden = $false }
+    [pscustomobject]@{ Name = 'test_portio';         File = 'test_portio.mazm';         Expected = 'portio: PASS';                  Golden = $false }
+    [pscustomobject]@{ Name = 'test_timer';          File = 'test_timer.mazm';          Expected = 'timer: PASS';                   Golden = $false }
     [pscustomobject]@{ Name = 'test_sysbrk';        File = 'test_sysbrk.mazm';        Expected = 'sysbrk: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_syserrno';      File = 'test_syserrno.mazm';      Expected = 'syserrno: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_tstind';        File = 'test_tstind.mazm';        Expected = 'tstind: PASS';                  Golden = $false }
@@ -322,19 +325,18 @@ function Invoke-UndefMultirefTest {
     }
 }
 
-# --- maize-78: BRK is a defined breakpoint trap, not a no-op ----------------------
-# BRK ($FF) raises a breakpoint trap (cause 3). With no handler installed (the
-# maize-21 vector table does not exist yet) an unhandled synchronous trap halts the
-# VM deterministically with the cause surfaced. test_brk.mazm places an unreachable
-# "brk: FAIL" marker right after BRK; the generic Invoke-Test cannot express
-# "expected to trap", so this bespoke runner asserts the VM exits nonzero, surfaces
-# a "breakpoint" diagnostic on stderr, and never reaches the fall-through marker
-# (which the old no-op behavior would have printed). Mirrors run-tests.sh's
-# run_brk_trap_test.
-function Invoke-BrkTrapTest {
-    $name = 'brk_trap'
-    $srcPath = Join-Path $AsmDir 'test_brk.mazm'
-    $asmPath = Join-Path $TestRunDir 'test_brk.mazm'
+# --- Reusable expect-trap facility (maize-21, generalizing the former bespoke brk
+#     runner). A trap-style fixture places an unreachable "FAIL" marker after the
+#     instruction that must trap; with no handler installed the VM halts deterministically
+#     with the cause surfaced, which the generic Invoke-Test (exact-stdout match) cannot
+#     express. Invoke-TrapTest asserts the VM exits nonzero, surfaces $errSubstr on
+#     stderr, and never reaches the fall-through marker on stdout. Mirrors run-tests.sh's
+#     run_brk_trap_test / run_priv_fault_trap_test so the two runners assert the same thing.
+#       - brk_trap        (test_brk.mazm):        'breakpoint' on stderr (cause 3).
+#       - priv_fault_trap (test_priv_fault.mazm): 'privileg' on stderr (cause 4, maize-21).
+function Invoke-TrapTest($name, $src, $errSubstr) {
+    $srcPath = Join-Path $AsmDir $src
+    $asmPath = Join-Path $TestRunDir $src
     Copy-Item -Path $srcPath -Destination $asmPath -Force
     $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
 
@@ -356,11 +358,11 @@ function Invoke-BrkTrapTest {
     if ($null -eq $out) { $out = '' }
     if ($null -eq $err) { $err = '' }
 
-    $pass = ($maizeExit -ne 0) -and ($err -like '*breakpoint*') -and ($out -notlike '*FAIL*')
+    $pass = ($maizeExit -ne 0) -and ($err -like "*$errSubstr*") -and ($out -notlike '*FAIL*')
     return [pscustomobject]@{
         Name     = $name
         Pass     = $pass
-        Expected = "nonzero exit, 'breakpoint' on stderr, no fall-through marker on stdout"
+        Expected = "nonzero exit, '$errSubstr' on stderr, no fall-through marker on stdout"
         Actual   = "exit ${maizeExit}; stdout=`"$(Trim-TrailingNewlines $out)`"; stderr=`"$(Trim-TrailingNewlines $err)`""
     }
 }
@@ -404,7 +406,8 @@ function Invoke-SysreadTest {
 }
 
 $results += Invoke-UndefMultirefTest
-$results += Invoke-BrkTrapTest
+$results += Invoke-TrapTest 'brk_trap'        'test_brk.mazm'        'breakpoint'
+$results += Invoke-TrapTest 'priv_fault_trap' 'test_priv_fault.mazm' 'privileg'
 $results += Invoke-SysreadTest
 
 # --- maize-12: multi-TU assemble -> link -> run -----------------------------------

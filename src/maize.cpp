@@ -583,6 +583,20 @@ int main(int argc, char *argv[]) {
 	cpu::device loopback_test_device;
 	cpu::add_device(1, loopback_test_device);
 
+	/* card maize-21: the system timer, the first interrupt source and the end-to-end
+	   proof of the interrupt mechanism. Its three registers attach as separate ports in
+	   a reserved low-port block (provisional pinout, finalized with the device pinout
+	   work), and it is installed as the active instruction-tick timer the run loop
+	   advances once per executed instruction. It powers up disabled (control = 0), so a
+	   program that never programs it sees no interrupts and every existing fixture is
+	   unaffected. */
+	cpu::timer_device system_timer;
+	system_timer.irq_vector = cpu::timer_irq_vector;
+	cpu::add_device(cpu::timer_port_period, system_timer.period_reg);
+	cpu::add_device(cpu::timer_port_control, system_timer.control_reg);
+	cpu::add_device(cpu::timer_port_status, system_timer.status_reg);
+	cpu::set_active_timer(&system_timer);
+
 	/* card maize-114: install the mount table built and validated above (before the
 	   guest runs). mazm never calls this, so its hostfs paths stay inert. */
 	sys::set_hostfs_table(&hostfs_tab);
