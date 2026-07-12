@@ -438,9 +438,16 @@ run_hostfs_escape() {
     root="${WORK_DIR}/hostfs_esc"
     rm -rf "$root"; mkdir -p "$root/esc"
     printf 'secret\n' > "$root/escape_target.txt"
-    # A host symlink inside the mount pointing OUTSIDE it (Linux/macOS). On Windows the
-    # symlink is simply absent, which the fixture still treats as a denied (ENOENT) path.
-    ln -s "$root/escape_target.txt" "$root/esc/esclink" 2>/dev/null || true
+    # A host symlink inside the mount pointing OUTSIDE it (Linux/macOS). On Windows,
+    # MSYS's default `ln -s` writes a plain regular file carrying MSYS-only symlink
+    # metadata (not an NTFS reparse point) unless MSYS=winsymlinks:nativestrict is
+    # set; that pseudo-symlink is opaque to Win32 CreateFile, so the hostfs Win32
+    # backend's reparse-point check never fires and the file opens as ordinary
+    # content, silently defeating this test. Force a real NTFS reparse-point
+    # symlink so the existing FILE_ATTRIBUTE_REPARSE_POINT rejection applies; on a
+    # host without symlink privilege the create fails and no file is left behind,
+    # which the fixture still treats as a denied (ENOENT) path either way.
+    MSYS=winsymlinks:nativestrict ln -s "$root/escape_target.txt" "$root/esc/esclink" 2>/dev/null || true
     nat=$(host_to_native "$root/esc")
 
     set +e
