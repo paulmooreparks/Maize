@@ -83,6 +83,7 @@ PRESET="$DEFAULT_PRESET"
 MODE="compile"      # compile | build
 RUN=0               # -r / --run
 EMIT=0              # --emit
+DEV=0               # --dev (append the mzdev device-access shim to the link, maize-121)
 OUT=""
 SRC=""
 while [ $# -gt 0 ]; do
@@ -90,6 +91,7 @@ while [ $# -gt 0 ]; do
         --build) MODE="build"; shift ;;
         -r|--run) RUN=1; shift ;;
         --emit) EMIT=1; shift ;;
+        --dev) DEV=1; shift ;;
         --compile-only) RUN=0; shift ;;   # back-compat: no-op alias of new default (D3)
         -o) OUT="${2:-}"; shift 2 ;;
         -o*) OUT="${1#-o}"; shift ;;
@@ -179,8 +181,13 @@ compile_tu() {
 
     # Expand #include / include guards with the system preprocessor. -nostdinc keeps
     # the search to toolchain/rt (freestanding: no system headers); -P drops GNU line
-    # markers (cproc-qbe tolerates them, so -P is just for cleanliness).
-    if ! "$CPP" -E -P -nostdinc -I "$RT_DIR" "$_lf" > "$_pp" 2>"${WORK}/${_tag}.cpp.log"; then
+    # markers (cproc-qbe tolerates them, so -P is just for cleanliness). The ORIGINAL
+    # source directory is added AFTER toolchain/rt so a source can include a sibling
+    # header (e.g. a demo's own term_core.h) while RT headers still resolve from RT_DIR;
+    # existing fixtures include only RT headers, so their resolution is unchanged. The
+    # -I is the source's real directory (the .lf.c copy lives in the scratch dir, which
+    # cpp searches implicitly for the current file).
+    if ! "$CPP" -E -P -nostdinc -I "$RT_DIR" -I "$(dirname -- "$_src")" "$_lf" > "$_pp" 2>"${WORK}/${_tag}.cpp.log"; then
         echo "cc-maize.sh: cpp failed for ${_tag}" >&2; cat "${WORK}/${_tag}.cpp.log" >&2; return 1
     fi
     if ! "$CPROC_QBE" < "$_pp" > "$_ssa" 2>"${WORK}/${_tag}.cproc.log"; then
@@ -216,6 +223,20 @@ for rt in crt0 syscall; do
     fi
     RT_OBJS="${RT_OBJS} ${WORK}/${rt}.mzo"
 done
+
+# maize-121: the OPT-IN device-access shim. --dev appends toolchain/rt/mzdev.mzo (the
+# hand-written IN/OUT stubs over the frozen framebuffer/keyboard ports) to the link so a
+# guest-C program can drive the devices. This is the ONLY object added; the default C link
+# (no --dev) is byte-for-byte unchanged, so every existing ctest fixture is unaffected.
+if [ "$DEV" -eq 1 ]; then
+    cp "${RT_DIR}/mzdev.mazm" "${WORK}/mzdev.mazm"
+    if ! "$MAZM" -c "${WORK}/mzdev.mazm" >"${WORK}/mzdev.mazm.log" 2>&1 || [ ! -f "${WORK}/mzdev.mzo" ]; then
+        echo "cc-maize.sh: failed to assemble device shim mzdev.mazm:" >&2
+        cat "${WORK}/mzdev.mazm.log" >&2
+        exit 2
+    fi
+    RT_OBJS="${RT_OBJS} ${WORK}/mzdev.mzo"
+fi
 
 # The C runtime modules (maize-74 errno; maize-76 string/ctype/stdio/stdlib) are C
 # sources, not asm. Each is compiled through the SAME segmented C pipeline and its

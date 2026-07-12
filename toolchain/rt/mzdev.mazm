@@ -1,0 +1,92 @@
+; ==================================================================================
+; mzdev.mazm -- guest-C device-access shim (maize-121)
+;
+; This is the guest-C binding for the frozen standard-device pinout (Ch.11 of
+; docs/spec/device-surface.md; src/devices.{h,cpp}, maize-83). The Maize C toolchain
+; has no way to issue port I/O (IN / OUT) from C, so this hand-written asm shim exports
+; one C-callable stub per device primitive, exactly as toolchain/rt/syscall.mazm exports
+; one stub per syscall. It is the shared guest-C device foundation the terminal (this
+; card) and DOOM (maize-85) both build on.
+;
+; C ABI (same as syscall.mazm): the first integer argument arrives in R0, and the result
+; is returned in RV (the C return register). Each stub therefore reads its argument from
+; R0 (when any) and leaves its result in RV. Only R0 (a caller-clobbered argument
+; register) and RV (the caller-clobbered return register) are touched, so no callee-saved
+; register is disturbed and the stubs need no frame.
+;
+; PORT-OP DISCIPLINE (the correction folded in at review): the framebuffer/keyboard ports
+; are all immediate literals below $80, so these use the IMMEDIATE-port forms:
+;     OUT  R $NN   ($14)  -- write register R to the immediate port $NN
+;     IN   $NN R   ($1F)  -- read the immediate port $NN into register R
+; OUTR ($1E) is the REGISTER-port op (op2 is a register holding the port number) and is
+; deliberately NOT used here. asm/test_framebuffer.mazm drives $53/$54 with OUT, and
+; src/mazm.cpp:354/367-368 register OUT=immediate-port / OUTR=register-port; this shim
+; matches that contract. The read stubs CLR RV first so the untouched high bits of the
+; return register are zero before the sub-register IN lands its value.
+;
+; Concrete pinout targeted (frozen, Ch.11 "Concrete pinout"):
+;     Keyboard    $10 R scancode (read clears key-available); $11 R bit0 key-available
+;     Framebuffer $50 R width; $51 R height; $52 R format id (1 = XRGB8888)
+;                 $53 R/W guest base address of the pixel buffer
+;                 $54 W present a frame; R bit0 last-present-valid
+;
+; Assembled to mzdev.mzo (mazm -c) and linked by mzld via cc-maize.sh's opt-in --dev
+; flag; the default C link is unchanged, so existing ctest fixtures never see this object.
+; ==================================================================================
+
+SECTION CODE
+
+GLOBAL kbd_status
+GLOBAL kbd_read
+GLOBAL fb_width
+GLOBAL fb_height
+GLOBAL fb_format
+GLOBAL fb_set_base
+GLOBAL fb_present
+GLOBAL fb_present_valid
+
+; unsigned kbd_status(void) -> RV = bit0 key-available (port $11)
+kbd_status:
+    CLR RV
+    IN $11 RV.B0
+    RET
+
+; unsigned kbd_read(void) -> RV = latched scancode (port $10; reading clears key-available)
+kbd_read:
+    CLR RV
+    IN $10 RV.B0
+    RET
+
+; unsigned fb_width(void) -> RV = framebuffer width in pixels (port $50)
+fb_width:
+    CLR RV
+    IN $50 RV.H0
+    RET
+
+; unsigned fb_height(void) -> RV = framebuffer height in pixels (port $51)
+fb_height:
+    CLR RV
+    IN $51 RV.H0
+    RET
+
+; unsigned fb_format(void) -> RV = pixel format id (port $52; 1 = XRGB8888)
+fb_format:
+    CLR RV
+    IN $52 RV.B0
+    RET
+
+; void fb_set_base(void *base) -> OUT R0 $53 (base address in R0, per the C ABI)
+fb_set_base:
+    OUT R0 $53
+    RET
+
+; void fb_present(void) -> OUT R0 $54 (device ignores the written value; present-on-change)
+fb_present:
+    OUT R0 $54
+    RET
+
+; unsigned fb_present_valid(void) -> RV = bit0 last-present-valid (port $54 read)
+fb_present_valid:
+    CLR RV
+    IN $54 RV.B0
+    RET

@@ -573,6 +573,50 @@ run_hostfs_stat
 run_hostfs_escape
 run_hostfs_rofs
 
+# maize-121 self-hosted framebuffer terminal headless self-check. The fixture is a
+# guest-C program under demos/terminal/ that additionally links the mzdev device-access
+# shim (mzdev.mzo), so it is compiled via the driver's opt-in `--dev` flag rather than
+# compile_c's fixed RT set. Phase A drives term_write with a fixed ASCII+escape script and
+# reads back the guest-RAM framebuffer; phase B injects a known Set-1 scancode sequence via
+# `maize --input=keyboard` (mirroring run-tests.sh's run_keyboard_test) and checks the
+# echoed glyphs. One "terminal: PASS" line gates both phases, on Linux CI and Windows.
+run_terminal_selfcheck() {
+    name="terminal"
+    TOTAL=$((TOTAL + 1))
+    src="${REPO_ROOT}/demos/terminal/terminal_selfcheck.c"
+
+    if [ ! -f "$src" ]; then
+        echo "[FAIL] ${name}: missing source fixture" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+
+    mzx="${WORK_DIR}/terminal_selfcheck.mzx"
+    if ! "$CC_MAIZE" --preset "$PRESET" --dev -o "$mzx" "$src" \
+        >"${WORK_DIR}/terminal.cc.log" 2>&1 || [ ! -f "$mzx" ]; then
+        echo "[FAIL] ${name}: C compile failed"; cat "${WORK_DIR}/terminal.cc.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    # Set-1 scancodes: 1E('a'), 2A/1E/AA(shifted 'A'), 02('1'), 2A/02/AA(shifted '!'),
+    # 39(space). Octal for printf: 1E=036 2A=052 AA=252 02=002 39=071.
+    set +e
+    actual=$(printf '\036\052\036\252\002\052\002\252\071' \
+        | "$MAIZE" --input=keyboard "$mzx" 2>/dev/null | grep -v '^$')
+    set -e
+
+    if [ "$actual" = "terminal: PASS" ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"terminal: PASS\""
+        echo "        actual:   \"${actual}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_terminal_selfcheck
+
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then
     echo "C toolchain: ${TOTAL} passed, 0 failed."
