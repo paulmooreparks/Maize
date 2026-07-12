@@ -417,6 +417,25 @@ namespace maize {
 		};
 
 
+		/* Trap cause / vector numbering (card maize-78). Each synchronous trap has a
+		   stable numeric cause that doubles as its index into the shared trap+interrupt
+		   vector table (co-authored with maize-21). Synchronous traps occupy the low
+		   range 0..31; external / device interrupts occupy 32.. (maize-21). Vector 1 is
+		   intentionally left unassigned, reserving a slot for a future debug / single-step
+		   trap. Vector 4 reserves privileged-op-in-user (candidate set finalized with
+		   maize-21 / maize-92); vectors 5 and 6 reserve segment/bounds and stack-fault,
+		   whose enforcement mechanism ships with maize-92. These numbers are frozen ISA
+		   contract; see docs/spec/trap-model.md for the full model. */
+		namespace trap {
+			const u_byte cause_illegal_instruction	{0}; // unknown opcode or unallocated condition encoding
+			const u_byte cause_divide_error			{2}; // divide-by-zero or signed INT_MIN/-1 quotient overflow
+			const u_byte cause_breakpoint			{3}; // BRK ($FF)
+			const u_byte cause_privileged_op		{4}; // reserved: privileged instruction executed in user mode
+			const u_byte cause_segment_bounds		{5}; // reserved (maize-92): segment / bounds violation
+			const u_byte cause_stack_fault			{6}; // reserved (maize-92): stack-limit violation
+		}
+
+
 		namespace instr {
 			const opcode halt_opcode			{0x00};
 

@@ -922,6 +922,21 @@ namespace maize {
             throw std::logic_error(std::string("divide error: ") + detail);
         }
 
+        /* Breakpoint trap (card maize-78, Open Question O7, superseding maize-10
+           Decision D6460). BRK ($FF) is a defined breakpoint trap of cause
+           trap::cause_breakpoint (3), NOT a no-op. It is trap-class: it captures the
+           following-instruction PC, which regs::rp.w0 already holds because tick()
+           advanced past the single-byte opcode before dispatch. Until the maize-21
+           vector table exists there is no handler to enter, so an unhandled breakpoint
+           halts the VM deterministically with the cause surfaced, exactly as
+           raise_divide_error halts an unhandled divide-error. This is the specified
+           successor to today's throw-and-exit; the clean in-guest halt lands with the
+           maize-21 delivery mechanism. */
+        [[noreturn]] void raise_breakpoint() {
+            throw std::logic_error(std::string("breakpoint trap: BRK ($FF), cause ")
+                + std::to_string(static_cast<int>(trap::cause_breakpoint)));
+        }
+
         /* Illegal FP encoding trap (card maize-122 / maize-78 taxonomy): a B* or Q*
            subregister on an FP operand, or a reserved/unallocated FP opcode form,
            is a deterministic illegal-instruction/illegal-operand trap (never
@@ -3587,14 +3602,15 @@ namespace maize {
                         break;
                     }
 
-                    /* BRK (card maize-10, Decision D6460): dispatches as a no-op, mirroring
-                       nop_opcode above. No debugger front-end exists yet to give "trigger a
-                       debug break" observable meaning; this keeps the encoding stable and
-                       non-crashing for future debugger work without inventing throwaway
-                       semantics now. */
+                    /* BRK (card maize-78, Open Question O7, superseding maize-10 Decision
+                       D6460): a defined breakpoint trap, NOT a no-op. tick() has already
+                       advanced regs::rp.w0 past this single-byte opcode, so the captured
+                       following-instruction PC (trap class) is already in place. With no
+                       handler installed (the maize-21 vector table does not exist yet) the
+                       trap halts the VM deterministically with the breakpoint cause
+                       surfaced, through the same mechanism raise_divide_error uses. */
                     case instr::brk_opcode: {
-                        /* Do nothing. */
-                        break;
+                        raise_breakpoint();
                     }
 
                     /* INT ($24/$64) intentionally has no dispatch case here (card maize-10):

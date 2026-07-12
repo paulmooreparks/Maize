@@ -694,8 +694,9 @@ Notes:
 
 - DIV and MOD are signed (two's-complement, truncated toward zero; the remainder takes the sign
   of the dividend). UDIV and UMOD are the unsigned counterparts. A zero divisor, and the signed
-  INT_MIN / -1 quotient overflow, raise a divide-error trap; until the interrupt mechanism exists
-  the VM halts with a diagnostic rather than continuing with an undefined result.
+  INT_MIN / -1 quotient overflow, raise a divide-error trap (cause 2; see Trap Model); until the
+  interrupt mechanism exists the VM halts with a diagnostic rather than continuing with an
+  undefined result.
 - MUL keeps only the low half of the product, with C mirroring its overflow flag. For the full
   double-width product and a distinct "high half nonzero" carry test, use MULW (signed) or UMULW
   (unsigned), which write the low half to dst and the high half to a second destination register.
@@ -788,6 +789,58 @@ Control flow: JMP targets the full 64-bit width; any sub-register selection on t
 ignored, and the assembler rejects a JMP operand that carries a sub-register suffix. Conditional
 branches (Jcc) take an immediate target only, and encode the condition in the two high opcode bits
 using the same condition scheme as the SETcc family.
+
+
+## Trap Model
+
+Every condition that is undefined behavior on a conventional machine is, on Maize, a defined
+outcome: either a named **trap** with a stable numeric cause, or an explicitly defined
+**non-trapping** result. There is no third category, so two conforming implementations cannot
+diverge and a binary behaves identically under analysis and in production. The full normative
+model (delivery, capture layout, conformance checks) lives in
+[docs/spec/trap-model.md](docs/spec/trap-model.md); this section is the summary.
+
+Traps are delivered **precisely**: the in-order core retires every prior instruction and lets no
+later instruction take effect before the trap. A **fault** captures the faulting instruction's
+address (so a handler can correct and retry); a **trap** captures the following instruction's
+address. Synchronous traps are **unmaskable**; only external / device interrupts are maskable via
+the RF interrupt-enable bit (SETINT / CLRINT). Traps and interrupts share one vector table (index =
+cause number; synchronous traps low, interrupts high), one saved-state layout, and one return
+instruction (IRET). With no handler installed the machine halts deterministically with the cause
+surfaced.
+
+Trap taxonomy and reserved cause / vector numbers:
+
+    Cause  Name                              Class  Notes
+    -----  --------------------------------  -----  -------------------------------------------------------
+    0      Illegal instruction               Fault  Unknown opcode or unallocated condition encoding
+    1      (reserved)                         n/a    Reserved for a future debug / single-step trap
+    2      Divide error                       Fault  Divide-by-zero, or signed INT_MIN / -1 quotient overflow
+    3      Breakpoint (BRK)                   Trap   BRK ($FF); captures the following-instruction PC
+    4      Privileged operation in user mode  Fault  Reserved number; enforcement deferred (privilege bit)
+    5      Segment / bounds violation         Fault  Reserved number; mechanism ships with segments
+    6      Stack fault                        Fault  Reserved number; mechanism ships with segments
+    7      (reserved)                         n/a    Not spent on misaligned access (defined-allow)
+    8..31  (reserved)                         n/a    Future synchronous traps
+    32..   External / device interrupts       Intr   Device / timer sources (the timer is the first)
+
+The cause number is also the vector-table index. A cause that multiplexes conditions carries a
+subcode: divide error uses 0 for divide-by-zero and 1 for quotient overflow; illegal instruction
+uses 0 for an unknown opcode and 1 for an unallocated condition encoding.
+
+Explicitly defined, non-trapping behaviors (defined outcomes, not gaps in the taxonomy):
+
+- **Integer overflow wraps** two's-complement and sets C / V per the flags model. There is no
+  trap-on-overflow mode; JO / JNO and SETO / SETNO stay reserved condition encodings.
+- **Out-of-range shift count is defined**: `n == 0` leaves flags unaffected; `1 <= n <= bits`
+  shifts normally; `n > bits` yields result 0 with C / V / N / Z cleared.
+- **Unmapped / sparse memory access is defined**: a read of never-written memory returns 0; a
+  write allocates a zero-filled block. No EFAULT, no page fault in the flat v1.0 model.
+- **Misaligned multi-byte access is defined-allow**: stitched byte-wise across blocks, no
+  alignment requirement, no trap, no vector spent.
+- **Decoded-but-undefined operand-field encodings decode to a defined default**: sub-register
+  `$F` decodes to `b0`; immediate-size 4..7 decodes to the value-initialized default. These are
+  operand fields, not opcodes, so they never raise the illegal-instruction trap.
 
 
 ## Opcode Bytes
@@ -1106,7 +1159,7 @@ bit 7 is interpreted as follows:
 
     %1110`0100  $E4                             reserved
 
-    %1111`1111  $FF   BRK                       Trigger a debug break
+    %1111`1111  $FF   BRK                       Breakpoint trap (cause 3; captures following-instruction PC; see Trap Model)
 
 
 ## Floating-Point (IEEE-754)
@@ -1901,7 +1954,7 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %1111`1100  $FC   SBB       immAddr reg     Subtract value at immediate address plus Carry (borrow) from destination register
     %1111`1101  $FD   MULW      immAddr reg reg Signed wide multiply: full product of operand 2 by value at immediate address; low half to operand 2, high half to operand 3
     %1111`1110  $FE   UMULW     immAddr reg reg Unsigned wide multiply: full product of operand 2 by value at immediate address; low half to operand 2, high half to operand 3
-    %1111`1111  $FF   BRK                       Trigger a debug break
+    %1111`1111  $FF   BRK                       Breakpoint trap (cause 3; captures following-instruction PC; see Trap Model)
 
 ## License
 

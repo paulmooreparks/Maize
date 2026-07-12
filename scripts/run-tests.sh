@@ -252,7 +252,6 @@ run_test "reject_ldz"        "test_reject_ldz.mazm"   "unknown keyword or opcode
 run_test "test_call_ind"     "test_call_ind.mazm"     "call ind: PASS"                0
 run_test "test_setint"       "test_setint.mazm"       "setint: PASS"                  0
 run_test "test_outr_in"      "test_outr_in.mazm"      "outr/in: PASS"                 0
-run_test "test_brk"          "test_brk.mazm"          "brk: PASS"                     0
 run_test "test_sysbrk"       "test_sysbrk.mazm"       "sysbrk: PASS"                  0
 run_test "test_syserrno"     "test_syserrno.mazm"     "syserrno: PASS"                0
 run_test "test_tstind"       "test_tstind.mazm"       "tstind: PASS"                  0
@@ -306,6 +305,50 @@ run_undef_multiref_test() {
 }
 
 run_undef_multiref_test
+
+# --- maize-78: BRK is a defined breakpoint trap, not a no-op --------------------------
+# BRK ($FF) raises a breakpoint trap (cause 3). With no handler installed (the maize-21
+# vector table does not exist yet) an unhandled synchronous trap halts the VM
+# deterministically with the cause surfaced, through the same throw-and-exit mechanism
+# raise_divide_error uses. test_brk.mazm places an unreachable "brk: FAIL" marker right
+# after BRK; the generic run_test cannot express "expected to trap", so this bespoke
+# runner asserts the VM exits nonzero, surfaces a "breakpoint" diagnostic on stderr, and
+# never reaches the fall-through marker (which the old no-op behavior would have printed).
+run_brk_trap_test() {
+    name="brk_trap"
+    TOTAL=$((TOTAL + 1))
+    src="test_brk.mazm"
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+    out_file=$(mktemp)
+    err_file=$(mktemp)
+    if "$MAIZE_EXE" "$bin_path" >"$out_file" 2>"$err_file"; then
+        me=0
+    else
+        me=$?
+    fi
+    out=$(cat "$out_file")
+    err=$(cat "$err_file")
+    rm -f "$out_file" "$err_file"
+    if [ "$me" -ne 0 ] \
+        && printf '%s' "$err" | grep -qiF "breakpoint" \
+        && ! printf '%s' "$out" | grep -qF "FAIL"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: nonzero exit, 'breakpoint' on stderr, no fall-through marker on stdout"
+        echo "        actual:   exit ${me}; stdout=\"${out}\"; stderr=\"${err}\""
+    fi
+}
+
+run_brk_trap_test
 
 # --- maize-75: sys_read byte-count fix (needs a known stdin) --------------------------
 # The generic run_test gives no stdin, so this bespoke runner pipes "hello" and
