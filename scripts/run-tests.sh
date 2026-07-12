@@ -395,6 +395,46 @@ run_priv_fault_trap_test() {
 
 run_priv_fault_trap_test
 
+# --- maize-21: a period-1 timer must not lose an IRQ raised during the masked handler --
+# A period-1 periodic timer raises on every tick, including inside the masked handler
+# window (the post-ack POP/IRET instructions each tick it). Delivery must gate on the
+# durable irq_pending latch, not the RF interrupt-set mirror (which IRET restores clear),
+# or the guest services exactly one tick and then livelocks. The handler drives
+# termination (prints on the Nth tick), so this is an exact-stdout check BOUNDED by a
+# timeout: a lost-IRQ regression trips the timeout (exit 124) instead of hanging the suite.
+run_timer_period1_test() {
+    name="timer_period1"
+    expected="timerp1: PASS"
+    TOTAL=$((TOTAL + 1))
+    src="test_timer_period1.mazm"
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+    out_file=$(mktemp)
+    if timeout 10 "$MAIZE_EXE" "$bin_path" >"$out_file" 2>/dev/null; then
+        me=0
+    else
+        me=$?
+    fi
+    actual=$(cat "$out_file")
+    rm -f "$out_file"
+    if [ "$me" -eq 0 ] && [ "$actual" = "$expected" ]; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: \"${expected}\" (exit 0, no livelock)"
+        echo "        actual:   \"${actual}\" (exit ${me}; 124 = timed out = lost-IRQ livelock)"
+    fi
+}
+
+run_timer_period1_test
+
 # --- maize-75: sys_read byte-count fix (needs a known stdin) --------------------------
 # The generic run_test gives no stdin, so this bespoke runner pipes "hello" and
 # checks the program echoes exactly the bytes read plus an EOF marker: "hello|EOF".

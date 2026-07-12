@@ -4,6 +4,8 @@
 #include "fpu.h"
 #include <sstream>
 #include <exception>
+#include <atomic>
+#include <cassert>
 
 /* This isn't classic OOP. My primary concern is performance; readability is secondary. Readability
 and maintainability are still important, though, because I want this to become something
@@ -902,14 +904,18 @@ namespace maize {
 
             bool is_power_on = false;
 
-            /* Flat interrupt controller state (card maize-21). A single pending-vector
-               latch, guarded by int_mutex, alongside the shipped interrupt_set_flag (RF
-               bit_interrupt_set). Multiple raises coalesce to this one latch (the flat
-               model promises no queue). active_timer_ptr is the instruction-tick timer
+            /* Flat interrupt controller state (card maize-21). irq_pending is the single
+               DURABLE pending-vector latch and the authoritative delivery signal: it is
+               std::atomic so the run loop's lock-free fast path can read it race-free, and
+               it survives a handler return (unlike the RF bit_interrupt_set mirror, which
+               IRET pops back to its saved value). Writes happen under int_mutex. Multiple
+               raises coalesce to this one latch (the flat model promises no queue). The RF
+               interrupt_set_flag is kept as the ISA-visible mirror but is advisory only;
+               delivery never gates on it. active_timer_ptr is the instruction-tick timer
                the run loop advances once per executed instruction; it is null until a
                timer is installed, so the machine and every existing fixture run with no
                interrupt source. */
-            bool irq_pending = false;
+            std::atomic<bool> irq_pending {false};
             u_byte irq_pending_vector = 0;
             timer_device* active_timer_ptr = nullptr;
         }
@@ -981,10 +987,12 @@ namespace maize {
             return entry.w0;
         }
 
-        /* Push a full 64-bit word onto the full-descending stack (pre-decrement RS by 8,
-           then store), matching the PUSH instruction's convention. */
+        /* Push a full 64-bit word onto the full-descending stack (pre-decrement RS by the
+           stack word size, then store), matching the PUSH / CALL / RET convention. The
+           decrement uses the w0 sub-register size, a stack property, rather than the
+           vector-table entry width (which merely happens to be the same 8 bytes). */
         void push_word(u_word value) {
-            regs::rs.w0 -= trap_vector_entry_size;
+            regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];
             reg tmp;
             tmp.w0 = value;
             copy_regval_regaddr(tmp, subreg_enum::w0, regs::rs, subreg_enum::w0);
@@ -1019,13 +1027,18 @@ namespace maize {
         }
 
         /* Single delivery seam (card maize-21). Checked at the instruction boundary in
-           the run loop. The fast path is two RF-bit reads: only when an IRQ is actually
+           the run loop. The gate is the DURABLE controller latch irq_pending, not the RF
+           interrupt_set_flag mirror: IRET pops the whole RF word, so the mirror bit is
+           restored to whatever the frame saved and cannot be relied on across a handler
+           return. An IRQ raised while a handler ran masked sets irq_pending; once the
+           handler's IRET restores the enable bit, this gate delivers it. The fast path is
+           a lock-free atomic read plus an RF-bit read; only when an IRQ is actually
            pending AND interrupts are enabled does it take int_mutex. Acknowledge-on-
-           delivery clears the pending latch BEFORE handler entry, so the same IRQ is not
+           delivery clears the latch BEFORE handler entry, so the same IRQ is not
            re-delivered on IRET. Returns true when an interrupt was delivered (the run
            loop then continues to the handler's first instruction). */
         bool try_deliver_interrupt() {
-            if (!interrupt_set_flag || !interrupt_enabled_flag) {
+            if (!interrupt_enabled_flag || !irq_pending) {
                 return false;
             }
             u_byte vector;
@@ -1052,8 +1065,20 @@ namespace maize {
            controller coalesces multiple raises to the single pending-vector latch
            (last-raise-wins). Taking int_mutex and notifying int_event makes delivery
            race-free for both a running core (checked at the instruction boundary) and a
-           core waiting on int_event. */
+           core waiting on int_event.
+
+           Precondition: vector is an external-interrupt vector in [32, 255]; the
+           synchronous-trap range 0..31 is not an IRQ source and must not be raised here
+           (a sub-32 vector would deliver through a trap slot with an IRQ cause packing).
+
+           Threading constraint: today the only caller is the instruction-tick timer,
+           which runs on the CPU thread, so the interrupt_set_flag RF-mirror write below
+           is safe. A host-thread device backend that calls this seam would race the CPU
+           thread's unsynchronized RF accesses on that mirror bit; the durable latch
+           (irq_pending, atomic) that delivery actually gates on is race-free, and the
+           full cross-thread RF synchronization lands with the device-plugin work. */
         void raise_irq(u_byte vector) {
+            assert(vector >= 32 && "raise_irq: vector must be an external-interrupt vector (32..255)");
             std::lock_guard<std::mutex> lk(int_mutex);
             irq_pending_vector = vector;
             irq_pending = true;
@@ -4205,21 +4230,26 @@ namespace maize {
                     std::unique_lock<std::mutex> lk(int_mutex);
 
                     if (is_power_on) {
-                        /* Wait-for-interrupt: a core that dropped out of tick() with power
-                           still on (running_flag clear, is_power_on set) is parked here
-                           until an IRQ arrives. raise_irq latches the pending vector and
-                           notifies int_event; on wake, delivery runs against the shared
-                           four-word aux / cause / RF / PC frame (card maize-21, replacing
-                           the stale two-word RP/RF sketch) and tick() is re-entered so the
-                           handler executes. The predicate guards against spurious wakeups.
+                        /* Wait-for-interrupt park: a core that dropped out of tick() with
+                           power still on (running_flag clear, is_power_on set) waits here
+                           until a DELIVERABLE interrupt arrives (a pending IRQ with
+                           interrupts enabled) or power is cut. Waiting on the deliverable
+                           condition (not merely "pending") means a masked pending IRQ
+                           keeps the core parked rather than spinning or resuming execution
+                           from the current PC. On a deliverable wake it acknowledges,
+                           builds the shared four-word aux / cause / RF / PC frame, and
+                           re-enters tick() so the handler runs.
 
-                           Existing fixtures never reach this park: HALT calls power_off(),
-                           which clears is_power_on, so the machine exits rather than
-                           waiting. A wait-for-interrupt HALT that keeps power on is a
-                           future path; the delivery seam here is ready for it. */
-                        int_event.wait(lk, [] { return irq_pending || !is_power_on; });
+                           No shipped instruction parks with power on: HALT calls
+                           power_off(), which clears is_power_on, so the machine exits
+                           rather than waiting. This park is therefore currently
+                           unreachable; it is written to be correct if a wait-for-interrupt
+                           HALT (which keeps power on) is added later. */
+                        while (is_power_on && !(irq_pending && interrupt_enabled_flag)) {
+                            int_event.wait(lk);
+                        }
 
-                        if (is_power_on && irq_pending && interrupt_enabled_flag) {
+                        if (is_power_on) {
                             u_byte vector = irq_pending_vector;
                             irq_pending = false;
                             interrupt_set_flag = false;

@@ -405,9 +405,48 @@ function Invoke-SysreadTest {
     return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = $expected; Actual = $actual }
 }
 
+# --- maize-21: a period-1 timer must not lose an IRQ raised during the masked handler --
+# A period-1 periodic timer raises on every tick, including inside the masked handler
+# window; delivery must gate on the durable irq_pending latch, not the RF interrupt-set
+# mirror (which IRET restores clear), or the guest services one tick and livelocks. The
+# handler drives termination, so this is an exact-stdout check bounded by a WaitForExit
+# deadline: a lost-IRQ regression trips the deadline instead of hanging the suite (same
+# Process API + bounded-wait idiom as Invoke-ObjBackjmpTest). Mirrors run-tests.sh's
+# run_timer_period1_test.
+function Invoke-TimerPeriod1Test {
+    $name = 'timer_period1'
+    $expected = 'timerp1: PASS'
+    $srcPath = Join-Path $AsmDir 'test_timer_period1.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_timer_period1.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'mazm failed to assemble' }
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $MaizeExe
+    $psi.Arguments = "`"$binPath`""
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    if (-not $proc.WaitForExit(10000)) {
+        try { $proc.Kill() } catch { }
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'timed out (lost-IRQ livelock?)' }
+    }
+    $me = $proc.ExitCode
+    $actualRaw = $proc.StandardOutput.ReadToEnd()
+    $actual = Trim-TrailingNewlines $actualRaw
+    return [pscustomobject]@{ Name = $name; Pass = (($me -eq 0) -and ($actual -eq $expected)); Expected = $expected; Actual = $actual }
+}
+
 $results += Invoke-UndefMultirefTest
 $results += Invoke-TrapTest 'brk_trap'        'test_brk.mazm'        'breakpoint'
 $results += Invoke-TrapTest 'priv_fault_trap' 'test_priv_fault.mazm' 'privileg'
+$results += Invoke-TimerPeriod1Test
 $results += Invoke-SysreadTest
 
 # --- maize-12: multi-TU assemble -> link -> run -----------------------------------

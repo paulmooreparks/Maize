@@ -932,7 +932,12 @@ namespace maize {
 		/* Interrupt controller seam (card maize-21). A device raises an IRQ by making a
 		   vector pending through raise_irq; the flat controller coalesces multiple raises
 		   to a single pending-vector latch. set_active_timer installs the instruction-tick
-		   timer the run loop advances once per executed instruction. */
+		   timer the run loop advances once per executed instruction.
+
+		   Precondition: raise_irq's vector is an external-interrupt vector in [32, 255].
+		   The synchronous-trap range 0..31 is not an IRQ source and must not be raised
+		   through this seam. Called on the CPU thread today (see the definition for the
+		   cross-thread RF-mirror constraint). */
 		void raise_irq(u_byte vector);
 		void set_active_timer(timer_device* timer);
 

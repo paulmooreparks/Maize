@@ -207,7 +207,7 @@ pointing at the saved RF. It then returns with **IRET**, which pops RF and then 
 restoring the interrupted context. This is the shared return path for both traps and
 interrupts; there is no TRET.
 
-The vector-table format is now pinned. The table has a fixed low base address of
+The vector-table format is fixed. The table has a fixed low base address of
 `0x1000`, one 4 KiB page above the null/zero location, so the "a null pointer reads 0"
 convention stays clean and an uninstalled entry reads as an unambiguous zero. Each entry
 is 8 bytes wide and holds a full 64-bit handler address; the table has 256 entries

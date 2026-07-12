@@ -126,9 +126,7 @@ per-device register model in Surface 3 states the read and write meaning of each
 **Reference-VM note.** The `$94` OUT form (out_regAddr_imm, "value at the address in the
 source register") writes the value loaded from the source address, matching the transfer
 semantics above and its sibling address forms (`$D4` OUT immAddr, and `$9E` / `$DE` OUTR
-regAddr / immAddr). An earlier reference-VM revision wrote the raw source register instead,
-so the memory load was dead; that defect is corrected. The conformance suite tests against
-the contract, so the corrected behavior is the canonical one.
+regAddr / immAddr). The conformance suite tests this transfer against the contract.
 
 ### Privilege
 

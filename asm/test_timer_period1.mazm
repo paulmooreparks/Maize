@@ -1,0 +1,87 @@
+; **********************************************************************************
+; Regression test for card maize-21 (cycle-2 blocker fix): an IRQ raised while a
+; masked handler runs must NOT be lost across IRET.
+;
+; With a period-1 periodic timer, the timer fires again during the handler's post-ack
+; tail (the POP/IRET instructions each tick it), so every tick is raised inside the
+; masked window. If delivery gated on the RF interrupt-set mirror (which IRET pops back
+; to its saved-clear value) the second and later ticks would be lost, irq_pending would
+; stay latched with no further delivery, and the guest would livelock. Gating delivery
+; on the durable irq_pending latch instead makes each masked-window IRQ deliver once the
+; handler's IRET restores the interrupt-enable bit.
+;
+; Because period-1 delivery preempts the main loop (a fresh IRQ is pending the instant
+; IRET returns), the handler itself drives progress and termination: it counts serviced
+; ticks and, on the Nth, prints "timerp1: PASS" and halts from within the handler. Under
+; the pre-fix behavior it services exactly one tick and then spins forever, never
+; reaching N, so the trap-free suite would hang (the runners bound it with a timeout).
+;
+; Provisional timer pinout (maize-21): period $40, control $41, status/ack $42, IRQ
+; vector 32; vector table base $1000, so entry[32] is at $1100.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- install the timer handler at entry[32] ($1100) ----
+    CLR R0
+    CP timer_handler R0.H0
+    CLR R1
+    CP $1100 R1
+    ST R0 @R1
+
+    ; ---- zero the serviced-tick counter ----
+    CLR R0
+    CLR R1
+    CP tick_count R1.H0
+    ST R0 @R1
+
+    ; ---- program the timer: period = 1 tick, mode = periodic + enable ----
+    CLR R0
+    CP $01 R0.B0
+    OUT R0.B0 $40         ; period register
+    CP $03 R0.B0          ; bit0 = enable, bit1 = periodic
+    OUT R0.B0 $41         ; control register
+
+    SETINT                ; unmask interrupts
+
+spin:
+    JMP spin              ; the handler drives progress and termination
+
+; **********************************************************************************
+; Timer interrupt handler. Services a tick; on the Nth (N = 3) it prints PASS and halts
+; from within the handler. Otherwise it acknowledges (re-arming the periodic timer) and
+; returns through the shared IRET.
+timer_handler:
+    ADD $10 SP            ; discard aux + cause (2 words); SP now at the saved RF
+    PUSH R8
+    PUSH R9
+
+    CLR R8
+    CP tick_count R8.H0
+    LD @R8 R9
+    INC R9
+    ST R9 @R8            ; ++serviced ticks
+    CMP $03 R9           ; reached N = 3 serviced ticks?
+    JGE finish
+
+    CLR R9
+    OUT R9.B0 $42        ; ack: write 0 to the status register (clears pending, re-arms)
+    POP R9
+    POP R8
+    IRET                 ; pop RF (re-enables interrupts), pop PC (resume the spin)
+
+finish:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $0E R2            ; 14 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+tick_count:
+    DATA $00 $00 $00 $00 $00 $00 $00 $00   ; 8-byte serviced-tick counter
+
+pass_string:
+    STRING "timerp1: PASS\n\0"
