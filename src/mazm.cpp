@@ -2676,19 +2676,70 @@ namespace {
         }
     }
 
+    /* Float width in bytes named by an operand's subregister: 4 for H0/H1, 8 for
+       W0/W or a bare register (== W0), 0 for a B* or Q* / integer subregister. A
+       leading '@' (address form) is stripped first. */
+    u_byte fp_operand_width(std::string const &operand) {
+        std::string op {operand};
+        if (!op.empty() && op[0] == special_chars::address) {
+            op = op.substr(1);
+        }
+        auto dot = op.find('.');
+        if (dot == std::string::npos) {
+            return 8; // bare register == W0 (binary64)
+        }
+        std::string sub;
+        std::transform(op.begin() + dot + 1, op.end(), std::back_inserter(sub), ::toupper);
+        if (sub == "H0" || sub == "H1") return 4;
+        if (sub == "W0" || sub == "W")  return 8;
+        return 0;
+    }
+
+    /* Byte width of an FP immediate literal (the count of encoded bytes), used to
+       check it matches the destination float width. */
+    u_byte fp_immediate_width(std::string const &literal) {
+        std::string lit {literal};
+        cpu::reg_value v {0};
+        u_byte flag = compile_literal(lit, v) & cpu::opflag_imm_size;
+        switch (flag) {
+            case cpu::opflag_imm_size_08b: return 1;
+            case cpu::opflag_imm_size_16b: return 2;
+            case cpu::opflag_imm_size_32b: return 4;
+            default:                       return 8;
+        }
+    }
+
     /* FADD/FSUB/FMUL/FDIV/FCMP: reuse the ALU/CMP four-form source compiler, but
        first reject a B* or Q* subregister on the destination float register and on a
-       register-value source (an '@' address or immediate source is not a float
-       operand, so it is not width-checked here). */
+       register-value source, reject a register source whose float width differs from
+       the destination (mixed-width FP operands are illegal, card maize-122), and
+       reject an immediate source whose byte width does not match the destination
+       float width (4 bytes for binary32, 8 for binary64). */
     void fp_arith_compiler(token_tree &tree, std::string &opcode_str) {
         auto it {tree.value.begin()};
         std::string op1 {it->key};
         auto loc1_file {it->loc_file}; auto loc1_line {it->loc_line};
         ++it;
         std::string op2 {it->key};
-        fp_reject_int_subreg(op2, opcode_str, it->loc_file, it->loc_line);
-        if (!op1.empty() && op1[0] != special_chars::address && is_register(op1)) {
+        auto loc2_file {it->loc_file}; auto loc2_line {it->loc_line};
+        fp_reject_int_subreg(op2, opcode_str, loc2_file, loc2_line);
+        u_byte dstw = fp_operand_width(op2);
+        bool op1_is_addr = (!op1.empty() && op1[0] == special_chars::address);
+        if (!op1_is_addr && is_register(op1)) {
             fp_reject_int_subreg(op1, opcode_str, loc1_file, loc1_line);
+            if (fp_operand_width(op1) != dstw) {
+                fatal(loc1_file, loc1_line,
+                    opcode_str + " operands must be the same floating-point width "
+                    "(binary32 H0/H1 with binary32, binary64 W0 with binary64)");
+            }
+        }
+        else if (!op1_is_addr && is_literal(op1)) {
+            if (fp_immediate_width(op1) != dstw) {
+                fatal(loc1_file, loc1_line,
+                    opcode_str + " immediate source must be " + std::to_string(dstw)
+                    + " bytes to match the " + (dstw == 4 ? "binary32" : "binary64")
+                    + " destination");
+            }
         }
         regimm_reg_compiler(tree, opcode_str);
     }
@@ -2702,12 +2753,34 @@ namespace {
         auto loc1_file {it->loc_file}; auto loc1_line {it->loc_line};
         ++it;
         std::string op2 {it->key};
-        fp_reject_int_subreg(op2, opcode_str, it->loc_file, it->loc_line);
+        auto loc2_file {it->loc_file}; auto loc2_line {it->loc_line};
+        fp_reject_int_subreg(op2, opcode_str, loc2_file, loc2_line);
         ++it;
         std::string op3 {it->key};
-        fp_reject_int_subreg(op3, opcode_str, it->loc_file, it->loc_line);
-        if (!op1.empty() && op1[0] != special_chars::address && is_register(op1)) {
+        auto loc3_file {it->loc_file}; auto loc3_line {it->loc_line};
+        fp_reject_int_subreg(op3, opcode_str, loc3_file, loc3_line);
+        u_byte dstw = fp_operand_width(op3);
+        if (fp_operand_width(op2) != dstw) {
+            fatal(loc2_file, loc2_line,
+                opcode_str + " operands must be the same floating-point width "
+                "(binary32 H0/H1 with binary32, binary64 W0 with binary64)");
+        }
+        bool op1_is_addr = (!op1.empty() && op1[0] == special_chars::address);
+        if (!op1_is_addr && is_register(op1)) {
             fp_reject_int_subreg(op1, opcode_str, loc1_file, loc1_line);
+            if (fp_operand_width(op1) != dstw) {
+                fatal(loc1_file, loc1_line,
+                    opcode_str + " operands must be the same floating-point width "
+                    "(binary32 H0/H1 with binary32, binary64 W0 with binary64)");
+            }
+        }
+        else if (!op1_is_addr && is_literal(op1)) {
+            if (fp_immediate_width(op1) != dstw) {
+                fatal(loc1_file, loc1_line,
+                    opcode_str + " immediate multiplicand must be " + std::to_string(dstw)
+                    + " bytes to match the " + (dstw == 4 ? "binary32" : "binary64")
+                    + " operands");
+            }
         }
         regimm_regreg_compiler(tree, opcode_str);
     }
@@ -2738,6 +2811,18 @@ namespace {
 
         if (op1_float) fp_reject_int_subreg(op1, opcode_str, loc1_file, loc1_line);
         if (op2_float) fp_reject_int_subreg(op2, opcode_str, loc2_file, loc2_line);
+
+        /* Same-format ops (FSQRT/FNEG/FABS/FMIN/FMAX) require both float operands at
+           the same width; mixed-width float operands are illegal (card maize-122).
+           The FCVT* family is exempt because a conversion intentionally names two
+           different widths. */
+        if (op1_float && op2_float && opcode_str != "FCVTFF") {
+            if (fp_operand_width(op1) != fp_operand_width(op2)) {
+                fatal(loc2_file, loc2_line,
+                    opcode_str + " operands must be the same floating-point width "
+                    "(binary32 H0/H1 with binary32, binary64 W0 with binary64)");
+            }
+        }
 
         u_byte operand1_byte {compile_register_checked(op1, loc1_file, loc1_line)};
         u_byte operand2_byte {compile_register_checked(op2, loc2_file, loc2_line)};

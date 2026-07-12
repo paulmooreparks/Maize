@@ -1,0 +1,9 @@
+; Card maize-122: the float operands of a same-format op must be the same width.
+; Mixing binary32 (H0) and binary64 (W0) is illegal; mazm must reject it at
+; assemble time (the VM also traps it deterministically at run time). Here FADD
+; names a binary32 source and a binary64 destination.
+
+$0000`0000:
+    CP $3FC00000 R0.H0
+    FADD R0.H0 R1.W0
+    HALT

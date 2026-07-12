@@ -422,8 +422,28 @@ namespace maize {
             // float -> float (binary32 <-> binary64), rounds per FRM.
             inline fresult fp_cvt_ff(std::uint64_t abits, std::uint8_t src_w, std::uint8_t dst_w, std::uint8_t frm) {
                 fresult r;
+
+                // NaN input: every path returns the canonical qNaN at the destination
+                // width, raising NV iff the source is a signaling NaN (a quiet NaN does
+                // not signal). Handled up front so the widening and same-width paths
+                // cannot drop NV the way a bare cast would.
+                bool src_nan, src_snan;
+                if (src_w == 4) {
+                    std::uint32_t lo = static_cast<std::uint32_t>(abits);
+                    src_nan = std::isnan(f32_from_bits(lo));
+                    src_snan = is_snan32(lo);
+                } else {
+                    src_nan = std::isnan(f64_from_bits(abits));
+                    src_snan = is_snan64(abits);
+                }
+                if (src_nan) {
+                    if (src_snan) r.flags |= fflag_nv;
+                    r.bits = (dst_w == 4) ? canonical_qnan32 : canonical_qnan64;
+                    return r;
+                }
+
                 if (src_w == dst_w) {
-                    // same width: identity (still canonicalise a NaN? keep bits)
+                    // same width, non-NaN: identity move.
                     r.bits = (dst_w == 4) ? static_cast<std::uint32_t>(abits) : abits;
                     return r;
                 }
@@ -431,9 +451,7 @@ namespace maize {
                     // widen binary32 -> binary64: always exact, no rounding.
                     float a = f32_from_bits(static_cast<std::uint32_t>(abits));
                     double res = static_cast<double>(a);
-                    std::uint64_t rb = bits_from_f64(res);
-                    if (std::isnan(res)) rb = canonical_qnan64;
-                    r.bits = rb;
+                    r.bits = bits_from_f64(res);
                     return r;
                 }
                 // narrow binary64 -> binary32: rounds per FRM.

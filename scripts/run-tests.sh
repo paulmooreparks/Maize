@@ -265,6 +265,7 @@ run_test "reject_jcc_reg"       "test_reject_jcc_reg.mazm"       "immediate targ
 run_test "reject_jmp_subreg"    "test_reject_jmp_subreg.mazm"    "full 64-bit width"      0 1
 run_test "test_fp"              "test_fp.mazm"                   "fp: PASS"               0
 run_test "reject_fp_subreg"     "test_fp_reject_subreg.mazm"     "B* or Q* subregister"   0 1
+run_test "reject_fp_mixwidth"   "test_fp_reject_mixwidth.mazm"   "same floating-point width" 0 1
 run_test "nested_include"       "test_nested_include.mazm"       "nested include: PASS"   1
 run_test "address_fwdlabel"     "test_address_fwdlabel.mazm"     "address fwd-ref: PASS"  0
 

@@ -939,6 +939,21 @@ namespace maize {
                 return (static_cast<u_byte>(regs::fcsr.b0) >> 5) & 0x07;
             }
 
+            /* The rounding mode consulted by every rounding FP op. FRM encodings
+               101 / 110 are reserved and 111 (DYN) is unsupported on Maize (there
+               is no per-instruction rounding field); rather than silently rounding
+               to nearest, a rounding op with a reserved/unsupported FRM in FCSR is a
+               deterministic illegal-operand trap (card maize-122; matches RISC-V,
+               which treats a reserved static rounding mode as illegal). Non-rounding
+               ops (FNEG/FABS/FMIN/FMAX/FCMP) never call this and are unaffected. */
+            u_byte fp_checked_frm() {
+                u_byte frm = fcsr_frm();
+                if (frm > 4) {
+                    raise_illegal_fp("reserved / unsupported FRM rounding mode in FCSR");
+                }
+                return frm;
+            }
+
             void fcsr_raise(u_byte fflag_bits) {
                 regs::fcsr.b0 = static_cast<u_byte>(regs::fcsr.b0) | (fflag_bits & 0x1F);
             }
@@ -2726,7 +2741,7 @@ namespace maize {
         void run_fpu_arith() {
             u_byte base = alu.b0 & arithmetic_logic_unit::opflag_code;
             u_byte width = alu.b2;
-            u_byte frm = fcsr_frm();
+            u_byte frm = fp_checked_frm();
             u_word dst = alu.op2_reg.w0;
             u_word src = alu.op1_reg.w0;
             fpu::fresult res;
@@ -3606,7 +3621,9 @@ namespace maize {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 (binary32) or W0 (binary64)");
-                        if (!fp_width_from_subreg(op1_subreg_flag())) raise_illegal_fp("FP source subregister must be H0/H1 or W0");
+                        u_byte sw = fp_width_from_subreg(op1_subreg_flag());
+                        if (!sw) raise_illegal_fp("FP source subregister must be H0/H1 or W0");
+                        if (sw != w) raise_illegal_fp("FP operands must be the same width (binary32 with binary32, binary64 with binary64)");
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
                         alu.b0 = regs::ri.b0;
@@ -3682,7 +3699,9 @@ namespace maize {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
-                        if (!fp_width_from_subreg(op1_subreg_flag())) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
+                        u_byte sw = fp_width_from_subreg(op1_subreg_flag());
+                        if (!sw) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
+                        if (sw != w) raise_illegal_fp("FCMP operands must be the same width (binary32 with binary32, binary64 with binary64)");
                         u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
                         u_word a = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         do_fcmp(a, src, w);
@@ -3735,11 +3754,13 @@ namespace maize {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 or W0");
-                        if (!fp_width_from_subreg(op1_subreg_flag())) raise_illegal_fp("FP source subregister must be H0/H1 or W0");
+                        u_byte sw = fp_width_from_subreg(op1_subreg_flag());
+                        if (!sw) raise_illegal_fp("FP source subregister must be H0/H1 or W0");
+                        if (sw != w) raise_illegal_fp("FP operands must be the same width (binary32 with binary32, binary64 with binary64)");
                         u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
                         fpu::fresult res;
                         switch (regs::ri.b0) {
-                            case instr::fsqrt_opcode: res = fpu::fp_sqrt(src, w, fcsr_frm()); break;
+                            case instr::fsqrt_opcode: res = fpu::fp_sqrt(src, w, fp_checked_frm()); break;
                             case instr::fneg_opcode:  res = fpu::fp_neg(src, w); break;
                             default:                  res = fpu::fp_abs(src, w); break;
                         }
@@ -3755,7 +3776,9 @@ namespace maize {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 or W0");
-                        if (!fp_width_from_subreg(op1_subreg_flag())) raise_illegal_fp("FP source subregister must be H0/H1 or W0");
+                        u_byte sw = fp_width_from_subreg(op1_subreg_flag());
+                        if (!sw) raise_illegal_fp("FP source subregister must be H0/H1 or W0");
+                        if (sw != w) raise_illegal_fp("FP operands must be the same width (binary32 with binary32, binary64 with binary64)");
                         u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
                         u_word dst = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         fpu::fresult res = (regs::ri.b0 == instr::fmin_opcode)
@@ -3774,7 +3797,7 @@ namespace maize {
                         u_byte sw = fp_width_from_subreg(op1_subreg_flag());
                         if (!dw || !sw) raise_illegal_fp("FCVTFF operand subregister must be H0/H1 or W0");
                         u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
-                        fpu::fresult res = fpu::fp_cvt_ff(src, sw, dw, fcsr_frm());
+                        fpu::fresult res = fpu::fp_cvt_ff(src, sw, dw, fp_checked_frm());
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
                         break;
@@ -3788,7 +3811,7 @@ namespace maize {
                         u_byte dw = op2_subreg_size(); // integer dst: any width
                         u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
                         bool is_signed = (regs::ri.b0 == instr::fcvtfs_opcode);
-                        fpu::fresult res = fpu::fp_cvt_f_to_int(src, sw, dw, is_signed, fcsr_frm());
+                        fpu::fresult res = fpu::fp_cvt_f_to_int(src, sw, dw, is_signed, fp_checked_frm());
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
                         break;
@@ -3802,7 +3825,7 @@ namespace maize {
                         u_byte sw = op1_subreg_size(); // integer src: any width
                         u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
                         bool is_signed = (regs::ri.b0 == instr::fcvtsf_opcode);
-                        fpu::fresult res = fpu::fp_cvt_int_to_f(src, sw, dw, is_signed, fcsr_frm());
+                        fpu::fresult res = fpu::fp_cvt_int_to_f(src, sw, dw, is_signed, fp_checked_frm());
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
                         break;
@@ -3819,11 +3842,15 @@ namespace maize {
                         regs::rp.w0 += 3;
                         u_byte w = fp_width_from_subreg(op3_subreg_flag());
                         if (!w) raise_illegal_fp("FMA destination subregister must be H0/H1 or W0");
+                        u_byte aw = fp_width_from_subreg(op1_subreg_flag());
+                        u_byte bw = fp_width_from_subreg(op2_subreg_flag());
+                        if (!aw || !bw) raise_illegal_fp("FMA multiplicand subregister must be H0/H1 or W0");
+                        if (aw != w || bw != w) raise_illegal_fp("FMA operands must be the same width (binary32 with binary32, binary64 with binary64)");
                         u_word a = read_subreg_bits(op1_reg(), op1_subreg_flag());
                         u_word b = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         u_word c = read_subreg_bits(op3_reg(), op3_subreg_flag());
                         bool sub = ((regs::ri.b0 & arithmetic_logic_unit::opflag_code) == instr::fmsub_opcode);
-                        fpu::fresult res = fpu::fp_fma(a, b, c, w, fcsr_frm(), sub);
+                        fpu::fresult res = fpu::fp_fma(a, b, c, w, fp_checked_frm(), sub);
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op3_reg(), op3_subreg_flag(), res.bits);
                         break;
@@ -3834,6 +3861,11 @@ namespace maize {
                         regs::rp.w0 += 3;
                         u_byte w = fp_width_from_subreg(op3_subreg_flag());
                         if (!w) raise_illegal_fp("FMA destination subregister must be H0/H1 or W0");
+                        {
+                            u_byte bw = fp_width_from_subreg(op2_subreg_flag());
+                            if (!bw) raise_illegal_fp("FMA multiplicand subregister must be H0/H1 or W0");
+                            if (bw != w) raise_illegal_fp("FMA operands must be the same width (binary32 with binary32, binary64 with binary64)");
+                        }
                         u_byte src_size = op1_imm_size();
                         reg tmp; tmp.w0 = 0;
                         mm.read(regs::rp.w0, tmp, src_size, 0);
@@ -3841,7 +3873,7 @@ namespace maize {
                         u_word b = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         u_word c = read_subreg_bits(op3_reg(), op3_subreg_flag());
                         bool sub = ((regs::ri.b0 & arithmetic_logic_unit::opflag_code) == instr::fmsub_opcode);
-                        fpu::fresult res = fpu::fp_fma(a, b, c, w, fcsr_frm(), sub);
+                        fpu::fresult res = fpu::fp_fma(a, b, c, w, fp_checked_frm(), sub);
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op3_reg(), op3_subreg_flag(), res.bits);
                         regs::rp.w0 += src_size;
@@ -3853,6 +3885,11 @@ namespace maize {
                         regs::rp.w0 += 3;
                         u_byte w = fp_width_from_subreg(op3_subreg_flag());
                         if (!w) raise_illegal_fp("FMA destination subregister must be H0/H1 or W0");
+                        {
+                            u_byte bw = fp_width_from_subreg(op2_subreg_flag());
+                            if (!bw) raise_illegal_fp("FMA multiplicand subregister must be H0/H1 or W0");
+                            if (bw != w) raise_illegal_fp("FMA operands must be the same width (binary32 with binary32, binary64 with binary64)");
+                        }
                         u_word addr = read_subreg_bits(op1_reg(), op1_subreg_flag());
                         reg tmp; tmp.w0 = 0;
                         mm.read(addr, tmp, w, 0);
@@ -3860,7 +3897,7 @@ namespace maize {
                         u_word b = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         u_word c = read_subreg_bits(op3_reg(), op3_subreg_flag());
                         bool sub = ((regs::ri.b0 & arithmetic_logic_unit::opflag_code) == instr::fmsub_opcode);
-                        fpu::fresult res = fpu::fp_fma(a, b, c, w, fcsr_frm(), sub);
+                        fpu::fresult res = fpu::fp_fma(a, b, c, w, fp_checked_frm(), sub);
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op3_reg(), op3_subreg_flag(), res.bits);
                         break;
@@ -3871,13 +3908,18 @@ namespace maize {
                         regs::rp.w0 += 3;
                         u_byte w = fp_width_from_subreg(op3_subreg_flag());
                         if (!w) raise_illegal_fp("FMA destination subregister must be H0/H1 or W0");
+                        {
+                            u_byte bw = fp_width_from_subreg(op2_subreg_flag());
+                            if (!bw) raise_illegal_fp("FMA multiplicand subregister must be H0/H1 or W0");
+                            if (bw != w) raise_illegal_fp("FMA operands must be the same width (binary32 with binary32, binary64 with binary64)");
+                        }
                         u_byte src_size = op1_imm_size();
                         copy_memaddr_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
                         u_word a = alu.op1_reg.w0;
                         u_word b = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         u_word c = read_subreg_bits(op3_reg(), op3_subreg_flag());
                         bool sub = ((regs::ri.b0 & arithmetic_logic_unit::opflag_code) == instr::fmsub_opcode);
-                        fpu::fresult res = fpu::fp_fma(a, b, c, w, fcsr_frm(), sub);
+                        fpu::fresult res = fpu::fp_fma(a, b, c, w, fp_checked_frm(), sub);
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op3_reg(), op3_subreg_flag(), res.bits);
                         regs::rp.w0 += src_size;

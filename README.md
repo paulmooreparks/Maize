@@ -1113,9 +1113,10 @@ bit 7 is interpreted as follows:
 
 Maize implements IEEE-754-2019 **binary32** (single) and **binary64** (double), both
 widths, all five rounding modes, all five sticky exception flags, subnormals (gradual
-underflow, no flush-to-zero), and a fused multiply-add. Semantics are lifted from the
-RISC-V F/D extensions verbatim; conformance is the standard IEEE-754 vectors, not
-per-op reasoning.
+underflow, no flush-to-zero), and a fused multiply-add. Semantics track the RISC-V F/D
+extensions closely, with one deliberate divergence named below (a NaN float->integer
+conversion yields 0 rather than RISC-V's maximum value); conformance is the standard
+IEEE-754 vectors, not per-op reasoning.
 
 ### Zfinx: floats live in the integer registers
 
@@ -1131,6 +1132,14 @@ A `B*` or `Q*` subregister on a floating-point operand is illegal: mazm rejects 
 assemble time, and the VM raises a deterministic illegal-operand trap. There is **no
 NaN-boxing**: a binary32 value simply occupies a 32-bit subregister like any 32-bit
 integer, and the upper bits follow the existing subregister merge semantics.
+
+The float operands of a same-format op (FADD/FSUB/FMUL/FDIV/FCMP, FSQRT/FNEG/FABS,
+FMIN/FMAX, and FMADD/FMSUB) must all be the **same width**: mixing a binary32 and a
+binary64 operand (for example `FADD R0.H0 R1.W0`) is a deterministic illegal-operand
+trap, and mazm rejects it at assemble time. An FP immediate source must likewise be
+exactly the destination float width (4 bytes for binary32, 8 for binary64). The
+conversion ops (FCVTFF and the integer/float FCVT* family) are the sole exception, since
+a conversion names two operands of intentionally different width.
 
 ### FCSR: rounding mode and sticky exception flags
 
@@ -1158,6 +1167,11 @@ upper bits are reserved for a future v1.x trap-enable extension and are not impl
     111  DYN  not supported (Maize has no per-instruction rounding field)
 
 Every rounding op consults the current FRM; there is no per-instruction rounding field.
+A rounding op executed while FRM holds a reserved encoding (`101`/`110`) or the
+unsupported `DYN` (`111`) is a deterministic illegal-operand trap, not a silent
+round-to-nearest (matching RISC-V, which treats a reserved static rounding mode as
+illegal). The non-rounding ops (FNEG, FABS, FMIN, FMAX, FCMP) never consult FRM and are
+unaffected.
 
 **FFLAGS (sticky exception flags)**, RISC-V bit order:
 
@@ -1226,9 +1240,12 @@ inversion (there is no separate opcode).
   operand; both NaN returns the canonical qNaN; a signaling NaN raises NV; `-0 < +0`.
 - **Compare** (`FCMP`): the quiet compare above.
 - **Conversions**: `FCVTFF` (float <-> float, widths from the two subregisters), `FCVTFS` /
-  `FCVTFU` (float -> signed / unsigned integer, saturating: NaN -> 0, overflow -> max,
-  underflow -> min, all setting NV), `FCVTSF` / `FCVTUF` (signed / unsigned integer ->
-  float). All round per FRM.
+  `FCVTFU` (float -> signed / unsigned integer, saturating: overflow -> max, underflow ->
+  min, all setting NV), `FCVTSF` / `FCVTUF` (signed / unsigned integer -> float). All round
+  per FRM. Note one **deliberate divergence from RISC-V**: a NaN input to a float->integer
+  conversion yields **0** here (matching the common C-cast convention), whereas RISC-V
+  yields the maximum-magnitude value; both set NV. This is the only point where Maize's
+  float->int conversion departs from the RISC-V F/D behavior it otherwise mirrors.
 
 ### Synthesizing FCLASS / copysign (no dedicated opcode)
 
@@ -1246,13 +1263,24 @@ integer bit-operations on the register that already holds the float:
 
 The VM computes on the host FPU (IEEE-754 conformant), setting the hardware rounding
 direction from FRM and reading the hardware exception flags into FFLAGS, with `std::fma`
-for the fused multiply-add. The four directed rounding modes map onto the hardware
-directions; RMM (ties-to-max-magnitude), which no hardware direction provides, is
-synthesized by computing in a wider host type and rounding to the target width with an
-explicit ties-away rule (its flags come from the equivalent nearest evaluation, which
-shares RMM's exception conditions). One documented limitation: a binary64 FMA under RMM at
-an exact tie falls back to the nearest-even value, because re-rounding a 106-bit product in
-an 80-bit host long double is not exact.
+for the fused multiply-add. The four directed rounding modes (RNE/RTZ/RDN/RUP) map onto
+the hardware directions and are correctly rounded by the host FPU. RMM
+(ties-to-max-magnitude), which no hardware direction provides, is synthesized by computing
+the operation in a wider host type and rounding the result to the target width with an
+explicit ties-away rule; its flags come from the equivalent nearest evaluation, which
+shares RMM's exception conditions and overflow threshold.
+
+RMM carries a small set of documented limitations, all confined to exact-tie behavior and
+none affecting the four hardware rounding modes:
+
+- The wider-type path is exact for binary32 add/sub/mul (double is exact) and for binary64
+  add/sub/mul on a host with an 80-bit `long double`. The RMM tie decision for div, sqrt,
+  and FMA inherits a benign double-rounding edge (the wider result is itself a rounding),
+  which a focused conformance fixture does not exercise.
+- A binary64 FMA under RMM at an exact tie falls back to the nearest-even value, because
+  re-rounding a 106-bit product exceeds the 80-bit host `long double`.
+
+RMM's directed sibling modes and every mode of the other ops are unaffected.
 
 
 ## Register Parameter
