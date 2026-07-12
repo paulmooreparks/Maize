@@ -653,7 +653,8 @@ off this block into the argument registers and calls `main`; a `main(void)` simp
                        the last bit shifted out. Set directly by SETCRY, cleared by CLRCRY.
     1    N     Neg     Negative: the sign bit of the result.
     2    V     Ovfl    Signed overflow: the signed result does not fit the operand width.
-    3    P     Par     Parity. Reserved; not currently computed by any instruction.
+    3    P     Par     Parity / unordered. Set by FCMP when either operand is NaN (an unordered
+                       compare); the JP / SETP predicate reads it. No integer op computes it.
     4    Z     Zero    Zero: the result is zero.
     5    -     -       Reserved (an unused sign-flag bit is declared but never read or written).
     6    -     -       Reserved.
@@ -687,6 +688,7 @@ be set in privileged mode and are unaffected by the arithmetic/logic instruction
     SETCRY                   1                       -        -                       -
     CLRCRY                   0                       -        -                       -
     SETcc (SETZ..SETAE)      -                       -        -                       -
+    FCMP                     see below (C/Z/P set by the ordered/unordered outcome; N=V=0)
 
 Notes:
 
@@ -914,8 +916,8 @@ bit 7 is interpreted as follows:
     %1001`0100  $94   OUT       regAddr imm     Output value at address in source register to destination port
     %1101`0100  $D4   OUT       immAddr imm     Output value at immediate address to destination port
 
-    %0001`0101  $15                             reserved
-    %0101`0101  $55                             reserved
+    %0001`0101  $15   FGETCSR   reg             Copy the FP control/status register (FCSR: FRM + FFLAGS) into the operand register
+    %0101`0101  $55   FSETCSR   reg             Copy the operand register (low 8 bits) into FCSR; also clears the sticky FFLAGS
     %1001`0101  $95                             reserved
     %1101`0101  $D5                             reserved
 
@@ -932,18 +934,27 @@ bit 7 is interpreted as follows:
     %0001`1000  $18   JNZ       immVal          If Zero flag is clear, jump to the immediate address
     %0101`1000  $58   JGT       immVal          If Zero flag is clear and Negative flag equals Overflow flag (signed >), jump to the immediate address
     %1001`1000  $98   JLE       immVal          If Zero flag is set or Negative flag differs from Overflow flag (signed <=), jump to the immediate address
-    %1101`1000  $D8                             reserved
+    %1101`1000  $D8   JP        immVal          If Parity flag is set (FCMP unordered / NaN operand), jump to the immediate address
 
     %0001`1001  $19   JLT       immVal          If Negative flag differs from Overflow flag (signed <), jump to the immediate address
     %0101`1001  $59   JA        immVal          If Carry flag is clear and Zero flag is clear (unsigned >), jump to the immediate address
     %1001`1001  $99   JBE       immVal          If Carry flag is set or Zero flag is set (unsigned <=), jump to the immediate address
     %1101`1001  $D9                             reserved
 
-    %0001`1010  $1A                             reserved
+    %0001`1010  $1A   FADD      regVal  reg     FP add source register value to destination register (width from destination subregister: H0/H1 = binary32, W0 = binary64)
+    %0101`1010  $5A   FADD      immVal  reg     FP add immediate value (raw IEEE-754 bits) to destination register
+    %1001`1010  $9A   FADD      regAddr reg     FP add value at address in source register to destination register
+    %1101`1010  $DA   FADD      immAddr reg     FP add value at immediate address to destination register
 
-    %0001`1011  $1B                             reserved
+    %0001`1011  $1B   FSUB      regVal  reg     FP subtract source register value from destination register
+    %0101`1011  $5B   FSUB      immVal  reg     FP subtract immediate value from destination register
+    %1001`1011  $9B   FSUB      regAddr reg     FP subtract value at address in source register from destination register
+    %1101`1011  $DB   FSUB      immAddr reg     FP subtract value at immediate address from destination register
 
-    %0001`1100  $1C                             reserved
+    %0001`1100  $1C   FMUL      regVal  reg     FP multiply destination register by source register value
+    %0101`1100  $5C   FMUL      immVal  reg     FP multiply destination register by immediate value
+    %1001`1100  $9C   FMUL      regAddr reg     FP multiply destination register by value at address in source register
+    %1101`1100  $DC   FMUL      immAddr reg     FP multiply destination register by value at immediate address
 
     %0001`1101  $1D   CALL      regVal          Push the return address to the stack, jump to address in source register and continue execution until RET is executed
     %0101`1101  $5D   CALL      immVal          Push the return address to the stack, jump to immediate address and continue execution until RET is executed
@@ -963,7 +974,30 @@ bit 7 is interpreted as follows:
     %0010`0000  $20   PUSH      regVal          Copy register value into memory at the stack pointer (SP), decrement SP by size of register
     %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at the stack pointer (SP), decrement SP by size of immediate value
 
-    %0010`0010  $22                             reserved
+    %0010`0001  $21   FDIV      regVal  reg     FP divide destination register by source register value
+    %0110`0001  $61   FDIV      immVal  reg     FP divide destination register by immediate value
+    %1010`0001  $A1   FDIV      regAddr reg     FP divide destination register by value at address in source register
+    %1110`0001  $E1   FDIV      immAddr reg     FP divide destination register by value at immediate address
+
+    %0010`0010  $22   FSQRT     reg     reg     FP square root of source register into destination register (row 0)
+    %0110`0010  $62   FNEG      reg     reg     FP negate (sign-bit flip, exact, no flags) source register into destination register (row 1)
+    %1010`0010  $A2   FABS      reg     reg     FP absolute value (sign-bit clear, exact, no flags) source register into destination register (row 2)
+    %1110`0010  $E2                             reserved (FSQRT/FNEG/FABS slot, row 3)
+
+    %0010`0011  $23   FMADD     regVal  reg reg FP fused multiply-add, single-rounded: operand-3 register = operand-1 * operand-2 + operand-3
+    %0110`0011  $63   FMADD     immVal  reg reg FP fused multiply-add: operand-3 = immediate * operand-2 + operand-3
+    %1010`0011  $A3   FMADD     regAddr reg reg FP fused multiply-add: operand-3 = (value at address in operand 1) * operand-2 + operand-3
+    %1110`0011  $E3   FMADD     immAddr reg reg FP fused multiply-add: operand-3 = (value at immediate address) * operand-2 + operand-3
+
+    %0010`0101  $25   FMSUB     regVal  reg reg FP fused multiply-subtract, single-rounded: operand-3 register = operand-1 * operand-2 - operand-3
+    %0110`0101  $65   FMSUB     immVal  reg reg FP fused multiply-subtract: operand-3 = immediate * operand-2 - operand-3
+    %1010`0101  $A5   FMSUB     regAddr reg reg FP fused multiply-subtract: operand-3 = (value at address in operand 1) * operand-2 - operand-3
+    %1110`0101  $E5   FMSUB     immAddr reg reg FP fused multiply-subtract: operand-3 = (value at immediate address) * operand-2 - operand-3
+
+    %0010`1010  $2A   FCMP      regVal  reg     FP quiet compare: set integer flags C/Z/P by comparing destination register against source register value (unordered -> C=Z=P=1)
+    %0110`1010  $6A   FCMP      immVal  reg     FP quiet compare against immediate value
+    %1010`1010  $AA   FCMP      regAddr reg     FP quiet compare against value at address in source register
+    %1110`1010  $EA   FCMP      immAddr reg     FP quiet compare against value at immediate address
 
     %0010`0100  $24   INT       regVal          Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
     %0110`0100  $64   INT       immVal          Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
@@ -990,7 +1024,7 @@ bit 7 is interpreted as follows:
     %0010`1100  $2C   SETNZ     regVal          Set destination register to 1 if Zero flag is clear, else 0 (reads flags; flag-neutral)
     %0110`1100  $6C   SETGT     regVal          Set destination register to 1 if Zero flag is clear and Negative flag equals Overflow flag (signed >), else 0 (reads flags; flag-neutral)
     %1010`1100  $AC   SETLE     regVal          Set destination register to 1 if Zero flag is set or Negative flag differs from Overflow flag (signed <=), else 0 (reads flags; flag-neutral)
-    %1110`1100  $EC                             reserved
+    %1110`1100  $EC   SETP      regVal          Set destination register to 1 if Parity flag is set (FCMP unordered / NaN operand), else 0 (reads flags; flag-neutral)
 
     %0010`1101  $2D   SETLT     regVal          Set destination register to 1 if Negative flag differs from Overflow flag (signed <), else 0 (reads flags; flag-neutral)
     %0110`1101  $6D   SETA      regVal          Set destination register to 1 if Carry flag is clear and Zero flag is clear (unsigned >), else 0 (reads flags; flag-neutral)
@@ -1016,9 +1050,15 @@ bit 7 is interpreted as follows:
 
     %0011`1000  $38                             reserved
 
-    %0011`1001  $39                             reserved
+    %0011`1001  $39   FCVTFF    reg     reg     FP convert float to float between binary32 and binary64 (widths from the two subregisters); rounds per FRM (row 0)
+    %0111`1001  $79   FCVTFS    reg     reg     FP convert float to signed integer (saturating; NaN/overflow -> NV); rounds per FRM (row 1)
+    %1011`1001  $B9   FCVTFU    reg     reg     FP convert float to unsigned integer (saturating; NaN/overflow -> NV); rounds per FRM (row 2)
+    %1111`1001  $F9                             reserved (FCVTFF/FCVTFS/FCVTFU slot, row 3)
 
-    %0011`1010  $3A                             reserved
+    %0011`1010  $3A   FCVTSF    reg     reg     FP convert signed integer to float; rounds per FRM (row 0)
+    %0111`1010  $7A   FCVTUF    reg     reg     FP convert unsigned integer to float; rounds per FRM (row 1)
+    %1011`1010  $BA                             reserved (FCVTSF/FCVTUF slot, row 2)
+    %1111`1010  $FA                             reserved (FCVTSF/FCVTUF slot, row 3)
 
     %0011`1011  $3B   ADC       regVal  reg     Add source register value plus Carry to destination register
     %0111`1011  $7B   ADC       immVal  reg     Add immediate value plus Carry to destination register
@@ -1054,26 +1094,165 @@ bit 7 is interpreted as follows:
     %0011`0010  $32   CLR       regVal          Set register to zero (0).
     %0111`0010  $72   POP       regVal          Increment SP by size of register, copy value at SP into register
 
-    %0011`0011  $33                             reserved
+    %0011`0011  $33   FMIN      reg     reg     FP minimum of destination and source registers (RISC-V NaN/signed-zero rules; sNaN -> NV) (row 0)
+    %0111`0011  $73   FMAX      reg     reg     FP maximum of destination and source registers (RISC-V NaN/signed-zero rules; sNaN -> NV) (row 1)
+    %1011`0011  $B3                             reserved (FMIN/FMAX slot, row 2)
+    %1111`0011  $F3                             reserved (FMIN/FMAX slot, row 3)
 
     %0011`0100  $34   SYS       regVal          Execute a system call using the system-call index stored in register (privileged)
     %0111`0100  $74   SYS       immVal          Execute a system call using the immediate index (privileged)
 
-    %1010`1010  $AA                             reserved
-
     %1110`0000  $E0   XCHG      reg     reg     Atomically exchange the values in two registers
-
-    %1110`0001  $E1                             reserved
-
-    %1110`0010  $E2                             reserved
-
-    %1110`0011  $E3                             reserved
 
     %1110`0100  $E4                             reserved
 
-    %1110`0101  $E5                             reserved
-
     %1111`1111  $FF   BRK                       Trigger a debug break
+
+
+## Floating-Point (IEEE-754)
+
+Maize implements IEEE-754-2019 **binary32** (single) and **binary64** (double), both
+widths, all five rounding modes, all five sticky exception flags, subnormals (gradual
+underflow, no flush-to-zero), and a fused multiply-add. Semantics are lifted from the
+RISC-V F/D extensions verbatim; conformance is the standard IEEE-754 vectors, not
+per-op reasoning.
+
+### Zfinx: floats live in the integer registers
+
+FP is **Zfinx-style**: floating-point instructions read operands from and write results
+to the existing sixteen integer registers. There is no separate FP register bank and no
+FP load/store/move (`LD`/`ST`/`CP` already move the bits). Format width comes from the
+per-operand **subregister field**, exactly as for integer ops:
+
+- **binary32** occupies a 32-bit subregister view: `H0` or `H1`.
+- **binary64** occupies the full 64-bit register: `W0`.
+
+A `B*` or `Q*` subregister on a floating-point operand is illegal: mazm rejects it at
+assemble time, and the VM raises a deterministic illegal-operand trap. There is **no
+NaN-boxing**: a binary32 value simply occupies a 32-bit subregister like any 32-bit
+integer, and the upper bits follow the existing subregister merge semantics.
+
+### FCSR: rounding mode and sticky exception flags
+
+A dedicated architectural **FP control/status register (FCSR)** holds the rounding mode
+and the sticky exception flags, keeping the hot per-instruction integer flags C/N/V/Z
+uncontaminated. It is not one of the sixteen operand-addressable registers; software
+reads and writes it with `FGETCSR reg` and `FSETCSR reg`. The byte layout is RISC-V's
+`fcsr` verbatim:
+
+    Bits 7-5  FRM     rounding mode (3 bits)
+    Bits 4-0  FFLAGS  sticky exception flags (5 bits)
+
+`FSETCSR` writes the low 8 bits and thereby also clears the sticky flags (flags are set
+by hardware, cleared only by software). Reset default is `0x00` (RNE, no flags). The
+upper bits are reserved for a future v1.x trap-enable extension and are not implemented.
+
+**FRM (rounding mode)**, RISC-V encoding:
+
+    000  RNE  round to nearest, ties to even (default)
+    001  RTZ  round toward zero
+    010  RDN  round toward -infinity
+    011  RUP  round toward +infinity
+    100  RMM  round to nearest, ties to max magnitude
+    101, 110  reserved
+    111  DYN  not supported (Maize has no per-instruction rounding field)
+
+Every rounding op consults the current FRM; there is no per-instruction rounding field.
+
+**FFLAGS (sticky exception flags)**, RISC-V bit order:
+
+    bit 4  NV  invalid operation (sNaN operand, 0*inf, inf-inf, 0/0, inf/inf,
+               sqrt of a negative, invalid float->int conversion)
+    bit 3  DZ  divide by zero (finite nonzero / 0)
+    bit 2  OF  overflow (rounded result exceeds the largest finite value)
+    bit 1  UF  underflow (a tiny nonzero result)
+    bit 0  NX  inexact (the result is not exactly representable)
+
+These are the 754 arithmetic exceptions and are distinct from the integer RF flags; in
+particular FFLAGS.OF (binary overflow to infinity) is not RF.V (integer signed overflow).
+
+### Exceptions are sticky, not trapping (v1.0)
+
+FP arithmetic exceptions do **not** trap in v1.0. A divide by zero yields the correctly
+signed infinity and sets DZ; an invalid operation yields the canonical qNaN and sets NV;
+the operation always produces its 754-defined result. Only **illegal encodings** trap (a
+`B*`/`Q*` subregister on an FP operand, or a reserved/unallocated FP opcode form), as part
+of the illegal-instruction taxonomy. Trapping FP (754 alternate exception handling) is a
+reserved future extension in the unused FCSR bits.
+
+### NaN handling
+
+A signaling NaN has the significand MSB clear; a quiet NaN has it set. A signaling-NaN
+operand to any arithmetic op, to FMIN/FMAX, or to FCMP raises NV; a quiet NaN does not.
+Every NaN-producing arithmetic op returns the **canonical qNaN** (binary32 `0x7FC00000`,
+binary64 `0x7FF8000000000000`; positive, quiet, zero payload) rather than preserving an
+input payload, matching RISC-V. FNEG and FABS are the sole exceptions: they manipulate the
+sign bit only, raise no flags, do not round, and pass NaN payloads through unchanged.
+
+### FCMP and the float branch idioms
+
+`FCMP src, a` compares the destination register `a` against the source `src` and writes
+the integer flags, mapping the four 754 outcomes onto the x86 `UCOMISD` convention:
+
+    Outcome              C (bit0)  Z (bit4)  P (bit3)  N,V
+    a > src (ordered)    0         0         0         0,0
+    a < src (ordered)    1         0         0         0,0
+    a == src             0         1         0         0,0
+    unordered (a NaN)    1         1         1         0,0
+
+FCMP is the **quiet** compare: a quiet-NaN operand yields unordered without signaling;
+only a signaling NaN raises NV. After FCMP the ordered branch idioms work directly off
+the reused predicate table:
+
+    JB  / SETB   a < src        JA  / SETA   a > src
+    JBE          a <= src       JAE          a >= src
+    JZ  / SETZ   a == src       JP  / SETP   unordered (either operand NaN)
+
+`JP` / `SETP` is the new unordered predicate; `JNP` / `SETNP` are synthesized by branch
+inversion (there is no separate opcode).
+
+### Operations
+
+- **Arithmetic** (`FADD`, `FSUB`, `FMUL`, `FDIV`): correctly rounded under the current FRM,
+  full four addressing-mode source forms like the integer ALU. `FADD src dst` computes
+  `dst = dst + src`.
+- **Unary** (`FSQRT`, `FNEG`, `FABS`): register-only, `MNEMONIC src dst` computing
+  `dst = f(src)`. FSQRT is correctly rounded; FNEG/FABS are exact sign-bit ops.
+- **Fused multiply-add** (`FMADD`, `FMSUB`): three registers, single-rounded
+  `dst = a*b (+/-) c` where the third operand is both the addend `c` and the destination.
+  `FNMADD` = `FNEG(FMADD(...))` and `FNMSUB` = `FNEG(FMSUB(...))` are synthesized via the
+  exact FNEG (no dedicated opcode), so they remain single-rounded.
+- **Min / max** (`FMIN`, `FMAX`): RISC-V semantics. A quiet-NaN operand returns the non-NaN
+  operand; both NaN returns the canonical qNaN; a signaling NaN raises NV; `-0 < +0`.
+- **Compare** (`FCMP`): the quiet compare above.
+- **Conversions**: `FCVTFF` (float <-> float, widths from the two subregisters), `FCVTFS` /
+  `FCVTFU` (float -> signed / unsigned integer, saturating: NaN -> 0, overflow -> max,
+  underflow -> min, all setting NV), `FCVTSF` / `FCVTUF` (signed / unsigned integer ->
+  float). All round per FRM.
+
+### Synthesizing FCLASS / copysign (no dedicated opcode)
+
+Maize deliberately spends no opcode on FCLASS or FSGNJ (copysign); under Zfinx these are
+integer bit-operations on the register that already holds the float:
+
+- **isnan(x)**: `FCMP x, x` then `JP` (a value compares unordered with itself iff it is NaN).
+- **copysign(x, y)**: clear x's sign with `AND` against `0x7FFF...`, extract y's sign with
+  `AND` against `0x8000...`, then `OR` the two.
+- **isinf / isfinite / fpclassify**: mask the exponent and mantissa fields with `AND` and
+  compare the bit patterns; the exponent-all-ones / mantissa-zero test distinguishes
+  infinity from NaN.
+
+### Implementation note (RMM)
+
+The VM computes on the host FPU (IEEE-754 conformant), setting the hardware rounding
+direction from FRM and reading the hardware exception flags into FFLAGS, with `std::fma`
+for the fused multiply-add. The four directed rounding modes map onto the hardware
+directions; RMM (ties-to-max-magnitude), which no hardware direction provides, is
+synthesized by computing in a wider host type and rounding to the target width with an
+explicit ties-away rule (its flags come from the equivalent nearest evaluation, which
+shares RMM's exception conditions). One documented limitation: a binary64 FMA under RMM at
+an exact tie falls back to the nearest-even value, because re-rounding a 106-bit product in
+an 80-bit host long double is not exact.
 
 
 ## Register Parameter
@@ -1460,28 +1639,28 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %0001`0010  $12   LEA       regVal  reg reg
     %0001`0011  $13   CPZ       regVal  reg     Copy source register value into destination register with zero extension
     %0001`0100  $14   OUT       regVal  imm     Output value in source register to destination port
-    %0001`0101  $15                             reserved
+    %0001`0101  $15   FGETCSR   reg             Copy FCSR (FP control/status: FRM + FFLAGS) into the operand register
     %0001`0110  $16   JMP       regVal          Jump to address in source register and continue execution
     %0001`0111  $17   JZ        immVal          If Zero flag is set, jump to the immediate address
     %0001`1000  $18   JNZ       immVal          If Zero flag is clear, jump to the immediate address
     %0001`1001  $19   JLT       immVal          If Negative flag differs from Overflow flag (signed <), jump to the immediate address
-    %0001`1010  $1A                             reserved
-    %0001`1011  $1B                             reserved
-    %0001`1100  $1C                             reserved
+    %0001`1010  $1A   FADD      regVal  reg     FP add source register value to destination register (width from destination subregister)
+    %0001`1011  $1B   FSUB      regVal  reg     FP subtract source register value from destination register
+    %0001`1100  $1C   FMUL      regVal  reg     FP multiply destination register by source register value
     %0001`1101  $1D   CALL      regVal          Push the return address to the stack, jump to address in source register and continue execution until RET is executed
     %0001`1110  $1E   OUTR      regVal  reg     Output value in source register to port in destination register
     %0001`1111  $1F   IN        regVal  reg     Read value from port in source register into destination register
     %0010`0000  $20   PUSH      regVal          Copy register value into memory at the stack pointer (SP), decrement SP by size of register
-    %0010`0001  $21
-    %0010`0010  $22                             reserved
-    %0010`0011  $23
+    %0010`0001  $21   FDIV      regVal  reg     FP divide destination register by source register value
+    %0010`0010  $22   FSQRT     reg     reg     FP square root of source register into destination register
+    %0010`0011  $23   FMADD     regVal  reg reg FP fused multiply-add (single-rounded): operand-3 = operand-1 * operand-2 + operand-3
     %0010`0100  $24   INT       regVal          Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
-    %0010`0101  $25
+    %0010`0101  $25   FMSUB     regVal  reg reg FP fused multiply-subtract (single-rounded): operand-3 = operand-1 * operand-2 - operand-3
     %0010`0110  $26                             reserved
     %0010`0111  $27   RET                       Pop the return address from the stack and continue execution at that address. Used to return from CALL.
     %0010`1000  $28                             reserved
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
-    %0010`1010  $2A
+    %0010`1010  $2A   FCMP      regVal  reg     FP quiet compare: set integer flags C/Z/P comparing destination against source (unordered -> C=Z=P=1)
     %0010`1011  $2B   SETZ      regVal          Set destination register to 1 if Zero flag is set, else 0 (reads flags; flag-neutral)
     %0010`1100  $2C   SETNZ     regVal          Set destination register to 1 if Zero flag is clear, else 0 (reads flags; flag-neutral)
     %0010`1101  $2D   SETLT     regVal          Set destination register to 1 if Negative flag differs from Overflow flag (signed <), else 0 (reads flags; flag-neutral)
@@ -1490,14 +1669,14 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %0011`0000  $30   TSTIND    regVal regAddr  Set flags by ANDing source register value with value at address in destination register
     %0011`0001  $31   INC       regVal          Increment register by 1.
     %0011`0010  $32   CLR       regVal          Set register to zero (0).
-    %0011`0011  $33                             reserved
+    %0011`0011  $33   FMIN      reg     reg     FP minimum of destination and source registers (RISC-V NaN/signed-zero rules)
     %0011`0100  $34   SYS       regVal          Execute a system call using the system-call index stored in register (privileged)
     %0011`0101  $35   UDIV      regVal  reg     Unsigned-divide destination register by source register value
     %0011`0110  $36   UMOD      regVal  reg     Unsigned remainder of destination register divided by source register value
     %0011`0111  $37                             reserved
     %0011`1000  $38                             reserved
-    %0011`1001  $39                             reserved
-    %0011`1010  $3A                             reserved
+    %0011`1001  $39   FCVTFF    reg     reg     FP convert float to float between binary32 and binary64 (widths from subregisters)
+    %0011`1010  $3A   FCVTSF    reg     reg     FP convert signed integer to float
     %0011`1011  $3B   ADC       regVal  reg     Add source register value plus Carry to destination register
     %0011`1100  $3C   SBB       regVal  reg     Subtract source register value plus Carry (borrow) from destination register
     %0011`1101  $3D   MULW      regVal  reg reg Signed wide multiply: full product of operand 2 by source register value; low half to operand 2, high half to operand 3
@@ -1524,28 +1703,28 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %0101`0010  $52   LEA       immVal  reg reg Add immediate value in operand 1 to value in operand 2 register and store result in operand 3 register
     %0101`0011  $53   CPZ       immVal  reg     Copy immediate value into destination register with zero extension
     %0101`0100  $54   OUT       immVal  imm     Output immediate value to destination port
-    %0101`0101  $55                             reserved
+    %0101`0101  $55   FSETCSR   reg             Copy the operand register (low 8 bits) into FCSR; also clears the sticky FFLAGS
     %0101`0110  $56   JMP       immVal          Jump to immediate address and continue execution
     %0101`0111  $57   JB        immVal          If Carry flag is set (unsigned <), jump to the immediate address
     %0101`1000  $58   JGT       immVal          If Zero flag is clear and Negative flag equals Overflow flag (signed >), jump to the immediate address
     %0101`1001  $59   JA        immVal          If Carry flag is clear and Zero flag is clear (unsigned >), jump to the immediate address
-    %0101`1010  $5A                             reserved
-    %0101`1011  $5B                             reserved
-    %0101`1100  $5C                             reserved
+    %0101`1010  $5A   FADD      immVal  reg     FP add immediate value (raw IEEE-754 bits) to destination register
+    %0101`1011  $5B   FSUB      immVal  reg     FP subtract immediate value from destination register
+    %0101`1100  $5C   FMUL      immVal  reg     FP multiply destination register by immediate value
     %0101`1101  $5D   CALL      immVal          Push the return address to the stack, jump to immediate address and continue execution until RET is executed
     %0101`1110  $5E   OUTR      immVal  reg     Output immediate value to port in destination register
     %0101`1111  $5F   IN        immVal  reg     Read value from port in immediate value into destination register
     %0110`0000  $60   PUSH      immVal          Copy immediate value into memory at the stack pointer (SP), decrement SP by size of immediate value
-    %0110`0001  $61
-    %0110`0010  $62
-    %0110`0011  $63
+    %0110`0001  $61   FDIV      immVal  reg     FP divide destination register by immediate value
+    %0110`0010  $62   FNEG      reg     reg     FP negate (sign-bit flip, exact, no flags) source register into destination register
+    %0110`0011  $63   FMADD     immVal  reg reg FP fused multiply-add: operand-3 = immediate * operand-2 + operand-3
     %0110`0100  $64   INT       immVal          Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
-    %0110`0101  $65
+    %0110`0101  $65   FMSUB     immVal  reg reg FP fused multiply-subtract: operand-3 = immediate * operand-2 - operand-3
     %0110`0110  $66
     %0110`0111  $67   IRET                      Pop FL and PC from the stack and continue execution at the address in PC. Used to return from interrupt (privileged).
     %0110`1000  $68
     %0110`1001  $69   CLRINT                    Clear the Interrupt flag, thereby disabling hardware interrupts (privileged)
-    %0110`1010  $6A
+    %0110`1010  $6A   FCMP      immVal  reg     FP quiet compare against immediate value
     %0110`1011  $6B   SETB      regVal          Set destination register to 1 if Carry flag is set (unsigned <), else 0 (reads flags; flag-neutral)
     %0110`1100  $6C   SETGT     regVal          Set destination register to 1 if Zero flag is clear and Negative flag equals Overflow flag (signed >), else 0 (reads flags; flag-neutral)
     %0110`1101  $6D   SETA      regVal          Set destination register to 1 if Carry flag is clear and Zero flag is clear (unsigned >), else 0 (reads flags; flag-neutral)
@@ -1554,14 +1733,14 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %0111`0000  $70   TSTIND    immVal regAddr  Set flags by ANDing immediate value with value at address in destination register
     %0111`0001  $71   DEC       regVal          Decrement register by 1.
     %0111`0010  $72   POP       regVal          Increment SP by size of register, copy value at SP into register
-    %0111`0011  $73
+    %0111`0011  $73   FMAX      reg     reg     FP maximum of destination and source registers (RISC-V NaN/signed-zero rules)
     %0111`0100  $74   SYS       immVal          Execute a system call using the immediate index (privileged)
     %0111`0101  $75   UDIV      immVal  reg     Unsigned-divide destination register by immediate value
     %0111`0110  $76   UMOD      immVal  reg     Unsigned remainder of destination register divided by immediate value
     %0111`0111  $77                             reserved
     %0111`1000  $78                             reserved
-    %0111`1001  $79                             reserved
-    %0111`1010  $7A                             reserved
+    %0111`1001  $79   FCVTFS    reg     reg     FP convert float to signed integer (saturating; NaN/overflow -> NV)
+    %0111`1010  $7A   FCVTUF    reg     reg     FP convert unsigned integer to float
     %0111`1011  $7B   ADC       immVal  reg     Add immediate value plus Carry to destination register
     %0111`1100  $7C   SBB       immVal  reg     Subtract immediate value plus Carry (borrow) from destination register
     %0111`1101  $7D   MULW      immVal  reg reg Signed wide multiply: full product of operand 2 by immediate value; low half to operand 2, high half to operand 3
@@ -1593,23 +1772,23 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %1001`0111  $97   JGE       immVal          If Negative flag equals Overflow flag (signed >=), jump to the immediate address
     %1001`1000  $98   JLE       immVal          If Zero flag is set or Negative flag differs from Overflow flag (signed <=), jump to the immediate address
     %1001`1001  $99   JBE       immVal          If Carry flag is set or Zero flag is set (unsigned <=), jump to the immediate address
-    %1001`1010  $9A                             reserved
-    %1001`1011  $9B                             reserved
-    %1001`1100  $9C                             reserved
+    %1001`1010  $9A   FADD      regAddr reg     FP add value at address in source register to destination register
+    %1001`1011  $9B   FSUB      regAddr reg     FP subtract value at address in source register from destination register
+    %1001`1100  $9C   FMUL      regAddr reg     FP multiply destination register by value at address in source register
     %1001`1101  $9D   CALL      regAddr         Push the return address to the stack, jump to address pointed to by source register and continue execution until RET is executed
     %1001`1110  $9E   OUTR      regAddr reg     Output value at address in source register to port in destination register
     %1001`1111  $9F   IN        regAddr reg     Read value from port at address in source register into destination register
     %1010`0000  $A0
-    %1010`0001  $A1
-    %1010`0010  $A2
-    %1010`0011  $A3
+    %1010`0001  $A1   FDIV      regAddr reg     FP divide destination register by value at address in source register
+    %1010`0010  $A2   FABS      reg     reg     FP absolute value (sign-bit clear, exact, no flags) source register into destination register
+    %1010`0011  $A3   FMADD     regAddr reg reg FP fused multiply-add: operand-3 = (value at address in operand 1) * operand-2 + operand-3
     %1010`0100  $A4
-    %1010`0101  $A5
+    %1010`0101  $A5   FMSUB     regAddr reg reg FP fused multiply-subtract: operand-3 = (value at address in operand 1) * operand-2 - operand-3
     %1010`0110  $A6
     %1010`0111  $A7   NOP                       No operation. Used as an instruction placeholder.
     %1010`1000  $A8
     %1010`1001  $A9   SETCRY                    Set the Carry flag
-    %1010`1010  $AA                             reserved
+    %1010`1010  $AA   FCMP      regAddr reg     FP quiet compare against value at address in source register
     %1010`1011  $AB   SETGE     regVal          Set destination register to 1 if Negative flag equals Overflow flag (signed >=), else 0 (reads flags; flag-neutral)
     %1010`1100  $AC   SETLE     regVal          Set destination register to 1 if Zero flag is set or Negative flag differs from Overflow flag (signed <=), else 0 (reads flags; flag-neutral)
     %1010`1101  $AD   SETBE     regVal          Set destination register to 1 if Carry flag is set or Zero flag is set (unsigned <=), else 0 (reads flags; flag-neutral)
@@ -1618,14 +1797,14 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %1011`0000  $B0
     %1011`0001  $B1   NOT       regVal          Bitwise negate (one's complement) value in register, store result in register.
     %1011`0010  $B2
-    %1011`0011  $B3
+    %1011`0011  $B3                             reserved (FMIN/FMAX slot, row 2)
     %1011`0100  $B4
     %1011`0101  $B5   UDIV      regAddr reg     Unsigned-divide destination register by value at address in source register
     %1011`0110  $B6   UMOD      regAddr reg     Unsigned remainder of destination register divided by value at address in source register
     %1011`0111  $B7                             reserved
     %1011`1000  $B8                             reserved
-    %1011`1001  $B9                             reserved
-    %1011`1010  $BA                             reserved
+    %1011`1001  $B9   FCVTFU    reg     reg     FP convert float to unsigned integer (saturating; NaN/overflow -> NV)
+    %1011`1010  $BA                             reserved (FCVTSF/FCVTUF slot, row 2)
     %1011`1011  $BB   ADC       regAddr reg     Add value at address in source register plus Carry to destination register
     %1011`1100  $BC   SBB       regAddr reg     Subtract value at address in source register plus Carry (borrow) from destination register
     %1011`1101  $BD   MULW      regAddr reg reg Signed wide multiply: full product of operand 2 by value at address in source register; low half to operand 2, high half to operand 3
@@ -1655,41 +1834,41 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %1101`0101  $D5                             reserved
     %1101`0110  $D6   JMP       immAddr         Jump to address pointed to by immediate value and continue execution
     %1101`0111  $D7   JAE       immVal          If Carry flag is clear (unsigned >=), jump to the immediate address
-    %1101`1000  $D8                             reserved
+    %1101`1000  $D8   JP        immVal          If Parity flag is set (FCMP unordered / NaN operand), jump to the immediate address
     %1101`1001  $D9                             reserved
-    %1101`1010  $DA                             reserved
-    %1101`1011  $DB                             reserved
-    %1101`1100  $DC                             reserved
+    %1101`1010  $DA   FADD      immAddr reg     FP add value at immediate address to destination register
+    %1101`1011  $DB   FSUB      immAddr reg     FP subtract value at immediate address from destination register
+    %1101`1100  $DC   FMUL      immAddr reg     FP multiply destination register by value at immediate address
     %1101`1101  $DD   CALL      immAddr         Push the return address to the stack, jump to address pointed to by immediate value and continue execution until RET is executed
     %1101`1110  $DE   OUTR      immAddr reg     Output value at immediate address to port in destination register
     %1101`1111  $DF   IN        immAddr reg     Read value from port at immediate address into destination register
     %1110`0000  $E0   XCHG      reg     reg     Atomically exchange the values in two registers
-    %1110`0001  $E1                             reserved
-    %1110`0010  $E2                             reserved
-    %1110`0011  $E3                             reserved
+    %1110`0001  $E1   FDIV      immAddr reg     FP divide destination register by value at immediate address
+    %1110`0010  $E2                             reserved (FSQRT/FNEG/FABS slot, row 3)
+    %1110`0011  $E3   FMADD     immAddr reg reg FP fused multiply-add: operand-3 = (value at immediate address) * operand-2 + operand-3
     %1110`0100  $E4                             reserved
-    %1110`0101  $E5                             reserved
+    %1110`0101  $E5   FMSUB     immAddr reg reg FP fused multiply-subtract: operand-3 = (value at immediate address) * operand-2 - operand-3
     %1110`0110  $E6
     %1110`0111  $E7                             reserved
     %1110`1000  $E8
     %1110`1001  $E9   CLRCRY                    Clear the Carry flag
-    %1110`1010  $EA
+    %1110`1010  $EA   FCMP      immAddr reg     FP quiet compare against value at immediate address
     %1110`1011  $EB   SETAE     regVal          Set destination register to 1 if Carry flag is clear (unsigned >=), else 0 (reads flags; flag-neutral)
-    %1110`1100  $EC                             reserved
+    %1110`1100  $EC   SETP      regVal          Set destination register to 1 if Parity flag is set (FCMP unordered / NaN operand), else 0 (reads flags; flag-neutral)
     %1110`1101  $ED                             reserved
     %1110`1110  $EE   SAR       immAddr reg     Arithmetic-shift value in destination register right by value at immediate address
     %1110`1111  $EF
     %1111`0000  $F0
     %1111`0001  $F1   NEG       regVal          Two's-complement negate (0 - value) in register, with SUB-family flags (C set when the value is non-zero; V set only for the width's most-negative value).
     %1111`0010  $F2
-    %1111`0011  $F3
+    %1111`0011  $F3                             reserved (FMIN/FMAX slot, row 3)
     %1111`0100  $F4
     %1111`0101  $F5   UDIV      immAddr reg     Unsigned-divide destination register by value at immediate address
     %1111`0110  $F6   UMOD      immAddr reg     Unsigned remainder of destination register divided by value at immediate address
     %1111`0111  $F7                             reserved
     %1111`1000  $F8                             reserved
-    %1111`1001  $F9                             reserved
-    %1111`1010  $FA                             reserved
+    %1111`1001  $F9                             reserved (FCVTFF/FCVTFS/FCVTFU slot, row 3)
+    %1111`1010  $FA                             reserved (FCVTSF/FCVTUF slot, row 3)
     %1111`1011  $FB   ADC       immAddr reg     Add value at immediate address plus Carry to destination register
     %1111`1100  $FC   SBB       immAddr reg     Subtract value at immediate address plus Carry (borrow) from destination register
     %1111`1101  $FD   MULW      immAddr reg reg Signed wide multiply: full product of operand 2 by value at immediate address; low half to operand 2, high half to operand 3

@@ -282,6 +282,15 @@ namespace {
     void jcc_compiler(token_tree &tree, std::string &opcode_str);
     void regimm_regreg_compiler(token_tree &tree, std::string &opcode_str);
 
+    /* Floating-point compilers (card maize-122). fp_arith_compiler wraps
+       regimm_reg_compiler (FADD/FSUB/FMUL/FDIV/FCMP) and fp_fma_compiler wraps
+       regimm_regreg_compiler (FMADD/FMSUB), both adding a B* or Q* FP-operand
+       subregister rejection. fp_regonly2_compiler emits the row-packed register-
+       only two-operand ops (FSQRT/FNEG/FABS/FMIN/FMAX and the FCVT* family). */
+    void fp_arith_compiler(token_tree &tree, std::string &opcode_str);
+    void fp_fma_compiler(token_tree &tree, std::string &opcode_str);
+    void fp_regonly2_compiler(token_tree &tree, std::string &opcode_str);
+
     /* Object-mode directives (maize-12). Registered as keywords in the LABEL /
        DATA / STRING style; each reads a single operand via the shared
        one-parameter tokenizer. In flat mode their compilers are no-ops. */
@@ -396,7 +405,34 @@ namespace {
         { "SYS",    {cpu::instr::sys_opcode    , opcode_1param_tokenizer, regimm_compiler}},
         { "NOP",    {cpu::instr::nop_opcode    , opcode_0param_tokenizer, no_operand_compiler}},
         { "XCHG",   {cpu::instr::xchg_opcode   , opcode_2param_tokenizer, regimm_reg_compiler}},
-        { "BRK",    {cpu::instr::brk_opcode    , opcode_0param_tokenizer, no_operand_compiler}}
+        { "BRK",    {cpu::instr::brk_opcode    , opcode_0param_tokenizer, no_operand_compiler}},
+
+        /* Floating-point ISA (card maize-122). Zfinx: FP operands are the integer
+           registers; width (binary32/binary64) comes from the subregister field
+           (H0/H1/W0). A B* or Q* subregister on an FP operand is rejected at assemble
+           time by the fp_* compilers. Arithmetic and FCMP take ADD/CMP's four
+           addressing-mode source forms; the register-only families are row-packed. */
+        { "FADD",   {cpu::instr::fadd_opcode   , opcode_2param_tokenizer, fp_arith_compiler}},
+        { "FSUB",   {cpu::instr::fsub_opcode   , opcode_2param_tokenizer, fp_arith_compiler}},
+        { "FMUL",   {cpu::instr::fmul_opcode   , opcode_2param_tokenizer, fp_arith_compiler}},
+        { "FDIV",   {cpu::instr::fdiv_opcode   , opcode_2param_tokenizer, fp_arith_compiler}},
+        { "FCMP",   {cpu::instr::fcmp_opcode   , opcode_2param_tokenizer, fp_arith_compiler}},
+        { "FSQRT",  {cpu::instr::fsqrt_opcode  , opcode_2param_tokenizer, fp_regonly2_compiler}},
+        { "FNEG",   {cpu::instr::fneg_opcode   , opcode_2param_tokenizer, fp_regonly2_compiler}},
+        { "FABS",   {cpu::instr::fabs_opcode   , opcode_2param_tokenizer, fp_regonly2_compiler}},
+        { "FMIN",   {cpu::instr::fmin_opcode   , opcode_2param_tokenizer, fp_regonly2_compiler}},
+        { "FMAX",   {cpu::instr::fmax_opcode   , opcode_2param_tokenizer, fp_regonly2_compiler}},
+        { "FCVTFF", {cpu::instr::fcvtff_opcode , opcode_2param_tokenizer, fp_regonly2_compiler}},
+        { "FCVTFS", {cpu::instr::fcvtfs_opcode , opcode_2param_tokenizer, fp_regonly2_compiler}},
+        { "FCVTFU", {cpu::instr::fcvtfu_opcode , opcode_2param_tokenizer, fp_regonly2_compiler}},
+        { "FCVTSF", {cpu::instr::fcvtsf_opcode , opcode_2param_tokenizer, fp_regonly2_compiler}},
+        { "FCVTUF", {cpu::instr::fcvtuf_opcode , opcode_2param_tokenizer, fp_regonly2_compiler}},
+        { "FMADD",  {cpu::instr::fmadd_opcode  , opcode_3param_tokenizer, fp_fma_compiler}},
+        { "FMSUB",  {cpu::instr::fmsub_opcode  , opcode_3param_tokenizer, fp_fma_compiler}},
+        { "FGETCSR",{cpu::instr::fgetcsr_opcode, opcode_1param_tokenizer, reg_compiler}},
+        { "FSETCSR",{cpu::instr::fsetcsr_opcode, opcode_1param_tokenizer, reg_compiler}},
+        { "JP",     {cpu::instr::jp_opcode     , opcode_1param_tokenizer, jcc_compiler}},
+        { "SETP",   {cpu::instr::setp_opcode   , opcode_1param_tokenizer, reg_compiler}}
     };
 
     /* A fatal assembler diagnostic (maize-13). Carries an already-formatted
@@ -2611,6 +2647,104 @@ namespace {
         else if (operand_is_label) {
             current_address += write_label(current_address, operand1, operand1_literal);
         }
+    }
+
+    /* ---- floating-point compilers (card maize-122) ----------------------- */
+
+    /* Reject a B* or Q* subregister on an FP operand at assemble time (AC 7953).
+       A bare register (no suffix) is binary64 (W0) and is accepted; H0/H1/W0/W
+       are the legal float subregisters. `operand` may carry a leading '@'
+       (address form) which is stripped first, though callers only pass value
+       operands here. */
+    void fp_reject_int_subreg(std::string const &operand, std::string const &opcode_str,
+                              std::string const &file, int line) {
+        std::string op {operand};
+        if (!op.empty() && op[0] == special_chars::address) {
+            op = op.substr(1);
+        }
+        auto dot = op.find('.');
+        if (dot == std::string::npos) {
+            return; // bare register == W0 (binary64): legal FP operand
+        }
+        std::string sub;
+        std::transform(op.begin() + dot + 1, op.end(), std::back_inserter(sub), ::toupper);
+        bool is_float_sub = (sub == "H0" || sub == "H1" || sub == "W0" || sub == "W");
+        if (!is_float_sub) {
+            fatal(file, line,
+                opcode_str + " operand '" + operand + "' uses a B* or Q* subregister; "
+                "floating-point operands are binary32 (H0/H1) or binary64 (W0)");
+        }
+    }
+
+    /* FADD/FSUB/FMUL/FDIV/FCMP: reuse the ALU/CMP four-form source compiler, but
+       first reject a B* or Q* subregister on the destination float register and on a
+       register-value source (an '@' address or immediate source is not a float
+       operand, so it is not width-checked here). */
+    void fp_arith_compiler(token_tree &tree, std::string &opcode_str) {
+        auto it {tree.value.begin()};
+        std::string op1 {it->key};
+        auto loc1_file {it->loc_file}; auto loc1_line {it->loc_line};
+        ++it;
+        std::string op2 {it->key};
+        fp_reject_int_subreg(op2, opcode_str, it->loc_file, it->loc_line);
+        if (!op1.empty() && op1[0] != special_chars::address && is_register(op1)) {
+            fp_reject_int_subreg(op1, opcode_str, loc1_file, loc1_line);
+        }
+        regimm_reg_compiler(tree, opcode_str);
+    }
+
+    /* FMADD/FMSUB: reuse the three-operand regreg compiler, rejecting a B* or Q*
+       subregister on the two register operands (op2 = b, op3 = c/dst) and on a
+       register-value first operand (a). */
+    void fp_fma_compiler(token_tree &tree, std::string &opcode_str) {
+        auto it {tree.value.begin()};
+        std::string op1 {it->key};
+        auto loc1_file {it->loc_file}; auto loc1_line {it->loc_line};
+        ++it;
+        std::string op2 {it->key};
+        fp_reject_int_subreg(op2, opcode_str, it->loc_file, it->loc_line);
+        ++it;
+        std::string op3 {it->key};
+        fp_reject_int_subreg(op3, opcode_str, it->loc_file, it->loc_line);
+        if (!op1.empty() && op1[0] != special_chars::address && is_register(op1)) {
+            fp_reject_int_subreg(op1, opcode_str, loc1_file, loc1_line);
+        }
+        regimm_regreg_compiler(tree, opcode_str);
+    }
+
+    /* Register-only two-operand FP ops (FSQRT/FNEG/FABS/FMIN/FMAX and the FCVT*
+       family). The opcode constant already carries the row bits selecting the
+       specific operation, so the opcode byte is emitted verbatim (no src-flag
+       bits) followed by the two register param bytes (op1 = src, op2 = dst).
+       Float operands are width-checked (H0/H1/W0); the integer operand of a
+       conversion may be any width. */
+    void fp_regonly2_compiler(token_tree &tree, std::string &opcode_str) {
+        u_byte opcode {opcodes[opcode_str].opcode};
+        auto it {tree.value.begin()};
+        current_ref_loc = { it->loc_file, it->loc_line };
+        std::string op1 {it->key};
+        auto loc1_file {it->loc_file}; auto loc1_line {it->loc_line};
+        ++it;
+        std::string op2 {it->key};
+        auto loc2_file {it->loc_file}; auto loc2_line {it->loc_line};
+
+        bool op1_float = true, op2_float = true;
+        if (opcode_str == "FCVTFS" || opcode_str == "FCVTFU") {
+            op1_float = true;  op2_float = false; // float -> integer
+        }
+        else if (opcode_str == "FCVTSF" || opcode_str == "FCVTUF") {
+            op1_float = false; op2_float = true;  // integer -> float
+        }
+
+        if (op1_float) fp_reject_int_subreg(op1, opcode_str, loc1_file, loc1_line);
+        if (op2_float) fp_reject_int_subreg(op2, opcode_str, loc2_file, loc2_line);
+
+        u_byte operand1_byte {compile_register_checked(op1, loc1_file, loc1_line)};
+        u_byte operand2_byte {compile_register_checked(op2, loc2_file, loc2_line)};
+
+        current_address += cpu::mm.write_byte(current_address, opcode);
+        current_address += cpu::mm.write_byte(current_address, operand1_byte);
+        current_address += cpu::mm.write_byte(current_address, operand2_byte);
     }
 
     /* ---- object-mode directives (maize-12) ------------------------------- */

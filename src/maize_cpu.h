@@ -722,6 +722,103 @@ namespace maize {
 
 			const opcode brk_opcode {0xFF}; // $FF sentinel: a run of $FF-filled / erased memory traps, mirroring HALT at $00. Occupies only base $3F's mode-11 form; $3F/$7F/$BF stay free for future full-byte-dispatched ops (a mask-to-base ALU op cannot sit at base $3F, since its immAddr form would be $FF).
 
+			/* ===== Floating-point ISA (card maize-122) =====================
+			   Zfinx: FP ops read operands from and write results to the existing
+			   integer register file; format width (binary32 vs binary64) comes
+			   from the per-operand subregister field (H0/H1 => binary32, W0 =>
+			   binary64; a B* or Q* subregister on an FP operand is an illegal-operand
+			   trap). No separate FP bank, no FP load/store/move (LD/ST/CP already
+			   move the bits), no NaN-boxing. Base slots are drawn from maize-64's
+			   freed pool; every addressing-mode form was verified collision-free
+			   against the landed post-maize-64 opcode map before commit. */
+
+			/* 3a. Arithmetic: four addressing-mode forms each, same shape as ADD. */
+			const opcode fadd_opcode			{0x1A};
+			const opcode fadd_regVal_reg		{fadd_opcode | opcode_flag_srcReg};
+			const opcode fadd_immVal_reg		{fadd_opcode | opcode_flag_srcImm};
+			const opcode fadd_regAddr_reg		{fadd_opcode | opcode_flag_srcAddr};
+			const opcode fadd_immAddr_reg		{fadd_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			const opcode fsub_opcode			{0x1B};
+			const opcode fsub_regVal_reg		{fsub_opcode | opcode_flag_srcReg};
+			const opcode fsub_immVal_reg		{fsub_opcode | opcode_flag_srcImm};
+			const opcode fsub_regAddr_reg		{fsub_opcode | opcode_flag_srcAddr};
+			const opcode fsub_immAddr_reg		{fsub_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			const opcode fmul_opcode			{0x1C};
+			const opcode fmul_regVal_reg		{fmul_opcode | opcode_flag_srcReg};
+			const opcode fmul_immVal_reg		{fmul_opcode | opcode_flag_srcImm};
+			const opcode fmul_regAddr_reg		{fmul_opcode | opcode_flag_srcAddr};
+			const opcode fmul_immAddr_reg		{fmul_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			const opcode fdiv_opcode			{0x21};
+			const opcode fdiv_regVal_reg		{fdiv_opcode | opcode_flag_srcReg};
+			const opcode fdiv_immVal_reg		{fdiv_opcode | opcode_flag_srcImm};
+			const opcode fdiv_regAddr_reg		{fdiv_opcode | opcode_flag_srcAddr};
+			const opcode fdiv_immAddr_reg		{fdiv_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			/* 3e. Compare: four addressing-mode forms, like CMP; writes integer flags. */
+			const opcode fcmp_opcode			{0x2A};
+			const opcode fcmp_regVal_reg		{fcmp_opcode | opcode_flag_srcReg};
+			const opcode fcmp_immVal_reg		{fcmp_opcode | opcode_flag_srcImm};
+			const opcode fcmp_regAddr_reg		{fcmp_opcode | opcode_flag_srcAddr};
+			const opcode fcmp_immAddr_reg		{fcmp_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			/* 3b. Unary register-only, row-packed at base $22: FSQRT (row0 $22),
+			   FNEG (row1 $62), FABS (row2 $A2); row3 ($E2) reserved. */
+			const opcode fsqrt_opcode {static_cast<opcode>(cond_row_0 | 0x22)}; // $22
+			const opcode fneg_opcode  {static_cast<opcode>(cond_row_1 | 0x22)}; // $62
+			const opcode fabs_opcode  {static_cast<opcode>(cond_row_2 | 0x22)}; // $A2
+
+			/* 3c. Fused multiply-add: 3-operand regreg form, like MULW. FNMADD/
+			   FNMSUB are synthesized via the exact FNEG (not primitives). */
+			const opcode fmadd_opcode			{0x23};
+			const opcode fmadd_regVal_regreg	{fmadd_opcode | opcode_flag_srcReg};
+			const opcode fmadd_immVal_regreg	{fmadd_opcode | opcode_flag_srcImm};
+			const opcode fmadd_regAddr_regreg	{fmadd_opcode | opcode_flag_srcAddr};
+			const opcode fmadd_immAddr_regreg	{fmadd_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			const opcode fmsub_opcode			{0x25};
+			const opcode fmsub_regVal_regreg	{fmsub_opcode | opcode_flag_srcReg};
+			const opcode fmsub_immVal_regreg	{fmsub_opcode | opcode_flag_srcImm};
+			const opcode fmsub_regAddr_regreg	{fmsub_opcode | opcode_flag_srcAddr};
+			const opcode fmsub_immAddr_regreg	{fmsub_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
+
+			/* 3d. Min/max register-only, row-packed at base $33: FMIN (row0 $33),
+			   FMAX (row1 $73); rows 2/3 ($B3/$F3) reserved. */
+			const opcode fmin_opcode {static_cast<opcode>(cond_row_0 | 0x33)}; // $33
+			const opcode fmax_opcode {static_cast<opcode>(cond_row_1 | 0x33)}; // $73
+
+			/* 3f. Conversions register-only, row-packed. Base $39: FCVTFF (row0
+			   $39), FCVTFS (row1 $79), FCVTFU (row2 $B9); row3 ($F9) reserved.
+			   Base $3A: FCVTSF (row0 $3A), FCVTUF (row1 $7A); rows 2/3 ($BA/$FA)
+			   reserved. Per-operand widths come from the two subregister fields. */
+			const opcode fcvtff_opcode {static_cast<opcode>(cond_row_0 | 0x39)}; // $39 float<->float
+			const opcode fcvtfs_opcode {static_cast<opcode>(cond_row_1 | 0x39)}; // $79 float->signed int
+			const opcode fcvtfu_opcode {static_cast<opcode>(cond_row_2 | 0x39)}; // $B9 float->unsigned int
+			const opcode fcvtsf_opcode {static_cast<opcode>(cond_row_0 | 0x3A)}; // $3A signed int->float
+			const opcode fcvtuf_opcode {static_cast<opcode>(cond_row_1 | 0x3A)}; // $7A unsigned int->float
+
+			/* FCSR access, register-only, row-packed at base $15 (a maize-64 freed
+			   slot outside the spec's 11-op arithmetic budget). The dedicated FCSR
+			   architectural register (FRM + FFLAGS) is not one of the 16 operand-
+			   addressable registers, so these two ops are the software path to read
+			   and write it (set the rounding mode, read/clear the sticky flags).
+			   FGETCSR (row0 $15) copies FCSR into the operand register; FSETCSR
+			   (row1 $55) copies the operand register into FCSR; rows 2/3 reserved. */
+			const opcode fgetcsr_opcode {static_cast<opcode>(cond_row_0 | 0x15)}; // $15
+			const opcode fsetcsr_opcode {static_cast<opcode>(cond_row_1 | 0x15)}; // $55
+
+			/* Unordered predicate JP/SETP (card maize-122): claims one of maize-64's
+			   two reserved spare condition encodings (the recorded "IEEE unordered-
+			   compare" claimant). JP is Jcc row3 col1 ($D8); SETP is SETcc row3 col1
+			   ($EC). Both fold to the same shared-predicate index (10), which
+			   eval_condition maps to the parity bit set by FCMP on an unordered
+			   result. JNP/SETNP are synthesized by branch inversion (no opcode); the
+			   remaining spares ($D9/$ED) stay reserved for the JO/JNO claimant. */
+			const opcode jp_opcode   {static_cast<opcode>(cond_row_3 | (jcc_base + 1))};   // $D8
+			const opcode setp_opcode {static_cast<opcode>(cond_row_3 | (setcc_base + 1))}; // $EC
+
 		}
 
 		namespace regs {
@@ -743,6 +840,7 @@ namespace maize {
 			extern reg rb; // base pointer register (BP); operand slot $D (maize-41)
 			extern reg rp; // program execution register (PC); full 64-bit (maize-41)
 			extern reg rs; // stack register (SP); full 64-bit (maize-41)
+			extern reg fcsr; // FP control/status register: FRM + FFLAGS (maize-122); not operand-addressable
 		}
 
 		extern bus address_bus;

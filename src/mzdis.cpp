@@ -132,6 +132,12 @@ namespace {
         set_entry(byte, mnem, {operand_kind::reg});
     }
 
+    /* Single row, two plain-register operands -- the row-packed register-only FP
+       ops (FSQRT/FNEG/FABS/FMIN/FMAX and the FCVT* family), card maize-122. */
+    void add_reg_reg(const char *mnem, u_byte byte) {
+        set_entry(byte, mnem, {operand_kind::reg, operand_kind::reg});
+    }
+
     /* Single row, no operands -- HALT/RET/IRET/SETINT/CLRINT/SETCRY/CLRCRY/
        NOP/BRK. */
     void add_zero_operand(const char *mnem, u_byte byte) {
@@ -255,6 +261,34 @@ namespace {
         add_zero_operand("NOP", instr_ns::nop_opcode);
         add_zero_operand("BRK", instr_ns::brk_opcode);
         add_zero_operand("HALT", instr_ns::halt_opcode);
+
+        /* Floating-point ISA (card maize-122). Arithmetic + FCMP take the four
+           addressing-mode source rows (SrcFlagged op1, FixedReg op2); FMA takes
+           the three-operand regreg shape; the register-only families are one flat
+           opcode byte per operation (the row bits are baked into the constant), so
+           each decodes as two plain register operands. Reserved rows in the
+           row-packed slots stay unassigned and disassemble as reserved. */
+        add_alu_family("FADD", instr_ns::fadd_opcode);
+        add_alu_family("FSUB", instr_ns::fsub_opcode);
+        add_alu_family("FMUL", instr_ns::fmul_opcode);
+        add_alu_family("FDIV", instr_ns::fdiv_opcode);
+        add_alu_family("FCMP", instr_ns::fcmp_opcode);
+        add_3reg_family("FMADD", instr_ns::fmadd_opcode);
+        add_3reg_family("FMSUB", instr_ns::fmsub_opcode);
+        add_reg_reg("FSQRT", instr_ns::fsqrt_opcode);
+        add_reg_reg("FNEG", instr_ns::fneg_opcode);
+        add_reg_reg("FABS", instr_ns::fabs_opcode);
+        add_reg_reg("FMIN", instr_ns::fmin_opcode);
+        add_reg_reg("FMAX", instr_ns::fmax_opcode);
+        add_reg_reg("FCVTFF", instr_ns::fcvtff_opcode);
+        add_reg_reg("FCVTFS", instr_ns::fcvtfs_opcode);
+        add_reg_reg("FCVTFU", instr_ns::fcvtfu_opcode);
+        add_reg_reg("FCVTSF", instr_ns::fcvtsf_opcode);
+        add_reg_reg("FCVTUF", instr_ns::fcvtuf_opcode);
+        add_reg_only("FGETCSR", instr_ns::fgetcsr_opcode);
+        add_reg_only("FSETCSR", instr_ns::fsetcsr_opcode);
+        add_jcc("JP", instr_ns::jp_opcode);
+        add_reg_only("SETP", instr_ns::setp_opcode);
     }
 
     /* ---- rendering helpers ------------------------------------------------ */

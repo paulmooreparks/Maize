@@ -263,6 +263,8 @@ run_test "reject_label_trunc"   "test_reject_label_trunc.mazm"   "unexpected end
 run_test "reject_address_trunc" "test_reject_address_trunc.mazm" "unexpected end of file" 0 1
 run_test "reject_jcc_reg"       "test_reject_jcc_reg.mazm"       "immediate target only"  0 1
 run_test "reject_jmp_subreg"    "test_reject_jmp_subreg.mazm"    "full 64-bit width"      0 1
+run_test "test_fp"              "test_fp.mazm"                   "fp: PASS"               0
+run_test "reject_fp_subreg"     "test_fp_reject_subreg.mazm"     "B* or Q* subregister"   0 1
 run_test "nested_include"       "test_nested_include.mazm"       "nested include: PASS"   1
 run_test "address_fwdlabel"     "test_address_fwdlabel.mazm"     "address fwd-ref: PASS"  0
 
@@ -689,13 +691,13 @@ run_mzdis_reserved_test() {
     "$MZDIS_EXE" -o "$dis_path" "$bin_path" || dis_exit=$?
 
     if [ "$dis_exit" -ne 0 ] \
-        || ! grep -qE 'DATA \$21.*unknown opcode' "$dis_path" \
+        || ! grep -qE 'DATA \$37.*unknown opcode' "$dis_path" \
         || ! grep -qE 'DATA \$93.*unknown opcode' "$dis_path" \
         || ! grep -qE '^\s+NOP\b' "$dis_path" \
         || grep -qi 'TRUNCATED' "$dis_path"; then
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
-        echo "        expected: DATA \$21/\$93 unknown-opcode lines, NOP decodes correctly after, exit 0"
+        echo "        expected: DATA \$37/\$93 unknown-opcode lines, NOP decodes correctly after, exit 0"
         echo "        actual:   exit ${dis_exit}; see ${dis_path}"
         return
     fi

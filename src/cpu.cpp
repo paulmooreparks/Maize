@@ -1,6 +1,7 @@
 #include "maize_cpu.h"
 #include "maize_cpu.h"
 #include "maize_sys.h"
+#include "fpu.h"
 #include <sstream>
 #include <exception>
 
@@ -468,6 +469,7 @@ namespace maize {
             reg rb; // base pointer register (BP); operand slot $D (maize-41)
             reg rp {0x0000000000000000}; // program execution register (PC); full 64-bit (maize-41)
             reg rs; // stack register (SP); full 64-bit (maize-41)
+            reg fcsr {0x0000000000000000}; // FP control/status: FRM(bits7-5)+FFLAGS(bits4-0); reset RNE, flags clear (maize-122)
         }
 
         namespace {
@@ -596,6 +598,24 @@ namespace maize {
 
             subreg_enum pc_dst_imm_subreg_flag() {
                 return imm_size_subreg_map[static_cast<size_t>(op2_imm_size_flag())];
+            }
+
+            /* Raw (zero-extended) read/write of a named subregister, no sign
+               extension (card maize-122). FP operands carry IEEE-754 bit patterns,
+               not integers, so the sign-extending copy_regval_reg would corrupt the
+               upper bits of a narrow value; these move exactly the subregister's
+               bits. Write preserves the rest of the destination register (the
+               existing subregister merge semantics). */
+            u_word read_subreg_bits(reg_value const &src, subreg_enum src_subreg) {
+                auto off = subreg_offset_map[static_cast<size_t>(src_subreg)];
+                auto mask = subreg_mask_map[static_cast<size_t>(src_subreg)];
+                return (src.w0 & static_cast<u_word>(mask)) >> off;
+            }
+
+            void write_subreg_bits(reg_value &dst, subreg_enum dst_subreg, u_word bits) {
+                auto off = subreg_offset_map[static_cast<size_t>(dst_subreg)];
+                auto mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
+                dst.w0 = (~static_cast<u_word>(mask) & dst.w0) | ((bits << off) & static_cast<u_word>(mask));
             }
 
             void clr_reg(reg_value &dst, subreg_enum dst_subreg) {
@@ -770,6 +790,7 @@ namespace maize {
                     case 7: return zero_flag || ((bool)negative_flag != (bool)overflow_flag);   // LE
                     case 8: return carryout_flag || zero_flag;                                  // BE (unsigned <=)
                     case 9: return !carryout_flag;                                              // AE (unsigned >=)
+                    case 10: return (bool)parity_flag;                                          // P  (unordered / NaN, maize-122)
                     default: {
                         std::stringstream err {};
                         err << "unallocated condition encoding: " << std::hex << static_cast<unsigned>(regs::ri.b0);
@@ -899,6 +920,73 @@ namespace maize {
            C++ undefined behavior; this matches the unknown-opcode handler's shape. */
         [[noreturn]] void raise_divide_error(const char* detail) {
             throw std::logic_error(std::string("divide error: ") + detail);
+        }
+
+        /* Illegal FP encoding trap (card maize-122 / maize-78 taxonomy): a B* or Q*
+           subregister on an FP operand, or a reserved/unallocated FP opcode form,
+           is a deterministic illegal-instruction/illegal-operand trap (never
+           undefined behavior or a silent no-op). Same shape as the divide-error
+           and unknown-opcode handlers until the interrupt mechanism exists. */
+        [[noreturn]] void raise_illegal_fp(const char* detail) {
+            throw std::logic_error(std::string("illegal floating-point instruction: ") + detail);
+        }
+
+        namespace {
+            /* FCSR field access (card maize-122). FRM lives in bits 7-5, FFLAGS
+               (sticky) in bits 4-0, RISC-V fcsr layout. FFLAGS are set by hardware
+               and cleared only by software (FSETCSR). */
+            u_byte fcsr_frm() {
+                return (static_cast<u_byte>(regs::fcsr.b0) >> 5) & 0x07;
+            }
+
+            void fcsr_raise(u_byte fflag_bits) {
+                regs::fcsr.b0 = static_cast<u_byte>(regs::fcsr.b0) | (fflag_bits & 0x1F);
+            }
+
+            /* Map an FP operand's subregister to its float width in bytes: H0/H1 =>
+               4 (binary32), W0 => 8 (binary64). A B* or Q* subregister is illegal for
+               an FP operand and returns 0, which every caller treats as a trap. */
+            u_byte fp_width_from_subreg(subreg_enum sr) {
+                switch (sr) {
+                    case subreg_enum::h0:
+                    case subreg_enum::h1:
+                        return 4;
+                    case subreg_enum::w0:
+                        return 8;
+                    default:
+                        return 0; // B* or Q* (or undefined): illegal for FP
+                }
+            }
+
+            /* FCMP flag production (card maize-122, spec 3e). `a_bits` is the dst
+               operand (op2), `b_bits` the src (op1); the outcome is a-versus-b,
+               mapped onto Maize's x86-shaped flags per the UCOMISD convention:
+                 a > src -> C=0 Z=0 P=0    a < src -> C=1 Z=0 P=0
+                 a == src -> C=0 Z=1 P=0    unordered -> C=1 Z=1 P=1
+               N and V are cleared. The parity bit P is the unordered indicator
+               (JP/SETP predicate). FCMP is the quiet compare: a quiet NaN yields
+               unordered without signaling; only a signaling NaN raises FFLAGS.NV.
+               The integer RF flags are the only ones written here; FFLAGS.NV is the
+               only FCSR bit FCMP can touch. */
+            void do_fcmp(u_word a_bits, u_word b_bits, u_byte width) {
+                fpu::fcmp_res c = fpu::fp_cmp(a_bits, b_bits, width);
+                bool C = false, Z = false, P = false;
+                switch (c.out) {
+                    case fpu::fcmp_out::greater:   C = false; Z = false; P = false; break;
+                    case fpu::fcmp_out::less:      C = true;  Z = false; P = false; break;
+                    case fpu::fcmp_out::equal:     C = false; Z = true;  P = false; break;
+                    case fpu::fcmp_out::unordered: C = true;  Z = true;  P = true;  break;
+                }
+                u_word f = regs::rf.w0;
+                f &= ~(bit_carryout | bit_zero | bit_parity | bit_negative | bit_overflow);
+                if (C) f |= bit_carryout;
+                if (Z) f |= bit_zero;
+                if (P) f |= bit_parity;
+                regs::rf.w0 = f;
+                if (c.nv) {
+                    fcsr_raise(fpu::fflag_nv);
+                }
+            }
         }
 
         void run_alu() {
@@ -2627,6 +2715,36 @@ namespace maize {
             }
         }
 
+        /* Floating-point arithmetic runner (card maize-122), the FP analogue of
+           run_alu for the four two-operand arithmetic ops. The caller loads the
+           src operand into alu.op1_reg and the dst operand into alu.op2_reg (both
+           as raw bit patterns), sets alu.b0 to the opcode byte and alu.b2 to the
+           operation width (4 = binary32, 8 = binary64), and reads the result back
+           from alu.op2_reg. Result = dst OP src (op2 OP op1), matching the integer
+           ALU operand convention. FFLAGS are OR-ed into FCSR (sticky); the integer
+           RF flags C/N/V/Z are left untouched (a dedicated FCSR, decision recorded). */
+        void run_fpu_arith() {
+            u_byte base = alu.b0 & arithmetic_logic_unit::opflag_code;
+            u_byte width = alu.b2;
+            u_byte frm = fcsr_frm();
+            u_word dst = alu.op2_reg.w0;
+            u_word src = alu.op1_reg.w0;
+            fpu::fresult res;
+
+            switch (base) {
+                case instr::fadd_opcode: res = fpu::fp_add(dst, src, width, frm); break;
+                case instr::fsub_opcode: res = fpu::fp_sub(dst, src, width, frm); break;
+                case instr::fmul_opcode: res = fpu::fp_mul(dst, src, width, frm); break;
+                case instr::fdiv_opcode: res = fpu::fp_div(dst, src, width, frm); break;
+                default: raise_illegal_fp("fp arithmetic dispatch");
+            }
+
+            if (res.flags) {
+                fcsr_raise(res.flags);
+            }
+            alu.op2_reg.w0 = res.bits;
+        }
+
         /* This is the state machine that implements the machine-code instructions. */
         void tick() {
             running_flag = true;
@@ -2673,7 +2791,8 @@ namespace maize {
                     case instr::setge_opcode:
                     case instr::setle_opcode:
                     case instr::setbe_opcode:
-                    case instr::setae_opcode: {
+                    case instr::setae_opcode:
+                    case instr::setp_opcode: {
                         regs::rp.w0 += 1;
                         set_reg(op1_reg(), op1_subreg_flag(),
                             eval_condition(decode_condition(instr::setcc_base)));
@@ -3411,7 +3530,8 @@ namespace maize {
                     case instr::jge_opcode:
                     case instr::jle_opcode:
                     case instr::jbe_opcode:
-                    case instr::jae_opcode: {
+                    case instr::jae_opcode:
+                    case instr::jp_opcode: {
                         regs::rp.w0 += 1;   // past the operand-descriptor (immediate-size) byte
                         if (eval_condition(decode_condition(instr::jcc_base))) {
                             jump_to_immediate();
@@ -3471,6 +3591,315 @@ namespace maize {
 
                        DUP/SWAP were header-only encoding ghosts and are removed entirely
                        (card maize-64). */
+
+                    /* ===== Floating-point ISA (card maize-122) =================
+                       Zfinx: operands live in the integer register file; the
+                       operation width (binary32 vs binary64) comes from the
+                       destination subregister (H0/H1 => 4, W0 => 8). A B* or Q*
+                       subregister on an FP operand is an illegal-operand trap. */
+
+                    /* 3a. Arithmetic, register-value source. */
+                    case instr::fadd_regVal_reg:
+                    case instr::fsub_regVal_reg:
+                    case instr::fmul_regVal_reg:
+                    case instr::fdiv_regVal_reg: {
+                        regs::rp.w0 += 2;
+                        u_byte w = fp_width_from_subreg(op2_subreg_flag());
+                        if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 (binary32) or W0 (binary64)");
+                        if (!fp_width_from_subreg(op1_subreg_flag())) raise_illegal_fp("FP source subregister must be H0/H1 or W0");
+                        copy_regval_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
+                        copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
+                        alu.b0 = regs::ri.b0;
+                        alu.b2 = w;
+                        run_fpu_arith();
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        break;
+                    }
+
+                    /* 3a. Arithmetic, immediate-value source (raw float bits). */
+                    case instr::fadd_immVal_reg:
+                    case instr::fsub_immVal_reg:
+                    case instr::fmul_immVal_reg:
+                    case instr::fdiv_immVal_reg: {
+                        regs::rp.w0 += 2;
+                        u_byte w = fp_width_from_subreg(op2_subreg_flag());
+                        if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 (binary32) or W0 (binary64)");
+                        u_byte src_size = op1_imm_size();
+                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
+                        alu.b0 = regs::ri.b0;
+                        alu.b2 = w;
+                        run_fpu_arith();
+                        regs::rp.w0 += src_size;
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        break;
+                    }
+
+                    /* 3a. Arithmetic, register-address source (load then operate). */
+                    case instr::fadd_regAddr_reg:
+                    case instr::fsub_regAddr_reg:
+                    case instr::fmul_regAddr_reg:
+                    case instr::fdiv_regAddr_reg: {
+                        regs::rp.w0 += 2;
+                        u_byte w = fp_width_from_subreg(op2_subreg_flag());
+                        if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 (binary32) or W0 (binary64)");
+                        {
+                            u_word addr = read_subreg_bits(op1_reg(), op1_subreg_flag());
+                            reg tmp; tmp.w0 = 0;
+                            mm.read(addr, tmp, w, 0);
+                            alu.op1_reg.w0 = tmp.w0;
+                        }
+                        copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
+                        alu.b0 = regs::ri.b0;
+                        alu.b2 = w;
+                        run_fpu_arith();
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        break;
+                    }
+
+                    /* 3a. Arithmetic, immediate-address source. */
+                    case instr::fadd_immAddr_reg:
+                    case instr::fsub_immAddr_reg:
+                    case instr::fmul_immAddr_reg:
+                    case instr::fdiv_immAddr_reg: {
+                        regs::rp.w0 += 2;
+                        u_byte w = fp_width_from_subreg(op2_subreg_flag());
+                        if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 (binary32) or W0 (binary64)");
+                        u_byte src_size = op1_imm_size();
+                        copy_memaddr_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
+                        alu.b0 = regs::ri.b0;
+                        alu.b2 = w;
+                        run_fpu_arith();
+                        regs::rp.w0 += src_size;
+                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
+                        break;
+                    }
+
+                    /* 3e. FCMP, all four addressing-mode source forms. op2 is `a`
+                       (the register compared), op1/immediate is `src`. */
+                    case instr::fcmp_regVal_reg: {
+                        regs::rp.w0 += 2;
+                        u_byte w = fp_width_from_subreg(op2_subreg_flag());
+                        if (!w) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
+                        if (!fp_width_from_subreg(op1_subreg_flag())) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
+                        u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
+                        u_word a = read_subreg_bits(op2_reg(), op2_subreg_flag());
+                        do_fcmp(a, src, w);
+                        break;
+                    }
+
+                    case instr::fcmp_immVal_reg: {
+                        regs::rp.w0 += 2;
+                        u_byte w = fp_width_from_subreg(op2_subreg_flag());
+                        if (!w) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
+                        u_byte src_size = op1_imm_size();
+                        reg tmp; tmp.w0 = 0;
+                        mm.read(regs::rp.w0, tmp, src_size, 0);
+                        u_word a = read_subreg_bits(op2_reg(), op2_subreg_flag());
+                        do_fcmp(a, tmp.w0, w);
+                        regs::rp.w0 += src_size;
+                        break;
+                    }
+
+                    case instr::fcmp_regAddr_reg: {
+                        regs::rp.w0 += 2;
+                        u_byte w = fp_width_from_subreg(op2_subreg_flag());
+                        if (!w) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
+                        u_word addr = read_subreg_bits(op1_reg(), op1_subreg_flag());
+                        reg tmp; tmp.w0 = 0;
+                        mm.read(addr, tmp, w, 0);
+                        u_word a = read_subreg_bits(op2_reg(), op2_subreg_flag());
+                        do_fcmp(a, tmp.w0, w);
+                        break;
+                    }
+
+                    case instr::fcmp_immAddr_reg: {
+                        regs::rp.w0 += 2;
+                        u_byte w = fp_width_from_subreg(op2_subreg_flag());
+                        if (!w) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
+                        u_byte src_size = op1_imm_size();
+                        copy_memaddr_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
+                        u_word a = read_subreg_bits(op2_reg(), op2_subreg_flag());
+                        do_fcmp(a, alu.op1_reg.w0, w);
+                        regs::rp.w0 += src_size;
+                        break;
+                    }
+
+                    /* 3b. Unary register-only: FSQRT/FNEG/FABS. op1 = src, op2 = dst
+                       (dst = f(src)). FNEG/FABS are exact sign-bit ops (no flags, no
+                       rounding, NaN payloads preserved). */
+                    case instr::fsqrt_opcode:
+                    case instr::fneg_opcode:
+                    case instr::fabs_opcode: {
+                        regs::rp.w0 += 2;
+                        u_byte w = fp_width_from_subreg(op2_subreg_flag());
+                        if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 or W0");
+                        if (!fp_width_from_subreg(op1_subreg_flag())) raise_illegal_fp("FP source subregister must be H0/H1 or W0");
+                        u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
+                        fpu::fresult res;
+                        switch (regs::ri.b0) {
+                            case instr::fsqrt_opcode: res = fpu::fp_sqrt(src, w, fcsr_frm()); break;
+                            case instr::fneg_opcode:  res = fpu::fp_neg(src, w); break;
+                            default:                  res = fpu::fp_abs(src, w); break;
+                        }
+                        if (res.flags) fcsr_raise(res.flags);
+                        write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
+                        break;
+                    }
+
+                    /* 3d. Min/max register-only: FMIN/FMAX. op1 = src, op2 = dst
+                       (dst = min/max(dst, src)). */
+                    case instr::fmin_opcode:
+                    case instr::fmax_opcode: {
+                        regs::rp.w0 += 2;
+                        u_byte w = fp_width_from_subreg(op2_subreg_flag());
+                        if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 or W0");
+                        if (!fp_width_from_subreg(op1_subreg_flag())) raise_illegal_fp("FP source subregister must be H0/H1 or W0");
+                        u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
+                        u_word dst = read_subreg_bits(op2_reg(), op2_subreg_flag());
+                        fpu::fresult res = (regs::ri.b0 == instr::fmin_opcode)
+                            ? fpu::fp_min(dst, src, w) : fpu::fp_max(dst, src, w);
+                        if (res.flags) fcsr_raise(res.flags);
+                        write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
+                        break;
+                    }
+
+                    /* 3f. Conversions register-only. op1 = src, op2 = dst. Widths
+                       come from the two subregister fields; the float operand must be
+                       H0/H1/W0, the integer operand may be any width. */
+                    case instr::fcvtff_opcode: { // float <-> float
+                        regs::rp.w0 += 2;
+                        u_byte dw = fp_width_from_subreg(op2_subreg_flag());
+                        u_byte sw = fp_width_from_subreg(op1_subreg_flag());
+                        if (!dw || !sw) raise_illegal_fp("FCVTFF operand subregister must be H0/H1 or W0");
+                        u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
+                        fpu::fresult res = fpu::fp_cvt_ff(src, sw, dw, fcsr_frm());
+                        if (res.flags) fcsr_raise(res.flags);
+                        write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
+                        break;
+                    }
+
+                    case instr::fcvtfs_opcode:   // float -> signed integer
+                    case instr::fcvtfu_opcode: { // float -> unsigned integer
+                        regs::rp.w0 += 2;
+                        u_byte sw = fp_width_from_subreg(op1_subreg_flag());
+                        if (!sw) raise_illegal_fp("FCVTFS/FCVTFU source subregister must be H0/H1 or W0");
+                        u_byte dw = op2_subreg_size(); // integer dst: any width
+                        u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
+                        bool is_signed = (regs::ri.b0 == instr::fcvtfs_opcode);
+                        fpu::fresult res = fpu::fp_cvt_f_to_int(src, sw, dw, is_signed, fcsr_frm());
+                        if (res.flags) fcsr_raise(res.flags);
+                        write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
+                        break;
+                    }
+
+                    case instr::fcvtsf_opcode:   // signed integer -> float
+                    case instr::fcvtuf_opcode: { // unsigned integer -> float
+                        regs::rp.w0 += 2;
+                        u_byte dw = fp_width_from_subreg(op2_subreg_flag());
+                        if (!dw) raise_illegal_fp("FCVTSF/FCVTUF destination subregister must be H0/H1 or W0");
+                        u_byte sw = op1_subreg_size(); // integer src: any width
+                        u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
+                        bool is_signed = (regs::ri.b0 == instr::fcvtsf_opcode);
+                        fpu::fresult res = fpu::fp_cvt_int_to_f(src, sw, dw, is_signed, fcsr_frm());
+                        if (res.flags) fcsr_raise(res.flags);
+                        write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
+                        break;
+                    }
+
+                    /* 3c. FMA: op1 = a (flagged src), op2 = b, op3 = c (also the
+                       destination accumulator): c = a*b (+/-) c, single-rounded. The
+                       spec's 4-name FMADD dst,a,b,c collapses to a 3-operand multiply-
+                       accumulate under the MULW-shaped encoding (op3 is both the
+                       addend c and the destination dst). FNMADD/FNMSUB are synthesized
+                       via the exact FNEG (not primitives). */
+                    case instr::fmadd_regVal_regreg:
+                    case instr::fmsub_regVal_regreg: {
+                        regs::rp.w0 += 3;
+                        u_byte w = fp_width_from_subreg(op3_subreg_flag());
+                        if (!w) raise_illegal_fp("FMA destination subregister must be H0/H1 or W0");
+                        u_word a = read_subreg_bits(op1_reg(), op1_subreg_flag());
+                        u_word b = read_subreg_bits(op2_reg(), op2_subreg_flag());
+                        u_word c = read_subreg_bits(op3_reg(), op3_subreg_flag());
+                        bool sub = ((regs::ri.b0 & arithmetic_logic_unit::opflag_code) == instr::fmsub_opcode);
+                        fpu::fresult res = fpu::fp_fma(a, b, c, w, fcsr_frm(), sub);
+                        if (res.flags) fcsr_raise(res.flags);
+                        write_subreg_bits(op3_reg(), op3_subreg_flag(), res.bits);
+                        break;
+                    }
+
+                    case instr::fmadd_immVal_regreg:
+                    case instr::fmsub_immVal_regreg: {
+                        regs::rp.w0 += 3;
+                        u_byte w = fp_width_from_subreg(op3_subreg_flag());
+                        if (!w) raise_illegal_fp("FMA destination subregister must be H0/H1 or W0");
+                        u_byte src_size = op1_imm_size();
+                        reg tmp; tmp.w0 = 0;
+                        mm.read(regs::rp.w0, tmp, src_size, 0);
+                        u_word a = tmp.w0;
+                        u_word b = read_subreg_bits(op2_reg(), op2_subreg_flag());
+                        u_word c = read_subreg_bits(op3_reg(), op3_subreg_flag());
+                        bool sub = ((regs::ri.b0 & arithmetic_logic_unit::opflag_code) == instr::fmsub_opcode);
+                        fpu::fresult res = fpu::fp_fma(a, b, c, w, fcsr_frm(), sub);
+                        if (res.flags) fcsr_raise(res.flags);
+                        write_subreg_bits(op3_reg(), op3_subreg_flag(), res.bits);
+                        regs::rp.w0 += src_size;
+                        break;
+                    }
+
+                    case instr::fmadd_regAddr_regreg:
+                    case instr::fmsub_regAddr_regreg: {
+                        regs::rp.w0 += 3;
+                        u_byte w = fp_width_from_subreg(op3_subreg_flag());
+                        if (!w) raise_illegal_fp("FMA destination subregister must be H0/H1 or W0");
+                        u_word addr = read_subreg_bits(op1_reg(), op1_subreg_flag());
+                        reg tmp; tmp.w0 = 0;
+                        mm.read(addr, tmp, w, 0);
+                        u_word a = tmp.w0;
+                        u_word b = read_subreg_bits(op2_reg(), op2_subreg_flag());
+                        u_word c = read_subreg_bits(op3_reg(), op3_subreg_flag());
+                        bool sub = ((regs::ri.b0 & arithmetic_logic_unit::opflag_code) == instr::fmsub_opcode);
+                        fpu::fresult res = fpu::fp_fma(a, b, c, w, fcsr_frm(), sub);
+                        if (res.flags) fcsr_raise(res.flags);
+                        write_subreg_bits(op3_reg(), op3_subreg_flag(), res.bits);
+                        break;
+                    }
+
+                    case instr::fmadd_immAddr_regreg:
+                    case instr::fmsub_immAddr_regreg: {
+                        regs::rp.w0 += 3;
+                        u_byte w = fp_width_from_subreg(op3_subreg_flag());
+                        if (!w) raise_illegal_fp("FMA destination subregister must be H0/H1 or W0");
+                        u_byte src_size = op1_imm_size();
+                        copy_memaddr_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
+                        u_word a = alu.op1_reg.w0;
+                        u_word b = read_subreg_bits(op2_reg(), op2_subreg_flag());
+                        u_word c = read_subreg_bits(op3_reg(), op3_subreg_flag());
+                        bool sub = ((regs::ri.b0 & arithmetic_logic_unit::opflag_code) == instr::fmsub_opcode);
+                        fpu::fresult res = fpu::fp_fma(a, b, c, w, fcsr_frm(), sub);
+                        if (res.flags) fcsr_raise(res.flags);
+                        write_subreg_bits(op3_reg(), op3_subreg_flag(), res.bits);
+                        regs::rp.w0 += src_size;
+                        break;
+                    }
+
+                    /* FCSR access (card maize-122). FGETCSR dst: dst = FCSR (the
+                       whole 8-bit FRM+FFLAGS byte). FSETCSR src: FCSR = src (low 8
+                       bits; the upper reserved trap-enable region stays 0 in v1.0). */
+                    case instr::fgetcsr_opcode: {
+                        regs::rp.w0 += 1;
+                        write_subreg_bits(op1_reg(), op1_subreg_flag(),
+                            static_cast<u_word>(static_cast<u_byte>(regs::fcsr.b0)));
+                        break;
+                    }
+
+                    case instr::fsetcsr_opcode: {
+                        regs::rp.w0 += 1;
+                        u_word v = read_subreg_bits(op1_reg(), op1_subreg_flag());
+                        regs::fcsr.w0 = v & 0xFF;
+                        break;
+                    }
 
                     default: {
                         std::stringstream err {};

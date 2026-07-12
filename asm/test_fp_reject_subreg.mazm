@@ -1,0 +1,9 @@
+; Card maize-122: a B* or Q* subregister on a floating-point operand is illegal
+; (FP operands are binary32 = H0/H1 or binary64 = W0). mazm must reject this at
+; assemble time with a clear diagnostic rather than emitting a form the VM would
+; trap. The B0 destination subregister below is the illegal case.
+
+$0000`0000:
+    CP $3FC00000 R0.H0
+    FADD R0.H0 R1.B0
+    HALT

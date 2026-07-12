@@ -1,13 +1,15 @@
 ; maize-14: mzdis reserved/unassigned-opcode-byte resync fixture (AC6481).
 ;
-; HALT, then two reserved bytes ($21, $93 -- both explicitly "reserved" per
-; README.md:1146,1260) embedded via DATA (a raw byte literal, not an
-; instruction), then a valid instruction (NOP), then HALT. mzdis must decode
+; HALT, then two reserved bytes ($37, $93 -- both still explicitly "reserved"
+; after the maize-122 FP additions) embedded via DATA (a raw byte literal, not
+; an instruction), then a valid instruction (NOP), then HALT. mzdis must decode
 ; each reserved byte as its own "DB $XX ; unknown opcode" line, advancing
-; exactly one byte each time, and resume correct decoding at NOP.
+; exactly one byte each time, and resume correct decoding at NOP. ($21 was a
+; reserved byte historically but is FDIV as of maize-122; $37 is the maize-64
+; freed slot that stays unallocated.)
 
 HALT
-DATA $21
+DATA $37
 DATA $93
 NOP
 HALT

@@ -112,4 +112,40 @@ INT $01
 SYS R0
 SYS $01
 
+; ---- Floating-point ISA (card maize-122) ----
+; Arithmetic + FCMP: SrcFlagged op1 + FixedReg op2, all four addressing modes.
+FADD R1.H0 R0.H0
+FADD $40100000 R0.H0
+FADD @R1 R0.H0
+FADD @$3000`0000 R0.H0
+FSUB R1.W0 R0.W0
+FMUL R1.H0 R0.H0
+FDIV R1.W0 R0.W0
+FCMP R1.H0 R0.H0
+FCMP $40100000 R0.H0
+FCMP @R1 R0.H0
+FCMP @$3000`0000 R0.H0
+; FMA: SrcFlagged op1 + FixedReg op2 + FixedReg op3, all four addressing modes.
+FMADD R0.H0 R1.H0 R2.H0
+FMADD $3F800000 R1.H0 R2.H0
+FMADD @R0 R1.H0 R2.H0
+FMADD @$4000`0000 R1.H0 R2.H0
+FMSUB R0.W0 R1.W0 R2.W0
+; Register-only two-operand families (row-packed).
+FSQRT R0.H0 R1.H0
+FNEG R0.W0 R1.W0
+FABS R0.H0 R1.H0
+FMIN R0.H0 R1.H0
+FMAX R0.W0 R1.W0
+FCVTFF R0.H0 R1.W0
+FCVTFS R0.H0 R1.B0
+FCVTFU R0.W0 R1.Q0
+FCVTSF R0.B0 R1.H0
+FCVTUF R0.Q0 R1.W0
+; FCSR access and the unordered predicate.
+FGETCSR R5.B0
+FSETCSR R5.B0
+JP $12
+SETP R0
+
 HALT
