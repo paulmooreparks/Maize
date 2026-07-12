@@ -1,4 +1,4 @@
-# Maize ISA: Trap Model (v1.0 freeze)
+# Chapter 10: Trap Model
 
 This chapter is a normative part of the Maize ISA specification. It fixes the trap
 taxonomy, the cause/vector numbering, the state a trap captures, and how traps and
@@ -49,22 +49,22 @@ instruction), which the reference dispatch holds naturally at the point BRK exec
 
 Each synchronous trap has a stable numeric **cause**. The cause number doubles as the
 trap's index into the shared vector table (see "Vector table and delivery"). Synchronous
-traps occupy the low range 0..31; external and device interrupts occupy 32 and above
-(maize-21). Vector 1 is intentionally left unassigned, reserving a slot for a future
-debug / single-step trap, matching the x86 lineage a reader will expect.
+traps occupy the low range 0..31; external and device interrupts occupy 32 and above.
+Vector 1 is intentionally left unassigned, reserving a slot for a future debug /
+single-step trap, matching the x86 lineage a reader will expect.
 
-| Cause | Name | Class | Trigger | Captured aux | Status |
-|------:|------|-------|---------|--------------|--------|
-| 0 | Illegal instruction / illegal operand | Fault | An unknown / undefined opcode; an unallocated condition encoding on a Jcc / SETcc; or an illegal floating-point encoding (a B\* / Q\* subregister on an FP operand, an FP operand-width mismatch, a reserved / unsupported FCSR rounding mode on a rounding op, or a reserved FP opcode form) | Offending instruction byte | Implemented (as throw-and-exit); guest delivery newly pinned |
-| 1 | (reserved) | n/a | Unassigned; reserved for a future debug / single-step trap | n/a | Reserved, unassigned |
-| 2 | Divide error | Fault | Divide-by-zero (signed or unsigned), or signed `INT_MIN / -1` quotient overflow | Subcode: 0 = divide-by-zero, 1 = quotient overflow | Implemented (as throw-and-exit); guest delivery newly pinned |
-| 3 | Breakpoint | Trap | The `BRK` (`$FF`) instruction executes | 0 | Newly pinned (was a no-op) |
-| 4 | Privileged operation in user mode | Fault | A privileged instruction executes with the RF privilege bit clear | Offending instruction byte | Reserved number; enforcement mechanism deferred |
-| 5 | Segment / bounds violation | Fault | An access falls outside a segment window, once segments exist | Faulting address | Reserved number (maize-92); mechanism deferred |
-| 6 | Stack fault | Fault | A stack access violates the stack limit, once a stack bound exists | Faulting address | Reserved number (maize-92); mechanism deferred |
-| 7 | SYS / syscall entry | Trap | The `SYS` instruction executes (a deliberate synchronous software trap into the kernel syscall dispatcher) | 0 (syscall number and arguments travel in registers per the syscall ABI) | Reserved number; SYS dispatches directly today, trap-vector delivery + ABI owned by maize-82 / maize-21 |
-| 8..31 | (reserved) | n/a | Future synchronous traps | n/a | Reserved |
-| 32.. | External / device interrupts | Interrupt | Device / timer sources (maize-21); the timer is the first source | Source-defined | Deferred to maize-21 |
+| Cause | Name | Class | Trigger | Captured aux |
+|------:|------|-------|---------|--------------|
+| 0 | Illegal instruction / illegal operand | Fault | An unknown / undefined opcode; an unallocated condition encoding on a Jcc / SETcc; or an illegal floating-point encoding (a B\* / Q\* subregister on an FP operand, an FP operand-width mismatch, a reserved / unsupported FCSR rounding mode on a rounding op, or a reserved FP opcode form) | Offending instruction byte |
+| 1 | (reserved) | n/a | Unassigned; reserved for a future debug / single-step trap | n/a |
+| 2 | Divide error | Fault | Divide-by-zero (signed or unsigned), or signed `INT_MIN / -1` quotient overflow | Subcode: 0 = divide-by-zero, 1 = quotient overflow |
+| 3 | Breakpoint | Trap | The `BRK` (`$FF`) instruction executes | 0 |
+| 4 | Privileged operation in user mode | Fault | A privileged instruction executes with the RF privilege bit clear | Offending instruction byte |
+| 5 | Segment / bounds violation | Fault | An access falls outside a segment window, once segments exist | Faulting address |
+| 6 | Stack fault | Fault | A stack access violates the stack limit, once a stack bound exists | Faulting address |
+| 7 | SYS / syscall entry | Trap | The `SYS` instruction executes (a deliberate synchronous software trap into the kernel syscall dispatcher) | 0 (syscall number and arguments travel in registers per the syscall ABI) |
+| 8..31 | (reserved) | n/a | Future synchronous traps | n/a |
+| 32.. | External / device interrupts | Interrupt | Device / timer sources; the timer is the first source | Source-defined |
 
 Cause subcodes: where one cause number multiplexes distinct conditions, the cause word
 carries a subcode so a handler can tell them apart without re-deriving the condition.
@@ -77,18 +77,15 @@ condition encoding, and 2 for an illegal floating-point encoding / operand.
 **Cause 0, Illegal instruction / illegal operand (fault).** Fires when the decoder meets
 an opcode byte with no defined meaning, when a Jcc / SETcc carries a condition selector
 that is not an allocated encoding, or when a floating-point instruction carries an
-illegal encoding or operand. The floating-point cases (maize-122) are: a B\* or Q\*
-subregister on an FP operand (FP operands must select H0 / H1 for binary32 or W0 for
-binary64), an FP operand-width mismatch (mixing binary32 and binary64 on a same-format
-op), a reserved or unsupported FCSR rounding mode on a rounding op, or a reserved FP
-opcode form. All of these are illegal-encoding / illegal-operand conditions, distinct
-from FP arithmetic exceptions, which never trap (see "Defined non-trapping behavior").
-The trap captures the faulting instruction's PC (a handler may rewrite the encoding and
-retry) and the offending instruction byte as aux; the cause subcode is 0 for an unknown
-opcode, 1 for an unallocated condition encoding, and 2 for an illegal FP encoding /
-operand. In the reference VM this is the `default:` case of the opcode dispatch, the
-`default:` case of the condition evaluator, and the `raise_illegal_fp` call sites, all of
-which currently throw and exit; this chapter pins the guest-visible delivery those become.
+illegal encoding or operand. The floating-point cases are: a B\* or Q\* subregister on an
+FP operand (FP operands must select H0 / H1 for binary32 or W0 for binary64), an FP
+operand-width mismatch (mixing binary32 and binary64 on a same-format op), a reserved or
+unsupported FCSR rounding mode on a rounding op, or a reserved FP opcode form. All of
+these are illegal-encoding / illegal-operand conditions, distinct from FP arithmetic
+exceptions, which never trap (see "Defined non-trapping behavior"). The trap captures the
+faulting instruction's PC (a handler may rewrite the encoding and retry) and the
+offending instruction byte as aux; the cause subcode is 0 for an unknown opcode, 1 for an
+unallocated condition encoding, and 2 for an illegal FP encoding / operand.
 
 **Cause 2, Divide error (fault).** Fires on signed or unsigned divide-by-zero and on the
 one signed quotient overflow (`INT_MIN / -1`, whose true quotient is not representable),
@@ -103,34 +100,32 @@ fills erased or uninitialized memory, so a run of `$FF` bytes reached as code ra
 breakpoint rather than wandering, mirroring `HALT` (`$00`) at the other end.
 
 **Cause 4, Privileged operation in user mode (fault, reserved).** The cause number is
-frozen now; the enforcement mechanism is deferred. It fires when a privileged
-instruction executes with the RF privilege bit clear. The RF privilege bit already
-exists but no instruction gates on it yet. The candidate privileged set is IN / OUT,
-SETINT / CLRINT, IRET, HALT, and future segment-register writes; the exact set is
-finalized jointly with maize-21 (port I/O) and maize-92 (segments). Reserving the number
-now leaves stable encoding space.
+frozen; the enforcement mechanism is reserved. It fires when a privileged instruction
+executes with the RF privilege bit clear. The RF privilege bit exists and gates
+privileged mode, but no instruction enforces it in the flat v1.0 model. The candidate
+privileged set is IN / OUT / OUTR, SETINT / CLRINT, IRET, HALT, INT, and future
+segment-register writes; the exact set is settled together with the port-I/O and segment
+work. Reserving the number leaves stable encoding space.
 
-**Cause 5, Segment / bounds violation (fault, reserved).** The cause number is frozen
-now for maize-92; the mechanism ships with the segment / base-bounds registers, possibly
-as the first v1.x extension. In the v1.0 flat sparse memory model no access is out of
-bounds, so this never fires yet.
+**Cause 5, Segment / bounds violation (fault, reserved).** The cause number is frozen;
+the mechanism ships with the segment / base-bounds registers as a future extension. In
+the v1.0 flat sparse memory model no access is out of bounds, so this never fires yet.
 
-**Cause 6, Stack fault (fault, reserved).** The cause number is frozen now; there is no
-stack bound in the flat sparse model, so it never fires until bounds exist (maize-92).
+**Cause 6, Stack fault (fault, reserved).** The cause number is frozen; there is no stack
+bound in the flat sparse model, so it never fires until bounds exist.
 
-**Cause 7, SYS / syscall entry (trap, reserved).** The cause number is frozen now; the
-delivery mechanism and the syscall ABI are owned by maize-82 and maize-21. `SYS` is a
+**Cause 7, SYS / syscall entry (trap, reserved).** The cause number is frozen; the
+trap-vector delivery mechanism and the syscall ABI are specified separately. `SYS` is a
 deliberate synchronous software trap: unlike the fault causes, it is requested by the
 program, so it vectors through the shared trap table at index 7 into the kernel syscall
-dispatcher, uses the corrected capture layout below, and returns via the shared IRET
-(consistent with the ratified maize-82 model that SYS $34 is syscall entry with a
-saved-state contract and IRET return). Like every synchronous trap it is unmaskable. It
-is trap-class: it captures the address of the **following** instruction, so IRET resumes
-the program at the instruction after `SYS`. The syscall number and arguments travel in
-registers per the syscall ABI, which maize-82 / maize-21 define; this chapter only
-reserves the vector and names `SYS` as its source. In the reference VM `SYS` today
-dispatches directly to the BIOS / syscall surface (src/sys.cpp) rather than through the
-trap table; the trap-vector delivery is the future path maize-82 / maize-21 build.
+dispatcher, uses the corrected capture layout below, and returns via the shared IRET. Its
+model is that SYS ($34) is syscall entry with a saved-state contract and IRET return.
+Like every synchronous trap it is unmaskable. It is trap-class: it captures the address
+of the **following** instruction, so IRET resumes the program at the instruction after
+`SYS`. The syscall number and arguments travel in registers per the syscall ABI; this
+chapter only reserves the vector and names `SYS` as its source. In the reference VM `SYS`
+today dispatches directly to the BIOS / syscall surface (`src/sys.cpp`) rather than
+through the trap table; routing it through the trap table is a future path.
 
 ## Defined non-trapping behavior
 
@@ -140,9 +135,10 @@ undefined behavior. They are listed here so no reader mistakes a defined result 
 gap in the taxonomy.
 
 - **Integer overflow wraps.** ADD, SUB, MUL, INC, DEC, NEG, and shift results wrap
-  two's-complement and set the C and V flags per the flags model (maize-1). There is no
-  trap-on-overflow mode in v1.0. The JO / JNO and SETO / SETNO condition encodings stay
-  reserved; overflow is observed through flags, never through a trap.
+  two's-complement and set the C and V flags per the flags model (see the Register Model
+  chapter). There is no trap-on-overflow mode in v1.0. The JO / JNO and SETO / SETNO
+  condition encodings stay reserved; overflow is observed through flags, never through a
+  trap.
 - **Out-of-range shift count is defined.** For a shift of width `bits`: `n == 0` leaves
   the flags unaffected; `1 <= n <= bits` shifts normally; `n > bits` yields a result of
   0 with C, V, N, and Z cleared. Never a trap, never host undefined behavior.
@@ -150,7 +146,7 @@ gap in the taxonomy.
   never-written memory returns 0, and a write allocates a zero-filled block on first
   touch. There is no EFAULT and no page fault in the v1.0 flat model. The absence of a
   memory-access trap here is deliberate, not a missing case; segment / bounds
-  enforcement (cause 5) is the separate, reserved path that maize-92 adds.
+  enforcement (cause 5) is the separate, reserved path a future extension adds.
 - **Misaligned multi-byte access is defined-allow.** A multi-byte load or store may sit
   at any address; it is stitched byte-wise across the 256-byte allocation blocks with no
   alignment requirement and no trap. No vector is spent on alignment.
@@ -160,13 +156,14 @@ gap in the taxonomy.
   encodings, not opcodes, so they never raise the illegal-instruction trap (whose
   triggers are the unknown opcodes, unallocated condition encodings, and illegal FP
   encodings enumerated under cause 0).
-- **Floating-point arithmetic exceptions are sticky, never trapping (maize-122).** An FP
-  invalid operation, divide-by-zero, overflow, underflow, or inexact result does not
-  trap: the operation produces its IEEE-754 defined result (a quiet NaN, a signed
-  infinity, the correctly rounded value) and sets the corresponding sticky FFLAGS bit in
-  the FCSR. Software clears those flags explicitly; the machine never raises a trap on an
-  FP arithmetic exception. Only illegal FP *encodings / operands* trap, and those are
-  cause 0 (illegal instruction / illegal operand), not an arithmetic exception.
+- **Floating-point arithmetic exceptions are sticky, never trapping.** An FP invalid
+  operation, divide-by-zero, overflow, underflow, or inexact result does not trap: the
+  operation produces its IEEE-754 defined result (a quiet NaN, a signed infinity, the
+  correctly rounded value) and sets the corresponding sticky FFLAGS bit in the FCSR.
+  Software clears those flags explicitly; the machine never raises a trap on an FP
+  arithmetic exception. Only illegal FP *encodings / operands* trap, and those are cause
+  0 (illegal instruction / illegal operand), not an arithmetic exception. See the
+  Floating-Point chapter.
 
 ## Captured state
 
@@ -181,14 +178,14 @@ offsets, three items:
    word as: the cause number in the low byte (bits 7:0), the subcode in the next byte
    (bits 15:8), and the remaining bits (63:16) reserved and written zero. A handler reads
    the cause with `AND $FF` and the subcode with a shift-and-mask; the reserved-zero high
-   bits leave room for the vector-table format (maize-21) to widen the field without
-   breaking existing handlers. This packing is frozen here.
+   bits leave room for the vector-table format to widen the field without breaking
+   existing handlers. This packing is frozen here.
 3. **Aux info**: the faulting address for memory-class faults; the offending instruction
    byte for illegal-instruction; zero otherwise.
 
 ### Saved-state stack layout
 
-The capture reuses the shipped IRET return path unchanged rather than inventing a
+The capture reuses the shared IRET return path unchanged rather than inventing a
 separate trap-return instruction. IRET pops RF first and then the PC. For that to be
 correct, the top of the saved frame (the word at SP on handler entry, once the handler
 has removed the two extra words) must be RF, with the saved PC just below it.
@@ -208,28 +205,27 @@ restoring the interrupted context. This is the shared return path for both traps
 interrupts; there is no TRET.
 
 (The vector-table base address, the per-entry width, and the index-bounds check are the
-one part of the format not frozen in this chapter. They are co-authored with maize-21,
-which owns the delivery mechanism, before v1.0. This chapter freezes the taxonomy, the
-cause / subcode numbering, and the capture layout above; maize-21 inherits them.)
+one part of the format not frozen in this chapter; they are settled with the interrupt
+delivery mechanism before v1.0. This chapter freezes the taxonomy, the cause / subcode
+numbering, and the capture layout above.)
 
 ## Vector table and delivery
 
 Traps and interrupts share **one** vector table, **one** saved-state layout, and **one**
 return instruction (IRET). This single-table design is the coherence requirement with
-the interrupt model (maize-21).
+the interrupt model.
 
 - **Indexing.** The table is indexed by cause number: entry[cause] holds the handler.
   Synchronous traps occupy indices 0..31; external interrupts occupy 32 and above.
 - **Handler entry.** On a fired trap the machine looks up entry[cause], captures the
   state described above onto the stack, and loads the handler address into PC. The
-  handler address is a full 64-bit value (maize-41). The interrupt-enable state on
-  handler entry is governed by the maskability rule below.
+  handler address is a full 64-bit value. The interrupt-enable state on handler entry is
+  governed by the maskability rule below.
 - **Handler return.** The handler removes its trap-only words (aux, cause) and executes
   IRET, which pops RF and then PC. This is shared with the interrupt return path.
 - **No handler installed (pre-OS / bare metal).** If no handler is installed for a fired
-  trap, the machine **halts deterministically** with the cause surfaced. This is the
-  defined successor to the reference VM's current throw-and-exit: a divide-by-zero, an
-  unknown opcode, or a breakpoint stops the VM with an observable cause rather than
+  trap, the machine **halts deterministically** with the cause surfaced. A divide-by-zero,
+  an unknown opcode, or a breakpoint stops the VM with an observable cause rather than
   wandering or invoking host undefined behavior. A third-party VM with no OS loaded must
   behave identically.
 
@@ -238,15 +234,15 @@ the interrupt model (maize-21).
 Synchronous traps (the faults and the breakpoint) are **unmaskable**: a masked
 divide-by-zero cannot be silently dropped, because that would reintroduce undefined
 behavior through the back door. External and device interrupts are **maskable** through
-the shipped RF interrupt-enable bit, toggled by the SETINT and CLRINT instructions. The
+the RF interrupt-enable bit, toggled by the SETINT and CLRINT instructions. The
 interrupt-enable bit governs only the maskable external sources; it has no effect on a
 synchronous trap.
 
-Nesting, priority, and interrupt acknowledge are maize-21's to define, but they are
-built on the saved-state layout this chapter fixes. The reference VM already carries the
-seam: RF holds the interrupt-enable and interrupt-set bits, SETINT / CLRINT toggle the
-enable bit, IRET pops RF then PC, and `run()` holds a commented delivery skeleton (push
-PC, push RF, load the handler address) that maize-21 fills in against this layout.
+Nesting, priority, and interrupt acknowledge are the interrupt model's to define, but
+they are built on the saved-state layout this chapter fixes. The reference VM already
+carries the seam: RF holds the interrupt-enable and interrupt-set bits, SETINT / CLRINT
+toggle the enable bit, IRET pops RF then PC, and `run()` holds a commented delivery
+skeleton (push PC, push RF, load the handler address) filled against this layout.
 
 ## Conformance
 
@@ -272,48 +268,37 @@ to every entry in the taxonomy.
 captured PC is the address of the instruction **after** `BRK`. With no handler installed
 the VM halts deterministically with cause 3 surfaced, and the instruction after `BRK`
 does not execute. The reference VM ships a regression test asserting exactly this
-(asm/test_brk.mazm plus the run_brk_trap_test runner in scripts/run-tests.sh).
+(`asm/test_brk.mazm` plus the breakpoint-trap runner in `scripts/run-tests.sh`).
 
-## Implementation grounding and status
+## Reference implementation
 
-Each entry is marked against the reference VM (src/cpu.cpp, src/maize_cpu.h) as already
-implemented, newly pinned by this chapter, or a reserved mechanism deferred to a later
-card.
+The reference VM (`src/cpu.cpp`, `src/maize_cpu.h`) grounds this chapter:
 
-- **Illegal instruction / illegal operand (cause 0)**: implemented as host abort. The
-  opcode dispatch `default:`, the condition-evaluator `default:`, and the `raise_illegal_fp`
-  call sites (maize-122: B\* / Q\* subregister on an FP operand, FP operand-width mismatch,
-  reserved / unsupported FCSR rounding mode, reserved FP opcode form) all throw and exit
-  today. Guest delivery (vector lookup, capture, handler entry) is newly pinned here and
-  delivered by maize-21.
-- **Divide error (cause 2)**: implemented as host abort. `raise_divide_error` throws for
-  signed and unsigned divide-by-zero and for signed `INT_MIN / -1` quotient overflow
-  across all four DIV / MOD / UDIV / UMOD widths (this is the maize-86 lineage: guard the
-  condition rather than let the host divide fault). Guest delivery newly pinned here.
-- **Breakpoint (cause 3)**: newly pinned and implemented on this card. `BRK` was a no-op
-  (maize-10 Decision D6460); this card promotes it to a defined breakpoint trap
-  (`raise_breakpoint`), reconciling the `$FF` sentinel intent with dispatch. Unhandled,
-  it halts deterministically with the breakpoint cause, through the same throw-and-exit
-  mechanism as divide-error, until maize-21 supplies the in-guest handler path.
-- **Privileged operation (cause 4)**: reserved number, mechanism deferred. The RF
-  privilege bit exists and is set on power-up, but no instruction checks it yet.
-- **Segment / bounds (cause 5) and stack fault (cause 6)**: reserved numbers, mechanism
-  deferred to maize-92. The flat sparse memory model has no out-of-bounds access and no
-  stack bound, so neither fires yet.
-- **SYS / syscall entry (cause 7)**: reserved number, trap-vector delivery deferred.
-  `SYS` ($34) today dispatches directly to the BIOS / syscall surface (src/sys.cpp); the
-  ratified maize-82 model routes it through the shared trap table with a saved-state
-  contract and IRET return. This chapter reserves the vector and names `SYS` as its
-  source; the syscall ABI and the trap-vector delivery are owned by maize-82 / maize-21.
-- **Interrupt delivery substrate**: present but inert. RF carries the interrupt-enable
-  and interrupt-set bits; SETINT / CLRINT toggle the enable bit; IRET pops RF then PC;
-  `run()` holds a commented-out delivery skeleton. No vector table is read anywhere yet;
-  maize-21 fills that seam against the layout this chapter fixes.
-- **INT (`$24` / `$64`)**: has no dispatch case yet and is deliberately deferred until
-  the vector-table format exists (co-authored with maize-21).
+- **Illegal instruction / illegal operand (cause 0)** is the `default:` case of the
+  opcode dispatch, the `default:` case of the condition evaluator, and the
+  `raise_illegal_fp` call sites (a B\* / Q\* subregister on an FP operand, an FP
+  operand-width mismatch, a reserved / unsupported FCSR rounding mode, and a reserved FP
+  opcode form).
+- **Divide error (cause 2)** is `raise_divide_error`, which guards signed and unsigned
+  divide-by-zero and the signed `INT_MIN / -1` quotient overflow across all four DIV /
+  MOD / UDIV / UMOD widths rather than letting the host divide fault.
+- **Breakpoint (cause 3)** is `raise_breakpoint`: `BRK` (`$FF`) is a defined breakpoint
+  trap, not a no-op.
+- Where no in-guest handler is installed, these paths halt the VM deterministically with
+  the cause surfaced. The full in-guest vector-table delivery (vector lookup, capture,
+  handler entry) is a future path built against the layout this chapter fixes.
+- **Privileged operation (cause 4)**: the RF privilege bit exists and is set on power-up,
+  but no instruction enforces it in the flat v1.0 model.
+- **Segment / bounds (cause 5) and stack fault (cause 6)**: reserved numbers; the flat
+  sparse memory model has no out-of-bounds access and no stack bound, so neither fires.
+- **SYS / syscall entry (cause 7)**: reserved number; `SYS` ($34) dispatches directly to
+  the BIOS / syscall surface today, with trap-vector delivery reserved.
+- **Interrupt delivery substrate**: present but inert. RF carries the interrupt-enable and
+  interrupt-set bits; SETINT / CLRINT toggle the enable bit; IRET pops RF then PC; `run()`
+  holds a commented-out delivery skeleton. **INT (`$24` / `$64`)** has no dispatch case yet
+  and is deferred until the vector-table format exists.
 
-The defined non-trapping behaviors are all shipped: overflow wrap and flags (maize-1),
-out-of-range shift result-0 (maize-1), sparse allocate-on-touch memory (the flat memory
-model, maize-75 lineage), byte-wise misaligned access, the value-initialized default for
-undefined sub-register and immediate-size encodings, and sticky (never-trapping) FP
-arithmetic exceptions via the FCSR FFLAGS (maize-122).
+The defined non-trapping behaviors are all shipped: overflow wrap and flags, out-of-range
+shift result-0, sparse allocate-on-touch memory, byte-wise misaligned access, the
+value-initialized default for undefined sub-register and immediate-size encodings, and
+sticky (never-trapping) FP arithmetic exceptions via the FCSR FFLAGS.
