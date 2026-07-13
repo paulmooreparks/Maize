@@ -1,0 +1,20 @@
+; maize-143 flag-safety fixture entry stub (self-contained, no C runtime).
+;
+; Minimal crt for ctest/caddroff_flag.qbe: call the qbe-emitted flagmain, then
+; terminate with its return value as the process exit status via the raw sys_exit
+; (SYS $3C, R0 = status; toolchain/rt/SYSCALL-ABI.md). flagmain returns 0 when the
+; flag-neutral LEA lowering kept the fused loop's exit test correct (sum == 2600),
+; nonzero when a flag-clobbering offset add miscompiled it. Linked ONLY with the
+; qbe body (no crt0/syscall/C runtime), so this test isolates the qbe -t maize
+; backend without duplicating the C-runtime link that lives in scripts/cc-maize.sh.
+
+SECTION CODE
+
+GLOBAL _start
+EXTERN flagmain
+
+_start:
+	CALL	flagmain      ; RV = 0 (PASS) or nonzero (flag-clobber miscompile)
+	CP	RV R0             ; sys_exit reads the status from R0
+	SYS	$3C               ; sys_exit(R0); terminates the VM, no return
+	HALT                  ; unreachable; kept for stub symmetry

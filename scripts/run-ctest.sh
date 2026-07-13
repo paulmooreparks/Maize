@@ -676,6 +676,65 @@ run_multi_usage_test() {
     fi
 }
 
+# maize-143 flag-safety regression, at the QBE-IR layer where the fix lives. The
+# nonzero-offset CAddr lowering (CP <label> ; LEA $<off>) MUST be flag-neutral: the
+# isel successor-phi-argument pass can land a $sym+K materialization at a block end,
+# between a fused flag-only CMP and its Jcc, so a flag-clobbering ADD/SUB there would
+# corrupt the branch. cproc cannot express a bare CAddr-con phi argument from C (it
+# keeps locals in memory, so a C loop materializes the address eagerly in the body or
+# in a jmp-terminated ternary arm, never between a fused CMP and its Jcc). So this
+# hazard is exercised from hand-written QBE: ctest/caddroff_flag.qbe folds
+# `add $garr, K` onto a loop back edge, and ctest/caddroff_flag_crt.mazm is a minimal
+# self-contained entry stub that exits with flagmain's return (0 == the fused loop
+# summed correctly under the flag-neutral LEA, nonzero == a flag-clobber miscompile).
+# Linked with ONLY the stub + qbe body, so the C-runtime link (scripts/cc-maize.sh)
+# is NOT duplicated here. Swapping the LEA for an ADD/SUB fails this fixture.
+run_qbe_flag() {
+    name="caddroff_flag"
+    TOTAL=$((TOTAL + 1))
+
+    QBE=$(resolve_exe "${QBE_DIR}/obj/qbe") || {
+        echo "[FAIL] ${name}: qbe not built (${QBE_DIR}/obj/qbe)" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return; }
+
+    src="${CTEST_DIR}/${name}.qbe"
+    crt="${CTEST_DIR}/${name}_crt.mazm"
+    body_mazm="${WORK_DIR}/${name}.body.mazm"
+    body_mzo="${WORK_DIR}/${name}.body.mzo"
+    crt_copy="${WORK_DIR}/${name}_crt.mazm"
+    crt_mzo="${WORK_DIR}/${name}_crt.mzo"
+    mzx="${WORK_DIR}/${name}.mzx"
+
+    if ! "$QBE" -t maize "$src" > "$body_mazm" 2>"${WORK_DIR}/${name}.qbe.log"; then
+        echo "[FAIL] ${name}: qbe -t maize failed"; cat "${WORK_DIR}/${name}.qbe.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    cp "$crt" "$crt_copy"
+    if ! "$MAZM" -c "$crt_copy" >"${WORK_DIR}/${name}.crt.log" 2>&1 \
+    || ! "$MAZM" -c "$body_mazm" >"${WORK_DIR}/${name}.body.log" 2>&1; then
+        echo "[FAIL] ${name}: mazm -c failed"
+        cat "${WORK_DIR}/${name}.crt.log" "${WORK_DIR}/${name}.body.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    if ! "$MZLD" -o "$mzx" "$crt_mzo" "$body_mzo" >"${WORK_DIR}/${name}.mzld.log" 2>&1 \
+    || [ ! -f "$mzx" ]; then
+        echo "[FAIL] ${name}: mzld failed"; cat "${WORK_DIR}/${name}.mzld.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    set +e
+    "$MAIZE" "$mzx" >/dev/null 2>&1
+    status=$?
+    set -e
+
+    if [ "$status" -eq 0 ]; then
+        echo "[PASS] ${name} (flag-neutral LEA lowering; fused exit test intact)"
+    else
+        echo "[FAIL] ${name} (exit ${status}: the nonzero-offset CAddr lowering clobbered the fused-branch flags)"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
 echo "=== C toolchain end-to-end (cproc -> qbe -t maize -> mazm -c -> mzld -> maize) ==="
 run_ctest "hello"
 run_ctest "capstone"
@@ -697,6 +756,16 @@ run_ctest "addrlocalphi"
 # die()d on any spilled operand; post-fix it emits the reload / spill-store / slot
 # copy paths. Overlay-only fix in qbe-maize/emit.c. Self-checks against 1541762618.
 run_ctest "spill"
+# maize-143 CAddr nonzero-offset regression: forms and uses &global_array[K],
+# &s.field, "lit"+K, and a &global[K] carried across a fused-branch loop, each with
+# a checked result folded into "caddroff: PASS". Pre-fix the emitter die()d on any
+# nonzero-offset CAddr con; post-fix isel routes it through a register and emitcopy
+# lowers it as CP <label> ; LEA $<off> (flag-neutral). Overlay-only in qbe-maize.
+run_ctest "caddroff"
+# maize-143 flag-safety gate (QBE-IR level; see run_qbe_flag above): the LEA offset
+# lowering must be flag-neutral so a $sym+K materialization landing between a fused
+# CMP and its Jcc cannot corrupt the branch. Fails if LEA is swapped for ADD/SUB.
+run_qbe_flag
 # maize-137 float/double codegen: a self-checking fixture exercising float and
 # double arithmetic (+ - * /), all six comparisons in both widths (ordered and
 # NaN/unordered), signed int<->float and float<->double conversions (unsigned

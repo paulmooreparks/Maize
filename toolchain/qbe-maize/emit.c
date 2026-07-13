@@ -113,6 +113,7 @@ regw(Ref r, int sz, E *e)
 }
 
 static void lea_negoff(E *e, uint64_t off, const char *reg);
+static void lea_off(E *e, int64_t off, const char *reg);
 
 /* Byte offset below BP of frame slot s (a 4-byte unit index): the spill/local
  * region sits just below the saved-register block (8*nsaved) and, for a variadic
@@ -223,6 +224,20 @@ emitcopy(Ins *i, E *e)
 			fputs("\tLD\t@RT ", e->f);
 			regw(dst, sz, e);
 			fputc('\n', e->f);
+		} else if (rtype(src) == RCon
+		&& (c = &e->fn->con[src.val])->type == CAddr
+		&& c->bits.i != 0) {
+			/* `$sym + K` -> reg (the isel-routed Ocopy): materialize the label
+			 * with the zero-offset idiom, then add the byte offset with a
+			 * FLAG-NEUTRAL LEA. opnd()/cp() cannot print the nonzero offset, so
+			 * emit the label CP directly here. Never ADD/SUB: this copy can land
+			 * at a block end after a fused flag-only CMP and before the block
+			 * Jcc (successor-phi-arg pass), where a flag write is a silent
+			 * miscompile. The isel copy is class Kl, so sz is whole-register. */
+			fprintf(e->f, "\tCP\t%s ", maize_sym(str(c->label)));
+			regw(dst, sz, e);
+			fputc('\n', e->f);
+			lea_off(e, c->bits.i, rname(dst.val));
 		} else {
 			cp(src, dst, sz, e);
 		}
@@ -241,10 +256,20 @@ emitcopy(Ins *i, E *e)
 	case RCon:
 		c = &e->fn->con[src.val];
 		if (c->type == CAddr) {
-			if (c->bits.i != 0)
-				die("maize emit: nonzero address offset is not supported");
 			fprintf(e->f, "\tPUSH\t%s\n", rname(R0));
-			cp(src, rb, sz, e);
+			if (c->bits.i != 0) {
+				/* `$sym + K` -> slot: rega spilled the isel-routed copy temp,
+				 * so its destination became a frame slot. Materialize the label
+				 * into the borrowed R0 then add K with the FLAG-NEUTRAL LEA
+				 * (never ADD/SUB), before storing R0 to the slot. cp()/opnd()
+				 * cannot print the nonzero offset, so emit the label CP here. */
+				fprintf(e->f, "\tCP\t%s ", maize_sym(str(c->label)));
+				regw(rb, sz, e);
+				fputc('\n', e->f);
+				lea_off(e, c->bits.i, rname(R0));
+			} else {
+				cp(src, rb, sz, e);
+			}
 			lea_negoff(e, slotoff(e, dst.val), "RT");
 			fputs("\tST\t", e->f);
 			opnd(rb, sz, e);
@@ -551,6 +576,38 @@ lea_negoff(E *e, uint64_t off, const char *reg)
 	else
 		digits = 16;
 	fprintf(e->f, "\tLEA\t$-%0*"PRIx64" BP %s\n", digits, off, reg);
+}
+
+/* Add a signed constant offset to a whole register in place, FLAG-NEUTRALLY:
+ * `LEA $<off> reg reg` (reg = off + reg). LEA is flag-neutral (src/cpu.cpp,
+ * instr::lea_immVal_regreg saves/restores RF around its internal add; maize-4),
+ * so this is safe to emit in ANY position, including the successor-phi-arg pass,
+ * which lands the materialization at block end after a fused flag-only CMP and
+ * before the block Jcc (isel.c). ADD/SUB would clobber RF there, a silent
+ * miscompile. The offset immediate is digit-sized exactly like lea_negoff so
+ * mazm does not sign-extend it to the wrong value (a 2-digit $c8 reads as -56,
+ * not +200): pad the magnitude so its top bit is clear. A negative offset uses
+ * the same instruction with a negated immediate, `LEA $-<|off|> reg reg`. */
+static void
+lea_off(E *e, int64_t off, const char *reg)
+{
+	uint64_t mag;
+	int digits;
+	const char *sign;
+
+	if (off == 0)
+		return;
+	sign = off < 0 ? "-" : "";
+	mag  = off < 0 ? (uint64_t)-off : (uint64_t)off;
+	if (mag <= 0x7f)
+		digits = 2;
+	else if (mag <= 0x7fff)
+		digits = 4;
+	else if (mag <= 0x7fffffff)
+		digits = 8;
+	else
+		digits = 16;
+	fprintf(e->f, "\tLEA\t$%s%0*"PRIx64" %s %s\n", sign, digits, mag, reg, reg);
 }
 
 /* Frame-slot address materialization: LEA $-<off> BP <reg>. The locals region

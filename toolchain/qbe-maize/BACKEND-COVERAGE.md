@@ -241,7 +241,44 @@ The following genuinely remain unsupported and `err()` in `abi.c`/`isel.c` (or
   front end does not synthesize it in this pinned pairing). Signed int<->float
   and float<->double conversions are supported.
 
-(Address references embedded in initialized data are now **supported** via
+(Address references embedded in initialized data are supported via
 `R_MAIZE_ABS64`/`ABS32`; see the Image-layout and pointer-in-data rows above.
-Nonzero CODE-side address offsets on `CAddr` operands remain a separate `emit.c`
-`die()` gap, out of scope for maize-77.)
+Nonzero CODE-side address offsets on `CAddr` operands are now supported too, via
+the isel routing + `emitcopy` LEA lowering described below, maize-143.)
+
+## Nonzero-offset `CAddr` operands (`$sym + K`, maize-143)
+
+QBE folds a global-symbol address plus a compile-time byte constant into a single
+address constant (a `Con` of type `CAddr` with `bits.i == K`): this is what
+`&global_array[K]`, `&s.field`, and `"lit" + K` fold to, and the `endptr == base
++ N` idiom (maize-142). mazm has no `sym+K` instruction-operand form (only the
+`DREF` data addend), and `opnd()` cannot emit a preceding materialization
+mid-line, so before maize-143 the emitter `die()`d on any such operand at four
+sites (`opnd`, `memaddrreg`, `emitcopy`->slot, `emitcall`).
+
+The fix is overlay-only (`isel.c` + `emit.c`, no qbe submodule bump, no VM/mazm
+change):
+
+- `isel.c` `fixarg()` routes every nonzero-offset `CAddr` con through a fresh
+  register (`Ocopy`), so it always lands as the source of a register-destination
+  copy; `fixarg` runs on every ALU/cmp/load/store/ext operand, the successor-phi
+  arguments, and (added here) the `Ocall` target, so no `$sym+K` reaches an inline
+  operand printer.
+- `emit.c` `emitcopy()` is then the sole materialization site: it emits `CP
+  <label> Rd` (the existing zero-offset idiom) followed by a FLAG-NEUTRAL `LEA
+  $<off> Rd Rd` (the `lea_off` helper, a sibling of `lea_negoff`). The offset add
+  MUST be flag-neutral because the successor-phi-arg pass can land the
+  materialization at a block end, between a fused flag-only `CMP` and its `Jcc`;
+  maize `LEA` saves/restores `RF` around its internal add (src/cpu.cpp,
+  `instr::lea_immVal_regreg`; maize-4), an `ADD`/`SUB` would clobber the branch.
+  Both the reg-dest and the `CAddr`->slot (spilled temp) copy sub-paths lower the
+  offset this way. The offset immediate is digit-sized like `lea_negoff` so mazm
+  does not sign-extend it; a negative offset uses `LEA $-<off> Rd Rd`.
+- The three other `die` sites (`opnd`, `memaddrreg`, `emitcall`) stay as
+  defensive invariants: unreachable for a nonzero offset once isel routes it, so a
+  future routing gap surfaces as a `die` rather than a miscompile.
+
+Regressions: `ctest/caddroff.c` forms and uses each fold pattern with checked
+results; `ctest/caddroff_flag.qbe` (hand-written QBE, since cproc keeps locals in
+memory and never emits a bare `CAddr`-con phi argument) drives the phi-across-a-
+fused-branch case that gates the flag-neutral lowering.

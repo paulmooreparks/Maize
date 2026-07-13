@@ -28,6 +28,7 @@ static void
 fixarg(Ref *pr, Fn *fn)
 {
 	Ref r0, r1;
+	Con *c;
 	int s;
 
 	r0 = *pr;
@@ -36,6 +37,24 @@ fixarg(Ref *pr, Fn *fn)
 		if (s != -1) {
 			r1 = newtmp("isel", Kl, fn);
 			emit(Oaddr, Kl, r1, SLOT(s), R);
+			*pr = r1;
+		}
+	} else if (rtype(r0) == RCon) {
+		c = &fn->con[r0.val];
+		if (c->type == CAddr && c->bits.i != 0) {
+			/* A `$sym + K` (K != 0) address constant cannot be printed inline:
+			 * mazm has no sym+K instruction-operand form, and opnd() cannot emit
+			 * a preceding materialization mid-line. Route it through a register
+			 * so it always lands as the source of a register-destination Ocopy,
+			 * the single emit site (emitcopy) that lowers the offset via the
+			 * flag-neutral CP+LEA idiom. This runs on every fixarg'd position
+			 * (ALU / cmp / load / store / ext operands and successor-phi args),
+			 * so no `$sym + K` ever reaches opnd()/memaddrreg()/emitcall inline.
+			 * Offset-0 CAddr cons are left untouched, so all currently-passing
+			 * output is byte-identical (the clause fires only for K != 0, which
+			 * previously always die()d). */
+			r1 = newtmp("isel", Kl, fn);
+			emit(Ocopy, Kl, r1, r0, R);
 			*pr = r1;
 		}
 	}
@@ -118,8 +137,13 @@ sel(Ins i, Fn *fn)
 		return;
 	if (i.op == Ocall) {
 		/* Keep the call target as-is (a CAddr constant becomes a direct
-		 * `CALL label`; a register becomes an indirect `CALL Rn`). */
+		 * `CALL label`; a register becomes an indirect `CALL Rn`). The call
+		 * target is the one operand not otherwise fixarg'd, so route a
+		 * nonzero-offset target through a register too (defensive: C never
+		 * produces a `$fn + K` call target, but this keeps emitcall correct by
+		 * construction rather than special-casing the offset there). */
 		emiti(i);
+		fixarg(&curi->arg[0], fn);
 		return;
 	}
 	if (i.op == Ocast)

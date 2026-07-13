@@ -1,0 +1,45 @@
+# maize-143 flag-safety regression, at the QBE-IR layer where the fix lives.
+#
+# The nonzero-offset CAddr lowering (CP <label> ; add-offset) is emitted by
+# emitcopy, and the isel successor-phi-argument pass can route a $sym+K con onto a
+# loop back edge. Because isel emits in reverse (the phi pass runs first), that
+# materialization lands at the END of the predecessor block: AFTER a fused
+# flag-only CMP the block's Jcc consumes, and BEFORE the Jcc. The offset add MUST
+# therefore be flag-neutral: a maize LEA saves/restores RF around its internal add
+# (src/cpu.cpp, instr::lea_immVal_regreg; maize-4), an ADD/SUB writes RF via
+# run_alu. A flag-clobbering lowering here corrupts the fused exit test and
+# miscompiles the loop.
+#
+# This exact hazard cannot be expressed from C: cproc keeps locals in memory
+# (alloc + load/store), so a bare CAddr-con phi argument never survives to isel; a
+# C loop instead materializes the address eagerly in the body (an Oadd before the
+# branch) or in a jmp-terminated ternary arm, neither of which lands between a
+# fused CMP and its Jcc. Hand-written QBE below folds `add $garr, K` into a bare
+# con phi argument on the loop back edge, so the offset materialization lands
+# exactly between the fused `csltw` and the `jnz`. Under the correct flag-neutral
+# LEA lowering the loop sums 200 + 600*4 == 2600 and this returns 0 (PASS);
+# swapping LEA for a flag-clobbering ADD/SUB flips the fused exit test and returns
+# nonzero (FAIL). Driven by scripts/run-ctest.sh:run_qbe_flag.
+#
+# garr = { 0, 100, 200, 300, 400, 500, 600, 700 } (int, 4-byte), so $garr+8 is
+# garr[2] == 200 and $garr+24 is garr[6] == 600.
+
+data $garr = align 4 { w 0, w 100, w 200, w 300, w 400, w 500, w 600, w 700 }
+
+export function w $flagmain() {
+@start
+	%p0 =l add $garr, 8
+@loop
+	%p =l phi @start %p0, @loop %pnext
+	%i =w phi @start 0, @loop %i2
+	%s =w phi @start 0, @loop %s2
+	%v =w loadw %p
+	%s2 =w add %s, %v
+	%i2 =w add %i, 1
+	%pnext =l add $garr, 24
+	%c =w csltw %i2, 5
+	jnz %c, @loop, @end
+@end
+	%bad =w cnew %s2, 2600
+	ret %bad
+}
