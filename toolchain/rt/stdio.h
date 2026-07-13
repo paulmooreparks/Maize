@@ -89,6 +89,12 @@ int vsnprintf(char *str, size_t n, const char *fmt, va_list ap);
 int sscanf(const char *str, const char *format, ...);
 int remove(const char *pathname);
 
+/* rename: link-only stub (maize-152, sibling of remove/mkdir). The VM does not dispatch
+ * $52 yet, so it returns 0 (apparent success, no filesystem effect); the real
+ * path-mutating semantics land in maize-151. DOOM references it on the save-game commit
+ * path, off the boot/first-level-render critical path. */
+int rename(const char *old, const char *new);
+
 /* maize-120 file-backed FILE* layer. fopen'd streams are fully buffered; the mode
  * string accepts and ignores a 'b' (Maize does no text-mode translation, so binary
  * and text streams are identical, which is what makes WAD reads byte-safe). */

@@ -75,8 +75,8 @@ fstat(int fd, void *statbuf)
     return (int)__syscall_ret(sys_fstat(fd, statbuf));
 }
 
-/* maize-148 path-mutating wrappers over the raw stubs, mirroring the open/close
- * pattern above. LINK-COMPLETE only: the VM does not dispatch $53/$57 yet, so both
+/* maize-148/152 path-mutating wrappers over the raw stubs, mirroring the open/close
+ * pattern above. LINK-COMPLETE only: the VM does not dispatch $52/$53/$57 yet, so the
  * raw stubs return 0 (interim no-op) and these return 0 (apparent success, no
  * filesystem effect), which is benign for DOOM Phase A's link + boot. The real
  * -errno-producing dispatch + confined hostfs backends are the spawned card
@@ -91,4 +91,10 @@ int
 mkdir(const char *path, mode_t mode)
 {
     return (int)__syscall_ret(sys_mkdir(path, (int)mode));
+}
+
+int
+rename(const char *old, const char *new)
+{
+    return (int)__syscall_ret(sys_rename(old, new));
 }

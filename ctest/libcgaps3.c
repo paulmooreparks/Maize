@@ -107,12 +107,13 @@ main(void)
     /* --- usleep: no-op stub, must not hang (AC 8436) -------------------------- */
     check(usleep(1000) == 0);
 
-    /* --- remove / mkdir: LINK + execute smoke only (AC 8437) ------------------ */
+    /* --- remove / mkdir / rename: LINK + execute smoke only (AC 8437/8483) ----- */
     /* The interim VM no-op returns 0; the real -errno semantics land on the spawned
      * VM+hostfs card (maize-151), where the checked filesystem acceptance criteria
      * live. Prove only that these link and execute without crashing. */
     (void)remove("maize_libcgaps3_nonexistent.tmp");
     (void)mkdir("maize_libcgaps3_dir", 0755);
+    (void)rename("maize_libcgaps3_a.tmp", "maize_libcgaps3_b.tmp");
 
     puts(ok ? "libcgaps3 PASS" : "libcgaps3 FAIL");
     return 0;

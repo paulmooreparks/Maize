@@ -49,12 +49,14 @@ void *sys_brk(void *addr);
  * cf. sys_brk). Monotonic non-decreasing; epoch arbitrary. */
 unsigned long sys_clock_ms(void);
 
-/* maize-148 path-mutating raw stubs (SYS $57 unlink / $53 mkdir). LINK-ONLY: the VM
- * does not dispatch $53/$57 yet, so both hit the unknown-number default and return 0
- * (an interim no-op). Each returns RV verbatim; the real -errno-producing dispatch is
- * the spawned VM+hostfs card (maize-151). remove()/mkdir() (errno.c) wrap these. */
+/* maize-148 path-mutating raw stubs (SYS $57 unlink / $53 mkdir), plus rename (SYS $52,
+ * maize-152). LINK-ONLY: the VM does not dispatch $52/$53/$57 yet, so all hit the
+ * unknown-number default and return 0 (an interim no-op). Each returns RV verbatim; the
+ * real -errno-producing dispatch is the spawned VM+hostfs card (maize-151).
+ * remove()/mkdir()/rename() (errno.c) wrap these. */
 long sys_unlink(const char *path);
 long sys_mkdir(const char *path, int mode);
+long sys_rename(const char *old, const char *new);
 
 /* --- errno + wrappers (errno.c) -------------------------------------------- */
 
