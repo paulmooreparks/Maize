@@ -128,7 +128,7 @@ static void putname8(Buf *buf, const char *s)
     }
 }
 
-/* ---- payload builders (byte-for-byte mirror of make_min_iwad.py) ------------ */
+/* ---- payload builders (this C generator is the canonical min-IWAD source) --- */
 
 static void build_playpal(Buf *out)
 {

@@ -1095,8 +1095,20 @@ run_doom_render() {
     fi
 
     nat=$(host_to_native "$waddir")
+    # maize-154: the guest-side arg `-iwad /ro/min.wad` is a GUEST path, not a host
+    # path: it names the WAD at its guest mount point, and maize's hostfs resolves it.
+    # Under MSYS2/MinGW (the windows-llvm-mingw CI lane), the runtime rewrites POSIX
+    # absolute argv elements into Windows paths before a NATIVE exe sees them, so a
+    # bare `/ro/min.wad` reaches maize.exe as e.g. `C:/Program Files/Git/ro/min.wad`;
+    # DOOM's D_FindWADByName then fails, I_Errors to stderr (discarded below), and the
+    # render never runs. Every OTHER mount test hardcodes its guest path inside the
+    # guest C, so this is the one leg that hands maize a guest path on the command line
+    # and the one that hit the rewrite. MSYS2_ARG_CONV_EXCL exempts the `/ro` prefix so
+    # the guest path passes through verbatim; the --mount host side is already a native
+    # `C:\...` path (host_to_native/cygpath -w) and is left untouched, and `$mzx` (a
+    # non-/ro host path) is still converted normally. Harmless on non-MSYS shells.
     set +e
-    actual=$("$MAIZE" --mount "${nat}=/ro:ro" "$mzx" \
+    actual=$(MSYS2_ARG_CONV_EXCL='/ro' "$MAIZE" --mount "${nat}=/ro:ro" "$mzx" \
         -iwad /ro/min.wad -warp 1 1 -nomonsters 2>/dev/null | grep -v '^$')
     set -e
 

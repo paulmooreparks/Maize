@@ -120,6 +120,14 @@ platform layer is built against). Keyboard controls follow the Set-1 to DOOM
 keymap in `doomgeneric_maize.c`: arrows to move, Ctrl to fire, Space to use,
 Enter / Escape for menus. This demo is the visible payoff; it is not a CI gate.
 
+On Windows under Git Bash / MSYS2, the shell rewrites a bare POSIX argument like
+`/wad/doom1.wad` (or `/ro/min.wad`) into a Windows path before the native
+`maize.exe` receives it, so DOOM cannot find the WAD at its guest mount point.
+Those `-iwad` values are GUEST paths (resolved by maize's hostfs), not host
+paths, so exempt them from the rewrite: prefix the command with
+`MSYS2_ARG_CONV_EXCL='/wad'` (or `'/ro'` for the render gate). The `--mount` host
+side needs no exemption (it is already a native `C:\...` path).
+
 ## Status: Phase C, DOOM boots and renders a first level
 
 The full engine boots against the minimal synthetic IWAD and renders a real 3D

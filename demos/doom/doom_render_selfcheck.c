@@ -2,7 +2,7 @@
  *
  * Distinct from Phase B's doom_selfcheck.c (which exercised the DG_* platform
  * primitives in isolation, no engine). This TU boots the WHOLE DOOM engine
- * against the minimal synthetic IWAD (demos/doom/tools/make_min_iwad.py) and
+ * against the minimal synthetic IWAD (demos/doom/tools/make_min_iwad.c) and
  * asserts a REAL 3D level actually rendered.
  *
  * Link shape: this entry TU + the entry-free doom.sources core set + the Phase B
