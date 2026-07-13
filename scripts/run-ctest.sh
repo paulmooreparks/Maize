@@ -661,6 +661,10 @@ run_ctest "str"
 run_ctest "ctype"
 run_ctest "sbrk"
 run_ctest "malloc"
+# maize-100 atexit registry: two handlers registered A-then-B run at exit in LIFO
+# order (B, then A) after "main done", proving both that exit() runs the registry
+# and the ordering, plus the indirect-call-through-a-runtime-indexed-fnptr-array path.
+run_ctest "atexit"
 # maize-98 varargs / stdarg ABI: a self-checking fixture exercising the register
 # save area, va_arg over mixed scalar classes, the register->overflow boundary,
 # and va_copy. Prints a single PASS line.

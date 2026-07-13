@@ -68,6 +68,19 @@ iscntrl(int c)
 }
 
 int
+isblank(int c)
+{
+    return c == ' ' || c == '\t';
+}
+
+int
+isgraph(int c)
+{
+    /* Printable and not a space: the visible-glyph subset of isprint. */
+    return isprint(c) && c != ' ';
+}
+
+int
 toupper(int c)
 {
     if (c >= 'a' && c <= 'z')

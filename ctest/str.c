@@ -92,6 +92,68 @@ main(void)
     check(memchr("abcdef", 'd', 6) != (void *)0);
     check(memchr("abcdef", 'z', 6) == (void *)0);
 
+    /* --- maize-100: strstr / strpbrk / strspn / strcspn / strtok(_r) --------- */
+
+    /* strstr: hit, miss, empty-needle-returns-haystack, and a backtracking match.
+       Pointer-returning cases use LOCAL mutable buffers (stack addresses), so the
+       results stay runtime addresses; a string-literal haystack could let qbe fold
+       the result into a `$sym + N` operand the pinned qbe -t maize backend cannot
+       emit (see the strchr authoring note above). */
+    {
+        char hay[] = "aaab";                 /* forces strstr to backtrack */
+        char h2[]  = "hello world";
+        check(strstr(h2, "world") == h2 + 6);      /* hit */
+        check(strstr(h2, "xyz") == (void *)0);     /* miss */
+        check(strstr(h2, "") == h2);               /* empty needle -> haystack */
+        check(strstr(hay, "aab") == hay + 1);      /* skip "aa", match "aab" at +1 */
+    }
+
+    /* strpbrk hit / miss (result is a pointer into a local buffer). */
+    {
+        char s[] = "hello, world";
+        check(strpbrk(s, ",;") == s + 5);          /* first ',' */
+        check(strpbrk(s, "xyz") == (void *)0);     /* none of x/y/z present */
+    }
+
+    /* strspn / strcspn boundary runs (return lengths, not literal pointers). */
+    {
+        char s[] = "  abc123";
+        check(strspn(s, " ") == 2);                /* two leading spaces */
+        check(strspn("abcxyz", "abc") == 3);       /* run of a/b/c */
+        check(strcspn(s, "c") == 4);               /* "  ab" then the first 'c' */
+        check(strcspn("abcdef", "xyz") == 6);      /* no reject byte -> full length */
+    }
+
+    /* strtok_r: reentrant split of "a,,b,c" on "," (consecutive delimiters
+       collapse) INTERLEAVED with a second, independent tokenization to prove the
+       caller-owned saveptr keeps the two scans separate. Inputs are local mutable
+       buffers (strtok_r writes NULs in place; string literals are read-only). */
+    {
+        char t1[] = "a,,b,c";
+        char t2[] = "x-y-z";
+        char *s1 = (void *)0, *s2 = (void *)0;
+        char *r;
+
+        r = strtok_r(t1, ",", &s1);  check(r && strcmp(r, "a") == 0);
+        r = strtok_r(t2, "-", &s2);  check(r && strcmp(r, "x") == 0);
+        r = strtok_r((void *)0, ",", &s1);  check(r && strcmp(r, "b") == 0);  /* skips ",," */
+        r = strtok_r((void *)0, "-", &s2);  check(r && strcmp(r, "y") == 0);
+        r = strtok_r((void *)0, ",", &s1);  check(r && strcmp(r, "c") == 0);
+        r = strtok_r((void *)0, "-", &s2);  check(r && strcmp(r, "z") == 0);
+        check(strtok_r((void *)0, ",", &s1) == (void *)0);   /* t1 exhausted */
+        check(strtok_r((void *)0, "-", &s2) == (void *)0);   /* t2 exhausted */
+    }
+
+    /* strtok wrapper over the same input, proving the file-scope static saveptr. */
+    {
+        char t[] = "a,,b,c";
+        char *r;
+        r = strtok(t, ",");         check(r && strcmp(r, "a") == 0);
+        r = strtok((void *)0, ",");  check(r && strcmp(r, "b") == 0);
+        r = strtok((void *)0, ",");  check(r && strcmp(r, "c") == 0);
+        check(strtok((void *)0, ",") == (void *)0);
+    }
+
     puts(ok ? "str PASS" : "str FAIL");
     return 0;
 }

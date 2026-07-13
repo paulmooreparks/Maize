@@ -1,9 +1,11 @@
 /* toolchain/rt/stdlib.h -- freestanding <stdlib.h> slice for the Maize C runtime
  * (maize-76): process termination, the malloc family, and the sbrk heap wrapper.
  *
- * exit/_Exit/abort are the M1 termination funnel (no atexit registry yet; stdio is
- * unbuffered so nothing to flush). abort maps to _exit(134) (128 + SIGABRT); Maize
- * has no signal machinery, recorded as an honest deviation.
+ * exit/_Exit/abort are the M1 termination funnel. exit() runs the atexit registry
+ * (LIFO) before _exit; stdio is unbuffered so there is nothing to flush yet (the
+ * buffered-stdio flush-on-exit hook is maize-120, delivered by it registering a
+ * flush via atexit). _Exit and abort bypass the registry. abort maps to _exit(134)
+ * (128 + SIGABRT); Maize has no signal machinery, recorded as an honest deviation.
  *
  * malloc/free/calloc/realloc are an address-ordered first-fit free list with
  * boundary coalescing over sbrk (decision 7340). sbrk is the increment wrapper
@@ -22,6 +24,10 @@
 _Noreturn void exit(int status);
 _Noreturn void _Exit(int status);
 _Noreturn void abort(void);
+
+/* Register func to run at normal exit(). Handlers run LIFO before _exit; a full
+ * registry (ATEXIT_MAX) makes atexit return nonzero. abort()/_Exit() bypass it. */
+int atexit(void (*func)(void));
 
 void *malloc(size_t size);
 void  free(void *ptr);

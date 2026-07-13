@@ -25,6 +25,8 @@ static int ref_space(int c) {
 static int ref_print(int c) { return c >= 0x20 && c <= 0x7E; }
 static int ref_cntrl(int c) { return (c >= 0 && c <= 0x1F) || c == 0x7F; }
 static int ref_punct(int c) { return ref_print(c) && c != ' ' && !ref_alnum(c); }
+static int ref_blank(int c) { return c == ' ' || c == '\t'; }
+static int ref_graph(int c) { return ref_print(c) && c != ' '; }
 
 /* Normalize predicate results to 0/1 for comparison. */
 static int b(int x) { return x ? 1 : 0; }
@@ -45,6 +47,8 @@ main(void)
         check(b(isprint(c))  == ref_print(c));
         check(b(ispunct(c))  == ref_punct(c));
         check(b(iscntrl(c))  == ref_cntrl(c));
+        check(b(isblank(c))  == ref_blank(c));
+        check(b(isgraph(c))  == ref_graph(c));
 
         if (ref_lower(c))
             check(toupper(c) == c - ('a' - 'A'));
@@ -63,6 +67,8 @@ main(void)
     check(isspace(' ') && isspace('\t') && !isspace('x'));
     check(ispunct('!') && ispunct('~') && !ispunct(' ') && !ispunct('a'));
     check(iscntrl(0) && iscntrl(0x7F) && !iscntrl(' '));
+    check(isblank(' ') && isblank('\t') && !isblank('x'));
+    check(isgraph('!') && isgraph('~') && !isgraph(' ') && !isgraph('\n'));
     check(toupper('a') == 'A' && tolower('Z') == 'z' && toupper('5') == '5');
 
     puts(ok ? "ctype PASS" : "ctype FAIL");

@@ -178,3 +178,133 @@ strrchr(const char *s, int c)
             return (char *)last;
     }
 }
+
+/* --- search / tokenize (maize-100) -------------------------------------------
+ * Byte-at-a-time, no allocation, C-locale. Results are plain runtime pointers
+ * into the caller's buffers, so the pinned qbe -t maize backend never has to
+ * fold a `$sym + N` offset (the strchr authoring note above). */
+
+char *
+strstr(const char *haystack, const char *needle)
+{
+    /* An empty needle matches at the start of the haystack (C contract). */
+    if (*needle == '\0')
+        return (char *)haystack;
+
+    for (; *haystack; haystack++) {
+        const char *h = haystack;
+        const char *n = needle;
+        while (*h && *n && *h == *n) {
+            h++;
+            n++;
+        }
+        if (*n == '\0')
+            return (char *)haystack;   /* whole needle matched */
+        /* Mismatch: restart the needle one byte further along (backtrack). */
+    }
+    return NULL;
+}
+
+char *
+strpbrk(const char *s, const char *accept)
+{
+    for (; *s; s++) {
+        const char *a = accept;
+        while (*a) {
+            if (*s == *a)
+                return (char *)s;
+            a++;
+        }
+    }
+    return NULL;   /* also the empty-accept case */
+}
+
+size_t
+strspn(const char *s, const char *accept)
+{
+    const char *p = s;
+    for (; *p; p++) {
+        const char *a = accept;
+        while (*a && *a != *p)
+            a++;
+        if (*a == '\0')
+            break;   /* *p is not in accept: the initial run ends here */
+    }
+    return (size_t)(p - s);
+}
+
+size_t
+strcspn(const char *s, const char *reject)
+{
+    const char *p = s;
+    for (; *p; p++) {
+        const char *r = reject;
+        while (*r) {
+            if (*r == *p)
+                return (size_t)(p - s);   /* first rejected byte */
+            r++;
+        }
+    }
+    return (size_t)(p - s);   /* no reject byte found: full length */
+}
+
+char *
+strtok_r(char *str, const char *delim, char **saveptr)
+{
+    char *start;
+    char *p;
+
+    if (str == NULL)
+        str = *saveptr;   /* continuation: resume where we left off */
+
+    /* Skip any leading delimiter bytes (collapses consecutive delimiters). */
+    while (*str) {
+        const char *d = delim;
+        int is_delim = 0;
+        while (*d) {
+            if (*str == *d) {
+                is_delim = 1;
+                break;
+            }
+            d++;
+        }
+        if (!is_delim)
+            break;
+        str++;
+    }
+
+    if (*str == '\0') {
+        *saveptr = str;   /* exhausted */
+        return NULL;
+    }
+
+    start = str;
+
+    /* Scan to the next delimiter, NUL-terminate the token, and record the
+       resume point just past it. */
+    for (p = start; *p; p++) {
+        const char *d = delim;
+        while (*d) {
+            if (*p == *d) {
+                *p = '\0';
+                *saveptr = p + 1;
+                return start;
+            }
+            d++;
+        }
+    }
+
+    /* No trailing delimiter: the token runs to the end of the string. */
+    *saveptr = p;   /* points at the terminating NUL */
+    return start;
+}
+
+/* strtok is the non-reentrant wrapper: the same tokenizer over one file-scope
+   saveptr, so the scanning logic lives only in strtok_r. */
+static char *g_strtok_save;
+
+char *
+strtok(char *str, const char *delim)
+{
+    return strtok_r(str, delim, &g_strtok_save);
+}

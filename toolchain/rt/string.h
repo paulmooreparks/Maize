@@ -3,8 +3,8 @@
  *
  * The committed set is pure computation (no syscalls): the mem* family, strlen,
  * the strcmp/strncmp comparators, the strcpy/strncpy/strcat/strncat copiers, and
- * strchr/strrchr/memchr scanners. Deferred (strstr, strtok, strspn/strcspn,
- * strpbrk, locale-aware helpers) are filed on maize-100, not implemented here.
+ * strchr/strrchr/memchr scanners. The search/tokenize helpers (strstr, strpbrk,
+ * strspn, strcspn, strtok_r, strtok) landed with maize-100, also pure computation.
  */
 #ifndef MAIZE_STRING_H
 #define MAIZE_STRING_H
@@ -26,5 +26,12 @@ char   *strcat(char *dst, const char *src);
 char   *strncat(char *dst, const char *src, size_t n);
 char   *strchr(const char *s, int c);
 char   *strrchr(const char *s, int c);
+
+char   *strstr(const char *haystack, const char *needle);
+char   *strpbrk(const char *s, const char *accept);
+size_t  strspn(const char *s, const char *accept);
+size_t  strcspn(const char *s, const char *reject);
+char   *strtok_r(char *str, const char *delim, char **saveptr);
+char   *strtok(char *str, const char *delim);
 
 #endif /* MAIZE_STRING_H */

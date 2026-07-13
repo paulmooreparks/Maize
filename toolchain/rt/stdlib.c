@@ -2,13 +2,14 @@
  * (maize-76, decisions 7340 / 7344 / 7346).
  *
  * TERMINATION FUNNEL
- *   _Exit(code) -> _exit(code)                (raw SYS $3C; no atexit/flush)
- *   exit(code)  -> _exit(code)                (M1: no atexit registry, stdio is
- *                                              unbuffered, so nothing to flush;
- *                                              structured so an atexit/flush hook
- *                                              can slot in without touching crt0)
+ *   _Exit(code) -> _exit(code)                (raw SYS $3C; bypasses atexit/flush)
+ *   exit(code)  -> run atexit handlers LIFO, then _exit(code) (stdio is unbuffered
+ *                                              at M1, so nothing to flush; the
+ *                                              buffered-stdio flush-on-exit hook is
+ *                                              maize-120 via atexit, not here)
  *   abort()     -> _exit(134)                 (128 + SIGABRT(6); Maize has no
- *                                              signals, an honest deviation)
+ *                                              signals, an honest deviation;
+ *                                              bypasses atexit per the C standard)
  * crt0 routes main's return value through exit() (decision 7346).
  *
  * ALLOCATOR (decision 7340): address-ordered first-fit free list with boundary
@@ -38,17 +39,42 @@
  * emits a `hlt` block terminator that the qbe -t maize backend now lowers to HALT
  * (maize-102); _exit carries `_Noreturn` for the same reason. See stdlib.h. */
 
+/* atexit registry: a fixed 32-slot table (ATEXIT_MAX is the C-mandated minimum).
+   Handlers push here and run in LIFO order from exit(). No dedup, no NULL guard
+   beyond storing the pointer. */
+#define ATEXIT_MAX 32
+
+static void (*g_atexit[ATEXIT_MAX])(void);
+static int g_atexit_n;
+
+int
+atexit(void (*func)(void))
+{
+    if (g_atexit_n >= ATEXIT_MAX)
+        return -1;   /* table full */
+    g_atexit[g_atexit_n] = func;
+    g_atexit_n++;
+    return 0;
+}
+
 _Noreturn void
 _Exit(int status)
 {
-    _exit(status);   /* raw SYS $3C; no atexit/flush */
+    _exit(status);   /* raw SYS $3C; bypasses atexit/flush */
 }
 
 _Noreturn void
 exit(int status)
 {
-    /* MVP: no atexit registry and unbuffered stdio, so exit == _exit today. The
-       single funnel means a future atexit/flush hook lands in one place. */
+    /* Run registered handlers in LIFO order, then hand off to _exit. The counter
+       is decremented before each indirect call, so a handler that itself calls
+       exit() resumes with the remaining handlers rather than looping. No stdio
+       flush: stdio is unbuffered at M1, and the buffered-stdio flush-on-exit hook
+       is maize-120's (delivered by it registering a flush via atexit). */
+    while (g_atexit_n > 0) {
+        void (*fn)(void) = g_atexit[--g_atexit_n];
+        fn();
+    }
     _exit(status);
 }
 
