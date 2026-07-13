@@ -669,6 +669,10 @@ run_ctest "atexit"
 # fixture (base 10/16/0-autodetect, overflow clamp + ERANGE, endptr/no-conversion,
 # invalid-base EINVAL, and the bare-"0x"/"0"-no-digit corners). One "strtol PASS".
 run_ctest "strtol"
+# maize-141 monotonic ms clock (SYS $F0): a self-checking fixture asserting the
+# clock is non-decreasing at fine grain, advances under a bounded busy-spin, and
+# reports a plausible (nonzero, < 60 s) delta. Prints a single "clock: PASS" line.
+run_ctest "clock"
 # maize-98 varargs / stdarg ABI: a self-checking fixture exercising the register
 # save area, va_arg over mixed scalar classes, the register->overflow boundary,
 # and va_copy. Prints a single PASS line.

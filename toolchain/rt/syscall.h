@@ -44,6 +44,11 @@ long sys_getdents64(int fd, void *dirp, unsigned long count);
  * new-or-current break in RV, NEVER -errno. sbrk (stdlib.c) wraps this. */
 void *sys_brk(void *addr);
 
+/* sys_clock_ms (SYS $F0, maize-141): monotonic milliseconds since VM start.
+ * Returns the count in RV; NEVER -errno (exempt from the errno convention,
+ * cf. sys_brk). Monotonic non-decreasing; epoch arbitrary. */
+unsigned long sys_clock_ms(void);
+
 /* --- errno + wrappers (errno.c) -------------------------------------------- */
 
 /* The musl error translator: a pure function of its input. A raw result in

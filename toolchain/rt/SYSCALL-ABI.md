@@ -94,6 +94,13 @@ Mirrors the Linux x86-64 table by construction. Frozen:
 | `$3C` | `_exit` (`sys_exit`) | `R0`=code | does not return |
 | `$A9` | `sys_reboot` | reserved (VM stub) | reserved |
 | `$D9` | `sys_getdents64` | `R0`=fd, `R1`=dirp, `R2`=count | `RV`=bytes / 0 (EOF) / `-errno` |
+| `$F0` | `sys_clock_ms` | none | `RV`=monotonic ms since VM start; never `-errno` |
+
+`$F0` is a Maize-private number (see "Maize-private high block" below), not a Linux
+mirror: it returns a raw monotonic millisecond count in `RV` and, like `sys_brk`, is
+exempt from the errno convention. The returned value cannot fall in the `[-4095, -1]`
+band in any realistic runtime (that band begins at ~5.8e8 years of milliseconds), so
+`RV` is always a valid clock value.
 
 `$02`/`$03`/`$05`/`$08`/`$D9` are the maize-114 hostfs file syscalls (design of record
 `docs/design/hostfs.md`), each mirroring its Linux x86-64 number. They are guest-visible
@@ -111,6 +118,23 @@ later cards.
 - This hosted SYS table (the VM acting as kernel) is a namespace **distinct** from the
   eventual guest-OS `INT $80` table. Freezing the SYS numbers here does not bind that
   future surface.
+
+### Maize-private high block (`$F0`-`$FF`)
+
+`$F0`-`$FF` is reserved as the **Maize-private high block**: numbers for calls that
+have no Linux equivalent and so cannot mirror a Linux number. Assignments in this block
+deliberately do **not** mirror the Linux x86-64 table (where those bytes are the
+`mq_*` / `keyctl` / `inotify_*` family); that non-mirror is intentional and of record.
+A Maize-private call returns whatever shape suits it, not the Linux call's shape at the
+same byte. `$F0` currently hosts `sys_clock_ms` (the monotonic millisecond clock); it
+previously hosted a different, since-removed syscall, which is why this block starts at
+`$F0` rather than being wholly unused history.
+
+The RV-returns-`uint64`-ms shape of `sys_clock_ms` has no Linux-ABI equivalent: Linux
+`clock_gettime` takes `(clockid, struct timespec*)` and returns `0`/`-errno`, writing
+its result to memory. Reusing that number with a different shape would violate the
+"mirror the Linux number ⇒ mirror the Linux semantics" contract, so the clock lives in
+the private block instead.
 
 Once C compiles against these stubs, the numbers are ABI. The convention frozen here
 (RV result, the `[-4095, -1]` errno range, the raw/wrapper split, Linux-mirrored

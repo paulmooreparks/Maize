@@ -2,6 +2,7 @@
 // #include "maize_sys.h"
 #include "hostfs/hostfs_core.h"
 #include <cerrno>
+#include <chrono>
 #include <string>
 
 /* This is all very broken right now, but I'm going to replace it with a sys_call architecture instead. */
@@ -393,6 +394,12 @@ namespace maize {
                 }
                 return false;
             }
+
+            /* maize-141: monotonic-clock baseline, captured once at sys::init(). SYS
+               $F0 reports milliseconds since VM start; steady_clock is monotonic
+               (never wall-clock-adjusted), so the result is non-decreasing by
+               construction. */
+            std::chrono::steady_clock::time_point clock_baseline;
         }
 
         /* maize-114: install the parsed mount table (maize.cpp calls this once at
@@ -415,6 +422,7 @@ namespace maize {
         }
 
         void init() {
+            clock_baseline = std::chrono::steady_clock::now();
             syscall::_init();
         }
 
@@ -607,6 +615,17 @@ namespace maize {
                 /* sys_reboot */
                 case 0x00A9U: {
                     break;
+                }
+
+                /* sys_clock_ms (maize-141): monotonic ms since VM start. RV = elapsed
+                   ms (steady_clock). Reads no argument registers. Exempt from the
+                   -errno convention (cf. sys_brk): the value cannot land in
+                   [-4095,-1] in any realistic runtime. */
+                case 0x00F0U: {
+                    auto now = std::chrono::steady_clock::now();
+                    auto ms  = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   now - clock_baseline).count();
+                    return static_cast<u_word>(ms);
                 }
             }
 
