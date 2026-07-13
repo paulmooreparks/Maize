@@ -25,21 +25,25 @@ OUTSIDE the submodule, which is never edited.
 
 ## Status: Phase A BLOCKED on toolchain gaps (dormant)
 
-As of maize-145's first bring-up pass the tree does NOT yet compile or link. The
-vendoring and build infra above are committed DORMANT: nothing in CI references
-them (no `run_doom_link` is wired into `scripts/run-ctest.sh`), so master stays
-green. The blocking gaps are recorded in the maize-145 card comments for the
-orchestrator to file as spawned fix cards; the dominant ones are:
+The vendoring and build infra above are committed DORMANT: nothing in CI
+references them (no `run_doom_link` is wired into `scripts/run-ctest.sh`), so
+master stays green until the tree links end to end.
 
-1. `cproc` rejects `__attribute__((packed))` on DOOM's on-disk WAD structs
-   (47 core TUs). Front-end / driver gap.
-2. `mazm` object mode does not support label operands in `ST` / data initializers
-   (maize-12), which DOOM's action-function pointer tables (info.c states[], menus,
-   etc.) require (~23 core TUs).
-3. Missing freestanding headers (`strings.h`, `math.h`, `assert.h`, `unistd.h`,
-   `sys/types.h`, `sys/stat.h`) and libc entry points (`strcasecmp`, `strncasecmp`,
-   `sscanf`, `system`, `remove`, `mkdir`, `usleep`, `fabs`) plus header macros
-   (`SEEK_SET`/`SEEK_CUR`/`SEEK_END`, `EISDIR`).
+The first bring-up pass's dominant blockers are all resolved: `cproc` now strips
+GNU attributes in the driver (maize-149, unblocks the packed WAD structs), `mazm`
+object mode carries label operands in `ST` and data initializers (maize-150,
+unblocks the action-function pointer tables), and the RT header/libc set gained
+`strings/math/assert/unistd/sys` headers plus `strcasecmp`/`strncasecmp`/`fabs`/
+`sscanf`/`system`/`remove`/`mkdir`/`usleep` and the `SEEK_*`/`EISDIR` macros
+(maize-147, maize-148).
 
-Once those land, re-run the build command above; on a produced `.mzx`, wire the
-`run_doom_link` gate into `scripts/run-ctest.sh` per maize-145 section 7.
+With those in, 83 of 83 translation units (the `doom.sources` set plus
+`doomgeneric_maize.c` and `doom_main.c`) compile through the real pipeline, and
+the image LINKS to a ~674 KB `.mzx`. One libc gap remains before the link is
+green on master: `g_game.c` calls `rename(2)` (save-game commit path) and the RT
+has no `rename`, which cproc rejects as an undeclared identifier. It is a sibling
+of the existing `remove`/`mkdir` link-only stubs (maize-148) and belongs to the
+libc-gaps workstream, not Phase A's diff.
+
+Once `rename` lands, re-run the build command above; on a produced `.mzx`, wire
+the `run_doom_link` gate into `scripts/run-ctest.sh` per maize-145 section 7.
