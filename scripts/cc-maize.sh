@@ -38,6 +38,15 @@
 #   cc-maize.sh [--preset <name>] -o <path> <file.c>
 #       write the linked image to <path> (suppresses the beside-source default); add
 #       -r to produce AND run.
+#   cc-maize.sh [--preset <name>] -o <path> <a.c> <b.c> [<c.c> ...]
+#       MULTI-SOURCE (maize-138): compile each C source to its own object and link them
+#       together with the runtime into one .mzx at <path>. -o (or -r) is REQUIRED with
+#       two or more sources: there is no single source to sit a beside-source default
+#       next to. --emit is single-source only and is rejected in multi-source mode.
+#   cc-maize.sh [--preset <name>] -o <path> --sources <listfile>
+#       read the C source list from <listfile> (one path per line; blank lines and
+#       lines beginning with # are skipped), then compile + link as the multi-source
+#       case above. Positionals and --sources may be combined.
 #   cc-maize.sh --build
 #       (re)build the vendored cproc/qbe toolchain, then exit.
 #   --compile-only is retained as a back-compat no-op alias of the new no-run default.
@@ -85,7 +94,9 @@ RUN=0               # -r / --run
 EMIT=0              # --emit
 DEV=0               # --dev (append the mzdev device-access shim to the link, maize-121)
 OUT=""
-SRC=""
+POS_SRCS=""         # positional C sources, newline-separated, in command-line order
+SRCFILES=""         # --sources listfiles, newline-separated
+USED_SOURCES=0      # set when --sources appears (forces the multi-source path, maize-138)
 while [ $# -gt 0 ]; do
     case "$1" in
         --build) MODE="build"; shift ;;
@@ -97,9 +108,15 @@ while [ $# -gt 0 ]; do
         -o*) OUT="${1#-o}"; shift ;;
         --preset) PRESET="${2:-}"; shift 2 ;;
         --preset=*) PRESET="${1#--preset=}"; shift ;;
-        --) shift; [ $# -gt 0 ] && { SRC="$1"; shift; } ;;
+        --sources) SRCFILES="${SRCFILES}${2:-}
+"; USED_SOURCES=1; shift 2 ;;
+        --sources=*) SRCFILES="${SRCFILES}${1#--sources=}
+"; USED_SOURCES=1; shift ;;
+        --) shift; while [ $# -gt 0 ]; do POS_SRCS="${POS_SRCS}$1
+"; shift; done ;;
         -*) die "unknown option: $1" ;;
-        *) SRC="$1"; shift ;;
+        *) POS_SRCS="${POS_SRCS}$1
+"; shift ;;
     esac
 done
 
@@ -108,14 +125,78 @@ if [ "$MODE" = "build" ]; then
     exec "${SCRIPT_DIR}/build-toolchain.sh"
 fi
 
-[ -n "$SRC" ] || die "usage: cc-maize.sh [--preset <name>] [-r|--run] [--emit] [-o <path>] <file.c>
+# --- Collect the C source list (positionals + any --sources listfiles) -----------
+# One source is the single-source path (unchanged). Two or more sources, OR any use
+# of --sources, take the multi-source path (maize-138). A source given as a Windows
+# path (C:\... or C:/...) is translated with wslpath per source, so the tool works
+# from a Windows shell forwarder as well as from a WSL/Linux shell.
+SRC_LIST=""         # resolved source paths, newline-separated, in link order
+SRC_COUNT=0
+add_source() {
+    _s="$1"
+    case "$_s" in
+        *:\\*|[A-Za-z]:/*) _s=$(wslpath "$_s") ;;
+    esac
+    [ -f "$_s" ] || die "no such file: $_s"
+    SRC_LIST="${SRC_LIST}${_s}
+"
+    SRC_COUNT=$((SRC_COUNT + 1))
+}
+
+# Positionals first (command-line order). A while-read fed from a here-doc (not a
+# pipe) runs in THIS shell, so add_source's counter/list updates persist.
+while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    add_source "$_line"
+done <<EOF
+${POS_SRCS}
+EOF
+
+# Then each --sources listfile, appending its non-blank, non-# lines in file order.
+while IFS= read -r _sf; do
+    [ -n "$_sf" ] || continue
+    case "$_sf" in
+        *:\\*|[A-Za-z]:/*) _sf=$(wslpath "$_sf") ;;
+    esac
+    [ -f "$_sf" ] || die "no such --sources listfile: $_sf"
+    while IFS= read -r _entry || [ -n "$_entry" ]; do
+        _entry=$(printf '%s' "$_entry" | tr -d '\r')
+        case "$_entry" in
+            ''|\#*) continue ;;
+        esac
+        add_source "$_entry"
+    done < "$_sf"
+done <<EOF
+${SRCFILES}
+EOF
+
+[ "$SRC_COUNT" -gt 0 ] || die "usage: cc-maize.sh [--preset <name>] [-r|--run] [--emit] [-o <path>] <file.c>
+       cc-maize.sh [--preset <name>] [-r|--run] -o <path> <a.c> <b.c> [<c.c> ...]
+       cc-maize.sh [--preset <name>] [-r|--run] -o <path> --sources <listfile>
        cc-maize.sh --build"
 
-# Accept a Windows path (C:\... or C:/...) as well as a WSL/Linux path.
-case "$SRC" in
-    *:\\*|[A-Za-z]:/*) SRC=$(wslpath "$SRC") ;;
-esac
-[ -f "$SRC" ] || die "no such file: $SRC"
+# Single source with no --sources keeps the existing single-source path exactly;
+# two or more sources (or any --sources use) take the multi-source path.
+MULTI=0
+if [ "$SRC_COUNT" -ge 2 ] || [ "$USED_SOURCES" -eq 1 ]; then MULTI=1; fi
+
+# Multi-source preconditions, checked early (before the toolchain is even resolved)
+# so a usage mistake fails fast. With several sources there is no single source to
+# sit a beside-source default next to, so an explicit output is required; --emit
+# drops one qbe body beside its single source and does not generalize to many.
+if [ "$MULTI" -eq 1 ]; then
+    if [ "$EMIT" -eq 1 ]; then
+        die "--emit works only when compiling a single .c file (it drops that file's
+       qbe body beside the source). Drop --emit for a multi-file build:
+       cc-maize.sh [--preset <name>] -o <out.mzx> <a.c> <b.c> [<c.c> ...]"
+    fi
+    if [ -z "$OUT" ] && [ "$RUN" -eq 0 ]; then
+        die "a multi-file build needs an output path: pass -o <out.mzx> to write the
+       linked image (add -r to also run it), or -r alone to build and run it:
+       cc-maize.sh [--preset <name>] -o <out.mzx> <a.c> <b.c> [<c.c> ...]
+       cc-maize.sh [--preset <name>] -r --sources <listfile>"
+    fi
+fi
 
 BUILD_DIR="${REPO_ROOT}/build/${PRESET}"
 
@@ -249,6 +330,54 @@ for rt in errno string ctype stdio stdlib; do
         || die "failed to compile C runtime object ${rt}.c"
     RT_OBJS="${RT_OBJS} ${RT_MZO}"
 done
+
+# --- Multi-source path (>= 2 sources, or any --sources use) ----------------------
+# Compile every user source to its own .mzo with an INDEX-prefixed tag (u0_<base>,
+# u1_<base>, ...) so two sources that share a basename do not collide their WORK
+# intermediates or objects, and no user tag collides with the RT tags (rt_*, crt0,
+# syscall, mzdev). Then link the RT set plus all user objects into one image. mzld
+# resolves cross-object calls and shared globals through its global symbol table, so
+# link order does not affect resolution; RT stays first to preserve section layout.
+if [ "$MULTI" -eq 1 ]; then
+    USER_OBJS=""
+    _i=0
+    while IFS= read -r _usrc; do
+        [ -n "$_usrc" ] || continue
+        _ubase=$(basename "${_usrc%.c}")
+        _uobj=$(compile_tu "$_usrc" "u${_i}_${_ubase}") || exit 1
+        USER_OBJS="${USER_OBJS} ${_uobj}"
+        _i=$((_i + 1))
+    done <<EOF
+${SRC_LIST}
+EOF
+
+    MZX="${WORK}/prog.mzx"
+    if ! "$MZLD" -o "$MZX" ${RT_OBJS} ${USER_OBJS} >"${WORK}/prog.mzld.log" 2>&1 || [ ! -f "$MZX" ]; then
+        echo "cc-maize.sh: mzld failed linking the multi-source image" >&2
+        cat "${WORK}/prog.mzld.log" >&2; exit 1
+    fi
+
+    # Produce BEFORE run (D6 ordering) so the artifact lands even on a nonzero guest
+    # exit. No beside-source default and no --emit in multi-source mode.
+    if [ -n "$OUT" ]; then
+        out_dir=$(dirname "$OUT"); [ -d "$out_dir" ] || mkdir -p "$out_dir"
+        cp "$MZX" "$OUT"
+    fi
+
+    if [ "$RUN" -eq 1 ]; then
+        set +e
+        "$MAIZE" "$MZX"
+        rc=$?
+        set -e
+        exit "$rc"
+    fi
+    exit 0
+fi
+
+# --- Single-source path (unchanged: byte-identical link, full existing contract) --
+IFS= read -r SRC <<EOF
+${SRC_LIST}
+EOF
 
 # Compile the user body.
 base=$(basename "${SRC%.c}")

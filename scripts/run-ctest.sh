@@ -514,6 +514,113 @@ run_hostfs_rofs() {
     fi
 }
 
+# maize-138 multi-file compile/link. Builds N C sources into one .mzx through the
+# extended driver's multi-source path (an explicit -o over several positional
+# sources), runs the linked image, and diffs stdout against ctest/<name>.expected
+# with the SAME exact-cmp-else-trailing-newline-tolerant compare run_ctest uses. The
+# fixture (multifile_main.c + multifile_lib.c) forces a genuine cross-object link: a
+# function call and a shared global whose definition sits in the OTHER object, so a
+# link that only worked for one self-contained body would fail it. $2 is a
+# space-separated list of bare fixture source names under ctest/.
+run_multi_ctest() {
+    name="$1"
+    srcs="$2"
+    expfile="${CTEST_DIR}/${name}.expected"
+    TOTAL=$((TOTAL + 1))
+
+    if [ ! -f "$expfile" ]; then
+        echo "[FAIL] ${name}: missing expected fixture" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+
+    # Expand the bare fixture names into ctest/ source paths (safe positional args).
+    set --
+    for s in $srcs; do
+        set -- "$@" "${CTEST_DIR}/${s}"
+    done
+
+    mzx="${WORK_DIR}/${name}.mzx"
+    if ! "$CC_MAIZE" --preset "$PRESET" -o "$mzx" "$@" \
+        >"${WORK_DIR}/${name}.cc.log" 2>&1 || [ ! -f "$mzx" ]; then
+        echo "[FAIL] ${name}: multi-source C compile failed"; cat "${WORK_DIR}/${name}.cc.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    out="${WORK_DIR}/${name}.out"
+    exp="${WORK_DIR}/${name}.exp"
+    "$MAIZE" "$mzx" > "$out" 2>/dev/null || true
+    tr -d '\r' < "$expfile" > "$exp"
+    if cmp -s "$out" "$exp" \
+    || { [ "$(cat "$out")" = "$(cat "$exp")" ]; }; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"$(cat "$exp")\""
+        echo "        actual:   \"$(cat "$out")\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+# maize-138 negative link case (AC 8231). An EXPECT-FAIL runner in the same spirit as
+# run_wx_reject_test: force the multi-source path (via --sources) with ONLY the main
+# TU, omitting the sibling object that defines add_and_tag / shared_counter. mzld must
+# reject the unresolved cross-object references ("undefined symbol ...") with a nonzero
+# exit and leave no image, proving the cross-object link genuinely resolves rather than
+# a single body happening to self-contain everything. A vacuous linker (never failing)
+# fails this test.
+run_multi_link_reject_test() {
+    name="multifile_undef"
+    expected="undefined symbol"
+    TOTAL=$((TOTAL + 1))
+
+    listfile="${WORK_DIR}/${name}.sources"
+    printf '%s\n' "${CTEST_DIR}/multifile_main.c" > "$listfile"
+    mzx="${WORK_DIR}/${name}.mzx"
+    rm -f "$mzx"
+    log="${WORK_DIR}/${name}.cc.log"
+
+    set +e
+    "$CC_MAIZE" --preset "$PRESET" -o "$mzx" --sources "$listfile" >"$log" 2>&1
+    ec=$?
+    set -e
+
+    if [ "$ec" -ne 0 ] && [ ! -f "$mzx" ] && grep -qF "$expected" "$log"; then
+        echo "[PASS] ${name} (mzld rejects the omitted cross-object definition)"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected nonzero exit + no image + stderr containing: \"${expected}\""
+        echo "        actual (exit ${ec}): \"$(cat "$log")\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+# maize-138 usage-error cases (AC 8235). EXPECT-FAIL runner asserting a nonzero exit
+# and an expected stderr substring for a multi-source invocation that violates the
+# CLI contract. $1 = label, $2 = expected stderr substring, remaining args = the
+# driver arguments under test.
+run_multi_usage_test() {
+    name="$1"
+    expected="$2"
+    shift 2
+    TOTAL=$((TOTAL + 1))
+
+    log="${WORK_DIR}/${name}.usage.log"
+    set +e
+    "$CC_MAIZE" --preset "$PRESET" "$@" >"$log" 2>&1
+    ec=$?
+    set -e
+
+    if [ "$ec" -ne 0 ] && grep -qF "$expected" "$log"; then
+        echo "[PASS] ${name} (usage error, exit ${ec})"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected nonzero exit + stderr containing: \"${expected}\""
+        echo "        actual (exit ${ec}): \"$(cat "$log")\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
 echo "=== C toolchain end-to-end (cproc -> qbe -t maize -> mazm -c -> mzld -> maize) ==="
 run_ctest "hello"
 run_ctest "capstone"
@@ -622,6 +729,16 @@ run_terminal_selfcheck() {
 }
 
 run_terminal_selfcheck
+
+# maize-138 multi-file compile/link: the primary-gate cross-object fixture, the
+# negative link-rejection case, and the two multi-source usage-error paths.
+run_multi_ctest "multifile" "multifile_main.c multifile_lib.c"
+run_multi_link_reject_test
+run_multi_usage_test "multifile_no_out" "needs an output path" \
+    "${CTEST_DIR}/multifile_main.c" "${CTEST_DIR}/multifile_lib.c"
+run_multi_usage_test "multifile_emit_reject" "only when compiling a single" \
+    --emit -o "${WORK_DIR}/multifile_emit_reject.mzx" \
+    "${CTEST_DIR}/multifile_main.c" "${CTEST_DIR}/multifile_lib.c"
 
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then
