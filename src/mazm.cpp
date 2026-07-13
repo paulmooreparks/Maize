@@ -627,10 +627,19 @@ namespace {
         std::cout << "Output to " << bin_path.string() << std::endl;
         std::ofstream bin(bin_path, std::fstream::binary);
 
-        maize::u_word last_block {cpu::mm.last_block()};
-        maize::u_word end {last_block + cpu::mm.block_size};
-        maize::u_word current_address {0};
+        /* The flat image size must not depend on the VM's internal memory block size (an
+           implementation detail that has changed for performance). Take the allocated extent,
+           trim trailing zero bytes (untouched memory is zero-filled by the loader, so trailing
+           zeros are recoverable), then round up to a fixed 256-byte image page. This keeps the
+           output reproducible and byte-identical across block-size changes. */
+        constexpr maize::u_word image_page {0x100};
+        maize::u_word end {cpu::mm.last_block() + cpu::mm.block_size};
+        while (end > 0 && cpu::mm.read_byte(end - 1) == 0) {
+            --end;
+        }
+        end = (end + (image_page - 1)) & ~(image_page - 1);
 
+        maize::u_word current_address {0};
         while (current_address < end) {
             char c = cpu::mm.read_byte(current_address);
             bin.write(&c, 1);
