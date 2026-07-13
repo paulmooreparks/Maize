@@ -174,27 +174,35 @@ out_bytes(struct fmtout *o, const char *body, size_t blen)
 }
 
 /* Emit a pre-built body of blen bytes, with an optional sign char (0 == none),
- * left-padded to `width`. When zero is set the pad is '0' inserted AFTER the sign
- * (%05d of -7 -> "-0007"); otherwise the pad is spaces before the sign. This is
- * the single field-emit helper shared by every conversion. */
+ * left-padded to `width`. Two distinct pads compose here (maize-144): the
+ * PRECISION pad zero-fills the body to at least `prec` digits and lands AFTER the
+ * sign (%.3d of -7 -> "-007"); the WIDTH pad fills to `width`. Precision applies
+ * only to the integer conversions (callers that ignore it pass prec == -1). Per C,
+ * a present precision (prec >= 0) suppresses the '0' (zero-pad-to-width) flag, so
+ * the flag zero-pad is taken only when prec is absent (usez); otherwise the width
+ * pad is spaces before the sign. This preserves the %05d of -7 -> "-0007" path
+ * (prec absent, usez true) while adding the precision path. Single shared emitter. */
 static void
 emit_field(struct fmtout *o, char sign, const char *body, size_t blen,
-           int width, int zero)
+           int width, int zero, int prec)
 {
     size_t signlen = sign ? 1u : 0u;
-    size_t total   = blen + signlen;
-    size_t pad     = (width > 0 && (size_t)width > total)
-                     ? (size_t)width - total : 0u;
+    size_t zpad    = (prec > (int)blen) ? (size_t)prec - blen : 0u; /* precision min-digits */
+    int    usez    = zero && prec < 0;                             /* precision disables 0-flag */
+    size_t content = signlen + zpad + blen;
+    size_t wpad    = (width > 0 && (size_t)width > content)
+                     ? (size_t)width - content : 0u;
 
-    if (zero) {
+    if (usez) {
         if (sign)
             out_ch(o, sign);
-        out_rep(o, '0', pad);
+        out_rep(o, '0', wpad);          /* width zero-pad, after sign */
         out_bytes(o, body, blen);
     } else {
-        out_rep(o, ' ', pad);
+        out_rep(o, ' ', wpad);          /* width space-pad, before sign */
         if (sign)
             out_ch(o, sign);
+        out_rep(o, '0', zpad);          /* precision zeros, after sign */
         out_bytes(o, body, blen);
     }
 }
@@ -224,20 +232,24 @@ u_to_digits(unsigned long mag, unsigned base, int upper, char *out)
     return n;
 }
 
-/* Unsigned numeric conversion (%u/%x/%X and the magnitude of %d/%i). */
+/* Unsigned numeric conversion (%u/%x/%X and the magnitude of %d/%i). prec is the
+ * minimum digit count, threaded to emit_field. The C corner "%.0d of 0 emits no
+ * digits" is handled here: precision 0 of a zero magnitude yields an empty body. */
 static void
 emit_uint(struct fmtout *o, unsigned long mag, unsigned base, int upper,
-          char sign, int width, int zero)
+          char sign, int width, int zero, int prec)
 {
     char body[20];
     size_t n = u_to_digits(mag, base, upper, body);
-    emit_field(o, sign, body, n, width, zero);
+    if (prec == 0 && mag == 0)          /* %.0d of 0 -> no digits */
+        n = 0;
+    emit_field(o, sign, body, n, width, zero, prec);
 }
 
 /* Signed decimal via the unsigned-negate idiom so INT_MIN / LONG_MIN do not
  * overflow (a naive -v is UB at the extreme). v is already widened to long. */
 static void
-emit_signed(struct fmtout *o, long v, int width, int zero)
+emit_signed(struct fmtout *o, long v, int width, int zero, int prec)
 {
     unsigned long mag = (unsigned long)v;
     char sign = 0;
@@ -246,7 +258,7 @@ emit_signed(struct fmtout *o, long v, int width, int zero)
         sign = '-';
         mag = -mag;             /* modular negate: correct for LONG_MIN too */
     }
-    emit_uint(o, mag, 10, 0, sign, width, zero);
+    emit_uint(o, mag, 10, 0, sign, width, zero, prec);
 }
 
 /* The %c / %s / %p / %% cases live in their own helpers rather than inline in the
@@ -260,15 +272,23 @@ static void
 conv_c(struct fmtout *o, int v, int width)
 {
     char ch = (char)v;
-    emit_field(o, 0, &ch, 1, width, 0);                 /* zero-pad n/a for %c */
+    emit_field(o, 0, &ch, 1, width, 0, -1);             /* precision/zero n/a for %c */
 }
 
+/* String conversion. precision (prec >= 0) is the MAXIMUM characters emitted, so a
+ * "%.3s" of "hello" prints "hel"; cap the length before the field emit. The field
+ * emitter is called with prec == -1 because integer-precision zero-fill must never
+ * apply to a string body (its own precision was already consumed as the cap here). */
 static void
-conv_s(struct fmtout *o, const char *s, int width)
+conv_s(struct fmtout *o, const char *s, int width, int prec)
 {
+    size_t len;
     if (s == NULL)
         s = fmt_nullstr;
-    emit_field(o, 0, s, strlen(s), width, 0);           /* zero-pad n/a for %s */
+    len = strlen(s);
+    if (prec >= 0 && (size_t)prec < len)
+        len = (size_t)prec;
+    emit_field(o, 0, s, len, width, 0, -1);
 }
 
 static void
@@ -279,18 +299,21 @@ conv_p(struct fmtout *o, void *ptr, int width)
     pbuf[0] = '0';
     pbuf[1] = 'x';
     n = u_to_digits((unsigned long)ptr, 16, 0, pbuf + 2);
-    emit_field(o, 0, pbuf, 2 + n, width, 0);
+    emit_field(o, 0, pbuf, 2 + n, width, 0, -1);        /* precision n/a for %p */
 }
 
 static void
 conv_pct(struct fmtout *o, int width)
 {
     char pct = '%';
-    emit_field(o, 0, &pct, 1, width, 0);
+    emit_field(o, 0, &pct, 1, width, 0, -1);            /* precision n/a for %% */
 }
 
 /* The one conversion loop. Walks fmt: literal bytes go straight to out_ch; on '%'
- * it parses [ '0' ] [ 1*DIGIT ] [ 'l' ] conv and emits via out_ch. */
+ * it parses [ '0' ] [ 1*DIGIT width ] [ '.' precision ] [ 'l' ] conv and emits via
+ * out_ch. precision follows C's %[flags][width][.precision][length]conv order: a
+ * bare "%.d" is precision 0, ".N" is literal, ".*" pulls the precision from an int
+ * arg (maize-144), and a negative .* precision counts as absent (prec == -1). */
 static void
 vformat(struct fmtout *o, const char *fmt, va_list ap)
 {
@@ -298,7 +321,7 @@ vformat(struct fmtout *o, const char *fmt, va_list ap)
 
     while (*p) {
         char c = *p++;
-        int zero, width, lng;
+        int zero, width, lng, prec;
         char conv;
 
         if (c != '%') {
@@ -313,9 +336,18 @@ vformat(struct fmtout *o, const char *fmt, va_list ap)
         zero = 0;
         width = 0;
         lng = 0;
+        prec = -1;                                      /* -1 == precision absent */
         if (*p == '0') { zero = 1; p++; }               /* zero-pad flag */
         while (*p >= '0' && *p <= '9')                  /* minimum field width */
             width = width * 10 + (*p++ - '0');
+        if (*p == '.') {                                /* precision (.N or .*) */
+            p++;
+            prec = 0;                                   /* bare "%.d" == precision 0 */
+            if (*p == '*') { prec = va_arg(ap, int); p++; }
+            else while (*p >= '0' && *p <= '9')
+                prec = prec * 10 + (*p++ - '0');
+            if (prec < 0) prec = -1;                    /* C rule: negative .* == omitted */
+        }
         if (*p == 'l') { lng = 1; p++; }                /* long length modifier */
 
         conv = *p;
@@ -326,28 +358,28 @@ vformat(struct fmtout *o, const char *fmt, va_list ap)
         case 'd':
         case 'i':
             emit_signed(o, lng ? va_arg(ap, long) : (long)va_arg(ap, int),
-                        width, zero);
+                        width, zero, prec);
             break;
         case 'u':
             emit_uint(o, lng ? va_arg(ap, unsigned long)
                              : (unsigned long)va_arg(ap, unsigned int),
-                      10, 0, 0, width, zero);
+                      10, 0, 0, width, zero, prec);
             break;
         case 'x':
             emit_uint(o, lng ? va_arg(ap, unsigned long)
                              : (unsigned long)va_arg(ap, unsigned int),
-                      16, 0, 0, width, zero);
+                      16, 0, 0, width, zero, prec);
             break;
         case 'X':
             emit_uint(o, lng ? va_arg(ap, unsigned long)
                              : (unsigned long)va_arg(ap, unsigned int),
-                      16, 1, 0, width, zero);
+                      16, 1, 0, width, zero, prec);
             break;
         case 'c':
             conv_c(o, va_arg(ap, int), width);
             break;
         case 's':
-            conv_s(o, va_arg(ap, const char *), width);
+            conv_s(o, va_arg(ap, const char *), width, prec);
             break;
         case 'p':
             conv_p(o, va_arg(ap, void *), width);

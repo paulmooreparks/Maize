@@ -482,3 +482,97 @@ atoi(const char *nptr)
        result; atoi does not report overflow (standard: UB). */
     return (int)strtol(nptr, (char **)0, 10);
 }
+
+/* --- environment / sort / float parse (maize-144) ----------------------------
+ * Small pure-libc growth over existing primitives (malloc, the function-pointer
+ * ABI, the maize-137 signed int<->double float codegen), added for the DOOM boot.
+ * No new VM/ISA surface. Each helper stays inside the pinned qbe-maize backend's
+ * authoring budget (small frame, a single loop per helper). */
+
+/* getenv: Maize runs with an EMPTY environment, so every lookup returns NULL. DOOM
+ * only needs getenv not to crash. A real environ-backed lookup would add crt0 /
+ * marshalling surface for no boot benefit and is out of scope (decision 8351). */
+char *
+getenv(const char *name)
+{
+    (void)name;
+    return NULL;
+}
+
+/* Swap `size` bytes between a and b using a single 1-byte temp (no dynamic
+ * size-byte buffer, no VLA), one loop. The sole element-move primitive for qsort. */
+static void
+qsort_swap(char *a, char *b, size_t size)
+{
+    size_t k;
+    for (k = 0; k < size; k++) {
+        char t = a[k];
+        a[k] = b[k];
+        b[k] = t;
+    }
+}
+
+/* qsort: correctness-first in-place SELECTION sort (decision 8352). O(n^2), needs
+ * only the fixed 1-byte swap temp above, no recursion. compar is invoked through
+ * the function-pointer ABI (the atexit indirect-call precedent). A sub-quadratic
+ * median-of-3 quicksort is a deliberate perf-shelf follow-up, not this card. */
+void
+qsort(void *base, size_t nmemb, size_t size,
+      int (*compar)(const void *, const void *))
+{
+    char *arr = (char *)base;
+    size_t i, j, min;
+
+    if (nmemb < 2 || size == 0)
+        return;
+    for (i = 0; i + 1 < nmemb; i++) {
+        min = i;
+        for (j = i + 1; j < nmemb; j++) {
+            if (compar(arr + j * size, arr + min * size) < 0)
+                min = j;
+        }
+        if (min != i)
+            qsort_swap(arr + i * size, arr + min * size, size);
+    }
+}
+
+/* atof: strtod-lite (decision 8353). Skips leading whitespace, an optional sign,
+ * integer digits, and an optional '.'+fraction. No exponent, no full IEEE round-
+ * tripping (DOOM needs only simple decimals like "3.14" / "-2" / "0.5"). It leans
+ * on the maize-137 SIGNED int<->double path and double + - * / only: each digit is
+ * kept as a signed int before the (double) cast, deliberately avoiding the
+ * unsigned->float conversion the backend does not cover (BACKEND-COVERAGE.md). */
+double
+atof(const char *nptr)
+{
+    const char *p = nptr;
+    int neg = 0;
+    double result = 0.0;
+    double scale;
+
+    while (isspace((unsigned char)*p))
+        p++;
+    if (*p == '+' || *p == '-') {
+        neg = (*p == '-');
+        p++;
+    }
+    while (*p >= '0' && *p <= '9') {
+        int d = *p - '0';                       /* signed digit, no unsigned->float */
+        result = result * 10.0 + (double)d;
+        p++;
+    }
+    if (*p == '.') {
+        p++;
+        scale = 0.1;
+        while (*p >= '0' && *p <= '9') {
+            int d = *p - '0';
+            result = result + (double)d * scale;
+            scale = scale * 0.1;
+            p++;
+        }
+    }
+    /* Negate via double subtraction (0.0 - result), not unary minus: cproc lowers a
+     * float unary minus to the QBE `neg` instruction, which the pinned qbe -t maize
+     * predates (its parser has no `neg` keyword). Double `-` is covered by maize-137. */
+    return neg ? (0.0 - result) : result;
+}

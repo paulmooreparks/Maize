@@ -51,4 +51,16 @@ int  abs(int j);
 long labs(long j);
 long strtol(const char *nptr, char **endptr, int base);
 
+/* maize-144 libc growth for the DOOM boot. getenv always returns NULL: Maize runs
+ * with an EMPTY environment (no environ-backed lookup), an honest deviation DOOM
+ * tolerates. qsort is a correctness-first, in-place O(n^2) selection sort using a
+ * fixed 1-byte swap temp (no VLA, no recursion); a faster sort is a perf-shelf
+ * follow-up. atof is strtod-lite: whitespace + sign + integer + optional '.'fraction
+ * (no exponent, not full IEEE round-tripping), over the maize-137 signed int<->double
+ * float codegen (simple decimals like "3.14" / "-2" / "0.5"). */
+char  *getenv(const char *name);
+void   qsort(void *base, size_t nmemb, size_t size,
+             int (*compar)(const void *, const void *));
+double atof(const char *nptr);
+
 #endif /* MAIZE_STDLIB_H */

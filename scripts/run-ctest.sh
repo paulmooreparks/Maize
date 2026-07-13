@@ -806,6 +806,11 @@ run_ctest "varargs"
 # LONG_MIN) matched byte-for-byte, plus an snprintf return/truncation self-check
 # and a >256-byte line proving chunked flush. Ends in a single "selfcheck PASS".
 run_ctest "printf"
+# maize-144 RT libc gaps for the DOOM boot: printf/sprintf PRECISION (%.Nd min-digits
+# incl. the DOOM STCFN%.3d lump shape, %.Ns string truncation, %8.3d width+precision,
+# %.0d-of-0 empty, and the untouched %05d path) plus strdup / getenv / qsort / atof,
+# all checked silently with inline-computed expected values. One "libcgaps PASS".
+run_ctest "libcgaps"
 run_exit_status_test "exitcode" 42
 # maize-76: abort() terminates with status 134 (128 + SIGABRT(6); no signals).
 run_exit_status_test "abort" 134

@@ -34,4 +34,9 @@ size_t  strcspn(const char *s, const char *reject);
 char   *strtok_r(char *str, const char *delim, char **saveptr);
 char   *strtok(char *str, const char *delim);
 
+/* strdup (maize-144): return a malloc'd, independently free-able copy of s (the
+ * caller owns and frees it), or NULL on allocation failure. POSIX places strdup in
+ * <string.h>; string.c gains #include "stdlib.h" for malloc. */
+char   *strdup(const char *s);
+
 #endif /* MAIZE_STRING_H */

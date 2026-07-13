@@ -5,6 +5,7 @@
  * source). Comparisons return the unsigned-char difference, per the C standard.
  */
 #include "string.h"
+#include "stdlib.h"   /* malloc (strdup); stdio.c pairs the two headers likewise */
 
 void *
 memcpy(void *dst, const void *src, size_t n)
@@ -307,4 +308,20 @@ char *
 strtok(char *str, const char *delim)
 {
     return strtok_r(str, delim, &g_strtok_save);
+}
+
+/* --- strdup (maize-144) ------------------------------------------------------
+ * POSIX strdup: malloc a fresh buffer of strlen(s)+1 and memcpy the string plus
+ * its terminating NUL, so the result is an independent, free-able copy. Returns
+ * NULL if malloc fails. The one memcpy is a helper call (no open-coded second
+ * loop in this body), keeping the pinned qbe-maize backend on its budget. */
+char *
+strdup(const char *s)
+{
+    size_t n = strlen(s) + 1u;
+    char *p = malloc(n);
+    if (p == NULL)
+        return NULL;
+    memcpy(p, s, n);
+    return p;
 }

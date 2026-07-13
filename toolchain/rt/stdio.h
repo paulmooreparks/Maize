@@ -19,8 +19,11 @@
  * unbuffered sys_write core. printf/fprintf format into a bounded stack buffer
  * and chunked-flush via sys_write (no persistent stream buffer); snprintf
  * count-and-stores into the caller buffer. One core formatter, six public faces.
- * Conversion subset: %d %i %u %x %X %c %s %p %%, the `l` length modifier, and
- * minimal field width + zero-pad. No precision, no floating point.
+ * Conversion subset: %d %i %u %x %X %c %s %p %%, the `l` length modifier, minimal
+ * field width + zero-pad, and precision (maize-144): ".N" and ".*" set the integer
+ * MINIMUM digit count (zero-filled after the sign, "0" flag suppressed) and the
+ * string MAXIMUM character count (truncation). Float printf (%f/%e/%g) is still
+ * unsupported: the formatter has no float conversion.
  */
 #ifndef MAIZE_STDIO_H
 #define MAIZE_STDIO_H
