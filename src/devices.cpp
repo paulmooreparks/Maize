@@ -490,15 +490,21 @@ namespace maize {
 					guest.join();
 				}
 
+				/* Report the peaks on exit. A windowed process has no visible stderr, so
+				   surface them in a GUI message box (with the still-open window as parent);
+				   the stderr line is kept for console runs / logs. */
+				if (show_perf) {
+					std::string msg = "Peak: " + std::to_string(peak_mips) + " MIPS, "
+						+ std::to_string(peak_fps) + " FPS";
+					std::cerr << "maize: " << msg << std::endl;
+					SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,
+						"Maize performance", msg.c_str(), win);
+				}
+
 				SDL_DestroyTexture(tex);
 				SDL_DestroyRenderer(ren);
 				SDL_DestroyWindow(win);
 				SDL_Quit();
-
-				if (show_perf) {
-					std::cerr << "maize: peak " << peak_mips << " MIPS, peak "
-						<< peak_fps << " FPS" << std::endl;
-				}
 			}
 
 		} // namespace display
