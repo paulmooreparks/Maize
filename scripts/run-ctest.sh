@@ -902,6 +902,60 @@ run_terminal_selfcheck() {
 
 run_terminal_selfcheck
 
+# maize-145 DOOM Phase A "it links" gate. Builds the ~50k-line doomgeneric + DOOM tree
+# (the doom.sources core set plus the Maize stub platform doomgeneric_maize.c and the
+# doom_main.c entry TU) to a .mzx through the real cc-maize.sh multi-source pipeline and
+# asserts the image is produced. It does NOT run maize: DOOM's zone / WAD / device /
+# render path is Phase B/C, so Phase A's gate is purely "the whole object set resolves
+# and links." Like run_terminal_selfcheck it links the mzdev device shim via --dev (the
+# DG_* platform seam references fb/kbd ports). doom.sources is entry-free (Phase C reuses
+# it verbatim), so the entry TU and the stub platform are passed positionally alongside
+# it, exactly as demos/doom/README.md documents.
+#
+# GRACEFUL SKIP: demos/doom/doomgeneric is a git submodule. A checkout (CI leg or local)
+# that did not `git submodule update --init` the demo leaves the source tree absent;
+# rather than hard-fail the whole ctest suite on a missing optional demo, this gate
+# prints a skip notice and returns without counting a test. Every ci.yml run-ctest leg
+# checks out with submodules: recursive, so CI exercises the real link; the skip is only
+# a safety net for a partial checkout.
+run_doom_link() {
+    name="doom-link"
+    doom_dir="${REPO_ROOT}/demos/doom"
+    sources="${doom_dir}/doom.sources"
+    entry="${doom_dir}/doom_main.c"
+    platform="${doom_dir}/doomgeneric_maize.c"
+    # Submodule presence probe: the doomgeneric core-loop TU. Absent => uninitialized.
+    probe="${doom_dir}/doomgeneric/doomgeneric/doomgeneric.c"
+
+    if [ ! -f "$probe" ]; then
+        echo "[SKIP] ${name}: demos/doom/doomgeneric submodule not initialized" \
+             "(run 'git submodule update --init demos/doom/doomgeneric'); skipping DOOM link gate"
+        return
+    fi
+
+    TOTAL=$((TOTAL + 1))
+
+    mzx="${WORK_DIR}/doom.mzx"
+    log="${WORK_DIR}/doom-link.cc.log"
+    rm -f "$mzx"
+
+    set +e
+    "$CC_MAIZE" --preset "$PRESET" --dev -o "$mzx" \
+        --sources "$sources" "$entry" "$platform" >"$log" 2>&1
+    ec=$?
+    set -e
+
+    if [ "$ec" -eq 0 ] && [ -f "$mzx" ]; then
+        echo "[PASS] ${name} ($(wc -c <"$mzx" | tr -d ' ') bytes .mzx)"
+    else
+        echo "[FAIL] ${name}: DOOM tree failed to link (exit ${ec})"
+        cat "$log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_doom_link
+
 # maize-138 multi-file compile/link: the primary-gate cross-object fixture, the
 # negative link-rejection case, and the two multi-source usage-error paths.
 run_multi_ctest "multifile" "multifile_main.c multifile_lib.c"
