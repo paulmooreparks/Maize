@@ -133,6 +133,9 @@ namespace maize {
 			   present; the SDL2 backend blits from here. */
 			const std::vector<std::uint32_t>& frame() const { return frame_; }
 			bool last_present_valid() const { return present_valid_; }
+			/* Monotonic count of valid presents (guest frames produced). The SDL backend
+			   samples the delta over time to show the guest frame rate. */
+			std::uint64_t present_count() const { return present_count_.load(std::memory_order_relaxed); }
 
 		private:
 			bool present_frame();   // read the guest buffer into frame_; returns validity
@@ -151,6 +154,7 @@ namespace maize {
 			u_word control_ {0};   // bit1 = vsync-IRQ-enable
 			u_word status_ {0};    // bit0 = vsync-pending
 			bool present_valid_ {false};
+			std::atomic<std::uint64_t> present_count_ {0};   // valid presents (guest frames)
 			std::vector<std::uint32_t> frame_;
 		};
 
@@ -160,7 +164,7 @@ namespace maize {
 		   the framebuffer's captured frame and mapping host keys to Set-1 scancodes pushed
 		   into the keyboard. Never compiled in the default/headless build. */
 		namespace display {
-			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale);
+			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale, bool show_fps);
 		}
 #endif
 

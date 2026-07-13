@@ -208,6 +208,7 @@ namespace maize {
 			cpu::mm.read_into(base_, reinterpret_cast<u_byte*>(frame_.data()),
 				static_cast<size_t>(size));
 			present_valid_ = true;
+			present_count_.fetch_add(1, std::memory_order_relaxed);
 			return true;
 		}
 
@@ -258,6 +259,8 @@ namespace maize {
 #include <SDL.h>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <string>
 #include <thread>
 
 namespace maize {
@@ -322,7 +325,41 @@ namespace maize {
 				}
 			}
 
-			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale) {
+			/* Minimal 3x5 bitmap font for digits 0-9 used by the --show-fps overlay (avoids a
+			   font-library dependency). Each row is three bits, high bit = leftmost column. */
+			static const unsigned char kFont3x5[10][5] = {
+				{0b111,0b101,0b101,0b101,0b111}, // 0
+				{0b010,0b110,0b010,0b010,0b111}, // 1
+				{0b111,0b001,0b111,0b100,0b111}, // 2
+				{0b111,0b001,0b111,0b001,0b111}, // 3
+				{0b101,0b101,0b111,0b001,0b001}, // 4
+				{0b111,0b100,0b111,0b001,0b111}, // 5
+				{0b111,0b100,0b111,0b101,0b111}, // 6
+				{0b111,0b001,0b010,0b100,0b100}, // 7
+				{0b111,0b101,0b111,0b101,0b111}, // 8
+				{0b111,0b101,0b111,0b001,0b111}, // 9
+			};
+
+			/* Draw a digit string with the 3x5 font, one font-pixel == px x px logical pixels,
+			   as filled rects in the renderer's logical coordinate space. */
+			static void draw_digits(SDL_Renderer* ren, int x, int y, int px, const std::string& s) {
+				for (char ch : s) {
+					if (ch >= '0' && ch <= '9') {
+						const unsigned char* g = kFont3x5[ch - '0'];
+						for (int row = 0; row < 5; ++row) {
+							for (int col = 0; col < 3; ++col) {
+								if (g[row] & (1 << (2 - col))) {
+									SDL_Rect r { x + col * px, y + row * px, px, px };
+									SDL_RenderFillRect(ren, &r);
+								}
+							}
+						}
+					}
+					x += 4 * px;   // 3 wide + 1 column gap
+				}
+			}
+
+			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale, bool show_fps) {
 				kbd.use_window_source();
 
 				if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -346,8 +383,16 @@ namespace maize {
 					SDL_WINDOW_RESIZABLE);
 				SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
 				SDL_RenderSetLogicalSize(ren, w, h);
+				SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);   // alpha for the fps box
 				SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
 					SDL_TEXTUREACCESS_STREAMING, w, h);
+
+				/* --show-fps overlay state: sample the framebuffer's present counter against
+				   wall-clock every ~500 ms to derive the GUEST frame rate (frames the guest
+				   actually produced), distinct from the ~60 Hz window refresh below. */
+				std::uint64_t fps_last_count = fb.present_count();
+				std::uint32_t fps_last_ticks = SDL_GetTicks();
+				std::string fps_str = "0";
 
 				/* guest_done latches true when cpu::run() returns (the guest halted, e.g.
 				   DOOM calling exit()). The window loop exits on either the window closing
@@ -379,12 +424,38 @@ namespace maize {
 						}
 					}
 
+					if (show_fps) {
+						std::uint32_t now = SDL_GetTicks();
+						std::uint32_t dt = now - fps_last_ticks;
+						if (dt >= 500) {
+							std::uint64_t c = fb.present_count();
+							int fps = static_cast<int>((c - fps_last_count) * 1000ull / dt);
+							fps_str = std::to_string(fps);
+							fps_last_count = c;
+							fps_last_ticks = now;
+						}
+					}
+
 					const std::vector<std::uint32_t>& frame = fb.frame();
 					if (!frame.empty()) {
 						SDL_UpdateTexture(tex, nullptr, frame.data(),
 							w * static_cast<int>(sizeof(std::uint32_t)));
 						SDL_RenderClear(ren);
 						SDL_RenderCopy(ren, tex, nullptr, nullptr);
+
+						if (show_fps) {
+							/* Top-left overlay in logical (w x h) space, so SDL scales it with
+							   the frame: a translucent box behind green digits. */
+							int px = 2;
+							int boxw = static_cast<int>(fps_str.size()) * 4 * px + 3;
+							int boxh = 5 * px + 3;
+							SDL_Rect box { 1, 1, boxw, boxh };
+							SDL_SetRenderDrawColor(ren, 0, 0, 0, 180);
+							SDL_RenderFillRect(ren, &box);
+							SDL_SetRenderDrawColor(ren, 0, 255, 0, 255);
+							draw_digits(ren, 3, 3, px, fps_str);
+						}
+
 						SDL_RenderPresent(ren);
 					}
 

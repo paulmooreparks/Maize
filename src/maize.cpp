@@ -423,6 +423,7 @@ int main(int argc, char *argv[]) {
 	std::vector<std::string> env_entries;
 	std::vector<mount_grant> grants;
 	bool display_requested = false;
+	bool show_fps = false;           // --show-fps: draw the guest frame rate in the window corner
 	unsigned display_scale = 3;      // window = framebuffer size * scale (--display-scale)
 	maize::u_hword fb_width = 320;   // framebuffer host config (OQ: default 320x200)
 	maize::u_hword fb_height = 200;
@@ -530,6 +531,12 @@ int main(int argc, char *argv[]) {
 			/* Opt-in host window. Only honored when a display backend is compiled in
 			   (MAIZE_DISPLAY); otherwise the run stays headless with a note. */
 			display_requested = true;
+			++idx;
+			continue;
+		}
+		if (arg == "--show-fps") {
+			/* Overlay the guest frame rate in the window corner (windowed mode only). */
+			show_fps = true;
 			++idx;
 			continue;
 		}
@@ -758,7 +765,7 @@ int main(int argc, char *argv[]) {
 	   keyboard. */
 	if (display_requested) {
 #ifdef MAIZE_DISPLAY
-		devices::display::run(framebuffer, keyboard, display_scale);
+		devices::display::run(framebuffer, keyboard, display_scale, show_fps);
 #else
 		std::cerr << "maize: --display requested but no display backend was compiled in "
 			<< "(build with -DMAIZE_DISPLAY=ON); running headless" << std::endl;
