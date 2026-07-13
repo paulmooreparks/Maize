@@ -6,6 +6,7 @@
 #include <exception>
 #include <atomic>
 #include <cassert>
+#include <cstring>
 
 /* This isn't classic OOP. My primary concern is performance; readability is secondary. Readability
 and maintainability are still important, though, because I want this to become something
@@ -258,13 +259,25 @@ namespace maize {
                 size_t idx {cache_address.b0};
 
                 if (rem >= count) {
-                    while (count && idx <= 0xFF) {
-                        cache[idx] = value & 0xff;
-                        value >>= 0x08;
-                        ++idx;
-                        --count;
-                        ++written;
+                    /* Fast in-block path: store the low `count` bytes of value with one sized
+                       store instead of the per-byte loop. Little-endian host assumption as in
+                       read(): the byte loop stores LSB-first, matching a fixed-size memcpy. */
+                    switch (count) {
+                        case 8: std::memcpy(cache + idx, &value, 8); break;
+                        case 4: { std::uint32_t t = static_cast<std::uint32_t>(value); std::memcpy(cache + idx, &t, 4); break; }
+                        case 2: { std::uint16_t t = static_cast<std::uint16_t>(value); std::memcpy(cache + idx, &t, 2); break; }
+                        case 1: cache[idx] = static_cast<u_byte>(value); break;
+                        default: {
+                            u_word v = value;
+                            for (size_t k = 0; k < count; ++k) {
+                                cache[idx + k] = static_cast<u_byte>(v & 0xff);
+                                v >>= 8;
+                            }
+                            break;
+                        }
                     }
+                    written += count;
+                    count = 0;
                 }
                 else {
                     while (count) {
@@ -351,13 +364,39 @@ namespace maize {
                 size_t idx {cache_address.b0};
 
                 if (rem >= count) {
-                    while (count && idx <= 0xFF) {
-                        reg[dst_idx] = cache[idx];
-                        ++idx;
-                        ++dst_idx;
-                        --count;
-                        ++read_count;
+                    /* Fast in-block path: the whole read (count in {1,2,4,8} for a subreg)
+                       fits in the current block, so pull it with one sized load and merge it
+                       into the destination subregister field in a single masked write instead
+                       of the per-byte proxy RMW. Assumes a little-endian host (x86-64/ARM64):
+                       guest memory is little-endian and reg storage is host-native, so a
+                       fixed-size memcpy load matches the byte-loop semantics exactly. */
+                    u_word val;
+                    switch (count) {
+                        case 8: std::memcpy(&val, cache + idx, 8); break;
+                        case 4: { std::uint32_t t; std::memcpy(&t, cache + idx, 4); val = t; break; }
+                        case 2: { std::uint16_t t; std::memcpy(&t, cache + idx, 2); val = t; break; }
+                        case 1: val = cache[idx]; break;
+                        default: {
+                            val = 0;
+                            for (size_t k = 0; k < count; ++k) {
+                                val |= static_cast<u_word>(cache[idx + k]) << (k * 8);
+                            }
+                            break;
+                        }
                     }
+
+                    if (dst_idx == 0 && count >= 8) {
+                        reg.storage_ = val;
+                    }
+                    else {
+                        u_word mask = (count >= 8) ? ~u_word {0}
+                                                   : ((u_word {1} << (count * 8)) - 1);
+                        mask <<= (dst_idx * 8);
+                        reg.storage_ = (reg.storage_ & ~mask) | ((val << (dst_idx * 8)) & mask);
+                    }
+
+                    read_count += count;
+                    count = 0;
                 }
                 else {
                     while (count) {
