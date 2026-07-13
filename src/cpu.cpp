@@ -444,6 +444,19 @@ namespace maize {
             return retval;
         }
 
+        void memory_module::read_into(u_word address, u_byte* dst, size_t count) {
+            size_t done {0};
+            while (count) {
+                size_t rem {set_cache_address(address)};   // bytes to end of the current block
+                size_t idx {cache_address.b0};
+                size_t n {rem < count ? rem : count};
+                std::memcpy(dst + done, cache + idx, n);
+                done += n;
+                address += n;
+                count -= n;
+            }
+        }
+
         u_byte memory_module::read_byte(u_word address) {
             u_byte retval {};
 

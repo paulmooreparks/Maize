@@ -201,15 +201,12 @@ namespace maize {
 				present_valid_ = false;
 				return false;
 			}
-			std::vector<u_byte> bytes = cpu::mm.read(reg_value(base_), size);
-			for (u_word i = 0; i < pixel_count_; ++i) {
-				size_t o = static_cast<size_t>(i) * 4u;
-				std::uint32_t px = static_cast<std::uint32_t>(bytes[o + 0])
-					| (static_cast<std::uint32_t>(bytes[o + 1]) << 8)
-					| (static_cast<std::uint32_t>(bytes[o + 2]) << 16)
-					| (static_cast<std::uint32_t>(bytes[o + 3]) << 24);
-				frame_[i] = px;
-			}
+			/* The guest framebuffer is XRGB8888 little-endian, byte-identical to frame_'s
+			   uint32 layout on a little-endian host, so one bulk copy into frame_ needs no
+			   intermediate vector and no per-pixel repack (was: a 256 KB alloc + byte-loop
+			   read + a second repack pass, every present). */
+			cpu::mm.read_into(base_, reinterpret_cast<u_byte*>(frame_.data()),
+				static_cast<size_t>(size));
 			present_valid_ = true;
 			return true;
 		}

@@ -435,6 +435,9 @@ namespace maize {
 			size_t read(u_word address, reg_value &reg, size_t count, size_t dst_idx);
 			size_t read(reg_value address, u_hword count, std::vector<u_byte> &retval);
 			std::vector<u_byte> read(reg_value address, u_word count);
+			/* Bulk-copy count bytes of guest memory into a host buffer (block-at-a-time
+			   memcpy through the cache), no allocation. Used by the framebuffer present. */
+			void read_into(u_word address, u_byte* dst, size_t count);
 			u_byte read_byte(u_word address);
 			u_word last_block() const;
 			

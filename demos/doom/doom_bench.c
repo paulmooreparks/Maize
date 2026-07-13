@@ -22,7 +22,9 @@
 #include "syscall.h"                              /* sys_clock_ms (SYS $F0) */
 #include "stdio.h"                                /* printf */
 
+#ifndef BENCH_FRAMES
 #define BENCH_FRAMES 120
+#endif
 
 int main(int argc, char **argv)
 {
