@@ -530,10 +530,10 @@ run_ctest "freelist"
 # address: a silent wrong answer. Overlay-only fix in qbe-maize/isel.c.
 run_ctest "addrlocalphi"
 # maize-136 spilled-operand regression: >11 simultaneously-live values force QBE to
-# spill to frame slots, and a loop rotating eight loop-carried values drives the
+# spill to frame slots, and a loop rotating sixteen loop-carried values drives the
 # block-edge slot->slot Ocopy (the PUSH/POP register borrow). Pre-fix the emitter
 # die()d on any spilled operand; post-fix it emits the reload / spill-store / slot
-# copy paths. Overlay-only fix in qbe-maize/emit.c. Self-checks against 118.
+# copy paths. Overlay-only fix in qbe-maize/emit.c. Self-checks against 1541762618.
 run_ctest "spill"
 # maize-74 syscall C binding: raw stub direct (AC 7290), wrapper success returns the
 # byte count (AC 7291), and error-range translation sets errno + returns -1 (AC 7292).
