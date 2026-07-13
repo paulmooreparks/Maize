@@ -785,6 +785,9 @@ run_ctest "str"
 run_ctest "ctype"
 run_ctest "sbrk"
 run_ctest "malloc"
+# maize-146 freestanding headers: fixed-width types + limit/constant macros + bool,
+# and (precautionary) the inttypes PRI* format macros over the Maize printf.
+run_ctest "stdint"
 # maize-100 atexit registry: two handlers registered A-then-B run at exit in LIFO
 # order (B, then A) after "main done", proving both that exit() runs the registry
 # and the ordering, plus the indirect-call-through-a-runtime-indexed-fnptr-array path.
