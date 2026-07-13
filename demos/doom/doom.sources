@@ -1,0 +1,104 @@
+# demos/doom/doom.sources: maize-145 DOOM Phase A source listfile
+#
+# The platform-agnostic doomgeneric + DOOM translation units for a headless
+# Maize build, consumed by scripts/cc-maize.sh via --sources. One repo-relative
+# path per line; blank lines and lines beginning with # are skipped.
+#
+# Vendored submodule: demos/doom/doomgeneric (github.com/ozkl/doomgeneric),
+# pinned commit dcb7a8dbc7a16ce3dda29382ac9aae9d77d21284 ("boolean fix").
+#
+# Derivation: this set is the SDL Makefile's SRC_DOOM list (the canonical DOOM +
+# doomgeneric object set) MINUS the three SDL-specific TUs:
+#   doomgeneric_sdl.c  (the SDL platform backend; replaced by demos/doom/doomgeneric_maize.c)
+#   i_sdlsound.c       (reaches for host SDL audio; residual DG_sound_module stubbed in doomgeneric_maize.c)
+#   i_sdlmusic.c       (reaches for host SDL_mixer; residual DG_music_module stubbed in doomgeneric_maize.c)
+# All other per-platform backends (doomgeneric_{allegro,emscripten,linuxvt,soso,
+# sosox,win,xlib}.c) and alternate sound backends are simply not in SRC_DOOM and
+# so are not listed here.
+#
+# This file names NO entry `main` TU, so Phase C can reuse it verbatim for the
+# headless self-check; the Phase A entry (demos/doom/doom_main.c) and the stub
+# platform (demos/doom/doomgeneric_maize.c) are passed alongside it on the
+# command line, not listed here.
+#
+demos/doom/doomgeneric/doomgeneric/dummy.c
+demos/doom/doomgeneric/doomgeneric/am_map.c
+demos/doom/doomgeneric/doomgeneric/doomdef.c
+demos/doom/doomgeneric/doomgeneric/doomstat.c
+demos/doom/doomgeneric/doomgeneric/dstrings.c
+demos/doom/doomgeneric/doomgeneric/d_event.c
+demos/doom/doomgeneric/doomgeneric/d_items.c
+demos/doom/doomgeneric/doomgeneric/d_iwad.c
+demos/doom/doomgeneric/doomgeneric/d_loop.c
+demos/doom/doomgeneric/doomgeneric/d_main.c
+demos/doom/doomgeneric/doomgeneric/d_mode.c
+demos/doom/doomgeneric/doomgeneric/d_net.c
+demos/doom/doomgeneric/doomgeneric/f_finale.c
+demos/doom/doomgeneric/doomgeneric/f_wipe.c
+demos/doom/doomgeneric/doomgeneric/g_game.c
+demos/doom/doomgeneric/doomgeneric/hu_lib.c
+demos/doom/doomgeneric/doomgeneric/hu_stuff.c
+demos/doom/doomgeneric/doomgeneric/info.c
+demos/doom/doomgeneric/doomgeneric/i_cdmus.c
+demos/doom/doomgeneric/doomgeneric/i_endoom.c
+demos/doom/doomgeneric/doomgeneric/i_joystick.c
+demos/doom/doomgeneric/doomgeneric/i_scale.c
+demos/doom/doomgeneric/doomgeneric/i_sound.c
+demos/doom/doomgeneric/doomgeneric/i_system.c
+demos/doom/doomgeneric/doomgeneric/i_timer.c
+demos/doom/doomgeneric/doomgeneric/memio.c
+demos/doom/doomgeneric/doomgeneric/m_argv.c
+demos/doom/doomgeneric/doomgeneric/m_bbox.c
+demos/doom/doomgeneric/doomgeneric/m_cheat.c
+demos/doom/doomgeneric/doomgeneric/m_config.c
+demos/doom/doomgeneric/doomgeneric/m_controls.c
+demos/doom/doomgeneric/doomgeneric/m_fixed.c
+demos/doom/doomgeneric/doomgeneric/m_menu.c
+demos/doom/doomgeneric/doomgeneric/m_misc.c
+demos/doom/doomgeneric/doomgeneric/m_random.c
+demos/doom/doomgeneric/doomgeneric/p_ceilng.c
+demos/doom/doomgeneric/doomgeneric/p_doors.c
+demos/doom/doomgeneric/doomgeneric/p_enemy.c
+demos/doom/doomgeneric/doomgeneric/p_floor.c
+demos/doom/doomgeneric/doomgeneric/p_inter.c
+demos/doom/doomgeneric/doomgeneric/p_lights.c
+demos/doom/doomgeneric/doomgeneric/p_map.c
+demos/doom/doomgeneric/doomgeneric/p_maputl.c
+demos/doom/doomgeneric/doomgeneric/p_mobj.c
+demos/doom/doomgeneric/doomgeneric/p_plats.c
+demos/doom/doomgeneric/doomgeneric/p_pspr.c
+demos/doom/doomgeneric/doomgeneric/p_saveg.c
+demos/doom/doomgeneric/doomgeneric/p_setup.c
+demos/doom/doomgeneric/doomgeneric/p_sight.c
+demos/doom/doomgeneric/doomgeneric/p_spec.c
+demos/doom/doomgeneric/doomgeneric/p_switch.c
+demos/doom/doomgeneric/doomgeneric/p_telept.c
+demos/doom/doomgeneric/doomgeneric/p_tick.c
+demos/doom/doomgeneric/doomgeneric/p_user.c
+demos/doom/doomgeneric/doomgeneric/r_bsp.c
+demos/doom/doomgeneric/doomgeneric/r_data.c
+demos/doom/doomgeneric/doomgeneric/r_draw.c
+demos/doom/doomgeneric/doomgeneric/r_main.c
+demos/doom/doomgeneric/doomgeneric/r_plane.c
+demos/doom/doomgeneric/doomgeneric/r_segs.c
+demos/doom/doomgeneric/doomgeneric/r_sky.c
+demos/doom/doomgeneric/doomgeneric/r_things.c
+demos/doom/doomgeneric/doomgeneric/sha1.c
+demos/doom/doomgeneric/doomgeneric/sounds.c
+demos/doom/doomgeneric/doomgeneric/statdump.c
+demos/doom/doomgeneric/doomgeneric/st_lib.c
+demos/doom/doomgeneric/doomgeneric/st_stuff.c
+demos/doom/doomgeneric/doomgeneric/s_sound.c
+demos/doom/doomgeneric/doomgeneric/tables.c
+demos/doom/doomgeneric/doomgeneric/v_video.c
+demos/doom/doomgeneric/doomgeneric/wi_stuff.c
+demos/doom/doomgeneric/doomgeneric/w_checksum.c
+demos/doom/doomgeneric/doomgeneric/w_file.c
+demos/doom/doomgeneric/doomgeneric/w_main.c
+demos/doom/doomgeneric/doomgeneric/w_wad.c
+demos/doom/doomgeneric/doomgeneric/z_zone.c
+demos/doom/doomgeneric/doomgeneric/w_file_stdc.c
+demos/doom/doomgeneric/doomgeneric/i_input.c
+demos/doom/doomgeneric/doomgeneric/i_video.c
+demos/doom/doomgeneric/doomgeneric/doomgeneric.c
+demos/doom/doomgeneric/doomgeneric/mus2mid.c

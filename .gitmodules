@@ -4,3 +4,6 @@
 [submodule "toolchain/qbe"]
 	path = toolchain/qbe
 	url = https://github.com/michaelforney/qbe
+[submodule "demos/doom/doomgeneric"]
+	path = demos/doom/doomgeneric
+	url = https://github.com/ozkl/doomgeneric
