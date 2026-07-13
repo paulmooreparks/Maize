@@ -425,19 +425,41 @@ namespace maize {
         }
 
         u_word memory_module::last_block() const {
-            auto last = memory_map.rbegin()->first;
-            return last;
+            /* Highest allocated block base. Tracked incrementally since the backing store
+               is now an unordered_map (no ordered rbegin()). */
+            return highest_block_;
         }
 
         size_t memory_module::set_cache_address(u_word address) {
-            if (cache_base != (address & address_mask)) {
-                cache_base = address & address_mask;
+            u_word base = address & address_mask;
 
-                if (!memory_map.contains(cache_base)) {
-                    memory_map[cache_base] = new u_byte[block_size] {0};
+            if (cache_base != base) {
+                cache_base = base;
+
+                /* Direct-mapped L1 block cache: one index + tag compare on the hot path,
+                   no hash, no tree. Falls back to the hash map only on an L1 miss. */
+                size_t slot = (base >> 8) & l1_mask;
+                if (l1_ptr[slot] != nullptr && l1_base[slot] == base) {
+                    cache = l1_ptr[slot];
                 }
-
-                cache = memory_map[cache_base];
+                else {
+                    u_byte* blk;
+                    auto it = memory_map.find(base);
+                    if (it == memory_map.end()) {
+                        blk = new u_byte[block_size] {0};
+                        memory_map.emplace(base, blk);
+                        if (!any_block_ || base > highest_block_) {
+                            highest_block_ = base;
+                            any_block_ = true;
+                        }
+                    }
+                    else {
+                        blk = it->second;
+                    }
+                    l1_base[slot] = base;
+                    l1_ptr[slot] = blk;
+                    cache = blk;
+                }
             }
 
             cache_address.w0 = address;

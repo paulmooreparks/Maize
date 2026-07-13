@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <array>
 #include <thread>
 #include <chrono>
@@ -450,7 +451,19 @@ namespace maize {
 			bus* pload_bus {nullptr};
 			bus* pstore_bus {nullptr};
 
-			std::map<u_word, u_byte*> memory_map;
+			/* Guest RAM is sparse 256-byte blocks. The authoritative store is a hash map
+			   (O(1) average), fronted by a direct-mapped L1 block cache so the hot access
+			   pattern (code / texture / framebuffer / stack blocks alternating) resolves
+			   with a single array index + tag compare, no tree walk and no hash. Blocks are
+			   never freed during a run, so cached pointers stay valid (no invalidation). */
+			static constexpr size_t l1_bits {13};
+			static constexpr size_t l1_count {size_t(1) << l1_bits};   // 8192 slots
+			static constexpr size_t l1_mask {l1_count - 1};
+			std::unordered_map<u_word, u_byte*> memory_map;
+			std::array<u_byte*, l1_count> l1_ptr {};   // nullptr = empty slot
+			std::array<u_word, l1_count> l1_base {};   // block base for the slot (valid iff l1_ptr set)
+			u_word highest_block_ {0};                 // max allocated block base (for last_block())
+			bool any_block_ {false};
 			u_byte* cache {nullptr};
 
 			size_t set_cache_address(u_word address);
