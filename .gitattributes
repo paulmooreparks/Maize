@@ -16,6 +16,7 @@
 # Assembler / toolchain text inputs and IL.
 *.mazm text eol=lf
 *.ssa  text eol=lf
+*.qbe  text eol=lf
 *.asm  text eol=lf
 
 # Build, CI, and test scripting.
