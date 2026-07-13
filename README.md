@@ -15,6 +15,23 @@ that targets the VM, with a small set of Unix-style system calls already impleme
 milestones are devices bridging the virtual environment to the host machine, a "BIOS" layer above
 the virtual devices, and a simple OS; see [ROADMAP.md](ROADMAP.md) for the sequencing.
 
+> **📘 [The Maize ISA Reference (v1.0)](https://paulmooreparks.github.io/Maize/):** the
+> complete, frozen instruction-set specification, published as a book. The register and
+> subregister model, instruction encoding, every instruction's operation and flag effects,
+> and the memory, trap, device-facing, and floating-point models, plus the conformance
+> rules. This is the authoritative reference for the machine (source under
+> [docs/spec/](docs/spec/README.md)).
+
+---
+
+## UPDATE: Maize Runs DOOM!
+
+As of 13 July 2026, Maize can run a version of DOOM compiled to Maize bytecode from C sources!
+
+<img src="doom.png" alt="DOOM running on Maize">
+
+---
+
 ## What It Is, Basically
 
 * A 64-bit virtual machine implemented in C++ that executes a custom byte code

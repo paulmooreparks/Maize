@@ -50,6 +50,28 @@ if (MAIZE_SANITIZE)
   endforeach()
 endif()
 
+# Performance flags for the VM hot path (the `maize` interpreter). Release-only and
+# skipped under sanitizers. LTO lets the compiler inline across translation units (device
+# port I/O in devices.cpp, syscalls in sys.cpp) into the cpu.cpp instruction loop; the
+# memory hot path is already same-TU. MAIZE_ARCH raises the ISA baseline from generic
+# x86-64 (SSE2) to x86-64-v3 (AVX2/BMI2, Haswell+ 2013) for better ALU/bit-op codegen;
+# set it to "native", "x86-64-v2", or empty (to disable) as portability requires. These
+# apply to `maize` only (the perf-critical target); the assembler/linker/disassembler
+# are untouched.
+set(MAIZE_ARCH "x86-64-v3" CACHE STRING "Release -march for the maize VM (empty to disable)")
+
+if (NOT MAIZE_SANITIZE)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT _maize_ipo_ok OUTPUT _maize_ipo_msg)
+  if (_maize_ipo_ok)
+    set_property(TARGET maize PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+  endif()
+
+  if (MAIZE_ARCH AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_options(maize PRIVATE "$<$<CONFIG:Release>:-march=${MAIZE_ARCH}>")
+  endif()
+endif()
+
 # Opt-in SDL2 window backend for the framebuffer + keyboard (device set). OFF by default:
 # the default build, linux-debug, the Windows presets, and MAIZE_SANITIZE all configure,
 # build, and link with NO new mandatory external dependency and run headless. SDL2 is
