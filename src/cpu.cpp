@@ -239,8 +239,8 @@ namespace maize {
         }
 
         u_hword memory_module::write_byte(reg_value address, u_byte value) {
-            set_cache_address(address);
-            cache[cache_address.b0] = value;
+            size_t idx {block_size - set_cache_address(address)};
+            cache[idx] = value;
             return sizeof(u_byte);
         }
 
@@ -256,7 +256,7 @@ namespace maize {
 
             do {
                 size_t rem {set_cache_address(address)};
-                size_t idx {cache_address.b0};
+                size_t idx {block_size - rem};
 
                 if (rem >= count) {
                     /* Fast in-block path: store the low `count` bytes of value with one sized
@@ -281,9 +281,9 @@ namespace maize {
                 }
                 else {
                     while (count) {
-                        cache[cache_address.b0] = value & 0xff;
+                        cache[idx] = value & 0xff;
                         value >>= 0x08;
-                        set_cache_address(++address);
+                        idx = block_size - set_cache_address(++address);
                         --count;
                         ++written;
                     }
@@ -315,10 +315,10 @@ namespace maize {
 
                 do {
                     auto rem = set_cache_address(address);
-                    size_t idx = cache_address.b0;
+                    size_t idx = block_size - rem;
 
                     if (rem >= count) {
-                        while (count && idx <= 0xFF) {
+                        while (count && idx < block_size) {
                             retval.push_back(cache[idx]);
                             ++idx;
                             --count;
@@ -327,8 +327,8 @@ namespace maize {
                     }
                     else {
                         while (count) {
-                            retval.push_back(cache[cache_address.b0]);
-                            set_cache_address(++address.w0);
+                            retval.push_back(cache[idx]);
+                            idx = block_size - set_cache_address(++address.w0);
                             --count;
                             ++read_count;
                         }
@@ -361,7 +361,7 @@ namespace maize {
 
             do {
                 size_t rem {set_cache_address(address)};
-                size_t idx {cache_address.b0};
+                size_t idx {block_size - rem};
 
                 if (rem >= count) {
                     /* Fast in-block path: the whole read (count in {1,2,4,8} for a subreg)
@@ -400,8 +400,8 @@ namespace maize {
                 }
                 else {
                     while (count) {
-                        reg[dst_idx] = cache[cache_address.b0];
-                        set_cache_address(++address);
+                        reg[dst_idx] = cache[idx];
+                        idx = block_size - set_cache_address(++address);
                         ++dst_idx;
                         --count;
                         ++read_count;
@@ -421,10 +421,10 @@ namespace maize {
 
                 do {
                     auto rem = set_cache_address(address);
-                    size_t idx = cache_address.b0;
+                    size_t idx = block_size - rem;
 
                     if (rem >= count) {
-                        while (count && idx <= 0xFF) {
+                        while (count && idx < block_size) {
                             retval.push_back(cache[idx]);
                             ++idx;
                             --count;
@@ -432,8 +432,8 @@ namespace maize {
                     }
                     else {
                         while (count) {
-                            retval.push_back(cache[cache_address.b0]);
-                            set_cache_address(++address.w0);
+                            retval.push_back(cache[idx]);
+                            idx = block_size - set_cache_address(++address.w0);
                             --count;
                         }
                     }
@@ -448,7 +448,7 @@ namespace maize {
             size_t done {0};
             while (count) {
                 size_t rem {set_cache_address(address)};   // bytes to end of the current block
-                size_t idx {cache_address.b0};
+                size_t idx {block_size - rem};
                 size_t n {rem < count ? rem : count};
                 std::memcpy(dst + done, cache + idx, n);
                 done += n;
@@ -458,22 +458,9 @@ namespace maize {
         }
 
         u_byte memory_module::read_byte(u_word address) {
-            u_byte retval {};
-
-            auto rem = set_cache_address(address);
-            size_t idx = cache_address.b0;
-
-            if (rem >= 1) {
-                if (idx <= 0xFF) {
-                    retval = cache[idx];
-                }
-            }
-            else {
-                retval = cache[cache_address.b0];
-                set_cache_address(++address);
-            }
-
-            return retval;
+            /* A single byte always fits within its block, so no straddle handling. */
+            size_t idx {block_size - set_cache_address(address)};
+            return cache[idx];
         }
 
         u_word memory_module::last_block() const {
@@ -490,7 +477,7 @@ namespace maize {
 
                 /* Direct-mapped L1 block cache: one index + tag compare on the hot path,
                    no hash, no tree. Falls back to the hash map only on an L1 miss. */
-                size_t slot = (base >> 8) & l1_mask;
+                size_t slot = (base >> block_shift) & l1_mask;
                 if (l1_ptr[slot] != nullptr && l1_base[slot] == base) {
                     cache = l1_ptr[slot];
                 }
@@ -514,8 +501,11 @@ namespace maize {
                 }
             }
 
-            cache_address.w0 = address;
-            return block_size - cache_address.b0;
+            /* Return bytes remaining in the block from `address`. The in-block offset the
+               callers need is block_size - (return value) == address & block_mask; deriving
+               it locally avoids storing a reg_value cache_address (whose proxy access was a
+               large slice of this function's cost). */
+            return block_size - (address & block_mask);
         }
 
         void reg::increment(u_byte value, subreg_enum subreg) {

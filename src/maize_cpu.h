@@ -441,13 +441,17 @@ namespace maize {
 			u_byte read_byte(u_word address);
 			u_word last_block() const;
 			
-			const u_hword block_size {0x100};
+			/* Block size is 2^block_shift bytes. 8 => 256 B (default), 12 => 4 KB. Changing
+			   block_shift is the only edit needed: block_mask and address_mask derive from it,
+			   and the in-block offset is address & block_mask (no stored cache_address). */
+			static constexpr unsigned block_shift {8};
+			static constexpr u_word block_size {u_word {1} << block_shift};
+			static constexpr u_word block_mask {block_size - 1};
 
 		protected:
 			reg address_reg {0};
-			u_word address_mask {0xFFFFFFFFFFFFFF00};
-			u_word cache_base {0xFFFFFFFFFFFFFFFF};
-			reg_value cache_address;
+			u_word address_mask {~block_mask};
+			u_word cache_base {~u_word {0}};
 
 			size_t load_size {3};
 			subreg_mask_enum store_mask {subreg_mask_enum::w0};
