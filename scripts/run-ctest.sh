@@ -794,6 +794,13 @@ run_ctest "stdint"
 # nlink@16/mode@24/size@48 via runtime pointer subtraction), and parses each new decl
 # via sizeof(&fn) with NO link dependency (bodies are maize-148). One "rthdrs2: PASS".
 run_ctest "rthdrs2"
+# maize-149 GNU-attribute strip: a DOOM mapsidedef_t-shaped struct using the
+# TRAILING __attribute__((packed)) position (which the pinned cproc rejects)
+# compiles through the driver's cpp-step strip, and its sizeof/offsetof asserts
+# (sizeof==30, char[8] blocks at 4/12/20, trailing short at 28) prove the natural
+# layout is byte-identical to the packed on-disk WAD layout, so the strip is
+# run-safe. Prints a single "packed: PASS" line.
+run_ctest "packed"
 # maize-100 atexit registry: two handlers registered A-then-B run at exit in LIFO
 # order (B, then A) after "main done", proving both that exit() runs the registry
 # and the ordering, plus the indirect-call-through-a-runtime-indexed-fnptr-array path.

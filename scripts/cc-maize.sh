@@ -268,7 +268,21 @@ compile_tu() {
     # existing fixtures include only RT headers, so their resolution is unchanged. The
     # -I is the source's real directory (the .lf.c copy lives in the scratch dir, which
     # cpp searches implicitly for the current file).
-    if ! "$CPP" -E -P -nostdinc -I "$RT_DIR" -I "$(dirname -- "$_src")" "$_lf" > "$_pp" 2>"${WORK}/${_tag}.cpp.log"; then
+    #
+    # -D '__attribute__(x)=' neutralizes GNU attributes before cproc-qbe (maize-149).
+    # __attribute__ is a compiler keyword, not a preprocessor keyword, so cpp treats it
+    # as an ordinary identifier and the one-arg function-like redefine is legal: the
+    # double-paren form __attribute__((packed)) expands as __attribute__( (packed) ) ->
+    # empty (the inner commas of e.g. ((packed, aligned(4))) are paren-protected). DOOM's
+    # doomtype.h puts packed in the TRAILING declarator position (} PACKEDATTR name;),
+    # which the pinned cproc rejects (it honors packed only in the leading position), so
+    # the strip is what unblocks DOOM's 47 core WAD-struct TUs. It is run-safe: every
+    # PACKEDATTR struct in the pinned doomgeneric is padding-free under natural alignment
+    # (per-member offsetof identical packed-vs-natural; verified in AC-4), so the layout
+    # DOOM reads/writes is byte-identical with or without packed. No in-tree TU compiled
+    # through this driver uses any GNU attribute, so the strip is a no-op for the existing
+    # RT/ctest corpus and cannot regress hello.mzb.
+    if ! "$CPP" -E -P -nostdinc -D '__attribute__(x)=' -I "$RT_DIR" -I "$(dirname -- "$_src")" "$_lf" > "$_pp" 2>"${WORK}/${_tag}.cpp.log"; then
         echo "cc-maize.sh: cpp failed for ${_tag}" >&2; cat "${WORK}/${_tag}.cpp.log" >&2; return 1
     fi
     if ! "$CPROC_QBE" < "$_pp" > "$_ssa" 2>"${WORK}/${_tag}.cproc.log"; then
