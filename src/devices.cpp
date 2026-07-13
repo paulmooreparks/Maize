@@ -352,10 +352,17 @@ namespace maize {
 				SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
 					SDL_TEXTUREACCESS_STREAMING, w, h);
 
-				std::thread guest([]() { cpu::run(); });
+				/* guest_done latches true when cpu::run() returns (the guest halted, e.g.
+				   DOOM calling exit()). The window loop exits on either the window closing
+				   (SDL_QUIT) OR the guest finishing; without the latter a guest exit would
+				   leave this loop spinning on the last frame forever, freezing the window.
+				   The latch (not a live power-state poll) avoids a startup race with run()
+				   setting power on. Joined below before guest_done goes out of scope. */
+				std::atomic<bool> guest_done {false};
+				std::thread guest([&guest_done]() { cpu::run(); guest_done = true; });
 
 				bool running = true;
-				while (running) {
+				while (running && !guest_done.load(std::memory_order_acquire)) {
 					SDL_Event e;
 					while (SDL_PollEvent(&e)) {
 						if (e.type == SDL_QUIT) {
