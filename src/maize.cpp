@@ -423,6 +423,7 @@ int main(int argc, char *argv[]) {
 	std::vector<std::string> env_entries;
 	std::vector<mount_grant> grants;
 	bool display_requested = false;
+	unsigned display_scale = 3;      // window = framebuffer size * scale (--display-scale)
 	maize::u_hword fb_width = 320;   // framebuffer host config (OQ: default 320x200)
 	maize::u_hword fb_height = 200;
 	std::string input_source;        // "" = SYS console (default); "keyboard" | "console"
@@ -530,6 +531,31 @@ int main(int argc, char *argv[]) {
 			   (MAIZE_DISPLAY); otherwise the run stays headless with a note. */
 			display_requested = true;
 			++idx;
+			continue;
+		}
+		if (arg == "--display-scale" || arg.rfind("--display-scale=", 0) == 0) {
+			/* Integer window magnification of the framebuffer (the guest still renders at
+			   the native resolution; SDL scales the presented frame). The window is also
+			   resizable, so this only sets the initial size. */
+			std::string val;
+			if (arg.size() > 16) {           /* "--display-scale=" is 16 chars */
+				val = arg.substr(16);
+				++idx;
+			}
+			else if (idx + 1 < argc) {
+				val = argv[idx + 1];
+				idx += 2;
+			}
+			else {
+				std::cerr << "maize: --display-scale requires a value" << std::endl;
+				return 2;
+			}
+			int s = std::atoi(val.c_str());
+			if (s < 1 || s > 16) {
+				std::cerr << "maize: --display-scale must be between 1 and 16" << std::endl;
+				return 2;
+			}
+			display_scale = static_cast<unsigned>(s);
 			continue;
 		}
 		if (arg == "--resolution" || arg.rfind("--resolution=", 0) == 0) {
@@ -732,7 +758,7 @@ int main(int argc, char *argv[]) {
 	   keyboard. */
 	if (display_requested) {
 #ifdef MAIZE_DISPLAY
-		devices::display::run(framebuffer, keyboard);
+		devices::display::run(framebuffer, keyboard, display_scale);
 #else
 		std::cerr << "maize: --display requested but no display backend was compiled in "
 			<< "(build with -DMAIZE_DISPLAY=ON); running headless" << std::endl;

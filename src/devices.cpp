@@ -325,7 +325,7 @@ namespace maize {
 				}
 			}
 
-			void run(framebuffer_device& fb, keyboard_device& kbd) {
+			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale) {
 				kbd.use_window_source();
 
 				if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -336,9 +336,19 @@ namespace maize {
 
 				int w = static_cast<int>(fb.width());
 				int h = static_cast<int>(fb.height());
+				if (scale < 1) { scale = 1; }
+
+				/* The guest renders at the native framebuffer resolution (w x h); the window
+				   opens at that size magnified by `scale` and is resizable. A logical render
+				   size of w x h lets SDL scale the presented frame to any window size while
+				   preserving aspect ratio (letterboxing as needed), so drag-resize and
+				   maximize stay correct. */
 				SDL_Window* win = SDL_CreateWindow("Maize",
-					SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, 0);
+					SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+					w * static_cast<int>(scale), h * static_cast<int>(scale),
+					SDL_WINDOW_RESIZABLE);
 				SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+				SDL_RenderSetLogicalSize(ren, w, h);
 				SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
 					SDL_TEXTUREACCESS_STREAMING, w, h);
 

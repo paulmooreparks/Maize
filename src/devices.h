@@ -160,7 +160,7 @@ namespace maize {
 		   the framebuffer's captured frame and mapping host keys to Set-1 scancodes pushed
 		   into the keyboard. Never compiled in the default/headless build. */
 		namespace display {
-			void run(framebuffer_device& fb, keyboard_device& kbd);
+			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale);
 		}
 #endif
 
