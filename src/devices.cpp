@@ -260,6 +260,7 @@ namespace maize {
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <iostream>
 #include <string>
 #include <thread>
 
@@ -325,8 +326,9 @@ namespace maize {
 				}
 			}
 
-			/* Minimal 3x5 bitmap font for digits 0-9 used by the --show-fps overlay (avoids a
-			   font-library dependency). Each row is three bits, high bit = leftmost column. */
+			/* Minimal 3x5 bitmap font for the --show-perf overlay (avoids a font-library
+			   dependency): digits 0-9 plus the label letters M and F. Each row is three bits,
+			   high bit = leftmost column. */
 			static const unsigned char kFont3x5[10][5] = {
 				{0b111,0b101,0b101,0b101,0b111}, // 0
 				{0b010,0b110,0b010,0b010,0b111}, // 1
@@ -339,13 +341,22 @@ namespace maize {
 				{0b111,0b101,0b111,0b101,0b111}, // 8
 				{0b111,0b101,0b111,0b001,0b111}, // 9
 			};
+			static const unsigned char kGlyphM[5] = {0b101,0b111,0b111,0b101,0b101};
+			static const unsigned char kGlyphF[5] = {0b111,0b100,0b111,0b100,0b100};
 
-			/* Draw a digit string with the 3x5 font, one font-pixel == px x px logical pixels,
+			static const unsigned char* glyph_for(char c) {
+				if (c >= '0' && c <= '9') { return kFont3x5[c - '0']; }
+				if (c == 'M') { return kGlyphM; }
+				if (c == 'F') { return kGlyphF; }
+				return nullptr;   // space / unknown -> blank cell
+			}
+
+			/* Draw a text string with the 3x5 font, one font-pixel == px x px logical pixels,
 			   as filled rects in the renderer's logical coordinate space. */
-			static void draw_digits(SDL_Renderer* ren, int x, int y, int px, const std::string& s) {
+			static void draw_text(SDL_Renderer* ren, int x, int y, int px, const std::string& s) {
 				for (char ch : s) {
-					if (ch >= '0' && ch <= '9') {
-						const unsigned char* g = kFont3x5[ch - '0'];
+					const unsigned char* g = glyph_for(ch);
+					if (g) {
 						for (int row = 0; row < 5; ++row) {
 							for (int col = 0; col < 3; ++col) {
 								if (g[row] & (1 << (2 - col))) {
@@ -359,7 +370,7 @@ namespace maize {
 				}
 			}
 
-			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale, bool show_fps) {
+			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale, bool show_perf) {
 				kbd.use_window_source();
 
 				if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -387,12 +398,16 @@ namespace maize {
 				SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
 					SDL_TEXTUREACCESS_STREAMING, w, h);
 
-				/* --show-fps overlay state: sample the framebuffer's present counter against
-				   wall-clock every ~500 ms to derive the GUEST frame rate (frames the guest
-				   actually produced), distinct from the ~60 Hz window refresh below. */
-				std::uint64_t fps_last_count = fb.present_count();
-				std::uint32_t fps_last_ticks = SDL_GetTicks();
-				std::string fps_str = "0";
+				/* --show-perf overlay state: every ~500 ms, sample the present counter -> FPS
+				   (guest frames produced) and the guest instruction counter -> MIPS (VM work
+				   rate), track the peak of each for the on-exit report, and render both as one
+				   line "M<mips> F<fps>". FPS is distinct from the ~60 Hz window refresh below. */
+				std::uint64_t perf_last_present = fb.present_count();
+				std::uint64_t perf_last_insn = cpu::instruction_count();
+				std::uint32_t perf_last_ticks = SDL_GetTicks();
+				std::string perf_str = "M0 F0";
+				int peak_fps = 0;
+				int peak_mips = 0;
 
 				/* guest_done latches true when cpu::run() returns (the guest halted, e.g.
 				   DOOM calling exit()). The window loop exits on either the window closing
@@ -424,15 +439,22 @@ namespace maize {
 						}
 					}
 
-					if (show_fps) {
+					if (show_perf) {
 						std::uint32_t now = SDL_GetTicks();
-						std::uint32_t dt = now - fps_last_ticks;
+						std::uint32_t dt = now - perf_last_ticks;
 						if (dt >= 500) {
-							std::uint64_t c = fb.present_count();
-							int fps = static_cast<int>((c - fps_last_count) * 1000ull / dt);
-							fps_str = std::to_string(fps);
-							fps_last_count = c;
-							fps_last_ticks = now;
+							std::uint64_t p = fb.present_count();
+							std::uint64_t ic = cpu::instruction_count();
+							int fps = static_cast<int>((p - perf_last_present) * 1000ull / dt);
+							/* MIPS = delta-instructions / (dt_ms * 1000). */
+							int mips = static_cast<int>((ic - perf_last_insn)
+								/ (static_cast<std::uint64_t>(dt) * 1000ull));
+							perf_str = "M" + std::to_string(mips) + " F" + std::to_string(fps);
+							if (fps > peak_fps) { peak_fps = fps; }
+							if (mips > peak_mips) { peak_mips = mips; }
+							perf_last_present = p;
+							perf_last_insn = ic;
+							perf_last_ticks = now;
 						}
 					}
 
@@ -443,17 +465,18 @@ namespace maize {
 						SDL_RenderClear(ren);
 						SDL_RenderCopy(ren, tex, nullptr, nullptr);
 
-						if (show_fps) {
+						if (show_perf) {
 							/* Top-left overlay in logical (w x h) space, so SDL scales it with
-							   the frame: a translucent box behind green digits. */
-							int px = 2;
-							int boxw = static_cast<int>(fps_str.size()) * 4 * px + 3;
-							int boxh = 5 * px + 3;
+							   the frame: a translucent box behind green "M<mips> F<fps>" text at
+							   a small font (px == 1 logical pixel per font pixel). */
+							int px = 1;
+							int boxw = static_cast<int>(perf_str.size()) * 4 * px + 2;
+							int boxh = 5 * px + 2;
 							SDL_Rect box { 1, 1, boxw, boxh };
 							SDL_SetRenderDrawColor(ren, 0, 0, 0, 180);
 							SDL_RenderFillRect(ren, &box);
 							SDL_SetRenderDrawColor(ren, 0, 255, 0, 255);
-							draw_digits(ren, 3, 3, px, fps_str);
+							draw_text(ren, 2, 2, px, perf_str);
 						}
 
 						SDL_RenderPresent(ren);
@@ -471,6 +494,11 @@ namespace maize {
 				SDL_DestroyRenderer(ren);
 				SDL_DestroyWindow(win);
 				SDL_Quit();
+
+				if (show_perf) {
+					std::cerr << "maize: peak " << peak_mips << " MIPS, peak "
+						<< peak_fps << " FPS" << std::endl;
+				}
 			}
 
 		} // namespace display

@@ -966,6 +966,14 @@ namespace maize {
 
             bool is_power_on = false;
 
+            /* --show-perf instrumentation. perf_count_enabled gates the per-instruction
+               counter so a normal run pays nothing but a predicted-not-taken branch; it is
+               set once by enable_perf_counter(). perf_insn_count is a plain 64-bit counter
+               written only by the CPU thread and read (relaxed, aligned-atomic on the host)
+               by the display thread for the MIPS readout. */
+            bool perf_count_enabled = false;
+            u_word perf_insn_count = 0;
+
             /* Flat interrupt controller state (card maize-21). irq_pending is the single
                DURABLE pending-vector latch and the authoritative delivery signal: it is
                std::atomic so the run loop's lock-free fast path can read it race-free, and
@@ -3338,6 +3346,7 @@ namespace maize {
                 mm.read(regs::rp.w0, regs::ri, subreg_enum::w0); \
                 ++regs::rp.w0; \
                 run_state = run_states::execute; \
+                if (perf_count_enabled) { ++perf_insn_count; } \
                 goto *dtbl[regs::ri.b0]; \
             } while (0)
 
@@ -4524,6 +4533,16 @@ namespace maize {
                     }
             tick_exit: ;
 #undef MAIZE_NEXT
+        }
+
+        /* --show-perf: enable the per-instruction counter (off by default so normal runs are
+           unperturbed) and read the running guest-instruction count for the MIPS readout. */
+        void enable_perf_counter() {
+            perf_count_enabled = true;
+        }
+
+        u_word instruction_count() {
+            return perf_insn_count;
         }
 
         /* Stop the VM: drop out of tick()'s instruction loop (running_flag) and

@@ -1024,6 +1024,8 @@ namespace maize {
 		void add_device(u_qword id, device& new_device);
 		void run();
 		void power_off();
+		void enable_perf_counter();   // --show-perf: start counting guest instructions
+		u_word instruction_count();   // running guest-instruction count (for MIPS)
 
 		/* Extract the zero-extended value of a named subregister from a port operand.
 		   Host-backed device hooks call this to read the guest's written value as a plain
