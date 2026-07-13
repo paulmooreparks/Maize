@@ -1,6 +1,6 @@
 # demos/doom: DOOM on Maize (port bring-up)
 
-This directory hosts the Maize DOOM port (maize-85). The engine itself is the
+This directory hosts the Maize DOOM port. The engine itself is the
 vendored `doomgeneric` submodule; every Maize-specific glue file lives here,
 OUTSIDE the submodule, which is never edited.
 
@@ -38,13 +38,12 @@ produced (build-only; it does NOT run maize, that is Phase C). The gate skips
 with a notice when the `demos/doom/doomgeneric` submodule is not initialized, so
 a partial checkout does not hard-fail the ctest suite.
 
-The bring-up blockers are all resolved: `cproc` strips GNU attributes in the
-driver (maize-149, the packed WAD structs), `mazm` object mode carries label
-operands in `ST` and data initializers (maize-150, the action-function pointer
-tables), and the RT header/libc set gained `strings/math/assert/unistd/sys`
-headers plus `strcasecmp`/`strncasecmp`/`fabs`/`sscanf`/`system`/`remove`/
-`mkdir`/`usleep`/`rename` and the `SEEK_*`/`EISDIR` macros (maize-147, maize-148,
-maize-152).
+The build relies on `cproc` stripping GNU attributes in the driver (DOOM's
+packed WAD structs), `mazm` object mode carrying label operands in `ST` and data
+initializers (the action-function pointer tables), and the RT header/libc set
+covering the `strings/math/assert/unistd/sys` headers plus
+`strcasecmp`/`strncasecmp`/`fabs`/`sscanf`/`system`/`remove`/`mkdir`/`usleep`/`rename`
+and the `SEEK_*`/`EISDIR` macros.
 
 Real `DG_*` platform behaviour (framebuffer present, ms clock, the Set-1 to DOOM
 key table, WAD loading) is Phase B; the headless render self-check and the
