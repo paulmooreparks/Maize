@@ -4,25 +4,28 @@
     Build the Maize toolchain (maize, mazm, mzld, mzdis) and install stable copies into ~\bin (Windows).
 
 .DESCRIPTION
-    Configures the CMake preset if needed, builds the maize/mazm/mzld/mzdis
-    targets, and copies each built .exe to the install directory (default:
-    $HOME\bin). Also refreshes the mzcc.cmd Windows forwarder (the C-toolchain
-    entry point that dispatches into the WSL driver) from a repo template. If the
-    install directory is not on the user PATH it is appended, so editors and shells
-    find the tools without per-workspace configuration. Wired to the default build
-    task (Ctrl+Shift+B) via .vscode/tasks.json.
+    Configures the CMake preset, builds the maize/mazm/mzld/mzdis targets as an
+    optimized Release, and copies each built .exe to the install directory
+    (default: $HOME\bin). The maize VM is built with the SDL2 window backend
+    (MAIZE_DISPLAY=ON) so `--display --input=keyboard` opens a real window; the
+    vendored SDL2 runtime (SDL2.dll) is installed alongside maize.exe. Also
+    refreshes the mzcc.cmd Windows forwarder (the C-toolchain entry point that
+    dispatches into the WSL driver) from a repo template. If the install directory
+    is not on the user PATH it is appended, so editors and shells find the tools
+    without per-workspace configuration. Wired to the default build task
+    (Ctrl+Shift+B) via .vscode/tasks.json.
 
     Never prompts; safe for non-interactive use.
 
 .PARAMETER Preset
-    CMake preset to build. Defaults to windows-llvm-mingw-debug.
+    CMake preset to build. Defaults to windows-llvm-mingw-release (optimized).
 
 .PARAMETER InstallDir
     Destination directory. Defaults to $HOME\bin.
 #>
 [CmdletBinding()]
 param(
-    [string]$Preset = 'windows-llvm-mingw-debug',
+    [string]$Preset = 'windows-llvm-mingw-release',
     [string]$InstallDir = (Join-Path $HOME 'bin')
 )
 
@@ -32,6 +35,24 @@ Set-StrictMode -Version Latest
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Resolve-Path (Join-Path $ScriptDir '..')
 $BuildDir  = Join-Path $RepoRoot "build/$Preset"
+
+# --- SDL2 window backend (MAIZE_DISPLAY) ------------------------------------------
+# maize's --display window backend needs the vendored mingw SDL2 (dev config + DLL).
+# When it is present, configure with MAIZE_DISPLAY=ON and point find_package at it,
+# and install SDL2.dll next to maize.exe. When it is absent (a headless machine),
+# warn and build without the window backend rather than failing the build task.
+$Sdl2Root     = Join-Path $RepoRoot '.toolchains/SDL2/x86_64-w64-mingw32'
+$Sdl2CmakeDir = Join-Path $Sdl2Root 'lib/cmake/SDL2'
+$Sdl2Dll      = Join-Path $Sdl2Root 'bin/SDL2.dll'
+$displayArgs  = @()
+$displayOn    = $false
+if (Test-Path $Sdl2CmakeDir) {
+    $displayOn   = $true
+    $displayArgs = @('-DMAIZE_DISPLAY=ON', "-DSDL2_DIR=$(($Sdl2CmakeDir) -replace '\\','/')")
+}
+else {
+    Write-Warning "Vendored SDL2 not found at $Sdl2CmakeDir; building headless (no --display window). Fetch the SDL2 toolchain to enable the window backend."
+}
 
 # --- Resolve cmake the same way run-tests.ps1 does ------------------------------
 $cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
@@ -46,14 +67,14 @@ else {
     exit 2
 }
 
-# --- Configure (first run only) and build ----------------------------------------
-if (-not (Test-Path (Join-Path $BuildDir 'CMakeCache.txt'))) {
-    Write-Host "Configuring preset '$Preset'..."
-    & $Cmake --preset $Preset
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "cmake configure failed for preset '$Preset' (exit $LASTEXITCODE)."
-        exit 2
-    }
+# --- Configure and build ----------------------------------------------------------
+# Always reconfigure (idempotent, ~1s with Ninja) so the display cache vars are applied
+# even to a build directory first configured without them.
+Write-Host "Configuring preset '$Preset'$(if ($displayOn) { ' with SDL2 window backend' })..."
+& $Cmake --preset $Preset @displayArgs
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "cmake configure failed for preset '$Preset' (exit $LASTEXITCODE)."
+    exit 2
 }
 
 Write-Host "Building maize, mazm, mzld, mzdis ($Preset)..."
@@ -73,6 +94,18 @@ foreach ($tool in 'maize', 'mazm', 'mzld', 'mzdis') {
     }
     Copy-Item $builtExe (Join-Path $InstallDir "$tool.exe") -Force
     Write-Host "Installed $builtExe -> $(Join-Path $InstallDir "$tool.exe")"
+}
+
+# maize.exe now links SDL2 dynamically; install the runtime DLL alongside it so it
+# starts from anywhere on PATH ($InstallDir is on PATH, so a co-located DLL resolves).
+if ($displayOn) {
+    if (Test-Path $Sdl2Dll) {
+        Copy-Item $Sdl2Dll (Join-Path $InstallDir 'SDL2.dll') -Force
+        Write-Host "Installed $Sdl2Dll -> $(Join-Path $InstallDir 'SDL2.dll')"
+    }
+    else {
+        Write-Warning "MAIZE_DISPLAY is ON but $Sdl2Dll is missing; maize.exe will fail to start until SDL2.dll is on PATH."
+    }
 }
 
 # --- Windows forwarder: refresh <InstallDir>\mzcc.cmd from the repo template --------

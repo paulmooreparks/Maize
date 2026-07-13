@@ -104,32 +104,36 @@ static void check_present(void)
     expect(mism == 0);
 }
 
-/* Keymap: drain DG_GetKey until the 11 injected make/break events are collected, then
+/* Keymap: drain DG_GetKey until the 13 injected make/break events are collected, then
  * compare each (pressed,key) against the expected doomkeys.h SYMBOL / ASCII. The injected
- * sequence (run-ctest side, octal): 036 236 110 113 115 120 035 071 034 001 017 =
+ * sequence (run-ctest side, octal): 036 236 110 113 115 120 035 071 034 001 017 063 064 =
  *   1E('a' make), 9E('a' break), 48(up), 4B(left), 4D(right), 50(down),
- *   1D(ctrl), 39(space), 1C(enter), 01(esc), 0F(tab). */
+ *   1D(ctrl->fire), 39(space->use), 1C(enter), 01(esc), 0F(tab),
+ *   33(comma->strafe-left), 34(period->strafe-right). Fire/use/strafe map to DOOM's action
+ *   codes KEY_FIRE/KEY_USE/KEY_STRAFE_L/KEY_STRAFE_R (the key_fire/key_use/key_strafe*
+ *   defaults), not the raw physical keys. */
 static void check_keymap(void)
 {
-    static const unsigned char exp_key[11] = {
+    static const unsigned char exp_key[13] = {
         'a', 'a',
         KEY_UPARROW, KEY_LEFTARROW, KEY_RIGHTARROW, KEY_DOWNARROW,
-        KEY_RCTRL, ' ', KEY_ENTER, KEY_ESCAPE, KEY_TAB
+        KEY_FIRE, KEY_USE, KEY_ENTER, KEY_ESCAPE, KEY_TAB,
+        KEY_STRAFE_L, KEY_STRAFE_R
     };
-    static const int exp_pressed[11] = { 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
-    static int got_pressed[11];
-    static unsigned char got_key[11];
+    static const int exp_pressed[13] = { 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+    static int got_pressed[13];
+    static unsigned char got_key[13];
     int p, kc = 0, j;
     unsigned char k;
 
-    while (kc < 11) {
+    while (kc < 13) {
         if (DG_GetKey(&p, &k)) {
             got_pressed[kc] = p;
             got_key[kc] = k;
             kc++;
         }
     }
-    for (j = 0; j < 11; j++) {
+    for (j = 0; j < 13; j++) {
         expect(got_pressed[j] == exp_pressed[j]);
         expect(got_key[j] == exp_key[j]);
     }

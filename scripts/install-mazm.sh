@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-PRESET="${1:-linux-debug}"
+PRESET="${1:-linux-release}"
 INSTALL_DIR="${2:-$HOME/bin}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,10 +17,20 @@ if ! command -v cmake >/dev/null 2>&1; then
     exit 2
 fi
 
-if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
-    echo "Configuring preset '$PRESET'..."
-    cmake --preset "$PRESET"
+# Enable the maize SDL2 window backend (--display) when system SDL2 dev files are
+# present; otherwise build headless rather than failing the task on a server host.
+display_args=()
+if command -v sdl2-config >/dev/null 2>&1 || pkg-config --exists sdl2 2>/dev/null; then
+    display_args=(-DMAIZE_DISPLAY=ON)
+    echo "SDL2 found; building maize with the --display window backend."
+else
+    echo "note: SDL2 dev files not found; building headless (no --display window)." >&2
 fi
+
+# Always reconfigure (idempotent) so the display cache var is applied even to a build
+# directory first configured without it.
+echo "Configuring preset '$PRESET'..."
+cmake --preset "$PRESET" "${display_args[@]}"
 
 echo "Building maize, mazm, mzld, mzdis ($PRESET)..."
 cmake --build "$BUILD_DIR" --target maize mazm mzld mzdis

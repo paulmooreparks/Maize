@@ -106,6 +106,7 @@ namespace maize {
 		void keyboard_device::push_event(u_byte scancode) {
 			std::lock_guard<std::mutex> lk(queue_mutex_);
 			queue_.push_back(scancode);
+			queue_size_.store(queue_.size(), std::memory_order_release);
 		}
 
 		void keyboard_device::port_write(int /*role*/, reg_value const& /*value*/, subreg_enum /*value_subreg*/) {
@@ -135,12 +136,18 @@ namespace maize {
 			}
 			u_word code = 0;
 			if (window_source_) {
+				/* Lock-free early out: no scancode pending (the overwhelmingly common
+				   case), so skip the per-instruction mutex acquisition entirely. */
+				if (queue_size_.load(std::memory_order_acquire) == 0) {
+					return;
+				}
 				std::lock_guard<std::mutex> lk(queue_mutex_);
 				if (queue_.empty()) {
 					return;
 				}
 				code = queue_.front();
 				queue_.pop_front();
+				queue_size_.store(queue_.size(), std::memory_order_release);
 			}
 			else {
 				if (exhausted_) {
@@ -303,6 +310,8 @@ namespace maize {
 					case SDL_SCANCODE_B: return 0x30;
 					case SDL_SCANCODE_N: return 0x31;
 					case SDL_SCANCODE_M: return 0x32;
+					case SDL_SCANCODE_COMMA: return 0x33;
+					case SDL_SCANCODE_PERIOD: return 0x34;
 					case SDL_SCANCODE_RETURN: return 0x1C;
 					case SDL_SCANCODE_LCTRL: return 0x1D;
 					case SDL_SCANCODE_LSHIFT: return 0x2A;

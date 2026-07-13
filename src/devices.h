@@ -8,6 +8,7 @@
    external dependency; the optional SDL2 window backend sits behind MAIZE_DISPLAY. */
 
 #include "maize_cpu.h"
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -91,6 +92,11 @@ namespace maize {
 			bool window_source_ {false};
 			std::mutex queue_mutex_;
 			std::deque<u_byte> queue_;
+			/* Lock-free fast path for on_input_tick, which runs once per executed guest
+			   instruction: taking queue_mutex_ every instruction just to test emptiness
+			   dominates the windowed hot loop. This mirrors queue_.size() (updated under
+			   the lock) so the common no-key-pending tick returns without locking. */
+			std::atomic<size_t> queue_size_ {0};
 		};
 
 		/* Memory-backed framebuffer (0x50-0x55 control ports). Pixels live in ordinary

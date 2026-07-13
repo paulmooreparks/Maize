@@ -54,6 +54,11 @@ const char *DG_MaizeWindowTitle = 0;
  * contract even though the current SDL map does not yet emit it (OQ-3, a Phase-C gap).
  * Letters deliver LOWERCASE ASCII unconditionally; DOOM does its own shift casing from
  * the KEY_RSHIFT event (DEC: do not case in the platform).
+ *
+ * Fire and use map to DOOM's ACTION codes (KEY_FIRE / KEY_USE), not the physical keys:
+ * the default in-game bindings are key_fire = KEY_FIRE and key_use = KEY_USE (m_controls.c),
+ * so gamekeydown[key_fire]/[key_use] only ever match those action codes. This mirrors the
+ * reference doomgeneric_sdl.c, where LCTRL/RCTRL -> KEY_FIRE and SPACE -> KEY_USE.
  */
 static const unsigned char scancode_to_doom[128] = {
     [0x01] = KEY_ESCAPE,
@@ -63,14 +68,19 @@ static const unsigned char scancode_to_doom[128] = {
     [0x10] = 'q', [0x11] = 'w', [0x12] = 'e', [0x13] = 'r', [0x14] = 't',
     [0x15] = 'y', [0x16] = 'u', [0x17] = 'i', [0x18] = 'o', [0x19] = 'p',
     [0x1C] = KEY_ENTER,
-    [0x1D] = KEY_RCTRL,     /* ctrl = DOOM default fire (DEC-2) */
+    [0x1D] = KEY_FIRE,      /* ctrl -> fire: DOOM binds key_fire = KEY_FIRE (0xa3), NOT
+                               KEY_RCTRL; gamekeydown[key_fire] never sees a raw KEY_RCTRL.
+                               Mirrors doomgeneric_sdl.c's LCTRL/RCTRL -> KEY_FIRE. */
     [0x1E] = 'a', [0x1F] = 's', [0x20] = 'd', [0x21] = 'f', [0x22] = 'g',
     [0x23] = 'h', [0x24] = 'j', [0x25] = 'k', [0x26] = 'l',
     [0x2A] = KEY_RSHIFT,    /* LShift -> DOOM run/strafe modifier */
     [0x2C] = 'z', [0x2D] = 'x', [0x2E] = 'c', [0x2F] = 'v', [0x30] = 'b',
     [0x31] = 'n', [0x32] = 'm',
+    [0x33] = KEY_STRAFE_L,  /* comma  -> strafe left  (DOOM's key_strafeleft default) */
+    [0x34] = KEY_STRAFE_R,  /* period -> strafe right (DOOM's key_straferight default) */
     [0x38] = KEY_RALT,      /* LAlt -> DOOM strafe modifier */
-    [0x39] = ' ',           /* space = DOOM default use */
+    [0x39] = KEY_USE,       /* space -> use: DOOM binds key_use = KEY_USE (0xa2), NOT the
+                               ' ' character; mirrors doomgeneric_sdl.c's SPACE -> KEY_USE. */
     [0x48] = KEY_UPARROW,
     [0x4B] = KEY_LEFTARROW,
     [0x4D] = KEY_RIGHTARROW,
@@ -143,29 +153,68 @@ uint32_t DG_GetTicksMs(void)
 }
 
 /*
- * DG_GetKey: dequeue at most one Set-1 make/break event and translate it to a DOOM key.
- * The device latches one scancode per input tick; doomgeneric's input layer calls this
- * in a drain loop across ticks. Returns 1 with *pressed/*key set on a mapped event, else
- * 0 (no key latched, or an unmapped make code dropped this tick).
+ * DG_GetKey: dequeue Set-1 make/break events and translate each to a DOOM key.
+ *
+ * doomgeneric's input layer (i_input.c I_GetEvent) drains this in a tight loop each
+ * frame until it returns 0, then D_ProcessEvents dispatches the posted events and
+ * TryRunTics builds the game tics that sample gamekeydown[]. At a low frame rate a
+ * quick TAP delivers both the make (keydown) and its break (keyup) inside ONE drain
+ * pass, so gamekeydown[key] is set and cleared before any tic samples it and the
+ * shot/use is silently lost (observed: fire fires only unreliably).
+ *
+ * Fix (no submodule edit): defer a break to the NEXT drain pass whenever the same
+ * key's make was delivered in the CURRENT pass. That guarantees the key reads as down
+ * across at least one built tic, so a tap registers regardless of frame rate. Held
+ * keys (make and break land in different passes) are never deferred, so continuous
+ * movement and the run/strafe modifiers are unchanged. A pass ends when the device
+ * drains (returns 0) or when a break is deferred; per-pass make tracking resets then.
+ *
+ * Returns 1 with *pressed/*key set on a delivered event, else 0 (pass complete).
  */
 int DG_GetKey(int *pressed, unsigned char *key)
 {
+    static int made_this_pass[128];   /* make code -> its make already went out this pass */
+    static int have_held = 0;         /* a scancode consumed but deferred to the next pass */
+    static unsigned held_sc = 0;
+
     unsigned sc;
     unsigned make;
     unsigned char dk;
+    int is_break;
 
-    if (!(kbd_status() & 1u)) {
-        return 0;                      /* no scancode latched */
+    for (;;) {
+        if (have_held) {
+            sc = held_sc;              /* deliver the deferred break first, new pass */
+            have_held = 0;
+        }
+        else {
+            if (!(kbd_status() & 1u)) {
+                memset(made_this_pass, 0, sizeof made_this_pass);
+                return 0;              /* device drained: pass over */
+            }
+            sc = kbd_read();           /* consumes + clears key-available */
+        }
+
+        make = sc & 0x7Fu;
+        dk = scancode_to_doom[make];
+        if (dk == 0) {
+            continue;                  /* unmapped: drop it, keep draining */
+        }
+
+        is_break = (sc & 0x80u) != 0;
+        if (is_break && made_this_pass[make]) {
+            held_sc = sc;              /* same key's make went out this pass: defer break */
+            have_held = 1;
+            memset(made_this_pass, 0, sizeof made_this_pass);
+            return 0;                  /* end the pass so a tic samples the key as down */
+        }
+        if (!is_break) {
+            made_this_pass[make] = 1;
+        }
+        *pressed = is_break ? 0 : 1;   /* make = down, break = up */
+        *key = dk;
+        return 1;
     }
-    sc = kbd_read();                   /* consumes + clears key-available */
-    make = sc & 0x7Fu;
-    dk = scancode_to_doom[make];
-    if (dk == 0) {
-        return 0;                      /* unmapped: drop this tick */
-    }
-    *pressed = (sc & 0x80u) ? 0 : 1;   /* make = down, break = up */
-    *key = dk;
-    return 1;
 }
 
 /*

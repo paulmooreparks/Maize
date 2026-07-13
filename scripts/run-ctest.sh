@@ -1008,9 +1008,10 @@ run_doom_selfcheck() {
     nat=$(host_to_native "$fixture_dir")
 
     # Set-1 make/break stream (octal for printf): 1E('a')/9E('a' rel)/48(up)/4B(left)/
-    # 4D(right)/50(down)/1D(ctrl)/39(space)/1C(enter)/01(esc)/0F(tab).
+    # 4D(right)/50(down)/1D(ctrl->fire)/39(space->use)/1C(enter)/01(esc)/0F(tab)/
+    # 33(comma->strafe-left)/34(period->strafe-right).
     set +e
-    actual=$(printf '\036\236\110\113\115\120\035\071\034\001\017' \
+    actual=$(printf '\036\236\110\113\115\120\035\071\034\001\017\063\064' \
         | "$MAIZE" --input=keyboard --mount "${nat}=/ro:ro" "$mzx" 2>/dev/null | grep -v '^$')
     set -e
 
