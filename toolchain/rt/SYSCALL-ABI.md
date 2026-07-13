@@ -76,7 +76,7 @@ honest deviation from Linux, recorded rather than faked.
 The raw process-termination stub is `_exit` (POSIX raw termination: no `atexit`/flush).
 The stdlib `exit()` (`toolchain/rt/stdlib.c`) runs the `atexit` registry LIFO, then
 delegates to `_exit`. `stdout`/`stderr` are unbuffered (direct `sys_write`), but
-`fopen`'d streams (maize-120) are fully buffered, so stdio registers
+`fopen`'d streams are fully buffered, so stdio registers
 `__stdio_flush_all` on the `atexit` registry at first `fopen`; `exit()` therefore
 flushes buffered write streams on a return from `main`, while `_Exit`/`abort` (which
 bypass the registry) do not.
@@ -105,7 +105,7 @@ exempt from the errno convention. The returned value cannot fall in the `[-4095,
 band in any realistic runtime (that band begins at ~5.8e8 years of milliseconds), so
 `RV` is always a valid clock value.
 
-`$02`/`$03`/`$05`/`$08`/`$D9` are the maize-114 hostfs file syscalls (design of record
+`$02`/`$03`/`$05`/`$08`/`$D9` are the hostfs file syscalls (design of record
 `docs/design/hostfs.md`), each mirroring its Linux x86-64 number. They are guest-visible
 only when a `--mount` / `--mount-home` grant installs a mount table; `read`/`write` for a
 granted fd `>= 3` resolve through that table (lifting the M4 real-file restriction). The
