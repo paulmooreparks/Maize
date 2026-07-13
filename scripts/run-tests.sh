@@ -701,6 +701,57 @@ run_obj_pipeline_test "obj_align"        "test_obj_align.mazm"        "align: PA
 run_obj_reject_test   "obj_align_reject" "test_reject_align.mazm"     "power of two"
 run_obj_backjmp_test
 
+# --- maize-150: two-TU data relocations (label/symbol operands in ST + DREF) ----------
+# TU A holds a static pointer table (DREF 8 local_target + DREF 8 ext_target, the
+# latter NOT declared EXTERN -> the GAP 3 data-context auto-import) and an
+# ST ext_target @Rn source (GAP 2). Both TUs assemble with -c, link into one .mzx,
+# and run: the program compares each read-back pointer against the symbol's linked
+# address and prints PASS only when the local reloc, the external auto-imported
+# reloc, and the ST-stored address all match. Proves runtime correctness, not just
+# "it assembled".
+run_obj_datareloc_test() {
+    name="obj_datareloc"
+    expected="datareloc: PASS"
+    TOTAL=$((TOTAL + 1))
+    emit_object "test_obj_datareloc_a.mazm"
+    emit_object "test_obj_datareloc_b.mazm"
+    a="${TEST_RUN_DIR}/test_obj_datareloc_a.mzo"
+    b="${TEST_RUN_DIR}/test_obj_datareloc_b.mzo"
+    mzx="${TEST_RUN_DIR}/test_obj_datareloc.mzx"
+    if [ ! -f "$a" ] || [ ! -f "$b" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm -c produced no .mzo)"
+        return
+    fi
+    log=$(mktemp)
+    if ! "$MZLD_EXE" -o "$mzx" "$a" "$b" >"$log" 2>&1; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (link failed)"
+        cat "$log"
+        rm -f "$log"
+        return
+    fi
+    rm -f "$log"
+    out=$(mktemp)
+    if "$MAIZE_EXE" "$mzx" >"$out" 2>/dev/null; then
+        me=0
+    else
+        me=$?
+    fi
+    actual=$(cat "$out")
+    rm -f "$out"
+    if [ "$me" -eq 0 ] && [ "$actual" = "$expected" ]; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: \"${expected}\" (exit 0)"
+        echo "        actual:   \"${actual}\" (exit ${me})"
+    fi
+}
+
+run_obj_datareloc_test
+
 # --- maize-71: EXTERN / PUBLIC declared module interfaces ----------------------------
 # --check accepts a fragment that declares EXTERN for its cross-module references
 # (the editor must not squiggle a valid fragment), but still errors on an
@@ -765,6 +816,13 @@ run_public_alias_test() {
 # Object-mode strict reject: an undefined non-EXTERN reference under `mazm -c`
 # exits nonzero, names the symbol, and suggests EXTERN.
 run_obj_reject_test "obj_undeclared_ref" "test_reject_undeclared_obj.mazm" "undefined symbol 'mystery'"
+# maize-150 instruction-path guard: an undeclared label used as a CP instruction
+# SOURCE (routing through obj_emit_label_ref, NOT CALL/write_label and NOT a DREF)
+# must still fatal. This pins the GAP 3 relaxation to data context: obj_data_refs
+# is populated only at dref_compiler, so an undefined instruction-operand label is
+# never importable. Without this fixture a future over-broad obj_data_refs populate
+# would silently re-import an undefined CP/LD/ST source.
+run_obj_reject_test "obj_undeclared_src" "test_reject_undeclared_obj_src.mazm" "undefined symbol 'undefinedtypo'"
 # Flat-mode reject: an EXTERN'd-but-locally-undefined reference has no linker to
 # resolve it, so flat assembly exits nonzero with `unresolved external`.
 run_test "flat_unresolved_extern" "test_reject_unresolved_extern.mazm" "unresolved external 'undefsym'" 0 1

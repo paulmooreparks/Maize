@@ -1,0 +1,18 @@
+; **********************************************************************************
+; Object-pipeline test for card maize-150, translation unit B.
+;
+; Defines ext_target (exported GLOBAL), the external symbol that TU A references
+; ONLY from a data initializer (DREF 8 ext_target) and from an ST source
+; (ST ext_target @Rn) WITHOUT declaring it EXTERN there. This is the cross-TU
+; external code-pointer that mirrors info.c's states[] entries pointing at an
+; A_* action function defined in another module. ext_target lives in CODE, so its
+; linked address is a real code address the linker binds TU A's SHN_UNDEF
+; references against.
+; **********************************************************************************
+
+SECTION CODE
+
+GLOBAL ext_target
+
+ext_target:
+    RET

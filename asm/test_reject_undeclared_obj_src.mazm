@@ -1,0 +1,16 @@
+; maize-150: instruction-path typo discipline preserved after the GAP 3
+; data-context relaxation. `undefinedtypo` is used as a CP instruction-operand
+; SOURCE, which routes through the shared obj_emit_label_ref helper (NOT a CALL,
+; which uses write_label, and NOT a DREF/data initializer, which populates
+; obj_data_refs). It is neither defined in this translation unit nor declared
+; EXTERN, so `mazm -c` must still fatal with the strict maize-71 diagnostic. This
+; proves the data-context obj_data_refs auto-EXTERN did NOT relax the instruction
+; path; a silent SHN_UNDEF auto-import here would be a regression.
+
+SECTION CODE
+
+GLOBAL _start
+
+_start:
+    CP undefinedtypo R0        ; undefined, undeclared instruction source: must reject
+    HALT

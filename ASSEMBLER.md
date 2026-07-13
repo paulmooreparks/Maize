@@ -235,12 +235,18 @@ In object mode the assembler never resolves a symbolic operand inline: every
 label reference becomes a relocation the linker fills in. Object mode uses
 strict declared interfaces: a reference to a symbol the unit neither defines nor
 declares `EXTERN` is an error, so a typo is caught at assembly time rather than
-deferred to the linker.
+deferred to the linker. The one exception is a data-only external reference: a
+symbol referenced solely from a data initializer (`DREF`) that the unit does not
+define is auto-imported for the linker to resolve, so a pointer table may name a
+symbol defined in another module without an `EXTERN` line. An undefined,
+undeclared symbol used as an instruction operand is still an error.
 
 A label reference's relocation width follows the immediate width the operand
 encodes. For a two-operand data move the width is the destination sub-register
 width, so `CP label Rn` materialises a full 64-bit address (`R_MAIZE_ABS64`) and
-`CP label Rn.H0` a 32-bit address (`R_MAIZE_ABS32`). Single-operand
+`CP label Rn.H0` a 32-bit address (`R_MAIZE_ABS32`). A label source in a store or
+address comparison (`ST label @Rn`, `CMPIND`, `TSTIND`) and in the `LEA`-family
+three-operand forms is a full 64-bit address (`R_MAIZE_ABS64`). Single-operand
 control-transfer targets (`CALL label`, `JMP label`) use a 32-bit target.
 
 The directives below apply only in object mode. In flat (`-c` absent) assembly

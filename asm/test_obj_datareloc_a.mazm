@@ -1,0 +1,78 @@
+; **********************************************************************************
+; Object-pipeline test for card maize-150: label/symbol operands in data
+; relocations and in an ST source, mirroring info.c's states[] -> A_* pointer
+; table shape (a static table of code-pointers, some local, some external).
+;
+; Translation unit A. Its DATA table `fptable` holds two 64-bit pointers:
+;   fptable[0] = DREF 8 local_target  (a CODE label defined in THIS TU)
+;   fptable[1] = DREF 8 ext_target    (defined in TU B, NOT declared EXTERN here;
+;                                      this is the GAP 3 data-context auto-import)
+; At run time the program proves, after mazm -c -> mzld -> maize:
+;   (a) fptable[0] read back equals &local_target (local data reloc);
+;   (b) fptable[1] read back equals &ext_target   (external data reloc: auto-import
+;       + mzld SHN_UNDEF/GLOBAL resolution);
+;   (c) GAP 2: `ST ext_target @Rn` stores &ext_target into a scratch slot, and the
+;       value read back equals &ext_target (label source in an ST, R_MAIZE_ABS64).
+; Prints "datareloc: PASS\n" (16 bytes) on all-equal, "datareloc: FAIL\n" otherwise.
+; **********************************************************************************
+
+SECTION CODE
+
+GLOBAL _start
+
+_start:
+    ; ---- (a) local-label data reloc: fptable[0] == &local_target ----
+    CP fptable R3
+    LD @R3 R1                  ; actual = *(fptable[0]) = relocated &local_target
+    CP local_target R0         ; expected = &local_target (full-width ABS64 load)
+    CMP R0 R1
+    JNZ fail
+
+    ; ---- (b) external-symbol data reloc: fptable[1] == &ext_target ----
+    CP fpslot1 R3
+    LD @R3 R1                  ; actual = *(fptable[1]) = mzld-resolved &ext_target
+    CP ext_target R0           ; expected = &ext_target (auto-imported SHN_UNDEF)
+    CMP R0 R1
+    JNZ fail
+
+    ; ---- (c) GAP 2: ST <label> @Rn stores &ext_target, then read it back ----
+    CP scratch R4              ; R4 = &scratch (8-byte writable slot)
+    ST ext_target @R4          ; *(scratch) = &ext_target (R_MAIZE_ABS64 label source)
+    LD @R4 R1                  ; actual = *(scratch)
+    CP ext_target R0           ; expected = &ext_target
+    CMP R0 R1
+    JNZ fail
+
+    CP $01 R0
+    CP pass_msg R1
+    CP $10 R2                  ; "datareloc: PASS\n" = 16 bytes
+    SYS $01
+    HALT
+
+fail:
+    CP $01 R0
+    CP fail_msg R1
+    CP $10 R2
+    SYS $01
+    HALT
+
+local_target:
+    ; A CODE label defined in THIS TU; its linked address is what fptable[0] holds
+    ; and is compared against above. Never called; only its address is referenced.
+    RET
+
+SECTION RODATA
+
+pass_msg:
+    STRING "datareloc: PASS\n\0"
+fail_msg:
+    STRING "datareloc: FAIL\n\0"
+
+SECTION DATA
+
+fptable:
+    DREF 8 local_target        ; local pointer-table entry (in-TU reloc)
+fpslot1:
+    DREF 8 ext_target          ; external pointer-table entry (auto-imported, GAP 3)
+scratch:
+    DATA $00 $00 $00 $00 $00 $00 $00 $00   ; 8-byte writable slot for the ST readback

@@ -166,6 +166,17 @@ namespace {
        unresolved, so flat output stays byte-identical. */
     std::set<std::string> obj_externs {};
 
+    /* Names referenced from a DATA-initializer relocation (DREF) whose definition
+       lives in another TU (maize-150). qbe emits EXTERN for code references but
+       never for data references, so a data-only external symbol arrives here
+       undeclared. Populated ONLY at the DREF/data caller (dref_compiler); it
+       relaxes the strict maize-71 undefined check for data-context references so
+       they auto-import (SHN_UNDEF) for mzld to resolve. It is deliberately NOT
+       populated from the shared obj_emit_label_ref helper, which also serves the
+       instruction path (CP/LD/ST/LEA label sources): an undefined, undeclared
+       instruction-operand label must still fatal at assemble time. */
+    std::set<std::string> obj_data_refs {};
+
     /* Diagnostic state (maize-13). current_file / current_line track the source
        position of the byte stream; token_line remembers the line a token began on
        so a diagnostic cites where the token started rather than where it ended. */
@@ -2444,20 +2455,28 @@ namespace {
             operand2_byte = compile_literal(operand2, operand2_literal);
         }
 
-        /* Object mode (maize-12): label operands in the three-operand forms are
-           not yet supported; the inline-immediate branch below would bypass
-           relocation emission. Fail loudly rather than corrupt the object. The
-           common LEA idioms use a register or literal offset, not a label. */
-        if (emit_object && (operand1_is_label || operand2_is_label)) {
-            fatal(current_ref_loc.file, current_ref_loc.line,
-                opcode_str + ": label operands are not supported in object mode yet (maize-12)");
+        /* Object mode (maize-150): route label operands through the width-keyed
+           relocation path instead of inlining them. A label is an address (full-64,
+           maize-11 decision 6415), so force each label operand's immediate-size
+           field to 64-bit and emit an R_MAIZE_ABS64 reloc. Not exercised by the
+           current qbe backend (OUT uses register/literal operands); lifted for
+           consistency with the CP/ST/LEA object paths. Flat mode keeps the
+           write_label paths below unchanged. */
+        if (emit_object && operand1_is_label) {
+            operand1_byte = (operand1_byte & ~cpu::opflag_imm_size) | obj_imm_size_flag(8);
+        }
+        if (emit_object && operand2_is_label) {
+            operand2_byte = (operand2_byte & ~cpu::opflag_imm_size) | obj_imm_size_flag(8);
         }
 
         current_address += cpu::mm.write_byte(current_address, opcode);
         current_address += cpu::mm.write_byte(current_address, operand1_byte);
         current_address += cpu::mm.write_byte(current_address, operand2_byte);
 
-        if (operand_is_immediate) {
+        if (operand1_is_label && emit_object) {
+            obj_emit_label_ref(operand1, 8);
+        }
+        else if (operand_is_immediate) {
             if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
                 current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
             }
@@ -2475,7 +2494,10 @@ namespace {
             current_address += write_label(current_address, operand1, operand1_literal);
         }
 
-        if (operand2_is_label) {
+        if (operand2_is_label && emit_object) {
+            obj_emit_label_ref(operand2, 8);
+        }
+        else if (operand2_is_label) {
             current_address += write_label(current_address, operand2, operand2_literal);
         }
         else {
@@ -2538,18 +2560,25 @@ namespace {
         operand2 = operand2.substr(1);
         operand2_byte = compile_register_checked(operand2, it->loc_file, it->loc_line);
 
-        /* Object mode (maize-12): see the regimm_imm guard. A label source here
-           would be inlined without a relocation. */
-        if (emit_object && operand_is_label) {
-            fatal(current_ref_loc.file, current_ref_loc.line,
-                opcode_str + ": label operands are not supported in object mode yet (maize-12)");
+        /* Object mode (maize-150): a label source is an address, materialized at
+           whole-register width (maize-11 decision 6415). The @Rn destination is an
+           address register carrying no width-bearing sub-register to derive from,
+           so force operand1's immediate-size field to 64-bit and emit an
+           R_MAIZE_ABS64 relocation, mirroring the CP object path. Flat mode keeps
+           the write_label path below unchanged. CMPIND/TSTIND share this compiler
+           and get the same full-64 treatment (an address comparison is also 64). */
+        if (operand_is_label && emit_object) {
+            operand1_byte = (operand1_byte & ~cpu::opflag_imm_size) | obj_imm_size_flag(8);
         }
 
         current_address += cpu::mm.write_byte(current_address, opcode);
         current_address += cpu::mm.write_byte(current_address, operand1_byte);
         current_address += cpu::mm.write_byte(current_address, operand2_byte);
 
-        if (operand_is_immediate) {
+        if (operand_is_label && emit_object) {
+            obj_emit_label_ref(operand1, 8);
+        }
+        else if (operand_is_immediate) {
             if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
                 current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
             }
@@ -2612,12 +2641,15 @@ namespace {
         u_byte operand2_byte {compile_register_checked(operand2, operand2_it->loc_file, operand2_it->loc_line)};
         u_byte operand3_byte {compile_register_checked(operand3, it->loc_file, it->loc_line)};
 
-        /* Object mode (maize-12): a resolved label source would be inlined below
-           without a relocation; fail loudly. LEA's common forms use a register or
-           literal source operand. */
-        if (emit_object && operand_is_label) {
-            fatal(current_ref_loc.file, current_ref_loc.line,
-                opcode_str + ": label operands are not supported in object mode yet (maize-12)");
+        /* Object mode (maize-150): a label source is an address (LEA's base, or an
+           absolute source for the CMPXCHG/MULW/UMULW three-operand forms), so force
+           operand1's immediate-size field to 64-bit and emit an R_MAIZE_ABS64
+           relocation instead of inlining, mirroring the CP/ST object paths. Not
+           exercised by the current qbe backend (frame-slot addressing uses a
+           literal offset), but lifted so a future codegen path does not re-hit a
+           fatal. Flat mode keeps the write_label path below unchanged. */
+        if (operand_is_label && emit_object) {
+            operand1_byte = (operand1_byte & ~cpu::opflag_imm_size) | obj_imm_size_flag(8);
         }
 
         current_address += cpu::mm.write_byte(current_address, opcode);
@@ -2625,7 +2657,10 @@ namespace {
         current_address += cpu::mm.write_byte(current_address, operand2_byte);
         current_address += cpu::mm.write_byte(current_address, operand3_byte);
 
-        if (operand_is_immediate) {
+        if (operand_is_label && emit_object) {
+            obj_emit_label_ref(operand1, 8);
+        }
+        else if (operand_is_immediate) {
             if (operand_is_label && operand1_literal.h0 == std::numeric_limits<u_hword>::max()) {
                 current_address += write_label(current_address, operand1, operand1_literal);
             }
@@ -2992,6 +3027,13 @@ namespace {
                 "DREF requires a label operand");
         }
 
+        /* Data-context auto-EXTERN (maize-150): mark this name as data-referenced
+           so the strict maize-71 undefined check relaxes for it (qbe never emits
+           EXTERN for a data-only external symbol). This insert lives ONLY here, at
+           the DREF/data caller, and never inside obj_emit_label_ref, so an
+           undefined, undeclared instruction-operand label still fatals. */
+        obj_data_refs.insert(label);
+
         obj_emit_label_ref(label, static_cast<std::size_t>(width), addend);
     }
 
@@ -3163,15 +3205,18 @@ namespace {
                    is neither defined nor EXTERN-declared is a typo or a missing
                    declaration. Both error here, before any .mzo bytes are
                    written; names are sorted, so the diagnostic is deterministic.
-                   A name in obj_externs (and not exported) falls through to a
-                   legitimate SHN_UNDEF import. */
+                   A name in obj_externs OR obj_data_refs (and not exported) falls
+                   through to a legitimate SHN_UNDEF import. The obj_data_refs
+                   relaxation (maize-150) is data-context only: an undefined,
+                   undeclared instruction-operand label is never in obj_data_refs,
+                   so it still fatals here (typo discipline preserved). */
                 src_loc loc = label_ref_loc.count(name)
                     ? label_ref_loc[name]
                     : src_loc {current_file, 0};
                 if (obj_exports.count(name)) {
                     fatal(loc.file, loc.line, "cannot export undefined symbol '" + name + "'");
                 }
-                if (!obj_externs.count(name)) {
+                if (!obj_externs.count(name) && !obj_data_refs.count(name)) {
                     fatal(loc.file, loc.line, "undefined symbol '" + name
                         + "' (declare it EXTERN if defined in another module)");
                 }
