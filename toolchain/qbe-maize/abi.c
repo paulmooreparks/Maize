@@ -24,7 +24,10 @@
  *
  * Aggregate (struct-by-value) and environment/closure calls are still unsupported
  * and err() here rather than miscompiling silently. Floating-point arguments and
- * returns err() too (no FP register file).
+ * returns pass through the SAME GP path under the Zfinx ABI (maize-137): a float
+ * consumes a GP arg register (or a stack slot), and the Ocopy keeps Ins.cls Ks/Kd
+ * so emit moves the correct width. Only variadic float va_arg READ stays out of
+ * scope (selvaarg still err()s); the float ARG side (selcall) is supported.
  *
  * Layout of a call's RCall argument (our own, read back by maize_argregs /
  * maize_retregs):
@@ -104,8 +107,11 @@ argsclass(Ins *i0, Ins *i1, int *preg, int *pnstk)
 		switch (i->op) {
 		case Opar:
 		case Oarg:
-			if (KBASE(i->cls) != 0)
-				err("maize abi: floating-point arguments are not supported");
+			/* Floats pass in GP registers under the Zfinx ABI (maize-137,
+			 * CALLING-CONVENTION.md): a float Opar/Oarg consumes the next
+			 * GP register R0..R5 (or a stack slot past R5) exactly like an
+			 * int/pointer. The Ocopy it lowers to keeps Ins.cls Ks/Kd, so
+			 * emitcopy moves H0 (single) / the whole register (double). */
 			if (ngp < 6)
 				preg[i - i0] = gpreg[ngp++];
 			else {
@@ -143,9 +149,8 @@ selret(Blk *b, Fn *fn)
 		err("maize abi: aggregate (struct) return is not supported");
 
 	k = j - Jretw;
-	if (KBASE(k) != 0)
-		err("maize abi: floating-point return is not supported");
-
+	/* A float return copies into RV like an int (maize-137); the Ocopy keeps
+	 * Ins.cls Ks/Kd so emitcopy moves the correct H0 / whole-register width. */
 	emit(Ocopy, k, TMP(RV), b->jmp.arg, R);
 	cty = RcRetGp;
 
@@ -176,9 +181,9 @@ selcall(Fn *fn, Ins *i0, Ins *i1)
 	if (nstk)
 		emit(Oadd, Kl, TMP(RS), TMP(RS), rstk);
 
-	/* Return value: copy RV into the call's destination temporary. */
-	if (KBASE(i1->cls) != 0)
-		err("maize abi: floating-point return is not supported");
+	/* Return value: copy RV into the call's destination temporary. A float
+	 * return arrives in RV like an int (maize-137); the copy carries the
+	 * call's float cls so emitcopy moves the right width. */
 	/* Always emit the RV result-copy and mark a GP return, mirroring amd64
 	 * sysv selcall. For a void call i1->to == R, producing a dead `copy R, RV`
 	 * that (1) keeps spill.c's dopm engaged so T.argregs()/T.retregs() are

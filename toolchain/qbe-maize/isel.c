@@ -41,11 +41,71 @@ fixarg(Ref *pr, Fn *fn)
 	}
 }
 
-/* The op carrying condition c for class k (Kw or Kl). */
+/* The op carrying integer condition c (c in [0,NCmpI)) for class k (Kw or Kl). */
 static int
 cmpop_for(int k, int c)
 {
 	return (k == Kw ? Ocmpw : Ocmpl) + c;
+}
+
+/* The op carrying float condition c (c in [NCmpI,NCmp)) for class k (Ks or Kd). */
+static int
+fcmpop_for(int k, int c)
+{
+	return (k == Ks ? Ocmps : Ocmpd) + (c - NCmpI);
+}
+
+/* Operand-swap canonicalization for a float compare, mirroring amd64/isel.c
+ * cmpswap: `lt`/`le` always swap to `gt`/`ge`; the symmetric relations
+ * (eq/ne/o/uo) swap only when arg0 is a constant (so the FCMP dst can be a
+ * register); `gt`/`ge` never swap. On a swap the caller applies cmpop(c). */
+static int
+fcmpswap(Ref arg[2], int c)
+{
+	switch (c) {
+	case NCmpI+Cflt:
+	case NCmpI+Cfle:
+		return 1;
+	case NCmpI+Cfgt:
+	case NCmpI+Cfge:
+		return 0;
+	}
+	return rtype(arg[0]) == RCon;
+}
+
+/* Lower a float comparison (maize-137). Canonicalize operands exactly like
+ * amd64/isel.c selcmp: swap per fcmpswap and swap the condition via cmpop, then
+ * rebuild the compare op for the surviving relation. The FCMP dst (arg0 == `a`)
+ * MUST be a register, so a surviving const dst is materialized into a fresh temp
+ * with the reclassed GP class (Ks->Kw, Kd->Kl) since the isel reclass pre-pass
+ * has already run. emit reads the (untouched) Ins.cls Ks/Kd to pick the FCMP
+ * mnemonic and the SETcc predicate; `to` decides value (SETcc) vs flag-only
+ * (a fused block Jcc consumes the flags). */
+static void
+selfcmp(Ins i, int kc, int c, Fn *fn)
+{
+	Ref *a, cst, t;
+	int swap, gpk;
+
+	swap = fcmpswap(i.arg, c);
+	if (swap) {
+		t = i.arg[0];
+		i.arg[0] = i.arg[1];
+		i.arg[1] = t;
+		c = cmpop(c);
+	}
+	i.op = fcmpop_for(kc, c);
+	emiti(i);
+	a = curi->arg;
+	if (rtype(a[0]) == RCon) {
+		cst = a[0];
+		gpk = KWIDE(kc) ? Kl : Kw;
+		t = newtmp("isel", gpk, fn);
+		a[0] = t;
+		emit(Ocopy, gpk, t, cst, R);
+	}
+	fixarg(&a[0], fn);
+	fixarg(&a[1], fn);
 }
 
 static void
@@ -62,10 +122,16 @@ sel(Ins i, Fn *fn)
 		emiti(i);
 		return;
 	}
+	if (i.op == Ocast)
+		/* Zfinx int<->float bitcast of equal width is a bit-identical
+		 * register move: lower to a plain copy (emitcopy handles it). */
+		i.op = Ocopy;
 
 	if (iscmp(i.op, &kc, &c)) {
-		if (c >= NCmpI)
-			err("maize isel: floating-point comparison is not supported");
+		if (c >= NCmpI) {
+			selfcmp(i, kc, c, fn);
+			return;
+		}
 		emiti(i);
 		a = curi->arg;
 		if (rtype(a[0]) == RCon) {
@@ -100,6 +166,8 @@ sel(Ins i, Fn *fn)
 	case Ostoreh:
 	case Ostorew:
 	case Ostorel:
+	case Ostores:
+	case Ostored:
 	case Oload:
 	case Oloadsb:
 	case Oloadub:
@@ -113,6 +181,12 @@ sel(Ins i, Fn *fn)
 	case Oextuh:
 	case Oextsw:
 	case Oextuw:
+	case Oexts:
+	case Otruncd:
+	case Ostosi:
+	case Odtosi:
+	case Oswtof:
+	case Osltof:
 		emiti(i);
 		a = curi->arg;
 		fixarg(&a[0], fn);
@@ -123,7 +197,8 @@ sel(Ins i, Fn *fn)
 	}
 }
 
-/* If the block's last instruction is an integer comparison, return it. */
+/* If the block's last instruction is a comparison (integer or float), return
+ * it. seljmp decides whether it is a fusable branch predicate. */
 static Ins *
 lastcmp(Blk *b)
 {
@@ -133,7 +208,7 @@ lastcmp(Blk *b)
 	if (b->nins == 0)
 		return 0;
 	i = &b->ins[b->nins - 1];
-	if (iscmp(i->op, &kc, &c) && c < NCmpI)
+	if (iscmp(i->op, &kc, &c))
 		return i;
 	return 0;
 }
@@ -144,7 +219,7 @@ seljmp(Blk *b, Fn *fn)
 	Ref r;
 	Ins *fi;
 	Tmp *t;
-	int kc, c;
+	int kc, c, swap, fused;
 
 	switch (b->jmp.type) {
 	case Jret0:
@@ -168,24 +243,51 @@ seljmp(Blk *b, Fn *fn)
 		return;
 	}
 
+	fused = 0;
 	fi = lastcmp(b);
 	if (fi && req(fi->to, r) && t->nuse == 1) {
-		/* Compare/branch fusion: reuse the comparison as a flag-only CMP
-		 * (to = R => emit emits CMP without a SETcc) and branch on it. */
 		iscmp(fi->op, &kc, &c);
-		if (rtype(fi->arg[0]) == RCon) {
-			Ref tmp = fi->arg[0];
-			fi->arg[0] = fi->arg[1];
-			fi->arg[1] = tmp;
-			c = cmpop(c);
-			fi->op = cmpop_for(kc, c);
+		if (c < NCmpI) {
+			/* Integer compare/branch fusion: reuse the comparison as a
+			 * flag-only CMP (to = R => emit emits CMP without a SETcc)
+			 * and branch on it. */
+			if (rtype(fi->arg[0]) == RCon) {
+				Ref tmp = fi->arg[0];
+				fi->arg[0] = fi->arg[1];
+				fi->arg[1] = tmp;
+				c = cmpop(c);
+				fi->op = cmpop_for(kc, c);
+			}
+			fi->to = R;
+			b->jmp.type = Jjf + c;
+			fused = 1;
+		} else {
+			/* Float compare/branch fusion: only {gt, ge, uo} map to a
+			 * single Maize Jcc (JA / JAE / JP). lt/le canonicalize to
+			 * gt/ge via the same swap sel()/selfcmp applies, so they
+			 * fuse too; eq/ne/o need a multi-instruction predicate and
+			 * are left as a 0/1 value for the CMP $00 fallback below.
+			 * Do not mutate fi here: sel()/selfcmp performs the swap,
+			 * op rewrite, and any const-dst materialization when it
+			 * emits the (now flag-only) FCMP, and its canonicalization
+			 * is deterministic, so the surviving relation equals the
+			 * one computed here and the jump type stays in sync. */
+			swap = fcmpswap(fi->arg, c);
+			if (swap)
+				c = cmpop(c);
+			if (c == NCmpI+Cfgt || c == NCmpI+Cfge
+			|| c == NCmpI+Cfuo) {
+				fi->to = R;
+				b->jmp.type = Jjf + c;
+				fused = 1;
+			}
 		}
-		fi->to = R;
-		b->jmp.type = Jjf + c;
-	} else {
-		/* Branch on a non-comparison value: data movement does not set
-		 * flags, so materialize an explicit `CMP $00 <reg>` (arg1 == 0,
-		 * arg0 == r => CMP arg1 arg0) and take the nonzero edge with JNZ. */
+	}
+	if (!fused) {
+		/* Branch on a value (a non-comparison, or a non-fusable float
+		 * compare materialized as 0/1): data movement does not set flags,
+		 * so materialize an explicit `CMP $00 <reg>` (arg1 == 0, arg0 ==
+		 * r => CMP arg1 arg0) and take the nonzero edge with JNZ. */
 		kc = fn->tmp[r.val].cls;
 		if (kc != Kw && kc != Kl)
 			err("maize isel: unsupported branch value class");
@@ -203,6 +305,25 @@ maize_isel(Fn *fn)
 	Phi *p;
 	uint n, al;
 	int64_t sz;
+
+	/* Float register-class reclass pre-pass (maize-137). Under Zfinx there is
+	 * one physical register file, so float values are allocated into the GP
+	 * registers alongside ints. QBE's target-independent allocator and spiller
+	 * key on tmp[t].cls (never Ins.cls: rega.c bank select / parallel-move,
+	 * spill.c pressure), so rewriting every float temp's class Ks->Kw, Kd->Kl
+	 * places floats in R0..R9/RV exactly like ints, with zero qbe-core change.
+	 * KWIDE is preserved by the mapping (Ks/Kw both 32-bit H0, Kd/Kl both
+	 * 64-bit W0), so spill-slot and register-move widths stay correct. The
+	 * float-ness rides ONLY on each operation's untouched Ins.cls (Ks/Kd),
+	 * which emit reads to pick the FP mnemonic; nothing downstream reads a
+	 * temp's cls expecting Ks/Kd after this. Runs before the alloc-slot pass
+	 * and the block loop; isel runs before spill/rega. */
+	for (n = 0; n < (uint)fn->ntmp; n++) {
+		if (fn->tmp[n].cls == Ks)
+			fn->tmp[n].cls = Kw;
+		else if (fn->tmp[n].cls == Kd)
+			fn->tmp[n].cls = Kl;
+	}
 
 	/* Assign frame slots to stack allocations (Oalloc). */
 	b = fn->start;

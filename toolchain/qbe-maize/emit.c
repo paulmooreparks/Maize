@@ -378,6 +378,61 @@ emitcmp(Ins *i, int kc, int c, E *e)
 		fprintf(e->f, "\t%s\t%s\n", setcctab[c], rname(i->to.val));
 }
 
+/* Float compare (maize-137). Emit `FCMP <src> <dst(reg)>` (same operand order
+ * as the integer CMP: dst = arg0 = `a`, src = arg1), which sets Maize's flags
+ * byte-identically to x86 UCOMISD (a>src => C0Z0P0, a<src => C1Z0P0, a==src =>
+ * C0Z1P0, unordered => C1Z1P1; P is the unordered/NaN indicator). When to == R
+ * the compare is flag-only (seljmp fused it into the block's Jcc). Otherwise
+ * materialize a clean 0/1 into `to` per the canonical relation. isel canonicali-
+ * zes lt/le into gt/ge, so the surviving value relations are exactly {gt, ge,
+ * eq, ne, o, uo}. SETA/SETAE/SETP each write a clean full-W0 0/1 (bare register
+ * dst); the byte-wise fixups touch only .B0 and leave the upper bytes zero, so
+ * the result is a clean 0/1. RT is the reserved back-end scratch. */
+static void
+emitfcmp(Ins *i, int kc, int c, E *e)
+{
+	int sz;
+	const char *dr;
+
+	sz = clssz(kc);
+	fputs("\tFCMP\t", e->f);
+	opnd(i->arg[1], sz, e);    /* src */
+	fputc(' ', e->f);
+	regw(i->arg[0], sz, e);    /* dst (register) = a */
+	fputc('\n', e->f);
+	if (req(i->to, R))
+		return;
+	dr = rname(i->to.val);
+	switch (c) {
+	case NCmpI+Cfgt:   /* a > src, ordered: A = !C && !Z */
+		fprintf(e->f, "\tSETA\t%s\n", dr);
+		break;
+	case NCmpI+Cfge:   /* a >= src, ordered: AE = !C */
+		fprintf(e->f, "\tSETAE\t%s\n", dr);
+		break;
+	case NCmpI+Cfuo:   /* unordered: P */
+		fprintf(e->f, "\tSETP\t%s\n", dr);
+		break;
+	case NCmpI+Cfo:    /* ordered = !P (Maize has no SETNP) */
+		fprintf(e->f, "\tSETP\t%s\n", dr);
+		fprintf(e->f, "\tXOR\t$01 %s.B0\n", dr);
+		break;
+	case NCmpI+Cfeq:   /* equal-ordered = Z && !P */
+		fprintf(e->f, "\tSETZ\t%s\n", dr);
+		fprintf(e->f, "\tSETP\tRT\n");
+		fprintf(e->f, "\tXOR\t$01 RT.B0\n");
+		fprintf(e->f, "\tAND\tRT.B0 %s.B0\n", dr);
+		break;
+	case NCmpI+Cfne:   /* C != is TRUE when unordered: !Z || P */
+		fprintf(e->f, "\tSETNZ\t%s\n", dr);
+		fprintf(e->f, "\tSETP\tRT\n");
+		fprintf(e->f, "\tOR\tRT.B0 %s.B0\n", dr);
+		break;
+	default:
+		die("maize emit: unsupported float compare %d", c);
+	}
+}
+
 /* LD @addr dst.<width>; then CP (sign) / CPZ (zero) extend for a sub-word load.
  * There is no LDZ (decision 6779): the load reads exactly the sub-register width
  * and the extension widens to the class width. */
@@ -421,6 +476,8 @@ emitstore(Ins *i, E *e)
 	case Ostoreh: ssz = SzQ; break;
 	case Ostorew: ssz = SzH; break;
 	case Ostorel: ssz = SzW; break;
+	case Ostores: ssz = SzH; break;   /* single-float: 32-bit H0 */
+	case Ostored: ssz = SzW; break;   /* double-float: whole register */
 	default: die("maize emit: unsupported store");
 	}
 	areg = memaddrreg(i->arg[1], e);   /* may emit `CP <label> RT` first */
@@ -446,6 +503,26 @@ emitext(Ins *i, E *e)
 	}
 	dsz = clssz(i->cls);
 	fprintf(e->f, "\t%s\t", signext ? "CP" : "CPZ");
+	opnd(i->arg[0], ssz, e);
+	fputc(' ', e->f);
+	regw(i->to, dsz, e);
+	fputc('\n', e->f);
+}
+
+/* Float conversion (maize-137): `<MNEMONIC> <src at ssz> <dst at dsz>`, source
+ * first. The source class comes from the op's signature (argcls(i,0), which the
+ * reclass pre-pass never touches since it keys on Ins.cls), the dest width from
+ * the instruction class. FCVTFF widens/narrows single<->double; FCVTFS is the
+ * SIGNED float->int narrow; FCVTSF the SIGNED int->float widen. Unsigned
+ * conversions are synthesized in the front end, so no unsigned form is emitted. */
+static void
+emitfcvt(Ins *i, const char *mnem, E *e)
+{
+	int ssz, dsz;
+
+	ssz = clssz(argcls(i, 0));
+	dsz = clssz(i->cls);
+	fprintf(e->f, "\t%s\t", mnem);
 	opnd(i->arg[0], ssz, e);
 	fputc(' ', e->f);
 	regw(i->to, dsz, e);
@@ -499,21 +576,37 @@ emitins(Ins *i, E *e)
 	case Oswap: emitswap(i, e); break;
 	case Ocall: emitcall(i, e); break;
 	case Oaddr: emitaddrslot(i, e); break;
-	case Oadd:  emitbinop(i, "ADD",  1, 0, e); break;
-	case Osub:  emitbinop(i, "SUB",  0, 0, e); break;
-	case Omul:  emitbinop(i, "MUL",  1, 0, e); break;
+	/* Arithmetic dispatches on KBASE(cls): a float op (Ks/Kd) emits the FP
+	 * mnemonic, an int op (Kw/Kl) the integer one. The dispatch diverges ONLY
+	 * on KBASE(cls)==1, so integer output is byte-identical to before. FADD /
+	 * FMUL are commutative, FSUB / FDIV are not (like their int siblings). */
+	case Oadd:  emitbinop(i, KBASE(i->cls) ? "FADD" : "ADD",  1, 0, e); break;
+	case Osub:  emitbinop(i, KBASE(i->cls) ? "FSUB" : "SUB",  0, 0, e); break;
+	case Omul:  emitbinop(i, KBASE(i->cls) ? "FMUL" : "MUL",  1, 0, e); break;
 	case Oand:  emitbinop(i, "AND",  1, 0, e); break;
 	case Oor:   emitbinop(i, "OR",   1, 0, e); break;
 	case Oxor:  emitbinop(i, "XOR",  1, 0, e); break;
 	case Oshl:  emitbinop(i, "SHL",  0, 1, e); break;
 	case Oshr:  emitbinop(i, "SHR",  0, 1, e); break;
 	case Osar:  emitbinop(i, "SAR",  0, 1, e); break;
-	case Odiv:  emitbinop(i, "DIV",  0, 0, e); break;
+	case Odiv:  emitbinop(i, KBASE(i->cls) ? "FDIV" : "DIV",  0, 0, e); break;
 	case Orem:  emitbinop(i, "MOD",  0, 0, e); break;
 	case Oudiv: emitbinop(i, "UDIV", 0, 0, e); break;
 	case Ourem: emitbinop(i, "UMOD", 0, 0, e); break;
+	case Oexts:
+	case Otruncd: emitfcvt(i, "FCVTFF", e); break;
+	case Ostosi:
+	case Odtosi:  emitfcvt(i, "FCVTFS", e); break;
+	case Oswtof:
+	case Osltof:  emitfcvt(i, "FCVTSF", e); break;
 	default:
-		if (iscmp(i->op, &kc, &c)) { emitcmp(i, kc, c, e); break; }
+		if (iscmp(i->op, &kc, &c)) {
+			if (c < NCmpI)
+				emitcmp(i, kc, c, e);
+			else
+				emitfcmp(i, kc, c, e);
+			break;
+		}
 		if (isload(i->op))         { emitload(i, e); break; }
 		if (isstore(i->op))        { emitstore(i, e); break; }
 		if (isext(i->op))          { emitext(i, e); break; }
@@ -688,10 +781,22 @@ maize_emitfn(Fn *fn, FILE *out)
 			fputs("\tHALT\n", e->f);
 			break;
 		default:
-			if (b->jmp.type >= Jjf && b->jmp.type < Jjf + NCmpI) {
+			if (b->jmp.type >= Jjf && b->jmp.type < Jjf + NCmp) {
+				const char *jcc;
 				c = b->jmp.type - Jjf;
+				if (c < NCmpI)
+					jcc = jcctab[c];
+				else switch (c - NCmpI) {
+					/* Only the three single-Jcc float relations
+					 * are ever produced fused (isel seljmp). */
+					case Cfgt: jcc = "JA";  break;
+					case Cfge: jcc = "JAE"; break;
+					case Cfuo: jcc = "JP";  break;
+					default:
+						die("maize emit: unfusable float branch (maize-137)");
+					}
 				fprintf(e->f, "\t%s\tLm%d\n",
-					jcctab[c], id0 + b->s1->id);
+					jcc, id0 + b->s1->id);
 				if (b->s2 != b->link)
 					fprintf(e->f, "\tJMP\tLm%d\n",
 						id0 + b->s2->id);

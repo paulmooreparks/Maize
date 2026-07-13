@@ -4,10 +4,15 @@ The QBE Maize target covers the full instruction-selection matrix reached by a
 nontrivial single-TU C program (as of maize-63): control flow, the comparison
 family both as branch predicates and as materialized 0/1 values, arithmetic /
 logic / shift / signed+unsigned div/mod, sign/zero-extending sub-word loads and
-stores, explicit width casts, and frame-slot addressing. Anything genuinely
-outside that set (see **Still out of scope**) still `err()`s in `isel`/`abi` or
-`die()`s in `emit`, so an unsupported construct surfaces rather than
-miscompiling silently.
+stores, explicit width casts, and frame-slot addressing. Floating point (`s`/`d`)
+is also covered: under the Zfinx ABI float values live in the general register
+file (an isel pre-pass reclasses float temps `Ks`->`Kw`, `Kd`->`Kl` so the
+allocator places them in `R0..R9/RV`), and the emitter selects `FADD`/`FSUB`/
+`FMUL`/`FDIV`, `FCMP` with IEEE NaN/unordered-correct predicate synthesis, the
+signed `FCVTFF`/`FCVTFS`/`FCVTSF` conversions, inline IEEE-bit float constants,
+and float args/returns in GP registers. Anything genuinely outside that set (see
+**Still out of scope**) still `err()`s in `isel`/`abi` or `die()`s in `emit`, so
+an unsupported construct surfaces rather than miscompiling silently.
 
 ## The hello-world QBE IL
 
@@ -225,13 +230,16 @@ recorded on maize-63 (6775-6790).
 The following genuinely remain unsupported and `err()` in `abi.c`/`isel.c` (or
 `die()` in `emit.c`); none is reached by the capstone:
 
-- floating point (`s`/`d`), out of scope for the whole workstream (maize-11
-  decision 6413);
 - aggregate (struct) arguments and returns;
-- varargs;
 - environment calls;
 - more than 10 register arguments / stack-passed argument overflow past R9;
-- dynamic (non-constant) `alloc`.
+- dynamic (non-constant) `alloc`;
+- variadic float `va_arg` reads (the float ARG side of a call is supported; only
+  a float fetched by `va_arg` inside a variadic body still `err()`s);
+- unsigned int-to-float conversions (the pinned qbe core has no `uwtof`/`ultof`
+  op, so an unsigned conversion cannot be represented without a core change; the
+  front end does not synthesize it in this pinned pairing). Signed int<->float
+  and float<->double conversions are supported.
 
 (Address references embedded in initialized data are now **supported** via
 `R_MAIZE_ABS64`/`ABS32`; see the Image-layout and pointer-in-data rows above.

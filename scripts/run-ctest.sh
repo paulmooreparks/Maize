@@ -642,6 +642,13 @@ run_ctest "addrlocalphi"
 # die()d on any spilled operand; post-fix it emits the reload / spill-store / slot
 # copy paths. Overlay-only fix in qbe-maize/emit.c. Self-checks against 1541762618.
 run_ctest "spill"
+# maize-137 float/double codegen: a self-checking fixture exercising float and
+# double arithmetic (+ - * /), all six comparisons in both widths (ordered and
+# NaN/unordered), int<->float and float<->double conversions (signed/unsigned,
+# incl the 64-bit-unsigned->double hard case), inline float/double constants, and
+# passing/returning float and double across a call boundary. Each sub-result is
+# checked (value or exact IEEE bits) so a wrong FP encoding fails the gate.
+run_ctest "fp"
 # maize-74 syscall C binding: raw stub direct (AC 7290), wrapper success returns the
 # byte count (AC 7291), and error-range translation sets errno + returns -1 (AC 7292).
 run_ctest "syscall_raw"
