@@ -644,8 +644,8 @@ run_ctest "addrlocalphi"
 run_ctest "spill"
 # maize-137 float/double codegen: a self-checking fixture exercising float and
 # double arithmetic (+ - * /), all six comparisons in both widths (ordered and
-# NaN/unordered), int<->float and float<->double conversions (signed/unsigned,
-# incl the 64-bit-unsigned->double hard case), inline float/double constants, and
+# NaN/unordered), signed int<->float and float<->double conversions (unsigned
+# int<->float is out of scope), inline float/double constants, and
 # passing/returning float and double across a call boundary. Each sub-result is
 # checked (value or exact IEEE bits) so a wrong FP encoding fails the gate.
 run_ctest "fp"
