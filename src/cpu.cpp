@@ -3093,6 +3093,14 @@ namespace maize {
         void tick() {
             running_flag = true;
 
+            /* Host input is drained every input_poll_stride instructions rather than every
+               one: on_input_tick is a virtual call, and in windowed mode (a real keyboard
+               attached) paying it per instruction is pure overhead. A key press produces its
+               scancode within a few microseconds of stride instructions, far below human
+               perception, and the injection stays fully deterministic (just coarser). */
+            constexpr unsigned input_poll_stride {64};
+            unsigned input_poll_countdown {1};
+
             while (running_flag) {
                 /* Interrupt delivery is checked at the instruction boundary (card
                    maize-21). A pending, enabled IRQ is delivered before the next
@@ -3110,12 +3118,14 @@ namespace maize {
                     active_timer_ptr->on_instruction_tick();
                 }
 
-                /* Advance the single active host input source once per executed
-                   instruction (device-plugin API). It pulls a byte from its host source
-                   and raises its IRQ on the CPU thread when it has room, so a headless
-                   keyboard/console injects deterministically with no cross-thread RF race.
-                   null (the default) is a cheap early skip. */
-                if (active_input_ptr != nullptr) {
+                /* Advance the single active host input source (device-plugin API). It pulls a
+                   byte from its host source and raises its IRQ on the CPU thread when it has
+                   room. Hoisted off the per-instruction path (drained every input_poll_stride
+                   instructions) so the windowed hot loop does not pay a virtual call each
+                   instruction; null (the default) is a cheap early skip that also avoids the
+                   countdown decrement. */
+                if (active_input_ptr != nullptr && --input_poll_countdown == 0) {
+                    input_poll_countdown = input_poll_stride;
                     active_input_ptr->on_input_tick();
                 }
 
