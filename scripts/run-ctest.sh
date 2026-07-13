@@ -827,6 +827,12 @@ run_ctest "printf"
 # %.0d-of-0 empty, and the untouched %05d path) plus strdup / getenv / qsort / atof,
 # all checked silently with inline-computed expected values. One "libcgaps PASS".
 run_ctest "libcgaps"
+# maize-148 RT libc round 3 for the DOOM Phase A link: strcasecmp/strncasecmp (tolower),
+# fabs via a sign-bit mask (incl. -0.0 -> +0.0 by bit pattern), the sscanf scanf core
+# (%d/%x/%f/%s/%c/width/suppress with checked counts + values, a partial match), system
+# (-1/0), usleep (no-op), and the remove/mkdir link-only stubs (execute smoke, no value
+# assertion; real filesystem ACs are on maize-151). One "libcgaps3 PASS".
+run_ctest "libcgaps3"
 run_exit_status_test "exitcode" 42
 # maize-76: abort() terminates with status 134 (128 + SIGABRT(6); no signals).
 run_exit_status_test "abort" 134

@@ -576,3 +576,15 @@ atof(const char *nptr)
      * predates (its parser has no `neg` keyword). Double `-` is covered by maize-137. */
     return neg ? (0.0 - result) : result;
 }
+
+/* --- system (maize-148) ------------------------------------------------------
+ * No shell on Maize (decision 8442). system(NULL) returns 0 to signal "no command
+ * processor available" (standard C); any actual command returns -1 (cannot execute).
+ * DOOM's i_system.c only needs it to link and observe a failure. Honest deviation. */
+int
+system(const char *command)
+{
+    if (command == NULL)
+        return 0;   /* no command processor available */
+    return -1;      /* cannot execute the command */
+}

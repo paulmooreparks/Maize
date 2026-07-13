@@ -334,13 +334,14 @@ if [ "$DEV" -eq 1 ]; then
 fi
 
 # The C runtime modules (maize-74 errno; maize-76 string/ctype/stdio/stdlib; maize-120
-# dirent) are C sources, not asm. Each is compiled through the SAME segmented C pipeline
-# and its object added to the RT set, so every C image links the freestanding libc slice
-# (errno + syscall wrappers incl. open/close/lseek/fstat, string, ctype, stdio's
-# unbuffered core + file-backed FILE* layer, stdlib's exit/abort/malloc family + sbrk,
-# dirent's opendir/readdir/closedir) alongside crt0/syscall. Single-source per maize-96:
-# this is the ONLY place the RT object set is enumerated.
-for rt in errno string ctype stdio stdlib dirent; do
+# dirent; maize-148 strings/math/unistd) are C sources, not asm. Each is compiled through
+# the SAME segmented C pipeline and its object added to the RT set, so every C image links
+# the freestanding libc slice (errno + syscall wrappers incl. open/close/lseek/fstat +
+# remove/mkdir, string, strings' case-insensitive compares, ctype, math's fabs, stdio's
+# unbuffered core + printf/sscanf + file-backed FILE* layer, stdlib's exit/abort/malloc
+# family + sbrk + system, unistd's usleep, dirent's opendir/readdir/closedir) alongside
+# crt0/syscall. Single-source per maize-96: this is the ONLY place the RT set is enumerated.
+for rt in errno string strings ctype math stdio stdlib unistd dirent; do
     RT_MZO=$(compile_tu "${RT_DIR}/${rt}.c" "rt_${rt}") \
         || die "failed to compile C runtime object ${rt}.c"
     RT_OBJS="${RT_OBJS} ${RT_MZO}"

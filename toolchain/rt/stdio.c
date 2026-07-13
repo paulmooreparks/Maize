@@ -18,6 +18,7 @@
 #include "stdlib.h"   /* malloc/free, atexit (maize-120) */
 #include "syscall.h"  /* sys_write, read/write/lseek/close (maize-120) */
 #include "fcntl.h"    /* O_* open flags, SEEK_* whence (maize-120) */
+#include "ctype.h"    /* isspace (sscanf whitespace handling, maize-148) */
 
 /* FILE::flags bits (maize-120). readable/writable are the mode; eof/error are the
  * sticky status bits feof/ferror report; unbuffered marks stdout/stderr (direct
@@ -489,6 +490,324 @@ sprintf(char *str, const char *fmt, ...)
     r = vsnprintf(str, (size_t)-1, fmt, ap);
     va_end(ap);
     return r;
+}
+
+/* ------------------------------------------------------------------------------ */
+/* sscanf: a scanf core over a NUL-terminated string source (maize-148).          */
+/*                                                                                */
+/* Conversion set: %d %i %u %o %x %f %s %c %%, plus optional field width, the `*`  */
+/* assignment-suppression flag, and the `l` length modifier (%ld -> long*,         */
+/* %lf -> double*); h/ll/hh are parsed and tolerated. %e/%g and the %[...] scanset  */
+/* are out of scope (DOOM's m_config.c parser uses the %d/%f/%s core). Returns the  */
+/* number of successful ASSIGNMENTS (suppressed conversions and %% do not count),   */
+/* or EOF if the input was exhausted before the first conversion produced a value.  */
+/*                                                                                */
+/* Per the pinned qbe -t maize authoring budget (the vformat precedent above), the  */
+/* work is split into small static helpers with ONE primary loop each; scan_str /   */
+/* scan_char call scan_ws rather than inlining a second pointer-indexing loop.      */
+/* ------------------------------------------------------------------------------ */
+
+/* Map a character to its digit value in `base`, or -1 if it is not a valid digit in
+ * that base (0-9, then a-z / A-Z for 10..35). No loop. */
+static int
+scan_digit(int c, int base)
+{
+    int d;
+    if (c >= '0' && c <= '9')
+        d = c - '0';
+    else if (c >= 'a' && c <= 'z')
+        d = c - 'a' + 10;
+    else if (c >= 'A' && c <= 'Z')
+        d = c - 'A' + 10;
+    else
+        return -1;
+    return d < base ? d : -1;
+}
+
+/* Advance *pp past a run of whitespace. The one loop for both the driver's format
+ * whitespace directive and the leading-whitespace skip of scan_str/scan_char. */
+static void
+scan_ws(const char **pp)
+{
+    const char *p = *pp;
+    while (isspace((unsigned char)*p))
+        p++;
+    *pp = p;
+}
+
+/* Parse an optional sign + base-`base` digits, bounded by `width` (-1 == unlimited),
+ * reporting the unsigned magnitude and sign. `base == 0` (from %i) autodetects: a 0x
+ * prefix -> 16, a leading 0 -> 8, else 10; a 0x prefix is also consumed for base 16.
+ * Returns 1 if at least one digit was consumed, else 0. One primary loop. */
+static int
+scan_int(const char **pp, int base, int width, int *neg, unsigned long *mag)
+{
+    const char *p = *pp;
+    int w = width;                  /* remaining allowance; -1 stays unlimited */
+    int sign = 0;
+    int any = 0;
+    unsigned long acc = 0;
+
+    if (w != 0 && (*p == '+' || *p == '-')) {
+        sign = (*p == '-');
+        p++;
+        if (w > 0) w--;
+    }
+
+    /* Resolve base 0 (%i) and consume an optional 0x/0X prefix for hex. The width
+     * guard (w < 0 || w >= 3) keeps a positive width from underflowing past the
+     * prefix; a bare leading 0 stays for the digit loop to consume as octal 0. */
+    if (base == 0) {
+        if ((w < 0 || w >= 3) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')
+            && scan_digit((unsigned char)p[2], 16) >= 0) {
+            base = 16;
+            p += 2;
+            if (w > 0) w -= 2;
+        } else if (p[0] == '0') {
+            base = 8;
+        } else {
+            base = 10;
+        }
+    } else if (base == 16) {
+        if ((w < 0 || w >= 3) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')
+            && scan_digit((unsigned char)p[2], 16) >= 0) {
+            p += 2;
+            if (w > 0) w -= 2;
+        }
+    }
+
+    for (;;) {
+        int d;
+        if (w == 0)
+            break;
+        d = scan_digit((unsigned char)*p, base);
+        if (d < 0)
+            break;
+        acc = acc * (unsigned long)base + (unsigned long)d;
+        any = 1;
+        p++;
+        if (w > 0) w--;
+    }
+
+    if (!any)
+        return 0;
+    *neg = sign;
+    *mag = acc;
+    *pp = p;
+    return 1;
+}
+
+/* Parse a decimal float (the maize-144 atof algorithm, advancing *pp and reporting
+ * success): optional sign, integer digits, optional '.'+fraction, bounded by `width`
+ * (-1 == unlimited). Signed-int -> double path only, negate via 0.0 - x (never the
+ * unsigned->float or `neg` the backend lacks). Returns 1 if any digit was consumed. */
+static int
+scan_float(const char **pp, int width, double *out)
+{
+    const char *p = *pp;
+    int w = width;
+    int neg = 0;
+    int any = 0;
+    double result = 0.0;
+    double scale;
+
+    if (w != 0 && (*p == '+' || *p == '-')) {
+        neg = (*p == '-');
+        p++;
+        if (w > 0) w--;
+    }
+    while (w != 0 && *p >= '0' && *p <= '9') {      /* integer digits */
+        int d = *p - '0';
+        result = result * 10.0 + (double)d;
+        any = 1;
+        p++;
+        if (w > 0) w--;
+    }
+    if (w != 0 && *p == '.') {                      /* optional '.'+fraction */
+        p++;
+        if (w > 0) w--;
+        scale = 0.1;
+        while (w != 0 && *p >= '0' && *p <= '9') {
+            int d = *p - '0';
+            result = result + (double)d * scale;
+            scale = scale * 0.1;
+            any = 1;
+            p++;
+            if (w > 0) w--;
+        }
+    }
+    if (!any)
+        return 0;
+    *out = neg ? (0.0 - result) : result;
+    *pp = p;
+    return 1;
+}
+
+/* Copy a whitespace-delimited token into dst (NUL-terminated), up to `width` chars
+ * (-1 == unlimited); dst == NULL suppresses the store. Leading whitespace is skipped
+ * via scan_ws (a call, so this body keeps ONE loop). Returns the char count. */
+static int
+scan_str(const char **pp, char *dst, int width)
+{
+    const char *p;
+    int w = width;
+    int n = 0;
+
+    scan_ws(pp);
+    p = *pp;
+    while (w != 0 && *p != '\0' && !isspace((unsigned char)*p)) {
+        if (dst)
+            dst[n] = *p;
+        n++;
+        p++;
+        if (w > 0) w--;
+    }
+    if (dst)
+        dst[n] = '\0';
+    *pp = p;
+    return n;
+}
+
+/* Copy exactly `width` chars (default 1) with NO leading-whitespace skip and NO NUL
+ * terminator; dst == NULL suppresses the store. Returns the char count. One loop. */
+static int
+scan_char(const char **pp, char *dst, int width)
+{
+    const char *p = *pp;
+    int w = (width < 0) ? 1 : width;
+    int n = 0;
+
+    while (n < w && *p != '\0') {
+        if (dst)
+            dst[n] = *p;
+        n++;
+        p++;
+    }
+    *pp = p;
+    return n;
+}
+
+int
+sscanf(const char *str, const char *format, ...)
+{
+    va_list ap;
+    const char *ip = str;
+    const char *fp = format;
+    int count = 0;          /* successful assignments (the return value) */
+    int stop = 0;           /* set on a matching failure to end the scan */
+    int attempted = 0;      /* a real conversion (not %%) was attempted */
+
+    va_start(ap, format);
+
+    while (*fp != '\0' && !stop) {
+        char fc = *fp;
+        int suppress, width, lng;
+        char conv;
+
+        if (isspace((unsigned char)fc)) {           /* format whitespace: skip input ws */
+            scan_ws(&ip);
+            fp++;
+            continue;
+        }
+        if (fc != '%') {                            /* ordinary char: must match input */
+            if (*ip != fc) {
+                stop = 1;
+                break;
+            }
+            ip++;
+            fp++;
+            continue;
+        }
+
+        /* fc == '%': parse [*] [width] [l|h|ll|hh] conv. */
+        fp++;
+        suppress = 0;
+        width = -1;                                 /* -1 == no width */
+        lng = 0;
+        if (*fp == '*') { suppress = 1; fp++; }
+        if (*fp >= '0' && *fp <= '9') {
+            width = 0;
+            while (*fp >= '0' && *fp <= '9')
+                width = width * 10 + (*fp++ - '0');
+        }
+        while (*fp == 'l' || *fp == 'h') {          /* length modifiers */
+            if (*fp == 'l') lng = 1;                /* h/hh best-effort ignored */
+            fp++;
+        }
+        conv = *fp;
+        if (conv != '\0')
+            fp++;
+
+        if (conv == '%') {
+            if (*ip == '%')
+                ip++;
+            else
+                stop = 1;
+            continue;
+        }
+
+        attempted = 1;
+
+        if (conv == 'd' || conv == 'i' || conv == 'u'
+            || conv == 'o' || conv == 'x') {
+            int base;
+            unsigned long mag;
+            int neg;
+
+            if (conv == 'i')      base = 0;
+            else if (conv == 'o') base = 8;
+            else if (conv == 'x') base = 16;
+            else                  base = 10;
+
+            scan_ws(&ip);
+            if (!scan_int(&ip, base, width, &neg, &mag)) {
+                stop = 1;
+            } else if (!suppress) {
+                unsigned long uval = neg ? (unsigned long)(-(long)mag) : mag;
+                void *dst = va_arg(ap, void *);
+                if (lng)
+                    *(long *)dst = (long)uval;
+                else
+                    *(int *)dst = (int)uval;
+                count++;
+            }
+        } else if (conv == 'f') {
+            double dv;
+            scan_ws(&ip);
+            if (!scan_float(&ip, width, &dv)) {
+                stop = 1;
+            } else if (!suppress) {
+                void *dst = va_arg(ap, void *);
+                if (lng)
+                    *(double *)dst = dv;
+                else
+                    *(float *)dst = (float)dv;
+                count++;
+            }
+        } else if (conv == 's') {
+            char *dst = suppress ? (char *)0 : va_arg(ap, char *);
+            if (scan_str(&ip, dst, width) == 0)
+                stop = 1;
+            else if (!suppress)
+                count++;
+        } else if (conv == 'c') {
+            char *dst = suppress ? (char *)0 : va_arg(ap, char *);
+            if (scan_char(&ip, dst, width) == 0)
+                stop = 1;
+            else if (!suppress)
+                count++;
+        } else {
+            stop = 1;                               /* unsupported conversion */
+        }
+    }
+
+    va_end(ap);
+
+    /* Input-failure (EOF) rule: no assignment made and a conversion was attempted on
+     * an exhausted input. A matching failure on PRESENT input returns 0, not EOF. */
+    if (count == 0 && attempted && *ip == '\0')
+        return EOF;
+    return count;
 }
 
 /* ------------------------------------------------------------------------------ */

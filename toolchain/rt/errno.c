@@ -19,6 +19,8 @@
  * other C runtime modules (string/ctype/stdio/stdlib; cc-maize.sh RT set).
  */
 #include "syscall.h"
+#include "stdio.h"      /* remove() prototype (maize-148) */
+#include "sys/stat.h"   /* mkdir() prototype + mode_t (maize-147/148) */
 
 /* Single source of truth for errno (single-threaded VM; TLS reserved). */
 int errno = 0;
@@ -71,4 +73,22 @@ int
 fstat(int fd, void *statbuf)
 {
     return (int)__syscall_ret(sys_fstat(fd, statbuf));
+}
+
+/* maize-148 path-mutating wrappers over the raw stubs, mirroring the open/close
+ * pattern above. LINK-COMPLETE only: the VM does not dispatch $53/$57 yet, so both
+ * raw stubs return 0 (interim no-op) and these return 0 (apparent success, no
+ * filesystem effect), which is benign for DOOM Phase A's link + boot. The real
+ * -errno-producing dispatch + confined hostfs backends are the spawned card
+ * (maize-151), where the checked filesystem acceptance criteria live. */
+int
+remove(const char *path)
+{
+    return (int)__syscall_ret(sys_unlink(path));
+}
+
+int
+mkdir(const char *path, mode_t mode)
+{
+    return (int)__syscall_ret(sys_mkdir(path, (int)mode));
 }

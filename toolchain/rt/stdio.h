@@ -79,9 +79,13 @@ int vprintf(const char *fmt, va_list ap);
 int vfprintf(FILE *stream, const char *fmt, va_list ap);
 int vsnprintf(char *str, size_t n, const char *fmt, va_list ap);
 
-/* maize-147 declarations (bodies in the sibling libc card, maize-148). sscanf parses a
- * string per the format; remove unlinks a path. DOOM references both; declared here so
- * strict cproc sees a visible prototype at each call site. */
+/* sscanf + remove (bodies in maize-148). sscanf parses a string per the format;
+ * remove unlinks a path. DOOM references both; declared here so strict cproc sees a
+ * visible prototype at each call site. sscanf's conversion set (maize-148): %d %i %u
+ * %o %x %f %s %c %%, plus optional field width, the `*` assignment-suppression flag,
+ * and the `l` length modifier (%ld -> long*, %lf -> double*); h/ll/hh are tolerated.
+ * %e/%g and the %[...] scanset are out of scope. It returns the number of successful
+ * assignments, or EOF if the input is exhausted before the first conversion. */
 int sscanf(const char *str, const char *format, ...);
 int remove(const char *pathname);
 

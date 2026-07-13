@@ -55,6 +55,15 @@ GLOBAL sys_getdents64
 ; Raw `SYS $F0; RET`; no args, RV = monotonic ms since VM start; never -errno.
 GLOBAL sys_clock_ms
 
+; maize-148 path-mutating stubs for the DOOM Phase A link: sys_unlink ($57) and
+; sys_mkdir ($53), the canonical Linux x86-64 numbers (87/83) already reserved for
+; these calls (SYSCALL-ABI.md). LINK-ONLY: src/sys.cpp does NOT dispatch $53/$57 yet,
+; so the VM's unknown-number default returns 0 (an interim no-op, benign for the demo
+; which does no deleting/creating). The real path-mutating VM+hostfs backends and the
+; ABI freeze are the spawned card maize-151. remove()/mkdir() (errno.c) wrap these.
+GLOBAL sys_unlink
+GLOBAL sys_mkdir
+
 sys_read:
     SYS $00                 ; fd/buf/count already in R0/R1/R2 per the C ABI
     RET
@@ -89,6 +98,14 @@ sys_getdents64:
 
 sys_clock_ms:
     SYS $F0                 ; no args; RV = monotonic ms since VM start
+    RET
+
+sys_unlink:
+    SYS $57                 ; R0=path; RV = 0 or -errno (interim: VM default returns 0)
+    RET
+
+sys_mkdir:
+    SYS $53                 ; R0=path, R1=mode; RV = 0 or -errno (interim: VM default returns 0)
     RET
 
 _exit:
