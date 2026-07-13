@@ -1026,6 +1026,94 @@ run_doom_selfcheck() {
 
 run_doom_selfcheck
 
+# maize-154 DOOM Phase C headless RENDER gate. Distinct from run_doom_selfcheck
+# (Phase B: DG_* platform in isolation, no engine boot): this boots the WHOLE
+# DOOM engine against a minimal, license-clean SYNTHETIC IWAD and asserts a real
+# 3D level actually rendered. The IWAD is produced AT TEST TIME by compiling the
+# committed generator demos/doom/tools/make_min_iwad.c with the system cc (D7: the
+# auditable artifact is the generator source, never a committed binary; every
+# lump byte is generator-computed, zero copied DOOM assets). The generator is C,
+# not Python, so this runs on both CI hosts including the Windows MSYS2 lane
+# (gcc, no python3).
+#
+# The render TU doom_render_selfcheck.c links the entry-free doom.sources core +
+# the Phase B platform + mzdev (--dev) at the 320x200 geometry override, boots
+# via `-iwad /ro/min.wad -warp 1 1 -nomonsters` (DOOM args pass through maize's
+# guest-argv), ticks until the level renders, and asserts the 3D VIEWPORT (ABOVE
+# the status bar, per OQ3) has >= 2 distinct colors, printing "doom: PASS". Same
+# submodule graceful-skip probe as run_doom_link / run_doom_selfcheck.
+run_doom_render() {
+    name="doom-render"
+    doom_dir="${REPO_ROOT}/demos/doom"
+    render="${doom_dir}/doom_render_selfcheck.c"
+    platform="${doom_dir}/doomgeneric_maize.c"
+    sources="${doom_dir}/doom.sources"
+    generator="${doom_dir}/tools/make_min_iwad.c"
+    # Submodule presence probe: the doomgeneric core-loop TU. Absent => uninitialized.
+    probe="${doom_dir}/doomgeneric/doomgeneric/doomgeneric.c"
+
+    if [ ! -f "$probe" ]; then
+        echo "[SKIP] ${name}: demos/doom/doomgeneric submodule not initialized" \
+             "(run 'git submodule update --init demos/doom/doomgeneric'); skipping DOOM render gate"
+        return
+    fi
+
+    TOTAL=$((TOTAL + 1))
+
+    # System C compiler (mirrors build-toolchain.sh's pick); present on both CI
+    # hosts. Compile the committed generator and run it into WORK_DIR to produce
+    # the synthetic IWAD in a directory we then mount read-only at /ro.
+    gen_cc="${CC:-}"
+    if [ -z "$gen_cc" ]; then
+        if command -v cc >/dev/null 2>&1; then gen_cc=cc; else gen_cc=gcc; fi
+    fi
+    gen_exe="${WORK_DIR}/make_min_iwad"
+    if ! "$gen_cc" -O2 -o "$gen_exe" "$generator" >"${WORK_DIR}/doom-render.gen.log" 2>&1; then
+        echo "[FAIL] ${name}: min-IWAD generator failed to compile"
+        cat "${WORK_DIR}/doom-render.gen.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    waddir="${WORK_DIR}/doom-render-wad"
+    rm -rf "$waddir"; mkdir -p "$waddir"
+    if ! "$gen_exe" "${waddir}/min.wad" >>"${WORK_DIR}/doom-render.gen.log" 2>&1 \
+    || [ ! -f "${waddir}/min.wad" ]; then
+        echo "[FAIL] ${name}: min-IWAD generation failed"
+        cat "${WORK_DIR}/doom-render.gen.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    mzx="${WORK_DIR}/doom_render.mzx"
+    log="${WORK_DIR}/doom-render.cc.log"
+    rm -f "$mzx"
+    if ! "$CC_MAIZE" --preset "$PRESET" --dev \
+        -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
+        -o "$mzx" --sources "$sources" "$render" "$platform" >"$log" 2>&1 \
+    || [ ! -f "$mzx" ]; then
+        echo "[FAIL] ${name}: render-gate C compile/link failed"; cat "$log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    nat=$(host_to_native "$waddir")
+    set +e
+    actual=$("$MAIZE" --mount "${nat}=/ro:ro" "$mzx" \
+        -iwad /ro/min.wad -warp 1 1 -nomonsters 2>/dev/null | grep -v '^$')
+    set -e
+
+    # The engine prints a banner + per-tick viewport diagnostics; the gate is the
+    # exact "doom: PASS" line (a real 3D render), like doom_selfcheck.c.
+    if printf '%s\n' "$actual" | grep -qx "doom: PASS"; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected a \"doom: PASS\" line (a non-blank 3D viewport render)"
+        echo "        actual:   \"$(printf '%s' "$actual" | tail -3 | tr '\n' '|')\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_doom_render
+
 # maize-138 multi-file compile/link: the primary-gate cross-object fixture, the
 # negative link-rejection case, and the two multi-source usage-error paths.
 run_multi_ctest "multifile" "multifile_main.c multifile_lib.c"

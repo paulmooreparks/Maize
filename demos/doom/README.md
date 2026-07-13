@@ -18,10 +18,17 @@ OUTSIDE the submodule, which is never edited.
   plus the two residual sound-module descriptor structs.
 - `doom_selfcheck.c`: a standalone headless self-check that links ONLY the platform
   layer (not the full engine) and verifies each `DG_*` primitive in isolation.
+- `doom_render_selfcheck.c`: the headless RENDER gate. It boots the WHOLE engine
+  against the minimal synthetic IWAD, ticks until the first level renders, and
+  asserts the 3D viewport is a real (non-blank) render.
+- `tools/make_min_iwad.c`: a generator for a minimal, license-clean synthetic
+  IWAD that boots DOOM to a one-room `E1M1`. Every lump byte is computed in the
+  program; no real-game asset is copied. Compiled and run at test time by the
+  render gate; the committed artifact is the source, never a WAD binary.
 - `testdata/doomread.bin`: a committed 512-byte binary fixture the self-check reads
   through the libc `FILE*` path (the same path DOOM uses to open a WAD).
 - `doom_main.c`: the entry TU; `main` calls `doomgeneric_Create` then loops
-  `doomgeneric_Tick`.
+  `doomgeneric_Tick`. This is the interactive image for the operator SDL demo.
 
 ## Geometry
 
@@ -59,7 +66,68 @@ scancode sequence piped in on stdin. It prints `doom: PASS` on success:
 `scripts/run-ctest.sh` wires this up as `run_doom_selfcheck` on both hosts, next
 to the `run_doom_link` build gate.
 
-## Status: Phase B, real DG platform + WAD-read plumbing, unit-verified
+## The minimal synthetic IWAD
+
+DOOM refuses to boot without a structurally valid IWAD: it checks a large set of
+required lumps (palette, colormap, textures, flats, the status-bar and font
+graphics, and a map). Committing the ~4 MB real `doom1.wad` is neither legal nor
+necessary, so `tools/make_min_iwad.c` computes a tiny (~32 KB) synthetic IWAD
+from scratch: a full 256-color palette, an identity colormap, one shared 8x8
+patch reused across the wall texture and every font / status-bar lump, two flats,
+the shareware switch textures, a dummy level-music lump, and a single convex
+`E1M1` room with a player start. Every byte is generated; nothing is copied from
+any real WAD. Build and run it directly with:
+
+    cc -O2 -o make_min_iwad demos/doom/tools/make_min_iwad.c
+    ./make_min_iwad min.wad
+
+## Run the headless render gate
+
+The render gate boots the full engine against that IWAD and checks a real 3D
+frame. Build the render image, generate the IWAD into a directory, and run it
+with that directory mounted read-only at `/ro`; it prints `doom: PASS`:
+
+    scripts/cc-maize.sh --dev -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
+        -o /tmp/doom_render.mzx \
+        --sources demos/doom/doom.sources \
+        demos/doom/doom_render_selfcheck.c demos/doom/doomgeneric_maize.c
+
+    build/<preset>/maize --mount "<wad-dir>=/ro:ro" /tmp/doom_render.mzx \
+        -iwad /ro/min.wad -warp 1 1 -nomonsters
+
+`scripts/run-ctest.sh` wires this up as `run_doom_render` on both hosts (it
+compiles the generator with the system `cc`, produces the IWAD, and runs the
+gate), distinct from the platform-only `run_doom_selfcheck`.
+
+## Operator SDL demo (play a rendered first level)
+
+To watch DOOM render and play it in a window, build a `maize` with the SDL
+display backend (`cmake -DMAIZE_DISPLAY=ON ...`), build the interactive demo
+image from `doom_main.c`, and run it with `--display` and YOUR OWN `doom1.wad`
+directory mounted read-only. Nothing real-game is committed; you supply the WAD.
+
+    scripts/cc-maize.sh --dev -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
+        -o demos/doom/doom.mzx \
+        --sources demos/doom/doom.sources \
+        demos/doom/doom_main.c demos/doom/doomgeneric_maize.c
+
+    build/<preset>/maize --display --input=keyboard \
+        --mount "<your-doom-wad-dir>=/wad:ro" \
+        demos/doom/doom.mzx -iwad /wad/doom1.wad -warp 1 1
+
+The window opens at the native 320x200 (the default framebuffer geometry the
+platform layer is built against). Keyboard controls follow the Set-1 to DOOM
+keymap in `doomgeneric_maize.c`: arrows to move, Ctrl to fire, Space to use,
+Enter / Escape for menus. This demo is the visible payoff; it is not a CI gate.
+
+## Status: Phase C, DOOM boots and renders a first level
+
+The full engine boots against the minimal synthetic IWAD and renders a real 3D
+first level, headless-checked in CI by `run_doom_render` and visible via the
+operator SDL demo on a real `doom1.wad`. The platform layer below is unchanged
+from Phase B.
+
+## Platform layer (Phase B): real DG platform + WAD-read plumbing
 
 The six `DG_*` platform functions are implemented for real over the frozen Maize
 device / clock / libc surfaces:
@@ -78,6 +146,3 @@ WAD file access needs no new hook: the engine reaches a WAD through the libc
 the committed binary fixture. Each primitive is checked in isolation by
 `doom_selfcheck.c` through the real `cc-maize.sh` pipeline, and the full tree
 still links (`run_doom_link`).
-
-The full DOOM boot, the first-level render from a real IWAD, operator IWAD
-provisioning, and the windowed SDL demo are the next phase.
