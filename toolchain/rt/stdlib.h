@@ -38,4 +38,17 @@ void *realloc(void *ptr, size_t size);
  * break, or (void *)-1 with errno = ENOMEM on failure. sbrk(0) queries. */
 void *sbrk(long incr);
 
+/* Numeric conversions (maize-142), pure computation over the ctype predicates; no
+ * syscalls. atoi is defined via strtol (single conversion core). abs/labs are a
+ * modular negate and never touch errno; abs(INT_MIN)/labs(LONG_MIN) are UB per the
+ * standard and are not special-cased. strtol is standard C: leading-whitespace skip,
+ * optional sign, base 0/2..36 with 0x/0-prefix handling, glibc-style overflow clamp
+ * to LONG_MAX/LONG_MIN with errno=ERANGE, endptr set to the first unconsumed char.
+ * On no conversion strtol returns 0 and sets *endptr = nptr; an invalid base returns
+ * 0 with errno=EINVAL. strtol never clears errno on the success path. */
+int  atoi(const char *nptr);
+int  abs(int j);
+long labs(long j);
+long strtol(const char *nptr, char **endptr, int base);
+
 #endif /* MAIZE_STDLIB_H */

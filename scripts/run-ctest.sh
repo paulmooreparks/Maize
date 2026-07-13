@@ -665,6 +665,10 @@ run_ctest "malloc"
 # order (B, then A) after "main done", proving both that exit() runs the registry
 # and the ordering, plus the indirect-call-through-a-runtime-indexed-fnptr-array path.
 run_ctest "atexit"
+# maize-142 stdlib numeric conversions: atoi/abs/labs/strtol in one self-checking
+# fixture (base 10/16/0-autodetect, overflow clamp + ERANGE, endptr/no-conversion,
+# invalid-base EINVAL, and the bare-"0x"/"0"-no-digit corners). One "strtol PASS".
+run_ctest "strtol"
 # maize-98 varargs / stdarg ABI: a self-checking fixture exercising the register
 # save area, va_arg over mixed scalar classes, the register->overflow boundary,
 # and va_copy. Prints a single PASS line.

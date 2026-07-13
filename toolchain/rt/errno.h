@@ -21,5 +21,6 @@ extern int errno;
 #define EBADF   9
 #define ENOMEM 12   /* sbrk/malloc: request over HEAP_CEILING or below the floor */
 #define EINVAL 22
+#define ERANGE 34   /* strtol: value out of long range (overflow clamp), maize-142 */
 
 #endif /* MAIZE_ERRNO_H */

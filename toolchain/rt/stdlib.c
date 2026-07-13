@@ -29,6 +29,7 @@
  *     is inserted as one free block and coalesced with the previous tail if free.
  */
 #include "stdlib.h"
+#include "ctype.h"    /* isspace, isdigit (maize-142 numeric conversions) */
 #include "errno.h"
 #include "string.h"   /* memcpy, memset */
 #include "syscall.h"  /* sys_brk, _exit */
@@ -350,4 +351,134 @@ realloc(void *ptr, size_t size)
     memcpy(np, ptr, oldpayload < size ? oldpayload : size);
     free(ptr);
     return np;
+}
+
+/* --- numeric conversions (maize-142) ------------------------------------------ */
+/* Pure computation over the ctype predicates; no syscalls, no VM surface.
+ *
+ * long is 64-bit on Maize (unsigned long backs size_t, stddef.h:13). The slice has
+ * no limits.h and this card does not introduce one (decision 8257): LONG_MAX/LONG_MIN
+ * live as file-private macros here. A later card that needs a full limits.h (DOOM may)
+ * can promote them. */
+#define LONG_MAX 0x7fffffffffffffffL              /* 9223372036854775807 */
+#define LONG_MIN (-LONG_MAX - 1L)                 /* -9223372036854775808 */
+
+int
+abs(int j)
+{
+    /* Modular negate. abs(INT_MIN) is UB per the standard and is not special-cased
+       (it returns INT_MIN unchanged via wraparound). Never touches errno. */
+    return j < 0 ? -j : j;
+}
+
+long
+labs(long j)
+{
+    /* labs(LONG_MIN) is UB per the standard, mirroring abs above. */
+    return j < 0 ? -j : j;
+}
+
+/* Map a character to its digit value in `base`, or -1 if it is not a valid digit
+ * in that base. Digits 0-9, then a-z / A-Z for values 10..35; only values < base
+ * are accepted. */
+static int
+digit_value(int c, int base)
+{
+    int d;
+
+    if (c >= '0' && c <= '9')
+        d = c - '0';
+    else if (c >= 'a' && c <= 'z')
+        d = c - 'a' + 10;
+    else if (c >= 'A' && c <= 'Z')
+        d = c - 'A' + 10;
+    else
+        return -1;
+    return d < base ? d : -1;
+}
+
+long
+strtol(const char *nptr, char **endptr, int base)
+{
+    const char *p = nptr;
+    int neg = 0;
+    int any = 0, ovf = 0;
+    unsigned long acc, cutoff, cutlim;
+
+    /* Invalid base (not 0 and not in 2..36): no conversion, errno=EINVAL, endptr=nptr
+       (decision 8260 / POSIX; EINVAL is already in errno.h). */
+    if (base != 0 && (base < 2 || base > 36)) {
+        if (endptr)
+            *endptr = (char *)nptr;
+        errno = EINVAL;
+        return 0;
+    }
+
+    /* 1. Skip leading whitespace. */
+    while (isspace((unsigned char)*p))
+        p++;
+
+    /* 2. Optional single sign. */
+    if (*p == '+' || *p == '-') {
+        neg = (*p == '-');
+        p++;
+    }
+
+    /* 3. Base / prefix resolution. A 0x/0X prefix is consumed only for base 0 or 16
+       AND only when a hex digit actually follows it; otherwise the leading '0' is a
+       plain zero digit and conversion stops at the 'x' (the bare-"0x" corner). */
+    if ((base == 0 || base == 16)
+        && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')
+        && digit_value((unsigned char)p[2], 16) >= 0) {
+        p += 2;
+        base = 16;
+    } else if (base == 0) {
+        base = (p[0] == '0') ? 8 : 10;
+    }
+
+    /* 4. Accumulate. glibc-style cutoff/cutlim clamp: on the first digit that would
+       exceed the signed range, clamp and keep consuming remaining valid digits so
+       endptr still lands past the whole numeric token. */
+    cutoff = neg ? (unsigned long)LONG_MAX + 1UL : (unsigned long)LONG_MAX;
+    cutlim = cutoff % (unsigned long)base;
+    cutoff /= (unsigned long)base;
+    acc = 0;
+    for (;; p++) {
+        int d = digit_value((unsigned char)*p, base);
+        if (d < 0)
+            break;
+        any = 1;
+        if (ovf)
+            continue;
+        if (acc > cutoff || (acc == cutoff && (unsigned long)d > cutlim)) {
+            ovf = 1;
+            continue;
+        }
+        acc = acc * (unsigned long)base + (unsigned long)d;
+    }
+
+    /* 5/6. endptr + result. errno is NOT cleared on the success path (standard C:
+       strtol only ever sets errno). */
+    if (ovf) {
+        errno = ERANGE;
+        if (endptr)
+            *endptr = (char *)p;
+        return neg ? LONG_MIN : LONG_MAX;
+    }
+    if (!any) {
+        if (endptr)
+            *endptr = (char *)nptr;   /* no conversion: endptr = nptr */
+        return 0;
+    }
+    if (endptr)
+        *endptr = (char *)p;
+    return neg ? -(long)acc : (long)acc;
+}
+
+int
+atoi(const char *nptr)
+{
+    /* Single conversion core (decision 8259). The (int) cast truncates the long
+       result; atoi does not report overflow (standard: UB). */
+    return (int)strtol(nptr, (char **)0, 10);
 }
