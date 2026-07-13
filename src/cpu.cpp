@@ -3089,6 +3089,14 @@ namespace maize {
             alu.op2_reg.w0 = res.bits;
         }
 
+        /* Out-of-line unknown-opcode trap, kept out of tick() so no non-trivial local lives
+           in the threaded-dispatch body (see LBL_default). */
+        [[noreturn]] void raise_unknown_opcode(u_byte op) {
+            std::stringstream err {};
+            err << "unknown opcode: " << std::hex << static_cast<unsigned>(op);
+            throw std::logic_error(err.str());
+        }
+
         /* This is the state machine that implements the machine-code instructions. */
         void tick() {
             running_flag = true;
@@ -3101,42 +3109,240 @@ namespace maize {
             constexpr unsigned input_poll_stride {64};
             unsigned input_poll_countdown {1};
 
-            while (running_flag) {
-                /* Interrupt delivery is checked at the instruction boundary (card
-                   maize-21). A pending, enabled IRQ is delivered before the next
-                   instruction decodes; the handler's first instruction runs on the next
-                   iteration. The fast path is two RF-bit reads, so an idle machine pays
-                   almost nothing. */
-                if (try_deliver_interrupt()) {
-                    continue;
-                }
+            static const void* dtbl[256];
+            static bool dtbl_ready = false;
+            if (!dtbl_ready) {
+                for (int di = 0; di < 256; ++di) { dtbl[di] = &&LBL_default; }
+                dtbl[instr::halt_opcode] = &&LBL_halt_opcode;
+                dtbl[instr::clr_opcode] = &&LBL_clr_opcode;
+                dtbl[instr::setz_opcode] = &&LBL_setz_opcode;
+                dtbl[instr::setnz_opcode] = &&LBL_setnz_opcode;
+                dtbl[instr::setlt_opcode] = &&LBL_setlt_opcode;
+                dtbl[instr::setb_opcode] = &&LBL_setb_opcode;
+                dtbl[instr::setgt_opcode] = &&LBL_setgt_opcode;
+                dtbl[instr::seta_opcode] = &&LBL_seta_opcode;
+                dtbl[instr::setge_opcode] = &&LBL_setge_opcode;
+                dtbl[instr::setle_opcode] = &&LBL_setle_opcode;
+                dtbl[instr::setbe_opcode] = &&LBL_setbe_opcode;
+                dtbl[instr::setae_opcode] = &&LBL_setae_opcode;
+                dtbl[instr::setp_opcode] = &&LBL_setp_opcode;
+                dtbl[instr::cp_regVal_reg] = &&LBL_cp_regVal_reg;
+                dtbl[instr::cp_immVal_reg] = &&LBL_cp_immVal_reg;
+                dtbl[instr::ld_regAddr_reg] = &&LBL_ld_regAddr_reg;
+                dtbl[instr::ld_immAddr_reg] = &&LBL_ld_immAddr_reg;
+                dtbl[instr::cpz_regVal_reg] = &&LBL_cpz_regVal_reg;
+                dtbl[instr::cpz_immVal_reg] = &&LBL_cpz_immVal_reg;
+                dtbl[instr::st_regVal_regAddr] = &&LBL_st_regVal_regAddr;
+                dtbl[instr::st_immVal_regAddr] = &&LBL_st_immVal_regAddr;
+                dtbl[instr::add_regVal_reg] = &&LBL_add_regVal_reg;
+                dtbl[instr::sub_regVal_reg] = &&LBL_sub_regVal_reg;
+                dtbl[instr::mul_regVal_reg] = &&LBL_mul_regVal_reg;
+                dtbl[instr::div_regVal_reg] = &&LBL_div_regVal_reg;
+                dtbl[instr::mod_regVal_reg] = &&LBL_mod_regVal_reg;
+                dtbl[instr::udiv_regVal_reg] = &&LBL_udiv_regVal_reg;
+                dtbl[instr::adc_regVal_reg] = &&LBL_adc_regVal_reg;
+                dtbl[instr::sbb_regVal_reg] = &&LBL_sbb_regVal_reg;
+                dtbl[instr::umod_regVal_reg] = &&LBL_umod_regVal_reg;
+                dtbl[instr::and_regVal_reg] = &&LBL_and_regVal_reg;
+                dtbl[instr::or_regVal_reg] = &&LBL_or_regVal_reg;
+                dtbl[instr::nor_regVal_reg] = &&LBL_nor_regVal_reg;
+                dtbl[instr::nand_regVal_reg] = &&LBL_nand_regVal_reg;
+                dtbl[instr::xor_regVal_reg] = &&LBL_xor_regVal_reg;
+                dtbl[instr::shl_regVal_reg] = &&LBL_shl_regVal_reg;
+                dtbl[instr::shr_regVal_reg] = &&LBL_shr_regVal_reg;
+                dtbl[instr::sar_regVal_reg] = &&LBL_sar_regVal_reg;
+                dtbl[instr::cmp_regVal_reg] = &&LBL_cmp_regVal_reg;
+                dtbl[instr::test_regVal_reg] = &&LBL_test_regVal_reg;
+                dtbl[instr::add_immVal_reg] = &&LBL_add_immVal_reg;
+                dtbl[instr::sub_immVal_reg] = &&LBL_sub_immVal_reg;
+                dtbl[instr::mul_immVal_reg] = &&LBL_mul_immVal_reg;
+                dtbl[instr::div_immVal_reg] = &&LBL_div_immVal_reg;
+                dtbl[instr::mod_immVal_reg] = &&LBL_mod_immVal_reg;
+                dtbl[instr::udiv_immVal_reg] = &&LBL_udiv_immVal_reg;
+                dtbl[instr::adc_immVal_reg] = &&LBL_adc_immVal_reg;
+                dtbl[instr::sbb_immVal_reg] = &&LBL_sbb_immVal_reg;
+                dtbl[instr::umod_immVal_reg] = &&LBL_umod_immVal_reg;
+                dtbl[instr::and_immVal_reg] = &&LBL_and_immVal_reg;
+                dtbl[instr::or_immVal_reg] = &&LBL_or_immVal_reg;
+                dtbl[instr::nor_immVal_reg] = &&LBL_nor_immVal_reg;
+                dtbl[instr::nand_immVal_reg] = &&LBL_nand_immVal_reg;
+                dtbl[instr::xor_immVal_reg] = &&LBL_xor_immVal_reg;
+                dtbl[instr::shl_immVal_reg] = &&LBL_shl_immVal_reg;
+                dtbl[instr::shr_immVal_reg] = &&LBL_shr_immVal_reg;
+                dtbl[instr::sar_immVal_reg] = &&LBL_sar_immVal_reg;
+                dtbl[instr::cmp_immVal_reg] = &&LBL_cmp_immVal_reg;
+                dtbl[instr::test_immVal_reg] = &&LBL_test_immVal_reg;
+                dtbl[instr::add_regAddr_reg] = &&LBL_add_regAddr_reg;
+                dtbl[instr::sub_regAddr_reg] = &&LBL_sub_regAddr_reg;
+                dtbl[instr::mul_regAddr_reg] = &&LBL_mul_regAddr_reg;
+                dtbl[instr::div_regAddr_reg] = &&LBL_div_regAddr_reg;
+                dtbl[instr::mod_regAddr_reg] = &&LBL_mod_regAddr_reg;
+                dtbl[instr::udiv_regAddr_reg] = &&LBL_udiv_regAddr_reg;
+                dtbl[instr::adc_regAddr_reg] = &&LBL_adc_regAddr_reg;
+                dtbl[instr::sbb_regAddr_reg] = &&LBL_sbb_regAddr_reg;
+                dtbl[instr::umod_regAddr_reg] = &&LBL_umod_regAddr_reg;
+                dtbl[instr::and_regAddr_reg] = &&LBL_and_regAddr_reg;
+                dtbl[instr::or_regAddr_reg] = &&LBL_or_regAddr_reg;
+                dtbl[instr::nor_regAddr_reg] = &&LBL_nor_regAddr_reg;
+                dtbl[instr::nand_regAddr_reg] = &&LBL_nand_regAddr_reg;
+                dtbl[instr::xor_regAddr_reg] = &&LBL_xor_regAddr_reg;
+                dtbl[instr::shl_regAddr_reg] = &&LBL_shl_regAddr_reg;
+                dtbl[instr::shr_regAddr_reg] = &&LBL_shr_regAddr_reg;
+                dtbl[instr::sar_regAddr_reg] = &&LBL_sar_regAddr_reg;
+                dtbl[instr::cmp_regAddr_reg] = &&LBL_cmp_regAddr_reg;
+                dtbl[instr::test_regAddr_reg] = &&LBL_test_regAddr_reg;
+                dtbl[instr::add_immAddr_reg] = &&LBL_add_immAddr_reg;
+                dtbl[instr::sub_immAddr_reg] = &&LBL_sub_immAddr_reg;
+                dtbl[instr::mul_immAddr_reg] = &&LBL_mul_immAddr_reg;
+                dtbl[instr::div_immAddr_reg] = &&LBL_div_immAddr_reg;
+                dtbl[instr::mod_immAddr_reg] = &&LBL_mod_immAddr_reg;
+                dtbl[instr::udiv_immAddr_reg] = &&LBL_udiv_immAddr_reg;
+                dtbl[instr::adc_immAddr_reg] = &&LBL_adc_immAddr_reg;
+                dtbl[instr::sbb_immAddr_reg] = &&LBL_sbb_immAddr_reg;
+                dtbl[instr::umod_immAddr_reg] = &&LBL_umod_immAddr_reg;
+                dtbl[instr::and_immAddr_reg] = &&LBL_and_immAddr_reg;
+                dtbl[instr::or_immAddr_reg] = &&LBL_or_immAddr_reg;
+                dtbl[instr::nor_immAddr_reg] = &&LBL_nor_immAddr_reg;
+                dtbl[instr::nand_immAddr_reg] = &&LBL_nand_immAddr_reg;
+                dtbl[instr::xor_immAddr_reg] = &&LBL_xor_immAddr_reg;
+                dtbl[instr::shl_immAddr_reg] = &&LBL_shl_immAddr_reg;
+                dtbl[instr::shr_immAddr_reg] = &&LBL_shr_immAddr_reg;
+                dtbl[instr::sar_immAddr_reg] = &&LBL_sar_immAddr_reg;
+                dtbl[instr::cmp_immAddr_reg] = &&LBL_cmp_immAddr_reg;
+                dtbl[instr::test_immAddr_reg] = &&LBL_test_immAddr_reg;
+                dtbl[instr::inc_opcode] = &&LBL_inc_opcode;
+                dtbl[instr::dec_opcode] = &&LBL_dec_opcode;
+                dtbl[instr::not_opcode] = &&LBL_not_opcode;
+                dtbl[instr::neg_opcode] = &&LBL_neg_opcode;
+                dtbl[instr::cmpind_immVal_regAddr] = &&LBL_cmpind_immVal_regAddr;
+                dtbl[instr::testind_immVal_regAddr] = &&LBL_testind_immVal_regAddr;
+                dtbl[instr::cmpind_regVal_regAddr] = &&LBL_cmpind_regVal_regAddr;
+                dtbl[instr::testind_regVal_regAddr] = &&LBL_testind_regVal_regAddr;
+                dtbl[instr::cmpxchg_regVal_regreg] = &&LBL_cmpxchg_regVal_regreg;
+                dtbl[instr::cmpxchg_regAddr_regreg] = &&LBL_cmpxchg_regAddr_regreg;
+                dtbl[instr::cmpxchg_immVal_regreg] = &&LBL_cmpxchg_immVal_regreg;
+                dtbl[instr::cmpxchg_immAddr_regreg] = &&LBL_cmpxchg_immAddr_regreg;
+                dtbl[instr::lea_regVal_regreg] = &&LBL_lea_regVal_regreg;
+                dtbl[instr::lea_regAddr_regreg] = &&LBL_lea_regAddr_regreg;
+                dtbl[instr::lea_immVal_regreg] = &&LBL_lea_immVal_regreg;
+                dtbl[instr::lea_immAddr_regreg] = &&LBL_lea_immAddr_regreg;
+                dtbl[instr::mulw_regVal_regreg] = &&LBL_mulw_regVal_regreg;
+                dtbl[instr::umulw_regVal_regreg] = &&LBL_umulw_regVal_regreg;
+                dtbl[instr::mulw_immVal_regreg] = &&LBL_mulw_immVal_regreg;
+                dtbl[instr::umulw_immVal_regreg] = &&LBL_umulw_immVal_regreg;
+                dtbl[instr::mulw_regAddr_regreg] = &&LBL_mulw_regAddr_regreg;
+                dtbl[instr::umulw_regAddr_regreg] = &&LBL_umulw_regAddr_regreg;
+                dtbl[instr::mulw_immAddr_regreg] = &&LBL_mulw_immAddr_regreg;
+                dtbl[instr::umulw_immAddr_regreg] = &&LBL_umulw_immAddr_regreg;
+                dtbl[instr::xchg_opcode] = &&LBL_xchg_opcode;
+                dtbl[instr::out_regVal_imm] = &&LBL_out_regVal_imm;
+                dtbl[instr::out_immVal_imm] = &&LBL_out_immVal_imm;
+                dtbl[instr::out_regAddr_imm] = &&LBL_out_regAddr_imm;
+                dtbl[instr::out_immAddr_imm] = &&LBL_out_immAddr_imm;
+                dtbl[instr::outr_regVal_reg] = &&LBL_outr_regVal_reg;
+                dtbl[instr::outr_immVal_imm] = &&LBL_outr_immVal_imm;
+                dtbl[instr::outr_regAddr_imm] = &&LBL_outr_regAddr_imm;
+                dtbl[instr::outr_immAddr_imm] = &&LBL_outr_immAddr_imm;
+                dtbl[instr::in_regVal_imm] = &&LBL_in_regVal_imm;
+                dtbl[instr::in_immVal_imm] = &&LBL_in_immVal_imm;
+                dtbl[instr::in_regAddr_imm] = &&LBL_in_regAddr_imm;
+                dtbl[instr::in_immAddr_imm] = &&LBL_in_immAddr_imm;
+                dtbl[instr::sys_immVal] = &&LBL_sys_immVal;
+                dtbl[instr::sys_regVal] = &&LBL_sys_regVal;
+                dtbl[instr::pop_opcode] = &&LBL_pop_opcode;
+                dtbl[instr::push_regVal] = &&LBL_push_regVal;
+                dtbl[instr::push_immVal] = &&LBL_push_immVal;
+                dtbl[instr::call_regVal] = &&LBL_call_regVal;
+                dtbl[instr::call_immVal] = &&LBL_call_immVal;
+                dtbl[instr::call_regAddr] = &&LBL_call_regAddr;
+                dtbl[instr::call_immAddr] = &&LBL_call_immAddr;
+                dtbl[instr::ret_opcode] = &&LBL_ret_opcode;
+                dtbl[instr::iret_opcode] = &&LBL_iret_opcode;
+                dtbl[instr::jmp_regVal] = &&LBL_jmp_regVal;
+                dtbl[instr::jmp_immVal] = &&LBL_jmp_immVal;
+                dtbl[instr::jmp_regAddr] = &&LBL_jmp_regAddr;
+                dtbl[instr::jmp_immAddr] = &&LBL_jmp_immAddr;
+                dtbl[instr::jz_opcode] = &&LBL_jz_opcode;
+                dtbl[instr::jnz_opcode] = &&LBL_jnz_opcode;
+                dtbl[instr::jlt_opcode] = &&LBL_jlt_opcode;
+                dtbl[instr::jb_opcode] = &&LBL_jb_opcode;
+                dtbl[instr::jgt_opcode] = &&LBL_jgt_opcode;
+                dtbl[instr::ja_opcode] = &&LBL_ja_opcode;
+                dtbl[instr::jge_opcode] = &&LBL_jge_opcode;
+                dtbl[instr::jle_opcode] = &&LBL_jle_opcode;
+                dtbl[instr::jbe_opcode] = &&LBL_jbe_opcode;
+                dtbl[instr::jae_opcode] = &&LBL_jae_opcode;
+                dtbl[instr::jp_opcode] = &&LBL_jp_opcode;
+                dtbl[instr::setcry_opcode] = &&LBL_setcry_opcode;
+                dtbl[instr::clrcry_opcode] = &&LBL_clrcry_opcode;
+                dtbl[instr::setint_opcode] = &&LBL_setint_opcode;
+                dtbl[instr::clrint_opcode] = &&LBL_clrint_opcode;
+                dtbl[instr::nop_opcode] = &&LBL_nop_opcode;
+                dtbl[instr::brk_opcode] = &&LBL_brk_opcode;
+                dtbl[instr::fadd_regVal_reg] = &&LBL_fadd_regVal_reg;
+                dtbl[instr::fsub_regVal_reg] = &&LBL_fsub_regVal_reg;
+                dtbl[instr::fmul_regVal_reg] = &&LBL_fmul_regVal_reg;
+                dtbl[instr::fdiv_regVal_reg] = &&LBL_fdiv_regVal_reg;
+                dtbl[instr::fadd_immVal_reg] = &&LBL_fadd_immVal_reg;
+                dtbl[instr::fsub_immVal_reg] = &&LBL_fsub_immVal_reg;
+                dtbl[instr::fmul_immVal_reg] = &&LBL_fmul_immVal_reg;
+                dtbl[instr::fdiv_immVal_reg] = &&LBL_fdiv_immVal_reg;
+                dtbl[instr::fadd_regAddr_reg] = &&LBL_fadd_regAddr_reg;
+                dtbl[instr::fsub_regAddr_reg] = &&LBL_fsub_regAddr_reg;
+                dtbl[instr::fmul_regAddr_reg] = &&LBL_fmul_regAddr_reg;
+                dtbl[instr::fdiv_regAddr_reg] = &&LBL_fdiv_regAddr_reg;
+                dtbl[instr::fadd_immAddr_reg] = &&LBL_fadd_immAddr_reg;
+                dtbl[instr::fsub_immAddr_reg] = &&LBL_fsub_immAddr_reg;
+                dtbl[instr::fmul_immAddr_reg] = &&LBL_fmul_immAddr_reg;
+                dtbl[instr::fdiv_immAddr_reg] = &&LBL_fdiv_immAddr_reg;
+                dtbl[instr::fcmp_regVal_reg] = &&LBL_fcmp_regVal_reg;
+                dtbl[instr::fcmp_immVal_reg] = &&LBL_fcmp_immVal_reg;
+                dtbl[instr::fcmp_regAddr_reg] = &&LBL_fcmp_regAddr_reg;
+                dtbl[instr::fcmp_immAddr_reg] = &&LBL_fcmp_immAddr_reg;
+                dtbl[instr::fsqrt_opcode] = &&LBL_fsqrt_opcode;
+                dtbl[instr::fneg_opcode] = &&LBL_fneg_opcode;
+                dtbl[instr::fabs_opcode] = &&LBL_fabs_opcode;
+                dtbl[instr::fmin_opcode] = &&LBL_fmin_opcode;
+                dtbl[instr::fmax_opcode] = &&LBL_fmax_opcode;
+                dtbl[instr::fcvtff_opcode] = &&LBL_fcvtff_opcode;
+                dtbl[instr::fcvtfs_opcode] = &&LBL_fcvtfs_opcode;
+                dtbl[instr::fcvtfu_opcode] = &&LBL_fcvtfu_opcode;
+                dtbl[instr::fcvtsf_opcode] = &&LBL_fcvtsf_opcode;
+                dtbl[instr::fcvtuf_opcode] = &&LBL_fcvtuf_opcode;
+                dtbl[instr::fmadd_regVal_regreg] = &&LBL_fmadd_regVal_regreg;
+                dtbl[instr::fmsub_regVal_regreg] = &&LBL_fmsub_regVal_regreg;
+                dtbl[instr::fmadd_immVal_regreg] = &&LBL_fmadd_immVal_regreg;
+                dtbl[instr::fmsub_immVal_regreg] = &&LBL_fmsub_immVal_regreg;
+                dtbl[instr::fmadd_regAddr_regreg] = &&LBL_fmadd_regAddr_regreg;
+                dtbl[instr::fmsub_regAddr_regreg] = &&LBL_fmsub_regAddr_regreg;
+                dtbl[instr::fmadd_immAddr_regreg] = &&LBL_fmadd_immAddr_regreg;
+                dtbl[instr::fmsub_immAddr_regreg] = &&LBL_fmsub_immAddr_regreg;
+                dtbl[instr::fgetcsr_opcode] = &&LBL_fgetcsr_opcode;
+                dtbl[instr::fsetcsr_opcode] = &&LBL_fsetcsr_opcode;
+                dtbl_ready = true;
+            }
 
-                /* Advance the instruction-tick timer once per executed instruction
-                   (OQ3). Disabled/absent timer is an early return, so existing fixtures
-                   are unaffected. */
-                if (active_timer_ptr != nullptr) {
-                    active_timer_ptr->on_instruction_tick();
-                }
+            /* Token-threaded dispatch: each handler tail-calls MAIZE_NEXT, which does
+               the per-instruction preamble (interrupt/timer/input, fetch) and jumps
+               straight to the next handler via its own indirect branch, so the
+               predictor learns opcode-pair correlations instead of funneling every
+               opcode through one shared switch branch. */
+#define MAIZE_NEXT() do { \
+                if (!running_flag) { goto tick_exit; } \
+                try_deliver_interrupt(); \
+                if (active_timer_ptr != nullptr) { active_timer_ptr->on_instruction_tick(); } \
+                if (active_input_ptr != nullptr && --input_poll_countdown == 0) { \
+                    input_poll_countdown = input_poll_stride; \
+                    active_input_ptr->on_input_tick(); \
+                } \
+                mm.read(regs::rp.w0, regs::ri, subreg_enum::w0); \
+                ++regs::rp.w0; \
+                run_state = run_states::execute; \
+                goto *dtbl[regs::ri.b0]; \
+            } while (0)
 
-                /* Advance the single active host input source (device-plugin API). It pulls a
-                   byte from its host source and raises its IRQ on the CPU thread when it has
-                   room. Hoisted off the per-instruction path (drained every input_poll_stride
-                   instructions) so the windowed hot loop does not pay a virtual call each
-                   instruction; null (the default) is a cheap early skip that also avoids the
-                   countdown decrement. */
-                if (active_input_ptr != nullptr && --input_poll_countdown == 0) {
-                    input_poll_countdown = input_poll_stride;
-                    active_input_ptr->on_input_tick();
-                }
-
-                /* Decode next instruction */
-                mm.read(regs::rp.w0, regs::ri, subreg_enum::w0);
-                ++regs::rp.w0;
-                run_state = run_states::execute;
-
-                /* Execute instruction */
-                switch (regs::ri.b0) {
-                    case instr::halt_opcode: {
+            MAIZE_NEXT();   // enter the thread
+                    LBL_halt_opcode: {
                         /* HALT halts the core pending an interrupt; it does NOT
                            carry an exit status. The VM has no interrupt source,
                            so a halted core has nothing to wake it: clearing
@@ -3146,13 +3352,13 @@ namespace maize {
                            exits 0. The status-carrying termination path is
                            SYS $3C (sys_exit), see src/sys.cpp. */
                         power_off();
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::clr_opcode: {
+                    LBL_clr_opcode: {
                         regs::rp.w0 += 1;
                         clr_reg(op1_reg(), op1_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* SETcc (cards maize-55 / maize-64): materialize a flag condition
@@ -3161,63 +3367,63 @@ namespace maize {
                        shared eval_condition predicate table, the SAME table Jcc uses,
                        so the two families can never disagree. Flag-neutral: RF is read
                        but never written. */
-                    case instr::setz_opcode:
-                    case instr::setnz_opcode:
-                    case instr::setlt_opcode:
-                    case instr::setb_opcode:
-                    case instr::setgt_opcode:
-                    case instr::seta_opcode:
-                    case instr::setge_opcode:
-                    case instr::setle_opcode:
-                    case instr::setbe_opcode:
-                    case instr::setae_opcode:
-                    case instr::setp_opcode: {
+                    LBL_setz_opcode:
+                    LBL_setnz_opcode:
+                    LBL_setlt_opcode:
+                    LBL_setb_opcode:
+                    LBL_setgt_opcode:
+                    LBL_seta_opcode:
+                    LBL_setge_opcode:
+                    LBL_setle_opcode:
+                    LBL_setbe_opcode:
+                    LBL_setae_opcode:
+                    LBL_setp_opcode: {
                         regs::rp.w0 += 1;
                         set_reg(op1_reg(), op1_subreg_flag(),
                             eval_condition(decode_condition(instr::setcc_base)));
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::cp_regVal_reg: {
+                    LBL_cp_regVal_reg: {
                         regs::rp.w0 += 2;
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::cp_immVal_reg: {
+                    LBL_cp_immVal_reg: {
                         regs::rp.w0 += 2;
                         u_hword imm_size = op1_imm_size();
                         copy_memval_reg(regs::rp.w0, imm_size, op2_reg(), op2_subreg_flag());
                         regs::rp.w0 += imm_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::ld_regAddr_reg: {
+                    LBL_ld_regAddr_reg: {
                         regs::rp.w0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::ld_immAddr_reg: {
+                    LBL_ld_immAddr_reg: {
                         regs::rp.w0 += 2;
                         u_hword imm_size = op1_imm_size();
                         copy_memaddr_reg(regs::rp.w0, imm_size, op2_reg(), op2_subreg_flag());
                         regs::rp.w0 += imm_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::cpz_regVal_reg: {
+                    LBL_cpz_regVal_reg: {
                         regs::rp.w0 += 2;
                         copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::cpz_immVal_reg: {
+                    LBL_cpz_immVal_reg: {
                         regs::rp.w0 += 2;
                         u_hword imm_size = op1_imm_size();
                         copy_memval_reg_zext(regs::rp.w0, imm_size, op2_reg(), op2_subreg_flag());
                         regs::rp.w0 += imm_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* LDZ (the zero-extending load, opcodes $93 / $D3) was removed as redundant
@@ -3225,39 +3431,39 @@ namespace maize {
                        narrows and has nothing to zero-extend. CPZ remains as the zero-extending
                        copy; those address-form encodings are now reserved. */
 
-                    case instr::st_regVal_regAddr: {
+                    LBL_st_regVal_regAddr: {
                         regs::rp.w0 += 2;
                         copy_regval_regaddr(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::st_immVal_regAddr: {
+                    LBL_st_immVal_regAddr: {
                         regs::rp.w0 += 2;
                         u_hword imm_size = op1_imm_size();
                         copy_memval_regaddr(regs::rp.w0, imm_size, op2_reg(), op2_subreg_flag());
                         regs::rp.w0 += imm_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::add_regVal_reg:
-                    case instr::sub_regVal_reg:
-                    case instr::mul_regVal_reg:
-                    case instr::div_regVal_reg:
-                    case instr::mod_regVal_reg:
-                    case instr::udiv_regVal_reg:
-                    case instr::adc_regVal_reg:
-                    case instr::sbb_regVal_reg:
-                    case instr::umod_regVal_reg:
-                    case instr::and_regVal_reg:
-                    case instr::or_regVal_reg:
-                    case instr::nor_regVal_reg:
-                    case instr::nand_regVal_reg:
-                    case instr::xor_regVal_reg:
-                    case instr::shl_regVal_reg:
-                    case instr::shr_regVal_reg:
-                    case instr::sar_regVal_reg:
-                    case instr::cmp_regVal_reg:
-                    case instr::test_regVal_reg: {
+                    LBL_add_regVal_reg:
+                    LBL_sub_regVal_reg:
+                    LBL_mul_regVal_reg:
+                    LBL_div_regVal_reg:
+                    LBL_mod_regVal_reg:
+                    LBL_udiv_regVal_reg:
+                    LBL_adc_regVal_reg:
+                    LBL_sbb_regVal_reg:
+                    LBL_umod_regVal_reg:
+                    LBL_and_regVal_reg:
+                    LBL_or_regVal_reg:
+                    LBL_nor_regVal_reg:
+                    LBL_nand_regVal_reg:
+                    LBL_xor_regVal_reg:
+                    LBL_shl_regVal_reg:
+                    LBL_shr_regVal_reg:
+                    LBL_sar_regVal_reg:
+                    LBL_cmp_regVal_reg:
+                    LBL_test_regVal_reg: {
                         regs::rp.w0 += 2;
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
@@ -3268,28 +3474,28 @@ namespace maize {
                         /* The value writeback is flag-neutral (card maize-4), so the ALU's
                            per-width C/N/V/Z stand as computed. */
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::add_immVal_reg:
-                    case instr::sub_immVal_reg:
-                    case instr::mul_immVal_reg:
-                    case instr::div_immVal_reg:
-                    case instr::mod_immVal_reg:
-                    case instr::udiv_immVal_reg:
-                    case instr::adc_immVal_reg:
-                    case instr::sbb_immVal_reg:
-                    case instr::umod_immVal_reg:
-                    case instr::and_immVal_reg:
-                    case instr::or_immVal_reg:
-                    case instr::nor_immVal_reg:
-                    case instr::nand_immVal_reg:
-                    case instr::xor_immVal_reg:
-                    case instr::shl_immVal_reg:
-                    case instr::shr_immVal_reg:
-                    case instr::sar_immVal_reg:
-                    case instr::cmp_immVal_reg:
-                    case instr::test_immVal_reg: {
+                    LBL_add_immVal_reg:
+                    LBL_sub_immVal_reg:
+                    LBL_mul_immVal_reg:
+                    LBL_div_immVal_reg:
+                    LBL_mod_immVal_reg:
+                    LBL_udiv_immVal_reg:
+                    LBL_adc_immVal_reg:
+                    LBL_sbb_immVal_reg:
+                    LBL_umod_immVal_reg:
+                    LBL_and_immVal_reg:
+                    LBL_or_immVal_reg:
+                    LBL_nor_immVal_reg:
+                    LBL_nand_immVal_reg:
+                    LBL_xor_immVal_reg:
+                    LBL_shl_immVal_reg:
+                    LBL_shr_immVal_reg:
+                    LBL_sar_immVal_reg:
+                    LBL_cmp_immVal_reg:
+                    LBL_test_immVal_reg: {
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
                         copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
@@ -3301,28 +3507,28 @@ namespace maize {
                         regs::rp.w0 += src_size;
                         /* Value writeback is flag-neutral (card maize-4); the ALU's flags stand. */
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::add_regAddr_reg:
-                    case instr::sub_regAddr_reg:
-                    case instr::mul_regAddr_reg:
-                    case instr::div_regAddr_reg:
-                    case instr::mod_regAddr_reg:
-                    case instr::udiv_regAddr_reg:
-                    case instr::adc_regAddr_reg:
-                    case instr::sbb_regAddr_reg:
-                    case instr::umod_regAddr_reg:
-                    case instr::and_regAddr_reg:
-                    case instr::or_regAddr_reg:
-                    case instr::nor_regAddr_reg:
-                    case instr::nand_regAddr_reg:
-                    case instr::xor_regAddr_reg:
-                    case instr::shl_regAddr_reg:
-                    case instr::shr_regAddr_reg:
-                    case instr::sar_regAddr_reg:
-                    case instr::cmp_regAddr_reg:
-                    case instr::test_regAddr_reg: {
+                    LBL_add_regAddr_reg:
+                    LBL_sub_regAddr_reg:
+                    LBL_mul_regAddr_reg:
+                    LBL_div_regAddr_reg:
+                    LBL_mod_regAddr_reg:
+                    LBL_udiv_regAddr_reg:
+                    LBL_adc_regAddr_reg:
+                    LBL_sbb_regAddr_reg:
+                    LBL_umod_regAddr_reg:
+                    LBL_and_regAddr_reg:
+                    LBL_or_regAddr_reg:
+                    LBL_nor_regAddr_reg:
+                    LBL_nand_regAddr_reg:
+                    LBL_xor_regAddr_reg:
+                    LBL_shl_regAddr_reg:
+                    LBL_shr_regAddr_reg:
+                    LBL_sar_regAddr_reg:
+                    LBL_cmp_regAddr_reg:
+                    LBL_test_regAddr_reg: {
                         regs::rp.w0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
@@ -3333,28 +3539,28 @@ namespace maize {
                         /* The value writeback is flag-neutral (card maize-4), so the ALU's
                            per-width C/N/V/Z stand as computed. */
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::add_immAddr_reg:
-                    case instr::sub_immAddr_reg:
-                    case instr::mul_immAddr_reg:
-                    case instr::div_immAddr_reg:
-                    case instr::mod_immAddr_reg:
-                    case instr::udiv_immAddr_reg:
-                    case instr::adc_immAddr_reg:
-                    case instr::sbb_immAddr_reg:
-                    case instr::umod_immAddr_reg:
-                    case instr::and_immAddr_reg:
-                    case instr::or_immAddr_reg:
-                    case instr::nor_immAddr_reg:
-                    case instr::nand_immAddr_reg:
-                    case instr::xor_immAddr_reg:
-                    case instr::shl_immAddr_reg:
-                    case instr::shr_immAddr_reg:
-                    case instr::sar_immAddr_reg:
-                    case instr::cmp_immAddr_reg:
-                    case instr::test_immAddr_reg: {
+                    LBL_add_immAddr_reg:
+                    LBL_sub_immAddr_reg:
+                    LBL_mul_immAddr_reg:
+                    LBL_div_immAddr_reg:
+                    LBL_mod_immAddr_reg:
+                    LBL_udiv_immAddr_reg:
+                    LBL_adc_immAddr_reg:
+                    LBL_sbb_immAddr_reg:
+                    LBL_umod_immAddr_reg:
+                    LBL_and_immAddr_reg:
+                    LBL_or_immAddr_reg:
+                    LBL_nor_immAddr_reg:
+                    LBL_nand_immAddr_reg:
+                    LBL_xor_immAddr_reg:
+                    LBL_shl_immAddr_reg:
+                    LBL_shr_immAddr_reg:
+                    LBL_sar_immAddr_reg:
+                    LBL_cmp_immAddr_reg:
+                    LBL_test_immAddr_reg: {
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
                         copy_memaddr_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
@@ -3366,17 +3572,17 @@ namespace maize {
                         regs::rp.w0 += src_size;
                         /* Value writeback is flag-neutral (card maize-4); the ALU's flags stand. */
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* Packed unary ALU family (card maize-64): INC ($31) / DEC ($71) /
                        NOT ($B1) / NEG ($F1) share base slot $31, distinguished by the
                        condition-style row bits. run_alu dispatches on alu.b0 & opflag_code,
                        so translate the row to a low-6-unique micro-op selector first. */
-                    case instr::inc_opcode:
-                    case instr::dec_opcode:
-                    case instr::not_opcode:
-                    case instr::neg_opcode: {
+                    LBL_inc_opcode:
+                    LBL_dec_opcode:
+                    LBL_not_opcode:
+                    LBL_neg_opcode: {
                         regs::rp.w0 += 1;
                         static const u_byte uop_sel[4] {alu_uop_inc, alu_uop_dec, alu_uop_not, alu_uop_neg};
                         u_byte row = (regs::ri.b0 & opcode_flag) >> 6;
@@ -3387,11 +3593,11 @@ namespace maize {
                         run_alu();
                         /* Value writeback is flag-neutral (card maize-4); the ALU's flags stand. */
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op1_reg(), op1_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::cmpind_immVal_regAddr:
-                    case instr::testind_immVal_regAddr:
+                    LBL_cmpind_immVal_regAddr:
+                    LBL_testind_immVal_regAddr:
                     {
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
@@ -3402,11 +3608,11 @@ namespace maize {
                         alu.b1 = src_size;
                         alu.b2 = op1_subreg_size();
                         run_alu();
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::cmpind_regVal_regAddr:
-                    case instr::testind_regVal_regAddr:
+                    LBL_cmpind_regVal_regAddr:
+                    LBL_testind_regVal_regAddr:
                     {
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_subreg_size();
@@ -3416,10 +3622,10 @@ namespace maize {
                         alu.b1 = src_size;
                         alu.b2 = op1_subreg_size();
                         run_alu();
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::cmpxchg_regVal_regreg: {
+                    LBL_cmpxchg_regVal_regreg: {
                         regs::rp.w0 += 3;
 
                         if (cmp_regval_reg(op3_reg(), op3_subreg_flag(), op2_reg(), op2_subreg_flag())) {
@@ -3431,10 +3637,10 @@ namespace maize {
                             copy_regval_reg(op2_reg(), op2_subreg_flag(), op3_reg(), op3_subreg_flag());
                         }
 
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::cmpxchg_regAddr_regreg: {
+                    LBL_cmpxchg_regAddr_regreg: {
                         regs::rp.w0 += 3;
 
                         if (cmp_regval_reg(op3_reg(), op3_subreg_flag(), op2_reg(), op2_subreg_flag())) {
@@ -3446,10 +3652,10 @@ namespace maize {
                             copy_regval_reg(op2_reg(), op2_subreg_flag(), op3_reg(), op3_subreg_flag());
                         }
 
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::cmpxchg_immVal_regreg: {
+                    LBL_cmpxchg_immVal_regreg: {
                         regs::rp.w0 += 3;
                         u_byte src_size = op1_imm_size();
                         regs::rp.w0 += src_size;
@@ -3463,10 +3669,10 @@ namespace maize {
                             copy_regval_reg(op2_reg(), op2_subreg_flag(), op3_reg(), op3_subreg_flag());
                         }
 
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::cmpxchg_immAddr_regreg: {
+                    LBL_cmpxchg_immAddr_regreg: {
                         regs::rp.w0 += 3;
                         u_byte src_size = op1_imm_size();
                         regs::rp.w0 += src_size;
@@ -3480,10 +3686,10 @@ namespace maize {
                             copy_regval_reg(op2_reg(), op2_subreg_flag(), op3_reg(), op3_subreg_flag());
                         }
 
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::lea_regVal_regreg: {
+                    LBL_lea_regVal_regreg: {
                         regs::rp.w0 += 3;
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
@@ -3497,10 +3703,10 @@ namespace maize {
                         run_alu();
                         regs::rf.h0 = saved_fl;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::lea_regAddr_regreg: {
+                    LBL_lea_regAddr_regreg: {
                         regs::rp.w0 += 3;
                         u_byte src_size = op1_imm_size();
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
@@ -3513,10 +3719,10 @@ namespace maize {
                         run_alu();
                         regs::rf.h0 = saved_fl;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::lea_immVal_regreg: {
+                    LBL_lea_immVal_regreg: {
                         regs::rp.w0 += 3;
                         u_byte src_size = op1_imm_size();
                         copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
@@ -3530,10 +3736,10 @@ namespace maize {
                         regs::rf.h0 = saved_fl;
                         regs::rp.w0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::lea_immAddr_regreg: {
+                    LBL_lea_immAddr_regreg: {
                         regs::rp.w0 += 3;
                         u_byte src_size = op1_imm_size();
                         copy_memaddr_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
@@ -3547,15 +3753,15 @@ namespace maize {
                         regs::rf.h0 = saved_fl;
                         regs::rp.w0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* Wide multiply (card maize-7): 3-operand src/dst/hi form modeled on LEA, but
                        flag-setting (run_alu leaves C/N/V/Z as computed) and writing BOTH dst (low
                        half, from alu.op2_reg) and hi (high half, from alu.op1_reg). The operation
                        width is dst's subregister (op2_subreg_size); hi is written at that width. */
-                    case instr::mulw_regVal_regreg:
-                    case instr::umulw_regVal_regreg: {
+                    LBL_mulw_regVal_regreg:
+                    LBL_umulw_regVal_regreg: {
                         regs::rp.w0 += 3;
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
@@ -3565,11 +3771,11 @@ namespace maize {
                         run_alu();
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
                         copy_regval_reg(alu.op1_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::mulw_immVal_regreg:
-                    case instr::umulw_immVal_regreg: {
+                    LBL_mulw_immVal_regreg:
+                    LBL_umulw_immVal_regreg: {
                         regs::rp.w0 += 3;
                         u_byte src_size = op1_imm_size();
                         copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
@@ -3581,11 +3787,11 @@ namespace maize {
                         regs::rp.w0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
                         copy_regval_reg(alu.op1_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::mulw_regAddr_regreg:
-                    case instr::umulw_regAddr_regreg: {
+                    LBL_mulw_regAddr_regreg:
+                    LBL_umulw_regAddr_regreg: {
                         regs::rp.w0 += 3;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
@@ -3595,11 +3801,11 @@ namespace maize {
                         run_alu();
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
                         copy_regval_reg(alu.op1_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::mulw_immAddr_regreg:
-                    case instr::umulw_immAddr_regreg: {
+                    LBL_mulw_immAddr_regreg:
+                    LBL_umulw_immAddr_regreg: {
                         regs::rp.w0 += 3;
                         u_byte src_size = op1_imm_size();
                         copy_memaddr_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
@@ -3611,15 +3817,15 @@ namespace maize {
                         regs::rp.w0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
                         copy_regval_reg(alu.op1_reg, subreg_enum::w0, op3_reg(), op3_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::xchg_opcode: {
+                    LBL_xchg_opcode: {
                         regs::rp.w0 += 2;
                         copy_regval_reg(op1_reg(), op1_subreg_flag(), operand1, subreg_enum::w0);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), op1_reg(), op1_subreg_flag());
                         copy_regval_reg(operand1, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* OUT / OUTR / IN (card maize-21): all twelve dispatch sites are
@@ -3630,17 +3836,17 @@ namespace maize {
                        The privilege gate is at the head of each case: executed with the RF
                        privilege bit clear (user mode) the instruction raises the cause-4
                        privileged-op fault before any device access. */
-                    case instr::out_regVal_imm: {
+                    LBL_out_regVal_imm: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte dst_size = op2_imm_size();
                         copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
                         port_write(operand2.q0, op1_reg(), op1_subreg_flag());
                         regs::rp.w0 += dst_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::out_immVal_imm: {
+                    LBL_out_immVal_imm: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
@@ -3650,7 +3856,7 @@ namespace maize {
                         copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
                         port_write(operand2.q0, operand1, subreg_enum::w0);
                         regs::rp.w0 += dst_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* $94 out_regAddr_imm (card maize-21): write operand1 (the value
@@ -3658,7 +3864,7 @@ namespace maize {
                        op1_reg() (the raw source address). This corrects the dead-load
                        defect isolated to this form; the sibling address forms already
                        write operand1. */
-                    case instr::out_regAddr_imm: {
+                    LBL_out_regAddr_imm: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), operand1, subreg_enum::w0);
@@ -3666,10 +3872,10 @@ namespace maize {
                         copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
                         port_write(operand2.q0, operand1, subreg_enum::w0);
                         regs::rp.w0 += dst_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::out_immAddr_imm: {
+                    LBL_out_immAddr_imm: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
@@ -3679,7 +3885,7 @@ namespace maize {
                         copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
                         port_write(operand2.q0, operand1, subreg_enum::w0);
                         regs::rp.w0 += dst_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* OUTR/IN (card maize-10, Decision D6464): mirror OUT's four-case pattern
@@ -3689,126 +3895,126 @@ namespace maize {
                        immediate-port convention of using only the low 16 bits regardless of
                        the encoded field width. IN's copy direction is device-to-register,
                        the mirror image of OUT's register-to-device direction. */
-                    case instr::outr_regVal_reg: {
+                    LBL_outr_regVal_reg: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         port_write(op2_reg().q0, op1_reg(), op1_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::outr_immVal_imm: {
+                    LBL_outr_immVal_imm: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
                         copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
                         port_write(op2_reg().q0, operand1, subreg_enum::w0);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::outr_regAddr_imm: {
+                    LBL_outr_regAddr_imm: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), operand1, subreg_enum::w0);
                         port_write(op2_reg().q0, operand1, subreg_enum::w0);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::outr_immAddr_imm: {
+                    LBL_outr_immAddr_imm: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
                         copy_memaddr_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
                         port_write(op2_reg().q0, operand1, subreg_enum::w0);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::in_regVal_imm: {
+                    LBL_in_regVal_imm: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         port_read(op1_reg().q0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::in_immVal_imm: {
+                    LBL_in_immVal_imm: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
                         copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
                         port_read(operand1.q0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::in_regAddr_imm: {
+                    LBL_in_regAddr_imm: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), operand1, subreg_enum::w0);
                         port_read(operand1.q0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::in_immAddr_imm: {
+                    LBL_in_immAddr_imm: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
                         copy_memaddr_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
                         port_read(operand1.q0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::sys_immVal: {
+                    LBL_sys_immVal: {
                         regs::rp.w0 += 1;
                         u_byte src_size = op1_imm_size();
                         copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
                         regs::rv.w0 = sys::call(operand1.b0);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::sys_regVal: {
+                    LBL_sys_regVal: {
                         regs::rp.w0 += 1;
                         regs::rv.w0 = sys::call(op1_reg().b0);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::pop_opcode: {
+                    LBL_pop_opcode: {
                         regs::rp.w0 += 1;
                         auto src_size = op1_subreg_size();
                         copy_memval_reg(regs::rs.w0, src_size, op1_reg(), op1_subreg_flag());
                         regs::rs.w0 += src_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::push_regVal: {
+                    LBL_push_regVal: {
                         regs::rp.w0 += 1;
                         u_byte src_size = op1_subreg_size();
                         regs::rs.w0 -= src_size;
                         copy_regval_regaddr(op1_reg(), op1_subreg_flag(), regs::rs, subreg_enum::w0);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::push_immVal: {
+                    LBL_push_immVal: {
                         regs::rp.w0 += 1;
                         u_byte src_size = op1_imm_size();
                         regs::rs.w0 -= src_size;
                         copy_memval_regaddr(regs::rp.w0, src_size, regs::rs, subreg_enum::w0);
                         regs::rp.w0 += src_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::call_regVal: {
+                    LBL_call_regVal: {
                         /* Push the full 64-bit return address, then jump (maize-41). */
                         regs::rp.w0 += 1;                                          // past the register param -> return address
                         regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
                         copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::call_immVal: {
+                    LBL_call_immVal: {
                         /* Read the target immediate at its encoded width (zero-extended), push the
                            full 64-bit return address, then jump (maize-41). */
                         regs::rp.w0 += 1;                                          // past the param byte
@@ -3819,21 +4025,21 @@ namespace maize {
                         regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
                         regs::rp.w0 = target.w0;
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* CALL indirect (card maize-10, Decision D6463): combines the
                        return-address-push sequence above with the target-resolution logic
                        already in jmp_regAddr/jmp_immAddr (below). */
-                    case instr::call_regAddr: {
+                    LBL_call_regAddr: {
                         regs::rp.w0 += 1;                                          // past the register param -> return address
                         regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::call_immAddr: {
+                    LBL_call_immAddr: {
                         /* Read the address-literal at its encoded width, advance PC past it
                            (that's the return address), push the return address, then
                            double-dereference to the actual jump target. */
@@ -3847,52 +4053,52 @@ namespace maize {
                         reg target;
                         mm.read(addr_literal.w0, target, subreg_size_map[static_cast<size_t>(subreg_enum::w0)], 0);
                         regs::rp.w0 = target.w0;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::ret_opcode: {
+                    LBL_ret_opcode: {
                         /* Pop the full 64-bit return address (maize-41). */
                         u_byte src_size = subreg_size_map[static_cast<size_t>(subreg_enum::w0)];
                         copy_memval_reg(regs::rs.w0, src_size, regs::rp, subreg_enum::w0);
                         regs::rs.w0 += src_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::iret_opcode: {
+                    LBL_iret_opcode: {
                         auto src_size = subreg_size_map[static_cast<size_t>(subreg_enum::w0)];
                         copy_memval_reg(regs::rs.w0, src_size, regs::rf, subreg_enum::w0);
                         regs::rs.w0 += src_size;
                         copy_memval_reg(regs::rs.w0, src_size, regs::rp, subreg_enum::w0);
                         regs::rs.w0 += src_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* JMP (card maize-64): always targets the full 64-bit width. The
                        register forms read the whole register (subreg_enum::w0) regardless
                        of any encoded sub-register selection, folding in the full-width role
                        LNGJMP used to play; LNGJMP is removed. */
-                    case instr::jmp_regVal: {
+                    LBL_jmp_regVal: {
                         regs::rp.w0 += 1;
                         copy_regval_reg_zext(op1_reg(), subreg_enum::w0, regs::rp, subreg_enum::w0);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::jmp_immVal: {
+                    LBL_jmp_immVal: {
                         regs::rp.w0 += 1;
                         jump_to_immediate();
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::jmp_regAddr: {
+                    LBL_jmp_regAddr: {
                         regs::rp.w0 += 1;
                         copy_regaddr_reg(op1_reg(), subreg_enum::w0, regs::rp, subreg_enum::w0);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::jmp_immAddr: {
+                    LBL_jmp_immAddr: {
                         regs::rp.w0 += 1;
                         copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* Conditional branches (Jcc), card maize-64: IMMEDIATE target only. The
@@ -3901,17 +4107,17 @@ namespace maize {
                        eval_condition table (the SAME predicate table SETcc uses). On a taken
                        branch the immediate target is loaded into PC; otherwise PC steps over
                        the immediate. */
-                    case instr::jz_opcode:
-                    case instr::jnz_opcode:
-                    case instr::jlt_opcode:
-                    case instr::jb_opcode:
-                    case instr::jgt_opcode:
-                    case instr::ja_opcode:
-                    case instr::jge_opcode:
-                    case instr::jle_opcode:
-                    case instr::jbe_opcode:
-                    case instr::jae_opcode:
-                    case instr::jp_opcode: {
+                    LBL_jz_opcode:
+                    LBL_jnz_opcode:
+                    LBL_jlt_opcode:
+                    LBL_jb_opcode:
+                    LBL_jgt_opcode:
+                    LBL_ja_opcode:
+                    LBL_jge_opcode:
+                    LBL_jle_opcode:
+                    LBL_jbe_opcode:
+                    LBL_jae_opcode:
+                    LBL_jp_opcode: {
                         regs::rp.w0 += 1;   // past the operand-descriptor (immediate-size) byte
                         if (eval_condition(decode_condition(instr::jcc_base))) {
                             jump_to_immediate();
@@ -3919,37 +4125,37 @@ namespace maize {
                         else {
                             regs::rp.w0 += op1_imm_size();
                         }
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* No-operand carry manipulation (card maize-1). */
-                    case instr::setcry_opcode: {
+                    LBL_setcry_opcode: {
                         carryout_flag = true;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::clrcry_opcode: {
+                    LBL_clrcry_opcode: {
                         carryout_flag = false;
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* No-operand interrupt-enable manipulation (card maize-10, Decision D6461):
                        pure set/clear of interrupt_enabled_flag, mirroring setcry_opcode/
                        clrcry_opcode above exactly. No interrupt-vector-table or delivery work
                        included (Open Question O1). */
-                    case instr::setint_opcode: {
+                    LBL_setint_opcode: {
                         interrupt_enabled_flag = true;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::clrint_opcode: {
+                    LBL_clrint_opcode: {
                         interrupt_enabled_flag = false;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::nop_opcode: {
+                    LBL_nop_opcode: {
                         /* Do nothing. */
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* BRK (card maize-78, Open Question O7, superseding maize-10 Decision
@@ -3959,7 +4165,7 @@ namespace maize {
                        handler installed (the maize-21 vector table does not exist yet) the
                        trap halts the VM deterministically with the breakpoint cause
                        surfaced, through the same mechanism raise_divide_error uses. */
-                    case instr::brk_opcode: {
+                    LBL_brk_opcode: {
                         raise_breakpoint();
                     }
 
@@ -3980,10 +4186,10 @@ namespace maize {
                        subregister on an FP operand is an illegal-operand trap. */
 
                     /* 3a. Arithmetic, register-value source. */
-                    case instr::fadd_regVal_reg:
-                    case instr::fsub_regVal_reg:
-                    case instr::fmul_regVal_reg:
-                    case instr::fdiv_regVal_reg: {
+                    LBL_fadd_regVal_reg:
+                    LBL_fsub_regVal_reg:
+                    LBL_fmul_regVal_reg:
+                    LBL_fdiv_regVal_reg: {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 (binary32) or W0 (binary64)");
@@ -3996,14 +4202,14 @@ namespace maize {
                         alu.b2 = w;
                         run_fpu_arith();
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* 3a. Arithmetic, immediate-value source (raw float bits). */
-                    case instr::fadd_immVal_reg:
-                    case instr::fsub_immVal_reg:
-                    case instr::fmul_immVal_reg:
-                    case instr::fdiv_immVal_reg: {
+                    LBL_fadd_immVal_reg:
+                    LBL_fsub_immVal_reg:
+                    LBL_fmul_immVal_reg:
+                    LBL_fdiv_immVal_reg: {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 (binary32) or W0 (binary64)");
@@ -4015,14 +4221,14 @@ namespace maize {
                         run_fpu_arith();
                         regs::rp.w0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* 3a. Arithmetic, register-address source (load then operate). */
-                    case instr::fadd_regAddr_reg:
-                    case instr::fsub_regAddr_reg:
-                    case instr::fmul_regAddr_reg:
-                    case instr::fdiv_regAddr_reg: {
+                    LBL_fadd_regAddr_reg:
+                    LBL_fsub_regAddr_reg:
+                    LBL_fmul_regAddr_reg:
+                    LBL_fdiv_regAddr_reg: {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 (binary32) or W0 (binary64)");
@@ -4037,14 +4243,14 @@ namespace maize {
                         alu.b2 = w;
                         run_fpu_arith();
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* 3a. Arithmetic, immediate-address source. */
-                    case instr::fadd_immAddr_reg:
-                    case instr::fsub_immAddr_reg:
-                    case instr::fmul_immAddr_reg:
-                    case instr::fdiv_immAddr_reg: {
+                    LBL_fadd_immAddr_reg:
+                    LBL_fsub_immAddr_reg:
+                    LBL_fmul_immAddr_reg:
+                    LBL_fdiv_immAddr_reg: {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 (binary32) or W0 (binary64)");
@@ -4056,12 +4262,12 @@ namespace maize {
                         run_fpu_arith();
                         regs::rp.w0 += src_size;
                         copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* 3e. FCMP, all four addressing-mode source forms. op2 is `a`
                        (the register compared), op1/immediate is `src`. */
-                    case instr::fcmp_regVal_reg: {
+                    LBL_fcmp_regVal_reg: {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
@@ -4071,10 +4277,10 @@ namespace maize {
                         u_word src = read_subreg_bits(op1_reg(), op1_subreg_flag());
                         u_word a = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         do_fcmp(a, src, w);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::fcmp_immVal_reg: {
+                    LBL_fcmp_immVal_reg: {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
@@ -4084,10 +4290,10 @@ namespace maize {
                         u_word a = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         do_fcmp(a, tmp.w0, w);
                         regs::rp.w0 += src_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::fcmp_regAddr_reg: {
+                    LBL_fcmp_regAddr_reg: {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
@@ -4096,10 +4302,10 @@ namespace maize {
                         mm.read(addr, tmp, w, 0);
                         u_word a = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         do_fcmp(a, tmp.w0, w);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::fcmp_immAddr_reg: {
+                    LBL_fcmp_immAddr_reg: {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
@@ -4108,15 +4314,15 @@ namespace maize {
                         u_word a = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         do_fcmp(a, alu.op1_reg.w0, w);
                         regs::rp.w0 += src_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* 3b. Unary register-only: FSQRT/FNEG/FABS. op1 = src, op2 = dst
                        (dst = f(src)). FNEG/FABS are exact sign-bit ops (no flags, no
                        rounding, NaN payloads preserved). */
-                    case instr::fsqrt_opcode:
-                    case instr::fneg_opcode:
-                    case instr::fabs_opcode: {
+                    LBL_fsqrt_opcode:
+                    LBL_fneg_opcode:
+                    LBL_fabs_opcode: {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 or W0");
@@ -4132,13 +4338,13 @@ namespace maize {
                         }
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* 3d. Min/max register-only: FMIN/FMAX. op1 = src, op2 = dst
                        (dst = min/max(dst, src)). */
-                    case instr::fmin_opcode:
-                    case instr::fmax_opcode: {
+                    LBL_fmin_opcode:
+                    LBL_fmax_opcode: {
                         regs::rp.w0 += 2;
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 or W0");
@@ -4151,13 +4357,13 @@ namespace maize {
                             ? fpu::fp_min(dst, src, w) : fpu::fp_max(dst, src, w);
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* 3f. Conversions register-only. op1 = src, op2 = dst. Widths
                        come from the two subregister fields; the float operand must be
                        H0/H1/W0, the integer operand may be any width. */
-                    case instr::fcvtff_opcode: { // float <-> float
+                    LBL_fcvtff_opcode: { // float <-> float
                         regs::rp.w0 += 2;
                         u_byte dw = fp_width_from_subreg(op2_subreg_flag());
                         u_byte sw = fp_width_from_subreg(op1_subreg_flag());
@@ -4166,11 +4372,11 @@ namespace maize {
                         fpu::fresult res = fpu::fp_cvt_ff(src, sw, dw, fp_checked_frm());
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::fcvtfs_opcode:   // float -> signed integer
-                    case instr::fcvtfu_opcode: { // float -> unsigned integer
+                    LBL_fcvtfs_opcode:   // float -> signed integer
+                    LBL_fcvtfu_opcode: { // float -> unsigned integer
                         regs::rp.w0 += 2;
                         u_byte sw = fp_width_from_subreg(op1_subreg_flag());
                         if (!sw) raise_illegal_fp("FCVTFS/FCVTFU source subregister must be H0/H1 or W0");
@@ -4180,11 +4386,11 @@ namespace maize {
                         fpu::fresult res = fpu::fp_cvt_f_to_int(src, sw, dw, is_signed, fp_checked_frm());
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::fcvtsf_opcode:   // signed integer -> float
-                    case instr::fcvtuf_opcode: { // unsigned integer -> float
+                    LBL_fcvtsf_opcode:   // signed integer -> float
+                    LBL_fcvtuf_opcode: { // unsigned integer -> float
                         regs::rp.w0 += 2;
                         u_byte dw = fp_width_from_subreg(op2_subreg_flag());
                         if (!dw) raise_illegal_fp("FCVTSF/FCVTUF destination subregister must be H0/H1 or W0");
@@ -4194,7 +4400,7 @@ namespace maize {
                         fpu::fresult res = fpu::fp_cvt_int_to_f(src, sw, dw, is_signed, fp_checked_frm());
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op2_reg(), op2_subreg_flag(), res.bits);
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* 3c. FMA: op1 = a (flagged src), op2 = b, op3 = c (also the
@@ -4203,8 +4409,8 @@ namespace maize {
                        accumulate under the MULW-shaped encoding (op3 is both the
                        addend c and the destination dst). FNMADD/FNMSUB are synthesized
                        via the exact FNEG (not primitives). */
-                    case instr::fmadd_regVal_regreg:
-                    case instr::fmsub_regVal_regreg: {
+                    LBL_fmadd_regVal_regreg:
+                    LBL_fmsub_regVal_regreg: {
                         regs::rp.w0 += 3;
                         u_byte w = fp_width_from_subreg(op3_subreg_flag());
                         if (!w) raise_illegal_fp("FMA destination subregister must be H0/H1 or W0");
@@ -4219,11 +4425,11 @@ namespace maize {
                         fpu::fresult res = fpu::fp_fma(a, b, c, w, fp_checked_frm(), sub);
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op3_reg(), op3_subreg_flag(), res.bits);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::fmadd_immVal_regreg:
-                    case instr::fmsub_immVal_regreg: {
+                    LBL_fmadd_immVal_regreg:
+                    LBL_fmsub_immVal_regreg: {
                         regs::rp.w0 += 3;
                         u_byte w = fp_width_from_subreg(op3_subreg_flag());
                         if (!w) raise_illegal_fp("FMA destination subregister must be H0/H1 or W0");
@@ -4243,11 +4449,11 @@ namespace maize {
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op3_reg(), op3_subreg_flag(), res.bits);
                         regs::rp.w0 += src_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::fmadd_regAddr_regreg:
-                    case instr::fmsub_regAddr_regreg: {
+                    LBL_fmadd_regAddr_regreg:
+                    LBL_fmsub_regAddr_regreg: {
                         regs::rp.w0 += 3;
                         u_byte w = fp_width_from_subreg(op3_subreg_flag());
                         if (!w) raise_illegal_fp("FMA destination subregister must be H0/H1 or W0");
@@ -4266,11 +4472,11 @@ namespace maize {
                         fpu::fresult res = fpu::fp_fma(a, b, c, w, fp_checked_frm(), sub);
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op3_reg(), op3_subreg_flag(), res.bits);
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::fmadd_immAddr_regreg:
-                    case instr::fmsub_immAddr_regreg: {
+                    LBL_fmadd_immAddr_regreg:
+                    LBL_fmsub_immAddr_regreg: {
                         regs::rp.w0 += 3;
                         u_byte w = fp_width_from_subreg(op3_subreg_flag());
                         if (!w) raise_illegal_fp("FMA destination subregister must be H0/H1 or W0");
@@ -4289,34 +4495,35 @@ namespace maize {
                         if (res.flags) fcsr_raise(res.flags);
                         write_subreg_bits(op3_reg(), op3_subreg_flag(), res.bits);
                         regs::rp.w0 += src_size;
-                        break;
+                        MAIZE_NEXT();
                     }
 
                     /* FCSR access (card maize-122). FGETCSR dst: dst = FCSR (the
                        whole 8-bit FRM+FFLAGS byte). FSETCSR src: FCSR = src (low 8
                        bits; the upper reserved trap-enable region stays 0 in v1.0). */
-                    case instr::fgetcsr_opcode: {
+                    LBL_fgetcsr_opcode: {
                         regs::rp.w0 += 1;
                         write_subreg_bits(op1_reg(), op1_subreg_flag(),
                             static_cast<u_word>(static_cast<u_byte>(regs::fcsr.b0)));
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    case instr::fsetcsr_opcode: {
+                    LBL_fsetcsr_opcode: {
                         regs::rp.w0 += 1;
                         u_word v = read_subreg_bits(op1_reg(), op1_subreg_flag());
                         regs::fcsr.w0 = v & 0xFF;
-                        break;
+                        MAIZE_NEXT();
                     }
 
-                    default: {
-                        std::stringstream err {};
-                        err << "unknown opcode: " << std::hex << regs::ri.b0;
-                        throw std::logic_error(err.str());
-                        break;
+                    LBL_default: {
+                        /* Unknown opcode. The message-building (a non-trivial std::stringstream)
+                           is in an out-of-line [[noreturn]] helper: clang forbids an indirect
+                           goto (the threaded dispatch) from crossing a non-trivial variable's
+                           scope, so no such variable may live in the dispatch body. */
+                        raise_unknown_opcode(regs::ri.b0);
                     }
-                }
-            }
+            tick_exit: ;
+#undef MAIZE_NEXT
         }
 
         /* Stop the VM: drop out of tick()'s instruction loop (running_flag) and
