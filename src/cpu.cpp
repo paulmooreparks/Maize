@@ -469,43 +469,27 @@ namespace maize {
             return highest_block_;
         }
 
-        size_t memory_module::set_cache_address(u_word address) {
-            u_word base = address & address_mask;
-
-            if (cache_base != base) {
-                cache_base = base;
-
-                /* Direct-mapped L1 block cache: one index + tag compare on the hot path,
-                   no hash, no tree. Falls back to the hash map only on an L1 miss. */
-                size_t slot = (base >> block_shift) & l1_mask;
-                if (l1_ptr[slot] != nullptr && l1_base[slot] == base) {
-                    cache = l1_ptr[slot];
-                }
-                else {
-                    u_byte* blk;
-                    auto it = memory_map.find(base);
-                    if (it == memory_map.end()) {
-                        blk = new u_byte[block_size] {0};
-                        memory_map.emplace(base, blk);
-                        if (!any_block_ || base > highest_block_) {
-                            highest_block_ = base;
-                            any_block_ = true;
-                        }
-                    }
-                    else {
-                        blk = it->second;
-                    }
-                    l1_base[slot] = base;
-                    l1_ptr[slot] = blk;
-                    cache = blk;
+        /* Out-of-line slow path for set_cache_address (in the header): an L1 block-cache miss
+           (first touch of a block, or a slot eviction). Consults the hash map, allocates the
+           block on first touch, and fills the L1 slot. Kept out of line so the inlined fast
+           path stays small. */
+        void memory_module::resolve_block_miss(u_word base, size_t slot) {
+            u_byte* blk;
+            auto it = memory_map.find(base);
+            if (it == memory_map.end()) {
+                blk = new u_byte[block_size] {0};
+                memory_map.emplace(base, blk);
+                if (!any_block_ || base > highest_block_) {
+                    highest_block_ = base;
+                    any_block_ = true;
                 }
             }
-
-            /* Return bytes remaining in the block from `address`. The in-block offset the
-               callers need is block_size - (return value) == address & block_mask; deriving
-               it locally avoids storing a reg_value cache_address (whose proxy access was a
-               large slice of this function's cost). */
-            return block_size - (address & block_mask);
+            else {
+                blk = it->second;
+            }
+            l1_base[slot] = base;
+            l1_ptr[slot] = blk;
+            cache = blk;
         }
 
         void reg::increment(u_byte value, subreg_enum subreg) {

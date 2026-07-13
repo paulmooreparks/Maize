@@ -475,7 +475,26 @@ namespace maize {
 			bool any_block_ {false};
 			u_byte* cache {nullptr};
 
-			size_t set_cache_address(u_word address);
+			/* Resolve the block for `address` and return bytes-remaining-in-block. Defined
+			   inline here (called ~150M times/frame from read/write) so it inlines into the
+			   memory hot loops: the fast path is a base compare + one L1 array probe, and the
+			   rare L1 miss (first touch / eviction) is the out-of-line resolve_block_miss. The
+			   in-block offset the callers need is block_size - (return value). */
+			size_t set_cache_address(u_word address) {
+				u_word base = address & address_mask;
+				if (cache_base != base) {
+					cache_base = base;
+					size_t slot = (base >> block_shift) & l1_mask;
+					if (l1_ptr[slot] != nullptr && l1_base[slot] == base) {
+						cache = l1_ptr[slot];
+					}
+					else {
+						resolve_block_miss(base, slot);
+					}
+				}
+				return block_size - (address & block_mask);
+			}
+			void resolve_block_miss(u_word base, size_t slot);
 			u_hword write_bytes(u_word address, u_word value, size_t count);
 		};
 
