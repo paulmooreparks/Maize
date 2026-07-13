@@ -63,4 +63,9 @@ void   qsort(void *base, size_t nmemb, size_t size,
              int (*compar)(const void *, const void *));
 double atof(const char *nptr);
 
+/* maize-147 declaration (body in the sibling libc card, maize-148). DOOM's m_misc.c
+ * shells a command via system(); Maize has no shell, so maize-148 returns a fixed
+ * failure. Declared here so every DOOM TU that calls it finds the visible prototype. */
+int system(const char *command);
+
 #endif /* MAIZE_STDLIB_H */

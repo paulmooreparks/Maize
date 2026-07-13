@@ -20,6 +20,7 @@ extern int errno;
 #define EPERM   1
 #define EBADF   9
 #define ENOMEM 12   /* sbrk/malloc: request over HEAP_CEILING or below the floor */
+#define EISDIR 21   /* m_misc.c:439: write target is a directory (maize-147) */
 #define EINVAL 22
 #define ERANGE 34   /* strtol: value out of long range (overflow clamp), maize-142 */
 

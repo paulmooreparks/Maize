@@ -40,6 +40,16 @@
 /* Full-buffer size for fopen'd streams (classic single-direction stdio buffer). */
 #define BUFSIZ 4096
 
+/* fseek/lseek whence values (maize-147). Identical tokens to fcntl.h's (0/1/2), so a
+ * TU including both <stdio.h> and <fcntl.h> sees a legal identical-token redefinition;
+ * the #ifndef is belt-and-suspenders. DOOM's w_file_stdc.c:162 references these via
+ * <stdio.h>. */
+#ifndef SEEK_SET
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+#endif
+
 struct _FILE {
     int            fd;
     int            flags;   /* bitset: readable / writable / eof / error / unbuffered */
@@ -68,6 +78,12 @@ int sprintf(char *str, const char *fmt, ...);
 int vprintf(const char *fmt, va_list ap);
 int vfprintf(FILE *stream, const char *fmt, va_list ap);
 int vsnprintf(char *str, size_t n, const char *fmt, va_list ap);
+
+/* maize-147 declarations (bodies in the sibling libc card, maize-148). sscanf parses a
+ * string per the format; remove unlinks a path. DOOM references both; declared here so
+ * strict cproc sees a visible prototype at each call site. */
+int sscanf(const char *str, const char *format, ...);
+int remove(const char *pathname);
 
 /* maize-120 file-backed FILE* layer. fopen'd streams are fully buffered; the mode
  * string accepts and ignores a 'b' (Maize does no text-mode translation, so binary

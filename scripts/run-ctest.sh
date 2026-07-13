@@ -788,6 +788,12 @@ run_ctest "malloc"
 # maize-146 freestanding headers: fixed-width types + limit/constant macros + bool,
 # and (precautionary) the inttypes PRI* format macros over the Maize printf.
 run_ctest "stdint"
+# maize-147 RT headers round 2 for DOOM: includes every new header (strings/math/
+# assert/unistd/sys/types/sys/stat), asserts the SEEK_*/EISDIR/S_IF* macro values and
+# the off_t/ssize_t/mode_t widths, proves the struct stat byte-ABI (sizeof 144;
+# nlink@16/mode@24/size@48 via runtime pointer subtraction), and parses each new decl
+# via sizeof(&fn) with NO link dependency (bodies are maize-148). One "rthdrs2: PASS".
+run_ctest "rthdrs2"
 # maize-100 atexit registry: two handlers registered A-then-B run at exit in LIFO
 # order (B, then A) after "main done", proving both that exit() runs the registry
 # and the ordering, plus the indirect-call-through-a-runtime-indexed-fnptr-array path.
