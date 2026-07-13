@@ -744,22 +744,36 @@ namespace maize {
                    immediates, the ALU immediate operands (which previously merged, leaking stale
                    upper bytes into the operation), and stack/pointer loads. CPZ is the
                    zero-extending counterpart; an explicit narrower destination subregister is the
-                   partial-write escape hatch. */
-                reg_value src_data;
-                src_data.w0 = 0;
-                mm.read(address, src_data, size, 0);
-                copy_regval_reg(src_data, imm_size_subreg_map[static_cast<size_t>(size)], op2_reg, dst_subreg);
+                   partial-write escape hatch.
+
+                   The immediate is read into a plain u_word (LE host: read_into fills the low
+                   `size` bytes of a zeroed word, so it is already zero-extended), avoiding a
+                   128-byte reg_value temporary + a second copy on this hot immediate path. The
+                   immediate source subreg is low-aligned (offset 0), so the source value is the
+                   raw word. */
+                u_word raw = 0;
+                mm.read_into(address, reinterpret_cast<u_byte*>(&raw), size);
+                subreg_enum src_subreg = imm_size_subreg_map[static_cast<size_t>(size)];
+                if (raw & subreg_sign_bit[static_cast<int>(src_subreg)]) {
+                    raw |= subreg_neg_bits[static_cast<int>(src_subreg)];
+                }
+                auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
+                auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
+                op2_reg.w0 = (~static_cast<u_word>(dst_mask) & op2_reg.w0)
+                    | ((raw << dst_offset) & static_cast<u_word>(dst_mask));
             }
 
             void copy_memval_reg_zext(u_word address, size_t size, reg_value &op2_reg, subreg_enum dst_subreg) {
                 /* Zero-extending immediate value for CPZ (card maize-29): a narrow immediate fills
                    the destination's upper bytes with zero, the unsigned counterpart to
-                   copy_memval_reg's sign-extension. Keeps CPZ distinct from CP for immediates
-                   (they were indistinguishable while both merged). */
-                reg_value src_data;
-                src_data.w0 = 0;
-                mm.read(address, src_data, size, 0);
-                copy_regval_reg_zext(src_data, imm_size_subreg_map[static_cast<size_t>(size)], op2_reg, dst_subreg);
+                   copy_memval_reg's sign-extension. read_into into a zeroed word is already the
+                   zero-extended value; no reg_value temporary. */
+                u_word raw = 0;
+                mm.read_into(address, reinterpret_cast<u_byte*>(&raw), size);
+                auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
+                auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
+                op2_reg.w0 = (~static_cast<u_word>(dst_mask) & op2_reg.w0)
+                    | ((raw << dst_offset) & static_cast<u_word>(dst_mask));
             }
 
             void copy_regaddr_reg(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
