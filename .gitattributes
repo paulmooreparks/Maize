@@ -39,3 +39,7 @@
 *.mzb  binary
 *.mzo  binary
 *.mzx  binary
+
+# Committed binary test fixtures (e.g. demos/doom/testdata/doomread.bin, the DOOM WAD-read
+# self-check input) must stay byte-exact: never line-ending-normalize them.
+*.bin  binary

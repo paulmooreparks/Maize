@@ -93,6 +93,9 @@ MODE="compile"      # compile | build
 RUN=0               # -r / --run
 EMIT=0              # --emit
 DEV=0               # --dev (append the mzdev device-access shim to the link, maize-121)
+EXTRA_CPPDEFS=""    # -D <name>[=val] cpp-define passthrough (maize-153); defaults empty so
+                    # every existing caller's cpp command is byte-identical. Threaded into
+                    # compile_tu's cpp line after the fixed -D '__attribute__(x)='.
 OUT=""
 POS_SRCS=""         # positional C sources, newline-separated, in command-line order
 SRCFILES=""         # --sources listfiles, newline-separated
@@ -103,6 +106,8 @@ while [ $# -gt 0 ]; do
         -r|--run) RUN=1; shift ;;
         --emit) EMIT=1; shift ;;
         --dev) DEV=1; shift ;;
+        -D)  EXTRA_CPPDEFS="${EXTRA_CPPDEFS} -D $2"; shift 2 ;;   # -D <name>[=val] (maize-153)
+        -D*) EXTRA_CPPDEFS="${EXTRA_CPPDEFS} $1";    shift ;;     # -D<name>[=val] (glued form)
         --compile-only) RUN=0; shift ;;   # back-compat: no-op alias of new default (D3)
         -o) OUT="${2:-}"; shift 2 ;;
         -o*) OUT="${1#-o}"; shift ;;
@@ -282,7 +287,11 @@ compile_tu() {
     # DOOM reads/writes is byte-identical with or without packed. No in-tree TU compiled
     # through this driver uses any GNU attribute, so the strip is a no-op for the existing
     # RT/ctest corpus and cannot regress hello.mzb.
-    if ! "$CPP" -E -P -nostdinc -D '__attribute__(x)=' -I "$RT_DIR" -I "$(dirname -- "$_src")" "$_lf" > "$_pp" 2>"${WORK}/${_tag}.cpp.log"; then
+    # ${EXTRA_CPPDEFS} carries any caller -D defines (maize-153); it is empty for every
+    # existing caller, so this cpp line is byte-identical unless a -D was passed (DOOM's
+    # -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 geometry override). Intentionally
+    # unquoted so the accumulated `-D name=val` tokens word-split into separate args.
+    if ! "$CPP" -E -P -nostdinc -D '__attribute__(x)=' ${EXTRA_CPPDEFS} -I "$RT_DIR" -I "$(dirname -- "$_src")" "$_lf" > "$_pp" 2>"${WORK}/${_tag}.cpp.log"; then
         echo "cc-maize.sh: cpp failed for ${_tag}" >&2; cat "${WORK}/${_tag}.cpp.log" >&2; return 1
     fi
     if ! "$CPROC_QBE" < "$_pp" > "$_ssa" 2>"${WORK}/${_tag}.cproc.log"; then

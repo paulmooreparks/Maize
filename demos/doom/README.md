@@ -13,38 +13,71 @@ OUTSIDE the submodule, which is never edited.
   doomgeneric + DOOM `.c` set for a headless build (SDL Makefile's `SRC_DOOM`
   minus the SDL platform + SDL-audio TUs). Names no entry `main` TU so Phase C
   can reuse it verbatim.
-- `doomgeneric_maize.c`: the Maize platform layer, Phase A STUB bodies for the
-  six `DG_*` functions plus the two residual sound-module descriptor structs.
+- `doomgeneric_maize.c`: the Maize platform layer, the real Phase B bodies for the
+  six `DG_*` functions (framebuffer present, ms clock, Set-1 to DOOM key table)
+  plus the two residual sound-module descriptor structs.
+- `doom_selfcheck.c`: a standalone headless self-check that links ONLY the platform
+  layer (not the full engine) and verifies each `DG_*` primitive in isolation.
+- `testdata/doomread.bin`: a committed 512-byte binary fixture the self-check reads
+  through the libc `FILE*` path (the same path DOOM uses to open a WAD).
 - `doom_main.c`: the entry TU; `main` calls `doomgeneric_Create` then loops
   `doomgeneric_Tick`.
 
-## Build command (Phase A target: compile + link only)
+## Geometry
 
-The entry TU and the stub platform layer are passed positionally alongside the
-entry-free `doom.sources` core set (which names no `main`, so Phase C reuses it
-verbatim):
+The engine defaults to 640x400 (`doomgeneric.h`), which would render DOOM's native
+320x200 frame scaled 2x. Both Maize builds instead pass
+`-D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200` (a `cc-maize.sh` cpp-define
+passthrough) so the frame is native 320x200 with no scaling, matching the default
+320x200 XRGB8888 Maize framebuffer exactly. The frame present is then a straight
+memcpy with no pixel conversion.
 
-    scripts/cc-maize.sh --dev -o demos/doom/doom.mzx \
+## Build command (compile + link the full tree)
+
+The entry TU and the platform layer are passed positionally alongside the
+entry-free `doom.sources` core set (which names no `main`, so the render phase
+reuses it verbatim):
+
+    scripts/cc-maize.sh --dev -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
+        -o demos/doom/doom.mzx \
         --sources demos/doom/doom.sources \
         demos/doom/doom_main.c demos/doom/doomgeneric_maize.c
 
-## Status: Phase A links
+## Run the headless self-check
 
-All 83 translation units (the `doom.sources` core set plus `doomgeneric_maize.c`
-and `doom_main.c`) compile through the real `cc-maize.sh` pipeline, and the image
-LINKS to a ~674 KB `.mzx` with zero unresolved symbols. The `run_doom_link` gate
-in `scripts/run-ctest.sh` builds this `.mzx` on both hosts and asserts it is
-produced (build-only; it does NOT run maize, that is Phase C). The gate skips
-with a notice when the `demos/doom/doomgeneric` submodule is not initialized, so
-a partial checkout does not hard-fail the ctest suite.
+The self-check needs the binary fixture mounted read-only at `/ro` and a Set-1
+scancode sequence piped in on stdin. It prints `doom: PASS` on success:
 
-The build relies on `cproc` stripping GNU attributes in the driver (DOOM's
-packed WAD structs), `mazm` object mode carrying label operands in `ST` and data
-initializers (the action-function pointer tables), and the RT header/libc set
-covering the `strings/math/assert/unistd/sys` headers plus
-`strcasecmp`/`strncasecmp`/`fabs`/`sscanf`/`system`/`remove`/`mkdir`/`usleep`/`rename`
-and the `SEEK_*`/`EISDIR` macros.
+    scripts/cc-maize.sh --dev -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
+        -o /tmp/doom_selfcheck.mzx \
+        demos/doom/doom_selfcheck.c demos/doom/doomgeneric_maize.c
 
-Real `DG_*` platform behaviour (framebuffer present, ms clock, the Set-1 to DOOM
-key table, WAD loading) is Phase B; the headless render self-check and the
-operator SDL demo are Phase C.
+    printf '\036\236\110\113\115\120\035\071\034\001\017' \
+        | build/<preset>/maize --input=keyboard \
+            --mount "demos/doom/testdata=/ro:ro" /tmp/doom_selfcheck.mzx
+
+`scripts/run-ctest.sh` wires this up as `run_doom_selfcheck` on both hosts, next
+to the `run_doom_link` build gate.
+
+## Status: Phase B, real DG platform + WAD-read plumbing, unit-verified
+
+The six `DG_*` platform functions are implemented for real over the frozen Maize
+device / clock / libc surfaces:
+
+- `DG_Init` registers a 320x200 XRGB8888 present buffer in guest RAM after a
+  geometry guard (framebuffer must be exactly 320x200, format XRGB8888).
+- `DG_DrawFrame` copies the rendered frame into that buffer and presents it.
+- `DG_GetTicksMs` / `DG_SleepMs` read and spin on the monotonic ms clock.
+- `DG_GetKey` translates Set-1 make/break scancodes to DOOM key codes (arrows,
+  ctrl = fire, space = use, enter, escape, tab, shift/alt modifiers, and the
+  alphanumerics used by the menus).
+- `DG_SetWindowTitle` stores the title (Maize has no window manager).
+
+WAD file access needs no new hook: the engine reaches a WAD through the libc
+`fopen`/`fread`/`fseek`/`ftell`/`fclose` path, which the self-check verifies on
+the committed binary fixture. Each primitive is checked in isolation by
+`doom_selfcheck.c` through the real `cc-maize.sh` pipeline, and the full tree
+still links (`run_doom_link`).
+
+The full DOOM boot, the first-level render from a real IWAD, operator IWAD
+provisioning, and the windowed SDL demo are the next phase.

@@ -939,8 +939,14 @@ run_doom_link() {
     log="${WORK_DIR}/doom-link.cc.log"
     rm -f "$mzx"
 
+    # maize-153: carry the 320x200 geometry override the platform layer is written against
+    # (DEC-5) so the full tree links at the geometry it will boot at in Phase C. Geometry
+    # does not affect linkage, so run_doom_link still PASSES; this only keeps the two DOOM
+    # builds (link gate + self-check) consistent. The -D flags require the cc-maize.sh
+    # passthrough (DEC-6).
     set +e
-    "$CC_MAIZE" --preset "$PRESET" --dev -o "$mzx" \
+    "$CC_MAIZE" --preset "$PRESET" --dev \
+        -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 -o "$mzx" \
         --sources "$sources" "$entry" "$platform" >"$log" 2>&1
     ec=$?
     set -e
@@ -955,6 +961,70 @@ run_doom_link() {
 }
 
 run_doom_link
+
+# maize-153 DOOM Phase B headless DG-platform self-check. Links ONLY the platform TU
+# doomgeneric_maize.c with the standalone doom_selfcheck.c (a minimal link: no doom.sources,
+# no doomgeneric.c, so no double DG_ScreenBuffer/main), plus the mzdev device shim via --dev
+# and the RT libc set, all at the 320x200 geometry override (DEC-5, via the cc-maize.sh -D
+# passthrough DEC-6). It exercises every DG_* primitive in isolation WITHOUT booting DOOM
+# (full boot needs an IWAD, Phase C): framebuffer present + readback, the Set-1 -> DOOM
+# keymap over an injected make/break sequence, the ms clock, the libc FILE* WAD-read path on
+# a committed binary fixture, and a zone-sized malloc smoke. One "doom: PASS" line gates it.
+#
+# The committed fixture demos/doom/testdata/doomread.bin is mounted read-only at /ro (the
+# same DOOM/WAD :ro read pattern run_hostfs_stdio proves), and the scancode stream is piped
+# via `maize --input=keyboard` exactly as run_terminal_selfcheck does.
+#
+# GRACEFUL SKIP: like run_doom_link, doom_selfcheck.c includes doomgeneric.h from the
+# submodule, so a checkout that did not init demos/doom/doomgeneric skips rather than fails.
+run_doom_selfcheck() {
+    name="doom"
+    doom_dir="${REPO_ROOT}/demos/doom"
+    selfcheck="${doom_dir}/doom_selfcheck.c"
+    platform="${doom_dir}/doomgeneric_maize.c"
+    fixture_dir="${doom_dir}/testdata"
+    # Submodule presence probe: the doomgeneric core-loop TU. Absent => uninitialized.
+    probe="${doom_dir}/doomgeneric/doomgeneric/doomgeneric.c"
+
+    if [ ! -f "$probe" ]; then
+        echo "[SKIP] ${name}: demos/doom/doomgeneric submodule not initialized" \
+             "(run 'git submodule update --init demos/doom/doomgeneric'); skipping DOOM self-check"
+        return
+    fi
+
+    TOTAL=$((TOTAL + 1))
+
+    mzx="${WORK_DIR}/doom_selfcheck.mzx"
+    log="${WORK_DIR}/doom-selfcheck.cc.log"
+    rm -f "$mzx"
+
+    if ! "$CC_MAIZE" --preset "$PRESET" --dev \
+        -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
+        -o "$mzx" "$selfcheck" "$platform" >"$log" 2>&1 || [ ! -f "$mzx" ]; then
+        echo "[FAIL] ${name}: self-check C compile/link failed"; cat "$log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    nat=$(host_to_native "$fixture_dir")
+
+    # Set-1 make/break stream (octal for printf): 1E('a')/9E('a' rel)/48(up)/4B(left)/
+    # 4D(right)/50(down)/1D(ctrl)/39(space)/1C(enter)/01(esc)/0F(tab).
+    set +e
+    actual=$(printf '\036\236\110\113\115\120\035\071\034\001\017' \
+        | "$MAIZE" --input=keyboard --mount "${nat}=/ro:ro" "$mzx" 2>/dev/null | grep -v '^$')
+    set -e
+
+    if [ "$actual" = "doom: PASS" ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"doom: PASS\""
+        echo "        actual:   \"${actual}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_doom_selfcheck
 
 # maize-138 multi-file compile/link: the primary-gate cross-object fixture, the
 # negative link-rejection case, and the two multi-source usage-error paths.
