@@ -45,3 +45,30 @@ write(int fd, const void *buf, unsigned long count)
 {
     return __syscall_ret(sys_write(fd, buf, count));
 }
+
+/* maize-120 descriptor wrappers: open/close/lseek/fstat, each routed through
+ * __syscall_ret like read/write. These sit beside read/write because errno.c is
+ * the errno-translating wrapper TU; the FILE* layer (stdio.c) builds on them. */
+int
+open(const char *path, int flags, int mode)
+{
+    return (int)__syscall_ret(sys_open(path, flags, mode));
+}
+
+int
+close(int fd)
+{
+    return (int)__syscall_ret(sys_close(fd));
+}
+
+long
+lseek(int fd, long offset, int whence)
+{
+    return __syscall_ret(sys_lseek(fd, offset, whence));
+}
+
+int
+fstat(int fd, void *statbuf)
+{
+    return (int)__syscall_ret(sys_fstat(fd, statbuf));
+}

@@ -14,20 +14,43 @@
  * contract, so the conversion switch is written exactly once against out_ch.
  */
 #include "stdio.h"
-#include "string.h"   /* strlen */
-#include "syscall.h"  /* sys_write */
+#include "string.h"   /* strlen, memcpy */
+#include "stdlib.h"   /* malloc/free, atexit (maize-120) */
+#include "syscall.h"  /* sys_write, read/write/lseek/close (maize-120) */
+#include "fcntl.h"    /* O_* open flags, SEEK_* whence (maize-120) */
 
-/* Static stream objects; the public handles are pointers to them (decision 7359). */
-static FILE _stdout = { STDOUT_FILENO };
-static FILE _stderr = { STDERR_FILENO };
+/* FILE::flags bits (maize-120). readable/writable are the mode; eof/error are the
+ * sticky status bits feof/ferror report; unbuffered marks stdout/stderr (direct
+ * sys_write, no buffer) apart from the fully buffered fopen'd streams. */
+#define _F_READ   0x01
+#define _F_WRITE  0x02
+#define _F_EOF    0x04
+#define _F_ERR    0x08
+#define _F_UNBUF  0x10
+
+/* Static stream objects; the public handles are pointers to them (decision 7359).
+ * Both are unbuffered write streams, so the widened tail is zero/NULL and only the
+ * flags carry _F_WRITE|_F_UNBUF. Field order matches struct _FILE in stdio.h. */
+static FILE _stdout = { STDOUT_FILENO, _F_WRITE | _F_UNBUF, 0, NULL, 0, 0, 0, NULL };
+static FILE _stderr = { STDERR_FILENO, _F_WRITE | _F_UNBUF, 0, NULL, 0, 0, 0, NULL };
 FILE *stdout = &_stdout;
 FILE *stderr = &_stderr;
+
+/* Head of the open (fopen'd) buffered-stream list, and the one-shot guard that arms
+ * the atexit flush hook the first time a buffered stream is created (maize-120). */
+static FILE *g_streams = NULL;
+static int   g_flush_armed = 0;
 
 int
 fputc(int c, FILE *stream)
 {
     unsigned char ch = (unsigned char)c;
-    if (sys_write(stream->fd, &ch, 1) != 1)
+    if (stream->flags & _F_UNBUF) {                 /* stdout/stderr: direct write */
+        if (sys_write(stream->fd, &ch, 1) != 1)
+            return EOF;
+        return (int)ch;
+    }
+    if (fwrite(&ch, 1, 1, stream) != 1)             /* buffered: through the buffer */
         return EOF;
     return (int)ch;
 }
@@ -48,7 +71,14 @@ int
 fputs(const char *s, FILE *stream)
 {
     size_t n = strlen(s);
-    if (n != 0 && sys_write(stream->fd, s, n) != (long)n)
+    if (n == 0)
+        return 0;
+    if (stream->flags & _F_UNBUF) {                 /* stdout/stderr: direct write */
+        if (sys_write(stream->fd, s, n) != (long)n)
+            return EOF;
+        return 0;
+    }
+    if (fwrite(s, 1, n, stream) != n)               /* buffered: through the buffer */
         return EOF;
     return 0;   /* any non-negative value on success */
 }
@@ -356,6 +386,13 @@ vfprintf(FILE *stream, const char *fmt, va_list ap)
     char sbuf[PRINTF_BUFSZ];
     struct fmtout o;
 
+    /* On a buffered stream, drain any pending write-buffer bytes first so formatted
+     * output cannot land ahead of earlier fwrite bytes (decision 8288); then emit via
+     * the existing chunked direct-to-fd path. For unbuffered stdout/stderr this branch
+     * is skipped and the body is byte-for-byte the pre-maize-120 formatter. */
+    if (!(stream->flags & _F_UNBUF))
+        fflush(stream);
+
     o.buf = sbuf;
     o.cap = PRINTF_BUFSZ;
     o.pos = 0;
@@ -405,4 +442,354 @@ snprintf(char *str, size_t n, const char *fmt, ...)
     r = vsnprintf(str, n, fmt, ap);
     va_end(ap);
     return r;
+}
+
+/* sprintf (maize-120): vsnprintf with an effectively-unbounded cap. vsnprintf's
+ * buffer-mode NUL-terminates and counts correctly, so (size_t)-1 as n makes it behave
+ * as an unbounded vsprintf while reusing the single formatter. DOOM uses it heavily. */
+int
+sprintf(char *str, const char *fmt, ...)
+{
+    va_list ap;
+    int r;
+
+    va_start(ap, fmt);
+    r = vsnprintf(str, (size_t)-1, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+/* ------------------------------------------------------------------------------ */
+/* File-backed FILE* layer (maize-120).                                           */
+/*                                                                                */
+/* fopen'd streams are fully buffered: one BUFSIZ buffer used one direction at a  */
+/* time (mode 1 = read, 2 = write). stdout/stderr stay unbuffered (_F_UNBUF), so  */
+/* every helper below short-circuits them to the direct sys_write path and the    */
+/* existing fixtures stay byte-identical. Each function is kept small and uses     */
+/* memcpy for bulk copies rather than an open-coded second loop, staying inside    */
+/* the pinned qbe-maize backend's budget (see the header comment on stdio.c).      */
+/* ------------------------------------------------------------------------------ */
+
+/* Parse an fopen mode string into O_* open flags and the FILE readable/writable
+ * bits. A 'b' is accepted and ignored (no text-mode translation); a '+' anywhere
+ * makes the stream read+write. Returns 0 on an unrecognized leading char. */
+static int
+parse_mode(const char *m, int *oflags, int *fbits)
+{
+    char c = m[0];
+    int plus = 0;
+    const char *p = m;
+
+    while (*p) {
+        if (*p == '+')
+            plus = 1;                       /* 'b' / other trailing chars ignored */
+        p++;
+    }
+    if (c == 'r') {
+        *oflags = plus ? O_RDWR : O_RDONLY;
+        *fbits  = plus ? (_F_READ | _F_WRITE) : _F_READ;
+    } else if (c == 'w') {
+        *oflags = plus ? (O_RDWR | O_CREAT | O_TRUNC)
+                       : (O_WRONLY | O_CREAT | O_TRUNC);
+        *fbits  = plus ? (_F_READ | _F_WRITE) : _F_WRITE;
+    } else if (c == 'a') {
+        *oflags = plus ? (O_RDWR | O_CREAT | O_APPEND)
+                       : (O_WRONLY | O_CREAT | O_APPEND);
+        *fbits  = plus ? (_F_READ | _F_WRITE) : _F_WRITE;
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
+/* Refill the read buffer with one read(). Returns bytes read (>0), 0 at EOF (sets
+ * the EOF flag), or -1 on error (sets the error flag). */
+static long
+fill_rbuf(FILE *f)
+{
+    long n = read(f->fd, f->buf, (unsigned long)f->bufcap);
+
+    f->bufpos = 0;
+    if (n < 0) {
+        f->flags |= _F_ERR;
+        f->buflen = 0;
+        return -1;
+    }
+    if (n == 0) {
+        f->flags |= _F_EOF;
+        f->buflen = 0;
+        return 0;
+    }
+    f->buflen = n;
+    return n;
+}
+
+/* Write out any pending write-buffer bytes. Returns 0 on success (or nothing to
+ * flush), -1 on a short/failed write (sets the error flag). */
+static int
+flush_wbuf(FILE *f)
+{
+    if (f->bufpos > 0) {
+        long w = write(f->fd, f->buf, (unsigned long)f->bufpos);
+        if (w != f->bufpos) {
+            f->flags |= _F_ERR;
+            return -1;
+        }
+        f->bufpos = 0;
+    }
+    return 0;
+}
+
+/* Pull one byte through the read buffer; EOF at end/error. */
+static int
+rbuf_getc(FILE *f)
+{
+    if (f->bufpos >= f->buflen) {
+        if (fill_rbuf(f) <= 0)
+            return EOF;
+    }
+    return (int)f->buf[f->bufpos++];
+}
+
+FILE *
+fopen(const char *path, const char *mode)
+{
+    int oflags, fbits, fd;
+    FILE *f;
+    unsigned char *b;
+
+    if (!parse_mode(mode, &oflags, &fbits))
+        return NULL;
+    fd = open(path, oflags, 0644);
+    if (fd < 0)
+        return NULL;
+    f = malloc(sizeof(FILE));
+    if (f == NULL) {
+        close(fd);
+        return NULL;
+    }
+    b = malloc(BUFSIZ);
+    if (b == NULL) {
+        close(fd);
+        free(f);
+        return NULL;
+    }
+    f->fd = fd;
+    f->flags = fbits;
+    f->mode = 0;
+    f->buf = b;
+    f->bufcap = BUFSIZ;
+    f->bufpos = 0;
+    f->buflen = 0;
+    f->next = g_streams;                    /* thread onto the open-stream list */
+    g_streams = f;
+
+    /* Arm the atexit flush hook once, now that a buffered stream exists (maize-120,
+     * decision 8283): exit() then flushes on a return-from-main; _Exit/abort bypass. */
+    if (!g_flush_armed) {
+        g_flush_armed = 1;
+        atexit(__stdio_flush_all);
+    }
+    return f;
+}
+
+int
+fclose(FILE *stream)
+{
+    int rc = 0;
+    FILE *p;
+
+    if (stream->mode == 2 && flush_wbuf(stream) != 0)
+        rc = -1;
+
+    /* Unlink from the open-stream list. */
+    if (g_streams == stream) {
+        g_streams = stream->next;
+    } else {
+        p = g_streams;
+        while (p != NULL && p->next != stream)
+            p = p->next;
+        if (p != NULL)
+            p->next = stream->next;
+    }
+
+    if (close(stream->fd) != 0)
+        rc = -1;
+    free(stream->buf);
+    free(stream);
+    return rc;
+}
+
+size_t
+fread(void *ptr, size_t size, size_t nmemb, FILE *stream)
+{
+    size_t total = size * nmemb;
+    size_t got = 0;
+    unsigned char *out = (unsigned char *)ptr;
+
+    if (total == 0)
+        return 0;
+    stream->mode = 1;
+    while (got < total) {
+        long avail = stream->buflen - stream->bufpos;
+        long chunk;
+
+        if (avail <= 0) {
+            if (fill_rbuf(stream) <= 0)
+                break;                       /* EOF or error: return short count */
+            avail = stream->buflen - stream->bufpos;
+        }
+        chunk = avail;
+        if ((size_t)chunk > total - got)
+            chunk = (long)(total - got);
+        memcpy(out + got, stream->buf + stream->bufpos, (size_t)chunk);
+        stream->bufpos += chunk;
+        got += (size_t)chunk;
+    }
+    return got / size;
+}
+
+size_t
+fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
+{
+    size_t total = size * nmemb;
+    size_t put = 0;
+    const unsigned char *in = (const unsigned char *)ptr;
+
+    if (total == 0)
+        return 0;
+
+    /* Unbuffered stdout/stderr: one direct write, byte-identical to the old path. */
+    if (stream->flags & _F_UNBUF) {
+        long w = write(stream->fd, ptr, total);
+        if (w < 0) {
+            stream->flags |= _F_ERR;
+            return 0;
+        }
+        return (size_t)w / size;
+    }
+
+    stream->mode = 2;
+    while (put < total) {
+        long room = stream->bufcap - stream->bufpos;
+        long chunk;
+
+        if (room <= 0) {
+            if (flush_wbuf(stream) != 0)
+                break;
+            room = stream->bufcap - stream->bufpos;
+        }
+        chunk = room;
+        if ((size_t)chunk > total - put)
+            chunk = (long)(total - put);
+        memcpy(stream->buf + stream->bufpos, in + put, (size_t)chunk);
+        stream->bufpos += chunk;
+        put += (size_t)chunk;
+    }
+    return put / size;
+}
+
+char *
+fgets(char *s, int n, FILE *stream)
+{
+    int i = 0;
+
+    if (n <= 0)
+        return NULL;
+    stream->mode = 1;
+    while (i < n - 1) {
+        int c = rbuf_getc(stream);
+        if (c == EOF)
+            break;
+        s[i++] = (char)c;
+        if (c == '\n')
+            break;
+    }
+    if (i == 0)
+        return NULL;                         /* EOF/error before any char */
+    s[i] = '\0';
+    return s;
+}
+
+int
+fseek(FILE *stream, long offset, int whence)
+{
+    if (stream->mode == 2 && flush_wbuf(stream) != 0)
+        return -1;
+    stream->bufpos = 0;                      /* discard buffered read data */
+    stream->buflen = 0;
+    stream->mode = 0;
+    if (lseek(stream->fd, offset, whence) < 0)
+        return -1;
+    stream->flags &= ~_F_EOF;
+    return 0;
+}
+
+long
+ftell(FILE *stream)
+{
+    long pos = lseek(stream->fd, 0, SEEK_CUR);
+
+    if (pos < 0)
+        return -1;
+    if (stream->mode == 1)                   /* buffered-but-unconsumed read bytes */
+        pos -= (stream->buflen - stream->bufpos);
+    else if (stream->mode == 2)              /* buffered-but-unwritten write bytes */
+        pos += stream->bufpos;
+    return pos;
+}
+
+int
+fflush(FILE *stream)
+{
+    FILE *p;
+    int rc = 0;
+
+    if (stream == NULL) {                    /* flush every open buffered stream */
+        p = g_streams;
+        while (p != NULL) {
+            if (p->mode == 2 && flush_wbuf(p) != 0)
+                rc = -1;
+            p = p->next;
+        }
+        return rc;
+    }
+    if (stream->flags & _F_UNBUF)
+        return 0;                            /* nothing buffered */
+    if (stream->mode == 2)
+        return flush_wbuf(stream);
+    return 0;
+}
+
+int
+feof(FILE *stream)
+{
+    return (stream->flags & _F_EOF) ? 1 : 0;
+}
+
+int
+ferror(FILE *stream)
+{
+    return (stream->flags & _F_ERR) ? 1 : 0;
+}
+
+void
+clearerr(FILE *stream)
+{
+    stream->flags &= ~(_F_EOF | _F_ERR);
+}
+
+/* Registered on the atexit registry by the first fopen (maize-120). Walks the open-
+ * stream list and flushes each buffered write stream so a program that returns from
+ * main without fclose still lands its bytes on the host. _Exit/abort bypass atexit. */
+void
+__stdio_flush_all(void)
+{
+    FILE *p = g_streams;
+
+    while (p != NULL) {
+        if (p->mode == 2)
+            flush_wbuf(p);
+        p = p->next;
+    }
 }

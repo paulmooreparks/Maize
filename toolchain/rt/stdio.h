@@ -1,15 +1,19 @@
-/* toolchain/rt/stdio.h -- non-variadic <stdio.h> core for the Maize C runtime
- * (maize-76, decisions 7341 / 7359).
+/* toolchain/rt/stdio.h -- <stdio.h> core for the Maize C runtime (maize-76,
+ * decisions 7341 / 7359; file-backed FILE* layer maize-120).
  *
- * Fully UNBUFFERED (decision 7341): each putchar is one sys_write; fputs is one
- * sys_write of the whole string. There is no persistent stream buffer, so exit()
- * and abort() need no flush hook.
+ * stdout/stderr stay UNBUFFERED (decision 7341): each putchar is one sys_write and
+ * fputs is one sys_write of the whole string, so every existing fixture's stdout is
+ * byte-for-byte identical. fopen'd streams (maize-120) are FULLY BUFFERED with one
+ * BUFSIZ single-direction buffer. Because a buffered write stream can hold undrained
+ * bytes when main returns, stdio registers __stdio_flush_all on maize-100's atexit
+ * registry at first fopen; exit() therefore flushes it, while _Exit()/abort() (which
+ * bypass the registry) do not. stdout/stderr being unbuffered, the hook is never
+ * load-bearing for them.
  *
- * FILE is the minimal M1 stream (decision 7359): a struct wrapping just the fd,
- * with static stdout/stderr objects (fd 1 / fd 2) reached through extern pointers.
- * putc/fputc/fputs are fixed-arity (a stream argument, not varargs), so they
- * compile on the current backend. A future M4 file-backed stdio can widen the
- * struct without breaking this API.
+ * FILE was the minimal M1 stream (decision 7359, just an fd); maize-120 widens it to
+ * carry the buffer + flags the file-backed layer needs, as decision 7359 anticipated
+ * ("A future M4 file-backed stdio can widen the struct without breaking this API").
+ * putc/fputc/fputs stay fixed-arity so they compile on the pinned backend.
  *
  * Variadic printf (maize-99) rides on the maize-98 stdarg ABI and the existing
  * unbuffered sys_write core. printf/fprintf format into a bounded stack buffer
@@ -30,9 +34,20 @@
 
 #define EOF (-1)
 
-typedef struct {
-    int fd;
-} FILE;
+/* Full-buffer size for fopen'd streams (classic single-direction stdio buffer). */
+#define BUFSIZ 4096
+
+struct _FILE {
+    int            fd;
+    int            flags;   /* bitset: readable / writable / eof / error / unbuffered */
+    int            mode;    /* 0 = idle, 1 = last op was read, 2 = last op was write */
+    unsigned char *buf;     /* NULL for the unbuffered stdout/stderr statics */
+    long           bufcap;  /* buffer capacity (BUFSIZ for fopen'd streams) */
+    long           bufpos;  /* cursor within buf */
+    long           buflen;  /* valid bytes in buf (read mode) */
+    struct _FILE  *next;    /* open-stream list link (fopen'd streams only) */
+};
+typedef struct _FILE FILE;
 
 extern FILE *stdout;
 extern FILE *stderr;
@@ -46,8 +61,29 @@ int fputs(const char *s, FILE *stream);
 int printf(const char *fmt, ...);
 int fprintf(FILE *stream, const char *fmt, ...);
 int snprintf(char *str, size_t n, const char *fmt, ...);
+int sprintf(char *str, const char *fmt, ...);
 int vprintf(const char *fmt, va_list ap);
 int vfprintf(FILE *stream, const char *fmt, va_list ap);
 int vsnprintf(char *str, size_t n, const char *fmt, va_list ap);
+
+/* maize-120 file-backed FILE* layer. fopen'd streams are fully buffered; the mode
+ * string accepts and ignores a 'b' (Maize does no text-mode translation, so binary
+ * and text streams are identical, which is what makes WAD reads byte-safe). */
+FILE  *fopen(const char *path, const char *mode);
+int    fclose(FILE *stream);
+size_t fread (void *ptr, size_t size, size_t nmemb, FILE *stream);
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
+char  *fgets(char *s, int n, FILE *stream);
+int    fseek(FILE *stream, long offset, int whence);
+long   ftell(FILE *stream);
+int    fflush(FILE *stream);   /* NULL flushes every open buffered stream */
+int    feof(FILE *stream);
+int    ferror(FILE *stream);
+void   clearerr(FILE *stream);
+
+/* Registered on the atexit registry at first fopen (maize-120): walks the open-stream
+ * list and flushes each buffered write stream, so bytes land even if main returns
+ * without fclose. _Exit()/abort() bypass atexit and so do not flush. */
+void   __stdio_flush_all(void);
 
 #endif /* MAIZE_STDIO_H */

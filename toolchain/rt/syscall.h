@@ -59,4 +59,14 @@ long __syscall_ret(unsigned long r);
 long read(int fd, void *buf, unsigned long count);
 long write(int fd, const void *buf, unsigned long count);
 
+/* maize-120: the POSIX-named, errno-translating descriptor wrappers over the
+ * hostfs raw stubs. Each calls the matching sys_* stub and passes the result
+ * through __syscall_ret exactly as read/write do. `mode` is open()'s O_CREAT
+ * permission arg (ignored unless O_CREAT). Directory enumeration lives in the
+ * dirent.c wrappers (opendir/readdir/closedir) over sys_getdents64. */
+int  open (const char *path, int flags, int mode);
+int  close(int fd);
+long lseek(int fd, long offset, int whence);
+int  fstat(int fd, void *statbuf);
+
 #endif /* MAIZE_SYSCALL_H */

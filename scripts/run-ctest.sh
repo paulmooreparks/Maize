@@ -10,7 +10,7 @@
 #   ctest/<name>.c
 #     -> cc-maize.sh -o <name>.mzx   (new no-run default; tr -> cpp -E -> cproc-qbe ->
 #                              normalize -> qbe -t maize -> mazm -c -> mzld over the
-#                              crt0/syscall + C runtime (errno/string/ctype/stdio/stdlib); entry _start; W^X)
+#                              crt0/syscall + C runtime (errno/string/ctype/stdio/stdlib/dirent); entry _start; W^X)
 #     -> maize                (load_mzx sets RP=_start; execute; capture stdout)
 #     -> diff vs ctest/<name>.expected
 #
@@ -113,7 +113,7 @@ TOTAL=0
 # Compile a C fixture to a runnable .mzx by delegating to the shared driver via its
 # no-run default with an explicit `-o <path>` (maize-96). cc-maize.sh owns the whole pipeline end to end
 # (tr -> cpp -> cproc-qbe -> normalize -> qbe -t maize -> mazm -c -> mzld over the
-# crt0/syscall + C runtime (errno/string/ctype/stdio/stdlib) set); this harness just asks for the linked image
+# crt0/syscall + C runtime (errno/string/ctype/stdio/stdlib/dirent) set); this harness just asks for the linked image
 # and runs it. On success sets BIN to the linked .mzx and returns 0; on failure prints
 # a [FAIL] line, bumps FAIL_COUNT, and returns 1. Shared by the stdout runner
 # (run_ctest), the exit-status runner (run_exit_status_test), and the argv runner
@@ -514,6 +514,61 @@ run_hostfs_rofs() {
     fi
 }
 
+# maize-120 FILE* stdio + dirent acceptance. Exercises the file-backed FILE* layer
+# (fopen/fread/fwrite/fseek/ftell/fclose), opendir/readdir/closedir, and sprintf over
+# host mounts. A 4096-byte binary file cycling all values 0x00..0xFF is pre-written to
+# a :ro mount (the DOOM/WAD read pattern, so any text-mode mangling of 0x0A/0x0D is
+# caught); a :rw mount takes the write round-trip and the flush-on-exit proof. Two
+# invocations: the normal run does the four checks + returns from main without fclose
+# (the atexit-registered __stdio_flush_all must land unclosed.dat), and the `noflush`
+# run fwrites then _Exit()s (bypasses atexit), so noflush.dat must stay empty. Follows
+# the same Linux-in-CI / Windows-verified-at-Test precedent as the other hostfs runners.
+run_hostfs_stdio() {
+    name="stdio_hostfs"
+    TOTAL=$((TOTAL + 1))
+    compile_c "$name" || return
+    bin="$BIN"
+
+    root="${WORK_DIR}/hostfs_stdio"
+    rm -rf "$root"; mkdir -p "$root/ro" "$root/rw"
+
+    # Pre-write the DOOM-shaped binary: 4096 bytes cycling every value 0x00..0xFF.
+    # LC_ALL=C forces awk's %c to emit raw bytes (not UTF-8 multibyte) on either host.
+    LC_ALL=C awk 'BEGIN{for(i=0;i<4096;i++)printf "%c", i%256}' > "$root/ro/bin.dat"
+    nat_ro=$(host_to_native "$root/ro")
+    nat_rw=$(host_to_native "$root/rw")
+
+    set +e
+    actual=$("$MAIZE" --mount "${nat_ro}=/ro:ro" --mount "${nat_rw}=/rw:rw" "$bin" \
+        2>/dev/null | grep -v '^$')
+    set -e
+
+    ok=1
+    [ "$actual" = "stdio: PASS" ] || ok=0
+
+    # AC 8276 positive: the un-fclosed buffered write stream's bytes landed on exit.
+    exp_unclosed='flush-on-exit-proof'
+    got_unclosed=$(cat "$root/rw/unclosed.dat" 2>/dev/null)
+    [ "$got_unclosed" = "$exp_unclosed" ] || ok=0
+
+    # AC 8276 negative: a _Exit() run must NOT flush, so noflush.dat exists but is empty.
+    set +e
+    "$MAIZE" --mount "${nat_rw}=/rw:rw" "$bin" noflush >/dev/null 2>&1
+    set -e
+    if [ ! -f "$root/rw/noflush.dat" ] || [ -s "$root/rw/noflush.dat" ]; then
+        ok=0
+    fi
+
+    if [ "$ok" -eq 1 ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        stdout:   \"${actual}\" (want \"stdio: PASS\")"
+        echo "        unclosed: \"${got_unclosed}\" (want \"${exp_unclosed}\")"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
 # maize-138 multi-file compile/link. Builds N C sources into one .mzx through the
 # extended driver's multi-source path (an explicit -o over several positional
 # sources), runs the linked image, and diffs stdout against ctest/<name>.expected
@@ -704,6 +759,8 @@ run_hostfs_ls
 run_hostfs_stat
 run_hostfs_escape
 run_hostfs_rofs
+# maize-120 FILE* stdio + dirent layer over the hostfs stubs.
+run_hostfs_stdio
 
 # maize-121 self-hosted framebuffer terminal headless self-check. The fixture is a
 # guest-C program under demos/terminal/ that additionally links the mzdev device-access

@@ -69,14 +69,17 @@ honest deviation from Linux, recorded rather than faked.
 | Layer | Symbols | Where | Role |
 |-------|---------|-------|------|
 | raw stubs | `sys_read`, `sys_write`, `_exit` | `toolchain/rt/syscall.mazm` | `SYS <n>; RET`; return `RV` verbatim (the musl `__syscall` role) |
-| wrappers | `read`, `write` | `toolchain/rt/errno.c` | call the raw stub, pass the result through `__syscall_ret` |
+| wrappers | `read`, `write`, `open`, `close`, `lseek`, `fstat` | `toolchain/rt/errno.c` | call the raw stub, pass the result through `__syscall_ret` |
 | storage | `errno`, `__syscall_ret` | `toolchain/rt/errno.c` | global `int errno`; the translator |
 | header | all of the above | `toolchain/rt/syscall.h` | C declarations |
 
 The raw process-termination stub is `_exit` (POSIX raw termination: no `atexit`/flush).
-The stdlib `exit()` (`toolchain/rt/stdlib.c`) currently delegates to `_exit`; there is
-no `atexit` registry yet and stdio is unbuffered, but `crt0` routes `main`'s return
-value through `exit()` so a future `atexit`/flush hook will be honored.
+The stdlib `exit()` (`toolchain/rt/stdlib.c`) runs the `atexit` registry LIFO, then
+delegates to `_exit`. `stdout`/`stderr` are unbuffered (direct `sys_write`), but
+`fopen`'d streams (maize-120) are fully buffered, so stdio registers
+`__stdio_flush_all` on the `atexit` registry at first `fopen`; `exit()` therefore
+flushes buffered write streams on a return from `main`, while `_Exit`/`abort` (which
+bypass the registry) do not.
 
 ## Frozen number table (hosted ABI)
 
