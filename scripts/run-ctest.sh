@@ -978,6 +978,63 @@ run_terminal_selfcheck() {
 
 run_terminal_selfcheck
 
+# maize-140 first-class graphical console headless self-check. Unlike the maize-121
+# terminal (a self-hosted guest engine verified by reading guest-RAM pixels), the console
+# is host C++ bound to fd 0/1/2, so this fixture drives it through ordinary stdio and the
+# harness verifies the RESULT via the grid text dump (--console-dump) plus an injected
+# Set-1 scancode stream on stdin (the same channel run_terminal_selfcheck uses). It checks
+# the VT-output subset (CUP/EL/ED, LF/CR/BS/HT, right-margin wrap), that ED ESC[2J actually
+# cleared (the PRECLEAR token is absent), and that the cooked line read and the raw
+# byte-at-a-time read both delivered correctly ("console: PASS"). No device shim (--dev):
+# it is a plain stdio + termios program on the default RT set.
+run_console_selfcheck() {
+    name="console"
+    TOTAL=$((TOTAL + 1))
+    src="${REPO_ROOT}/demos/console/console_selfcheck.c"
+
+    if [ ! -f "$src" ]; then
+        echo "[FAIL] ${name}: missing source fixture" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+
+    mzx="${WORK_DIR}/console_selfcheck.mzx"
+    if ! "$CC_MAIZE" --preset "$PRESET" -o "$mzx" "$src" \
+        >"${WORK_DIR}/console.cc.log" 2>&1 || [ ! -f "$mzx" ]; then
+        echo "[FAIL] ${name}: C compile failed"; cat "${WORK_DIR}/console.cc.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    # Scancodes: 0x23 'h', 0x2C 'Z', 0x0E Backspace, 0x17 'i', 0x1C Enter, 0x2D 'x'
+    # (octal 043 054 016 027 034 055). The cooked read consumes h/Z/BS/i/Enter and the
+    # Backspace edits the pending line, so it delivers "hi\n" (the erroneous Z erased);
+    # raw mode then returns the single 'x'. This exercises cooked line editing (Backspace)
+    # in addition to echo + deliver-on-Enter.
+    set +e
+    dump=$(printf '\043\054\016\027\034\055' \
+        | "$MAIZE" --no-root --console-dump "$mzx" 2>/dev/null)
+    set -e
+
+    ok=1
+    for want in "HELLO" "CD" "XQZ" "A       B" "ZZZ" "SGR" "ERA" "console: PASS"; do
+        printf '%s\n' "$dump" | grep -qx "$want" || ok=0
+    done
+    # ED ESC[2J must have wiped the pre-clear token.
+    if printf '%s\n' "$dump" | grep -q "PRECLEAR"; then ok=0; fi
+
+    if [ "$ok" -eq 1 ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: VT-output markers + \"console: PASS\", no PRECLEAR"
+        echo "        actual grid dump:"
+        printf '%s\n' "$dump" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_console_selfcheck
+
 # maize-145 DOOM Phase A "it links" gate. Builds the ~50k-line doomgeneric + DOOM tree
 # (the doom.sources core set plus the Maize stub platform doomgeneric_maize.c and the
 # doom_main.c entry TU) to a .mzx through the real cc-maize.sh multi-source pipeline and

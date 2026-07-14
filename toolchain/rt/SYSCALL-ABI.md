@@ -101,6 +101,8 @@ Mirrors the Linux x86-64 table by construction. Frozen:
 | `$A9` | `sys_reboot` | reserved (VM stub) | reserved |
 | `$D9` | `sys_getdents64` | `R0`=fd, `R1`=dirp, `R2`=count | `RV`=bytes / 0 (EOF) / `-errno` |
 | `$F0` | `sys_clock_ms` | none | `RV`=monotonic ms since VM start; never `-errno` |
+| `$F1` | `sys_tcgetattr` | `R0`=fd, `R1`=termios* | `RV`=0 or `-errno` |
+| `$F2` | `sys_tcsetattr` | `R0`=fd, `R1`=optional_actions, `R2`=termios* | `RV`=0 or `-errno` |
 
 `$F0` is a Maize-private number (see "Maize-private high block" below), not a Linux
 mirror: it returns a raw monotonic millisecond count in `RV` and, like `sys_brk`, is
@@ -150,6 +152,16 @@ A Maize-private call returns whatever shape suits it, not the Linux call's shape
 same byte. `$F0` currently hosts `sys_clock_ms` (the monotonic millisecond clock); it
 previously hosted a different, since-removed syscall, which is why this block starts at
 `$F0` rather than being wholly unused history.
+
+`$F1` / `$F2` host the console termios calls (`sys_tcgetattr` / `sys_tcsetattr`, maize-140).
+They live in the private block rather than mirroring a Linux number because Linux has no
+dedicated termios syscall: it drives termios through `ioctl(fd, TCGETS/TCSETS, ...)`, so
+there is no Linux number to mirror. Each copies the frozen 36-byte termios wire image
+(four little-endian 32-bit flag words `c_iflag`/`c_oflag`/`c_cflag`/`c_lflag`, then a
+20-byte `c_cc[]`; `src/console_io.h` and `toolchain/rt/termios.h` agree byte for byte)
+between guest memory and the window console's termios state, and returns `0` or `-EBADF`
+(no window console is bound / the fd is not a tty). `tcgetattr()` / `tcsetattr()` /
+`cfmakeraw()` (`toolchain/rt/termios.c`) wrap them.
 
 The RV-returns-`uint64`-ms shape of `sys_clock_ms` has no Linux-ABI equivalent: Linux
 `clock_gettime` takes `(clockid, struct timespec*)` and returns `0`/`-errno`, writing

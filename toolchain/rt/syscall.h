@@ -49,6 +49,13 @@ void *sys_brk(void *addr);
  * cf. sys_brk). Monotonic non-decreasing; epoch arbitrary. */
 unsigned long sys_clock_ms(void);
 
+/* maize-140 termios raw stubs (SYS $F1 tcgetattr / $F2 tcsetattr). Each returns 0 or a
+ * [-4095, -1] -errno (-EBADF when no window console is bound). The POSIX-named wrappers
+ * tcgetattr()/tcsetattr() live in termios.c. `termios_p` is a struct termios* (termios.h),
+ * declared void* here so syscall.h stays free of the termios type. */
+long sys_tcgetattr(int fd, void *termios_p);
+long sys_tcsetattr(int fd, int optional_actions, void *termios_p);
+
 /* path-mutating raw stubs (SYS $57 unlink / $53 mkdir / $52 rename). maize-151 wires
  * these through the confined hostfs backends, so each returns RV verbatim as a real
  * non-negative result or a [-4095, -1] -errno (EROFS on a :ro mount or the synthetic

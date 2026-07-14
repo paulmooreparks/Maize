@@ -55,6 +55,14 @@ GLOBAL sys_getdents64
 ; Raw `SYS $F0; RET`; no args, RV = monotonic ms since VM start; never -errno.
 GLOBAL sys_clock_ms
 
+; maize-140 termios: Maize-private high-block numbers ($F1 tcgetattr / $F2 tcsetattr)
+; with no clean Linux-number mirror (Linux does termios through ioctl TCGETS/TCSETS).
+; Each is a raw `SYS <n>; RET` over the window console's termios state; RV = 0 or -errno
+; (-EBADF when no window console is bound / the fd is not a tty). tcgetattr(fd, termios*),
+; tcsetattr(fd, optional_actions, termios*).
+GLOBAL sys_tcgetattr
+GLOBAL sys_tcsetattr
+
 ; path-mutating stubs: sys_unlink ($57), sys_mkdir ($53), sys_rename ($52), the
 ; canonical Linux x86-64 numbers (87/83/82). maize-151 wires these through the confined
 ; hostfs backends: src/sys.cpp dispatches $52/$53/$57 to hostfs_rename/mkdir/unlink, each
@@ -99,6 +107,14 @@ sys_getdents64:
 
 sys_clock_ms:
     SYS $F0                 ; no args; RV = monotonic ms since VM start
+    RET
+
+sys_tcgetattr:
+    SYS $F1                 ; R0=fd, R1=termios*; RV = 0 or -errno
+    RET
+
+sys_tcsetattr:
+    SYS $F2                 ; R0=fd, R1=optional_actions, R2=termios*; RV = 0 or -errno
     RET
 
 sys_unlink:
