@@ -21,7 +21,7 @@ As of 13 July 2026, Maize can run a version of DOOM compiled to Maize bytecode f
 
 <img src="doom.png" alt="DOOM running on Maize">
 
-It's not screaming fast (it tops out around 7fps on my workstation), but it's playable. Once
+It's not screaming fast (it averages around 7fps on my workstation), but it's playable. Once
 JIT is implemented, it should be considerably faster.
 
 If you want to try it yourself, you just need to build a `maize` VM with display enabled and
@@ -63,13 +63,13 @@ The guest sees that file as `/doom/doom1.wad`. Now run, from the repo root; no
 `--mount` is needed, because the WAD already lives inside the sandbox root:
 
 ``` powershell
-build\windows-llvm-mingw-release\maize.exe --display --display-scale 4 --refresh-hz 20 --input=keyboard demos/doom/doom.mzx -iwad /doom/doom1.wad -warp 1 1
+build\windows-llvm-mingw-release\maize.exe --display --display-scale 4 --refresh-hz 20 --input=keyboard demos/doom/doom.mzx -iwad /doom/doom1.wad
 ```
 
 The same run on Linux:
 
 ``` bash
-build/linux-release/maize --display --display-scale 4 --refresh-hz 20 --input=keyboard demos/doom/doom.mzx -iwad /doom/doom1.wad -warp 1 1
+build/linux-release/maize --display --display-scale 4 --refresh-hz 20 --input=keyboard demos/doom/doom.mzx -iwad /doom/doom1.wad
 ```
 
 Saves just work: DOOM writes them to a relative path (`./.savegame/...`), which
@@ -78,9 +78,10 @@ sandbox root, so no writable mount is needed and your saves and config survive
 across runs.
 
 That `~/.maize` directory is also how these commands get shorter: a `~/.maize/config`
-file supplies default values for the launcher flags (so `--display-scale 4
---refresh-hz 20 --input=keyboard` can live there instead of on every command line),
-and `~/.maize/env` supplies a default guest environment. The sandbox root, the
+file sets default values for the launcher flags, written one `key=value` per line
+with the dashes dropped (`display-scale=4`, `refresh-hz=20`, `input=keyboard`), so
+you set them once instead of on every command line, and `~/.maize/env` supplies a
+default guest environment. The sandbox root, the
 config file, and the environment file are all explained in detail further below,
 under "The sandbox root and mounting host directories", "Startup defaults
 (`~/.maize/config`)", and "Setting the program's environment". (Pass `--no-root` to
