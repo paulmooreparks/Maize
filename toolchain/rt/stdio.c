@@ -14,11 +14,12 @@
  * contract, so the conversion switch is written exactly once against out_ch.
  */
 #include "stdio.h"
-#include "string.h"   /* strlen, memcpy */
-#include "stdlib.h"   /* malloc/free, atexit (maize-120) */
+#include "string.h"   /* strlen, memcpy, strerror (perror, maize-172) */
+#include "stdlib.h"   /* malloc/free/realloc, atexit (maize-120) */
 #include "syscall.h"  /* sys_write, read/write/lseek/close (maize-120) */
 #include "fcntl.h"    /* O_* open flags, SEEK_* whence (maize-120) */
 #include "ctype.h"    /* isspace (sscanf whitespace handling, maize-148) */
+#include "errno.h"    /* errno (perror, maize-172) */
 
 /* FILE::flags bits (maize-120). readable/writable are the mode; eof/error are the
  * sticky status bits feof/ferror report; unbuffered marks stdout/stderr (direct
@@ -1062,6 +1063,51 @@ fgets(char *s, int n, FILE *stream)
     return s;
 }
 
+/* getline (maize-172): read one line through rbuf_getc, growing *lineptr as needed.
+ * Doubles the buffer (from a 128-byte floor) on demand and always keeps room for the
+ * NUL. Returns the character count (including the newline), or -1 with nothing read. */
+ssize_t
+getline(char **lineptr, size_t *n, FILE *stream)
+{
+    size_t len = 0;
+    int c;
+
+    if (lineptr == NULL || n == NULL)
+        return -1;
+    if (*lineptr == NULL || *n == 0) {
+        size_t cap = 128;
+        char *b = malloc(cap);
+        if (b == NULL)
+            return -1;
+        *lineptr = b;
+        *n = cap;
+    }
+
+    stream->mode = 1;
+    for (;;) {
+        c = rbuf_getc(stream);
+        if (c == EOF)
+            break;
+        /* Ensure room for this char plus the terminating NUL. */
+        if (len + 1 >= *n) {
+            size_t newcap = *n * 2;
+            char *nb = realloc(*lineptr, newcap);
+            if (nb == NULL)
+                return -1;
+            *lineptr = nb;
+            *n = newcap;
+        }
+        (*lineptr)[len++] = (char)c;
+        if (c == '\n')
+            break;
+    }
+
+    if (len == 0)
+        return -1;                           /* EOF before any char */
+    (*lineptr)[len] = '\0';
+    return (ssize_t)len;
+}
+
 int
 fseek(FILE *stream, long offset, int whence)
 {
@@ -1143,4 +1189,15 @@ __stdio_flush_all(void)
             flush_wbuf(p);
         p = p->next;
     }
+}
+
+/* perror (maize-172): "s: <errno message>\n" on stderr, prefix omitted when s is
+ * NULL/empty. One fprintf keeps the two forms on the single formatter. */
+void
+perror(const char *s)
+{
+    if (s != NULL && s[0] != '\0')
+        fprintf(stderr, "%s: %s\n", s, strerror(errno));
+    else
+        fprintf(stderr, "%s\n", strerror(errno));
 }

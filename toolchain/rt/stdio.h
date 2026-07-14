@@ -29,6 +29,7 @@
 #define MAIZE_STDIO_H
 
 #include "stddef.h"
+#include "sys/types.h"   /* ssize_t (getline, maize-172) */
 #include <stdarg.h>
 
 #define STDIN_FILENO  0
@@ -103,12 +104,25 @@ int    fclose(FILE *stream);
 size_t fread (void *ptr, size_t size, size_t nmemb, FILE *stream);
 size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
 char  *fgets(char *s, int n, FILE *stream);
+
+/* getline (maize-172, POSIX): read a whole line (through and including the newline)
+ * from stream into *lineptr, growing the malloc'd buffer via realloc as needed and
+ * updating *n to the buffer capacity. *lineptr may be NULL with *n == 0 to have
+ * getline allocate. Returns the number of characters read (including the newline,
+ * excluding the NUL terminator), or -1 at end of file with nothing read (or on
+ * allocation failure). kilo's editorOpen reads files with it. */
+ssize_t getline(char **lineptr, size_t *n, FILE *stream);
+
 int    fseek(FILE *stream, long offset, int whence);
 long   ftell(FILE *stream);
 int    fflush(FILE *stream);   /* NULL flushes every open buffered stream */
 int    feof(FILE *stream);
 int    ferror(FILE *stream);
 void   clearerr(FILE *stream);
+
+/* perror (maize-172): write "s: <strerror(errno)>\n" to stderr (the "s: " prefix is
+ * omitted when s is NULL or empty). kilo uses it on file-open failure. */
+void   perror(const char *s);
 
 /* Registered on the atexit registry at first fopen (maize-120): walks the open-stream
  * list and flushes each buffered write stream, so bytes land even if main returns

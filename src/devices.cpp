@@ -391,20 +391,28 @@ namespace maize {
 		}
 
 		void text_console::newline() {
+			wrap_pending_ = false;
 			col_ = 0;
 			row_++;
 			if (row_ >= rows_) { row_ = rows_ - 1; scroll_up(); }
 		}
 
 		void text_console::put_glyph(int ch) {
-			glyph_[static_cast<size_t>(row_) * cols_ + col_] = static_cast<unsigned char>(ch);
-			attr_[static_cast<size_t>(row_) * cols_ + col_] = static_cast<unsigned char>(cur_attr());
-			render_cell(row_, col_);
-			col_++;
-			if (col_ >= cols_) {
+			/* Honor a deferred right-margin wrap from the previous glyph first: only now
+			   (a real glyph is arriving) does the cursor drop to the next line. */
+			if (wrap_pending_) {
 				col_ = 0;
 				row_++;
 				if (row_ >= rows_) { row_ = rows_ - 1; scroll_up(); }
+				wrap_pending_ = false;
+			}
+			glyph_[static_cast<size_t>(row_) * cols_ + col_] = static_cast<unsigned char>(ch);
+			attr_[static_cast<size_t>(row_) * cols_ + col_] = static_cast<unsigned char>(cur_attr());
+			render_cell(row_, col_);
+			if (col_ >= cols_ - 1) {
+				wrap_pending_ = true;   // last column: arm the wrap, do NOT advance yet
+			} else {
+				col_++;
 			}
 		}
 
@@ -413,23 +421,28 @@ namespace maize {
 			int n = param_[0];
 			switch (final_byte) {
 			case 'A':
+				wrap_pending_ = false;
 				if (!pseen_ || n == 0) { n = 1; }
 				row_ -= n; if (row_ < 0) { row_ = 0; }
 				break;
 			case 'B':
+				wrap_pending_ = false;
 				if (!pseen_ || n == 0) { n = 1; }
 				row_ += n; if (row_ > rows_ - 1) { row_ = rows_ - 1; }
 				break;
 			case 'C':
+				wrap_pending_ = false;
 				if (!pseen_ || n == 0) { n = 1; }
 				col_ += n; if (col_ > cols_ - 1) { col_ = cols_ - 1; }
 				break;
 			case 'D':
+				wrap_pending_ = false;
 				if (!pseen_ || n == 0) { n = 1; }
 				col_ -= n; if (col_ < 0) { col_ = 0; }
 				break;
 			case 'H':
 			case 'f': {
+				wrap_pending_ = false;
 				int rr = pseen_ ? param_[0] : 1;
 				int cc = (np >= 2) ? param_[1] : 1;
 				if (rr < 1) { rr = 1; }
@@ -484,6 +497,32 @@ namespace maize {
 					}
 				}
 				break;
+			case 'n':
+				/* DSR (Device Status Report). ESC[6n queries the cursor position; the
+				   console replies on the INPUT stream with ESC[<row>;<col>R, 1-based, the
+				   standard VT100 handshake. This is what lets an editor discover the
+				   window size when there is no ioctl(TIOCGWINSZ): it homes the cursor to
+				   the bottom-right (ESC[999C ESC[999B, clamped by the CUF/CUD cases above)
+				   and reads back the clamped position. maize-172 (kilo) drives exactly this
+				   path. The reply is injected straight into delivered_ (drained ahead of
+				   any scancode input by read_in), so it works in cooked or raw mode. Only
+				   the non-private DSR 6 is answered; other reports are ignored. */
+				if (!priv_ && n == 6) {
+					auto push_dec = [this](int v) {
+						char tmp[8];
+						int k = 0;
+						if (v < 0) { v = 0; }
+						do { tmp[k++] = static_cast<char>('0' + v % 10); v /= 10; } while (v && k < 8);
+						while (k > 0) { deliver(static_cast<unsigned char>(tmp[--k])); }
+					};
+					deliver(0x1B);
+					deliver('[');
+					push_dec(row_ + 1);
+					deliver(';');
+					push_dec(col_ + 1);
+					deliver('R');
+				}
+				break;
 			default:
 				break;   /* unknown final byte: consumed and ignored */
 			}
@@ -493,10 +532,11 @@ namespace maize {
 			unsigned char ch = static_cast<unsigned char>(chi);
 			if (pstate_ == 0) {
 				if (ch == 0x1B) { pstate_ = 1; return; }
-				if (ch == 0x0D) { col_ = 0; return; }
+				if (ch == 0x0D) { wrap_pending_ = false; col_ = 0; return; }
 				if (ch == 0x0A) { newline(); return; }
-				if (ch == 0x08) { if (col_ > 0) { col_--; } return; }
+				if (ch == 0x08) { wrap_pending_ = false; if (col_ > 0) { col_--; } return; }
 				if (ch == 0x09) {
+					wrap_pending_ = false;
 					int nc = (col_ & ~7) + 8;
 					if (nc > cols_ - 1) { nc = cols_ - 1; }
 					col_ = nc;

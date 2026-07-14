@@ -18,10 +18,12 @@
 extern int errno;
 
 #define EPERM   1
+#define ENOENT  2   /* open of a missing path (kilo, maize-172, checks errno != ENOENT) */
 #define EBADF   9
 #define ENOMEM 12   /* sbrk/malloc: request over HEAP_CEILING or below the floor */
 #define EISDIR 21   /* m_misc.c:439: write target is a directory (maize-147) */
 #define EINVAL 22
+#define ENOTTY 25   /* ioctl on a non-ioctl backend; isatty on a non-tty (maize-172) */
 #define ERANGE 34   /* strtol: value out of long range (overflow clamp), maize-142 */
 
 #endif /* MAIZE_ERRNO_H */

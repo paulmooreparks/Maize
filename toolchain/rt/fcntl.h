@@ -23,4 +23,12 @@
 #define SEEK_CUR 1
 #define SEEK_END 2
 
+/* open (maize-172): declared here, its POSIX home, so a TU that includes <fcntl.h>
+ * for the O_* flags (kilo's editorSave) also sees the prototype. The body is the
+ * errno-translating wrapper over sys_open in errno.c; the signature is byte-identical
+ * to the one in the Maize-private "syscall.h" (a duplicate typedef-free redeclaration
+ * is legal C, so a TU that includes both headers still compiles). The third arg is the
+ * O_CREAT permission mode, ignored unless O_CREAT is set. */
+int open(const char *path, int flags, int mode);
+
 #endif /* MAIZE_FCNTL_H */

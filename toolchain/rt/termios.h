@@ -39,12 +39,30 @@ struct termios {
 #define ICANON 0x0002
 #define ECHO   0x0008
 
-/* c_iflag bit (Linux value): map input CR to NL. */
+/* c_iflag bits (Linux values). ICRNL maps input CR to NL; the remainder are the
+   input flags a raw-mode editor (kilo, maize-172) clears when it hand-rolls raw
+   mode instead of calling cfmakeraw. The console models the ICANON / ECHO / ISIG
+   line discipline; the extra input bits below have no host effect (there is no
+   parity, break, or XON/XOFF layer), so clearing them is a defined no-op. They
+   are defined here only so a Linux-written editor compiles without field surgery. */
 #define ICRNL  0x0100
+#define BRKINT 0x0002
+#define INPCK  0x0010
+#define ISTRIP 0x0020
+#define IXON   0x0400
 
 /* c_oflag bits (Linux values). */
 #define OPOST  0x0001
 #define ONLCR  0x0004
+
+/* c_cflag bit (Linux value): 8-bit characters. The console is always 8-bit clean,
+   so CS8 is a defined no-op, defined for source compatibility with hand-rolled
+   raw-mode setup. */
+#define CS8    0x0030
+
+/* c_lflag extended-input bit (Linux value): the console has no IEXTEN layer, so
+   clearing it is a defined no-op. Defined for source compatibility. */
+#define IEXTEN 0x8000
 
 /* tcsetattr optional_actions (all equivalent for this line discipline). */
 #define TCSANOW   0

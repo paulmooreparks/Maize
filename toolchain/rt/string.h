@@ -39,4 +39,10 @@ char   *strtok(char *str, const char *delim);
  * <string.h>; string.c gains #include "stdlib.h" for malloc. */
 char   *strdup(const char *s);
 
+/* strerror (maize-172): a static message for the errno codes the runtime names
+ * (errno.h). Unknown codes return a fixed "Unknown error". kilo prints it via
+ * perror / editorSave's I/O-error status line. The returned pointer is a static
+ * string; the caller must not free or modify it. */
+char   *strerror(int errnum);
+
 #endif /* MAIZE_STRING_H */

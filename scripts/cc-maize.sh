@@ -349,9 +349,10 @@ fi
 # open/close/lseek/fstat + remove/mkdir, string, strings' case-insensitive compares, ctype,
 # math's fabs, stdio's unbuffered core + printf/sscanf + file-backed FILE* layer, stdlib's
 # exit/abort/malloc family + sbrk + system, unistd's usleep, dirent's opendir/readdir/
-# closedir, termios' tcgetattr/tcsetattr/cfmakeraw over the window console) alongside
-# crt0/syscall. Single-source per maize-96: this is the ONLY place the RT set is enumerated.
-for rt in errno string strings ctype math stdio stdlib unistd dirent termios; do
+# closedir, termios' tcgetattr/tcsetattr/cfmakeraw over the window console, time's
+# monotonic-seconds time() over SYS $F0, maize-172) alongside crt0/syscall.
+# Single-source per maize-96: this is the ONLY place the RT set is enumerated.
+for rt in errno string strings ctype math stdio stdlib unistd dirent termios time; do
     RT_MZO=$(compile_tu "${RT_DIR}/${rt}.c" "rt_${rt}") \
         || die "failed to compile C runtime object ${rt}.c"
     RT_OBJS="${RT_OBJS} ${RT_MZO}"

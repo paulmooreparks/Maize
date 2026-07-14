@@ -325,3 +325,26 @@ strdup(const char *s)
     memcpy(p, s, n);
     return p;
 }
+
+/* --- strerror (maize-172) ----------------------------------------------------
+ * A static message per errno code the runtime names (errno.h). The set is small
+ * and matched by switch rather than a sparse table; unknown codes get a fixed
+ * "Unknown error". The returned pointer is a static string literal (never freed). */
+#include "errno.h"
+
+char *
+strerror(int errnum)
+{
+    switch (errnum) {
+    case 0:      return "Success";
+    case EPERM:  return "Operation not permitted";
+    case ENOENT: return "No such file or directory";
+    case EBADF:  return "Bad file descriptor";
+    case ENOMEM: return "Cannot allocate memory";
+    case EISDIR: return "Is a directory";
+    case EINVAL: return "Invalid argument";
+    case ENOTTY: return "Inappropriate ioctl for device";
+    case ERANGE: return "Numerical result out of range";
+    default:     return "Unknown error";
+    }
+}

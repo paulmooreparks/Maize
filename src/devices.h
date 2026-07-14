@@ -292,6 +292,14 @@ namespace maize {
 			std::vector<unsigned char> attr_;     // cols_*rows_
 			int row_ {0};
 			int col_ {0};
+			/* DEC deferred wrap (VT100 auto-margin, maize-172): writing a glyph to the
+			   last column does NOT immediately advance the cursor; it arms wrap_pending_,
+			   and the wrap happens only when the NEXT glyph is written. An editor
+			   (kilo) that fills the whole last row (its status bar spans every column)
+			   relies on this so a full-width bottom line does not scroll the screen. Any
+			   explicit cursor move (CR, LF, BS, TAB, or a CUP/CU[UDFB] escape) cancels
+			   the pending wrap. */
+			bool wrap_pending_ {false};
 			int fg_ {7};
 			int bg_ {0};
 			int pstate_ {0};
