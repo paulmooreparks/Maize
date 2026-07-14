@@ -51,23 +51,40 @@ cmake --build --preset linux-release --target maize
 
 ### Run it
 
-Here is how I run it in PowerShell on my workstation, from the repo root. Point `--mount` at
-the folder that holds your WAD:
+`maize` gives every guest a persistent sandbox root at `~/.maize/root` that IS the
+guest's `/`, so the simplest way to hand DOOM its WAD is to drop the file inside it.
+Make a `doom` folder under the root and put your WAD there (you supply the WAD; the
+shareware `doom1.wad` or a retail `DOOM.WAD` both work):
+
+- Windows: `%USERPROFILE%\.maize\root\doom\doom1.wad`
+- Linux: `~/.maize/root/doom/doom1.wad`
+
+The guest sees that file as `/doom/doom1.wad`. Now run, from the repo root; no
+`--mount` is needed, because the WAD already lives inside the sandbox root:
 
 ``` powershell
-build\windows-llvm-mingw-release\maize.exe --display --display-scale 4 --refresh-hz 20 --input=keyboard --mount "C:\Users\paul\Downloads=/wad:ro" demos/doom/doom.mzx -iwad /wad/doom1.wad -warp 1 1
+build\windows-llvm-mingw-release\maize.exe --display --display-scale 4 --refresh-hz 20 --input=keyboard demos/doom/doom.mzx -iwad /doom/doom1.wad -warp 1 1
 ```
 
 The same run on Linux:
 
 ``` bash
-build/linux-release/maize --display --display-scale 4 --refresh-hz 20 --input=keyboard --mount "$HOME/Downloads=/wad:ro" demos/doom/doom.mzx -iwad /wad/doom1.wad -warp 1 1
+build/linux-release/maize --display --display-scale 4 --refresh-hz 20 --input=keyboard demos/doom/doom.mzx -iwad /doom/doom1.wad -warp 1 1
 ```
 
 Saves just work: DOOM writes them to a relative path (`./.savegame/...`), which
-resolves against the guest's `/home/user` working directory in the persistent
-sandbox root (`~/.maize/root`), so no writable mount is needed and your saves and
-config survive across runs. (Pass `--no-root` to opt out of the sandbox root.)
+resolves against the guest's `/home/user` working directory in that same persistent
+sandbox root, so no writable mount is needed and your saves and config survive
+across runs.
+
+That `~/.maize` directory is also how these commands get shorter: a `~/.maize/config`
+file supplies default values for the launcher flags (so `--display-scale 4
+--refresh-hz 20 --input=keyboard` can live there instead of on every command line),
+and `~/.maize/env` supplies a default guest environment. The sandbox root, the
+config file, and the environment file are all explained in detail further below,
+under "The sandbox root and mounting host directories", "Startup defaults
+(`~/.maize/config`)", and "Setting the program's environment". (Pass `--no-root` to
+opt out of the sandbox root entirely.)
 
 For how the DOOM port itself is built and tested (the vendored doomgeneric tree, the headless
 render gate, and the license-clean synthetic IWAD used by CI), see
@@ -345,6 +362,12 @@ directory is `/home/user`. A relative guest path resolves against that cwd, so a
 program that writes `./file` (or DOOM saving to `./.savegame/...`) lands under the
 sandbox root and persists across runs with no per-program configuration. Your real
 filesystem is NOT reachable: only the sandbox root plus any explicit overlay grants.
+
+Because the root is just a host directory, you can stage files into it yourself:
+anything you create under `~/.maize/root` appears to the guest at the matching path.
+Create `~/.maize/root/doom/` and it is the guest's `/doom/`, which is exactly how the
+DOOM quickstart above hands the game its WAD (`~/.maize/root/doom/doom1.wad` becomes
+`/doom/doom1.wad`) without any `--mount`.
 
 - `--root <hostpath>` uses a different host directory as the sandbox root.
 - `--no-root` disables the sandbox root; the guest starts with an empty,
