@@ -90,6 +90,12 @@ typedef struct hostfs_backend_ops {
     int64_t (*rmdir) (hostfs_mount *mount, const char *path);
     int64_t (*unlink)(hostfs_mount *mount, const char *path);
     int64_t (*rename)(hostfs_mount *mount, const char *oldp, const char *newp);
+    /* maize-179: fd-based truncate. Sets the open file's size to exactly `length`
+       (POSIX ftruncate: a shrink drops the tail, an extend zero-fills; the file offset
+       is unchanged). The core applies the :ro / synthetic-root write-gate and the
+       negative-length check before dispatch, so the backend only performs the host
+       resize on its stored handle. */
+    int64_t (*ftruncate)(void *handle, int64_t length);
 } hostfs_backend_ops;
 
 /* --- (b) mount table shape (doc section 6b) --------------------------------- */

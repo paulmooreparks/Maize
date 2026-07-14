@@ -26,11 +26,11 @@ int  close(int fd);
  * Implemented over tcgetattr, which succeeds only for a console-backed fd. */
 int isatty(int fd);
 
-/* ftruncate (maize-172): PARTIAL. Maize has no truncate syscall yet (SYSCALL-ABI.md
- * reserves it as not-implemented), so this does NOT resize the file; it returns 0.
- * A caller that rewrites the whole file (kilo's save writes the full buffer) is
- * correct when the new content is at least as long as the old file; shrinking a file
- * leaves a stale tail. The real truncate syscall is a follow-up card. */
+/* ftruncate (maize-179): a real syscall (SYS $4D) over the confined hostfs backend.
+ * Resizes the open file to exactly `length` (a shrink drops the tail, an extend
+ * zero-fills); the file offset is unchanged. Returns 0, or -1 with errno set (EROFS on
+ * a :ro mount, EINVAL on a negative length or a non-file fd, EBADF on a bad fd). kilo's
+ * save rewrites the whole buffer after ftruncate, so a shrink is now byte-exact. */
 int ftruncate(int fd, long length);
 
 #endif /* MAIZE_UNISTD_H */

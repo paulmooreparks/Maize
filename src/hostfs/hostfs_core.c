@@ -445,6 +445,23 @@ int64_t hostfs_write(hostfs_table *t, int fd, const void *buf, uint64_t count) {
     return t->ops->write(s->handle, buf, count);
 }
 
+int64_t hostfs_ftruncate(hostfs_table *t, int fd, int64_t length) {
+    hostfs_fd_slot *s = slot_for_fd(fd);
+    if (!s) {
+        return -HOSTFS_EBADF;
+    }
+    if (s->is_root || (s->mount && s->mount->mode == HOSTFS_RO)) {
+        return -HOSTFS_EROFS;   /* write-intent op on a :ro mount / synthetic root */
+    }
+    if (length < 0) {
+        return -HOSTFS_EINVAL;
+    }
+    if (!t->ops->ftruncate) {
+        return -HOSTFS_ENOSYS;
+    }
+    return t->ops->ftruncate(s->handle, length);
+}
+
 int64_t hostfs_lseek(hostfs_table *t, int fd, int64_t offset, int whence) {
     hostfs_fd_slot *s = slot_for_fd(fd);
     if (!s) {

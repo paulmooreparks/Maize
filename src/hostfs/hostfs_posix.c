@@ -226,6 +226,14 @@ static int64_t posix_fstat(void *handle, hostfs_stat *out) {
     return 0;
 }
 
+static int64_t posix_ftruncate(void *handle, int64_t length) {
+    posix_handle *h = (posix_handle *)handle;
+    if (ftruncate(h->fd, (off_t)length) < 0) {
+        return map_errno(errno);
+    }
+    return 0;
+}
+
 static int64_t posix_getdents(void *handle, void *buf, uint64_t count) {
     posix_handle *h = (posix_handle *)handle;
     if (!h->is_dir) {
@@ -403,6 +411,7 @@ static const hostfs_backend_ops g_posix_ops = {
     posix_rmdir,
     posix_unlink,
     posix_rename,
+    posix_ftruncate,
 };
 
 const hostfs_backend_ops *hostfs_backend_ops_get(void) {

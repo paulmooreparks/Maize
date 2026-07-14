@@ -73,6 +73,12 @@ GLOBAL sys_unlink
 GLOBAL sys_mkdir
 GLOBAL sys_rename
 
+; maize-179 ftruncate ($4D, the canonical Linux x86-64 number 77). src/sys.cpp routes it
+; through the confined hostfs backend (hostfs_ftruncate), which applies the :ro / synthetic-
+; root write-gate (EROFS) and a negative-length check (EINVAL) before the host resize on the
+; open fd. RV = 0 or -errno. ftruncate() (unistd.c) wraps this through __syscall_ret.
+GLOBAL sys_ftruncate
+
 sys_read:
     SYS $00                 ; fd/buf/count already in R0/R1/R2 per the C ABI
     RET
@@ -127,6 +133,10 @@ sys_mkdir:
 
 sys_rename:
     SYS $52                 ; R0=old, R1=new; RV = 0 or -errno
+    RET
+
+sys_ftruncate:
+    SYS $4D                 ; R0=fd, R1=length; RV = 0 or -errno
     RET
 
 _exit:

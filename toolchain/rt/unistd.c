@@ -12,12 +12,14 @@
  *
  * isatty / ftruncate joined here for the kilo editor port (maize-172). isatty asks the
  * termios syscall whether the fd is a console tty (the classic tcgetattr-based probe);
- * ftruncate is a documented PARTIAL: with no truncate syscall yet it does not resize
- * the file. See the unistd.h header note and the maize-172 follow-up card.
+ * ftruncate (maize-179) is now a real syscall (SYS $4D) over the confined hostfs
+ * backend, so a shrink truncates the file exactly (kilo's save-after-shrink no longer
+ * leaves a stale tail).
  */
 #include "unistd.h"
 #include "termios.h"
 #include "errno.h"
+#include "syscall.h"
 
 int
 usleep(unsigned useconds)
@@ -43,11 +45,9 @@ isatty(int fd)
 int
 ftruncate(int fd, long length)
 {
-    /* PARTIAL (maize-172): Maize has no truncate syscall yet (SYSCALL-ABI.md reserves
-       it), so the file is NOT resized. Returning 0 lets a full-rewrite save (kilo)
-       succeed when the new content is at least as long as the old file; a shrink leaves
-       a stale tail. The real truncate syscall is tracked as a follow-up card. */
-    (void)fd;
-    (void)length;
-    return 0;
+    /* maize-179: real truncate over SYS $4D (confined hostfs backend). Sets the file to
+       exactly `length` (a shrink drops the tail, an extend zero-fills). The raw stub
+       returns 0 or a [-4095, -1] -errno; __syscall_ret turns the error band into
+       errno + -1, so a shrink-save (kilo) is now byte-exact with no stale tail. */
+    return (int)__syscall_ret((unsigned long)sys_ftruncate(fd, length));
 }

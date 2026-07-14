@@ -653,6 +653,24 @@ namespace maize {
                     return static_cast<u_word>(rc);
                 }
 
+                /* maize-179 sys_ftruncate: fd R0.H0 (a 32-bit C int, read via the low-32
+                   subregister like sys_write), length R1 (signed 64-bit). Only real files
+                   opened through the hostfs table (fd >= 3) can be truncated; the core
+                   applies the :ro / synthetic-root write-gate (EROFS) and the negative-
+                   length check (EINVAL) before the backend resize. The stdio reservations
+                   0/1/2 (host stdio or the window console) are not regular files, so
+                   truncating them is EINVAL, matching Linux ftruncate on a pipe/tty. */
+                case 0x004DU: {
+                    u_word fd {regs::r0.h0};
+                    int64_t length {static_cast<int64_t>(regs::r1.w0)};
+
+                    if (fd >= 3 && hostfs != nullptr) {
+                        int64_t rc = hostfs_ftruncate(hostfs, static_cast<int>(fd), length);
+                        return static_cast<u_word>(rc);
+                    }
+                    return static_cast<u_word>(-static_cast<long>(HOSTFS_EINVAL));
+                }
+
                 /* sys_exit: record main's status and terminate the VM. The exit
                    code is the first integer argument in R0 (same ABI slot fd
                    uses for sys_read/sys_write). We record the low 8 bits only;

@@ -642,6 +642,35 @@ run_hostfs_savefs_neg() {
     fi
 }
 
+# maize-179 ftruncate acceptance: shrink drops the tail (kilo save-after-shrink is now
+# byte-exact), extend zero-fills, a negative length is EINVAL, and ftruncate on a fd from
+# a :ro mount is EROFS. Same --root sandbox + :ro overlay grant shape as savefs_neg.
+run_hostfs_truncate() {
+    name="truncate_hostfs"
+    TOTAL=$((TOTAL + 1))
+    compile_c "$name" || return
+    bin="$BIN"
+
+    root="${WORK_DIR}/hostfs_truncate"
+    rm -rf "$root"; mkdir -p "$root/sandbox" "$root/ro"
+    printf 'payload\n' > "$root/ro/payload.txt"
+    nat_root=$(host_to_native "$root/sandbox")
+    nat_ro=$(host_to_native "$root/ro")
+
+    set +e
+    actual=$("$MAIZE" --root "${nat_root}" --mount "${nat_ro}=/ro:ro" "$bin" 2>/dev/null | grep -v '^$')
+    set -e
+
+    if [ "$actual" = "truncate: PASS" ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"truncate: PASS\""
+        echo "        actual:   \"${actual}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
 # maize-138 multi-file compile/link. Builds N C sources into one .mzx through the
 # extended driver's multi-source path (an explicit -o over several positional
 # sources), runs the linked image, and diffs stdout against ctest/<name>.expected
@@ -933,6 +962,8 @@ run_hostfs_stdio
 # maize-151 path-mutating syscalls (mkdir/unlink/rename) over the confined hostfs.
 run_hostfs_savefs
 run_hostfs_savefs_neg
+# maize-179 ftruncate over the confined hostfs (shrink/extend/EINVAL/EROFS).
+run_hostfs_truncate
 
 # maize-121 self-hosted framebuffer terminal headless self-check. The fixture is a
 # guest-C program under demos/terminal/ that additionally links the mzdev device-access

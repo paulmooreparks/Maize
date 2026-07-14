@@ -381,6 +381,35 @@ static int64_t win_lseek(void *handle, int64_t offset, int whence) {
     return (int64_t)out.QuadPart;
 }
 
+static int64_t win_ftruncate(void *handle, int64_t length) {
+    win_handle *wh = (win_handle *)handle;
+    if (length < 0) {
+        return -(int64_t)HOSTFS_EINVAL;
+    }
+    /* POSIX ftruncate leaves the file offset unchanged, but SetEndOfFile truncates at
+       the current pointer, so save the offset, move to `length`, resize, and restore.
+       An extend zero-fills on NTFS (the filesystem zeroes newly allocated ranges);
+       kilo's save immediately overwrites from offset 0, so the fill is moot there. */
+    LARGE_INTEGER zero, saved, target;
+    zero.QuadPart = 0;
+    if (!SetFilePointerEx(wh->h, zero, &saved, FILE_CURRENT)) {
+        return map_last_error(GetLastError());
+    }
+    target.QuadPart = length;
+    if (!SetFilePointerEx(wh->h, target, NULL, FILE_BEGIN)) {
+        return map_last_error(GetLastError());
+    }
+    if (!SetEndOfFile(wh->h)) {
+        int64_t rc = map_last_error(GetLastError());
+        SetFilePointerEx(wh->h, saved, NULL, FILE_BEGIN);   /* best-effort restore */
+        return rc;
+    }
+    if (!SetFilePointerEx(wh->h, saved, NULL, FILE_BEGIN)) {
+        return map_last_error(GetLastError());
+    }
+    return 0;
+}
+
 /* FILETIME (100ns ticks since 1601) -> unix seconds/nanoseconds. */
 static void filetime_to_unix(FILETIME ft, int64_t *sec, int64_t *nsec) {
     uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | (uint64_t)ft.dwLowDateTime;
@@ -651,6 +680,7 @@ static const hostfs_backend_ops g_win_ops = {
     win_rmdir,
     win_unlink,
     win_rename,
+    win_ftruncate,
 };
 
 const hostfs_backend_ops *hostfs_backend_ops_get(void) {

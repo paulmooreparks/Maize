@@ -113,12 +113,11 @@ kilo's read loop blocks on stdin until a key is available. The console's `read_i
 parks the CPU (HALT on the run-bit substrate) while the input queue is empty and
 wakes on a keyboard IRQ, so an idle editor burns no cycles (no busy-spin).
 
-## Known limitation: file save on shrink (follow-up card)
+## File save on shrink (resolved, maize-179)
 
-`ftruncate` is a documented PARTIAL shim: Maize has no `truncate`/`ftruncate`
-syscall yet (`toolchain/rt/SYSCALL-ABI.md` reserves it as not-implemented), so it
-returns success without resizing the file. Because kilo's save rewrites the entire
-buffer with one `write`, saving is correct whenever the new content is at least as
-long as the file on disk (the common editing case). Saving a file that has become
-SHORTER leaves a stale tail until a real truncate syscall lands. That syscall is
-tracked as its own follow-up card.
+`ftruncate` is a real syscall (`SYS $4D`, the Linux x86-64 number 77) routed through
+the confined hostfs backend: it resizes the open file to exactly the new length, `:rw`
+gated (a `:ro` mount returns `EROFS`) and confined like the other mutating ops. kilo's
+save rewrites the whole buffer after `ftruncate`, so saving a file that has become
+SHORTER is now byte-exact with no stale tail. (Earlier this was a documented PARTIAL
+shim that did not resize the file; that limitation is gone.)

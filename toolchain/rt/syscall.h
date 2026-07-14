@@ -64,6 +64,11 @@ long sys_unlink(const char *path);
 long sys_mkdir(const char *path, int mode);
 long sys_rename(const char *old, const char *new);
 
+/* maize-179 ftruncate raw stub (SYS $4D). Routed through the confined hostfs backend:
+ * RV = 0 on success, or a [-4095, -1] -errno (EROFS on a :ro mount / synthetic root,
+ * EINVAL on a negative length, EBADF on a bad fd). ftruncate() (unistd.c) wraps this. */
+long sys_ftruncate(int fd, long length);
+
 /* --- errno + wrappers (errno.c) -------------------------------------------- */
 
 /* The musl error translator: a pure function of its input. A raw result in

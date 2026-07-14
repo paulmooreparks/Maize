@@ -96,6 +96,7 @@ Mirrors the Linux x86-64 table by construction. Frozen:
 | `$52` | `sys_rename` | `R0`=oldpath, `R1`=newpath | `RV`=0 or `-errno` |
 | `$53` | `sys_mkdir` | `R0`=path, `R1`=mode | `RV`=0 or `-errno` |
 | `$57` | `sys_unlink` | `R0`=path | `RV`=0 or `-errno` |
+| `$4D` | `sys_ftruncate` | `R0`=fd, `R1`=length | `RV`=0 or `-errno` |
 | `$0C` | `sys_brk` | `R0`=new break (0=query) | `RV`=new (or current) break; never `-errno` |
 | `$3C` | `_exit` (`sys_exit`) | `R0`=code | does not return |
 | `$A9` | `sys_reboot` | reserved (VM stub) | reserved |
@@ -129,9 +130,19 @@ check on Windows), so neither a guest `..` nor an escaping host symlink can leav
 mount. `mkdir`'s `mode` follows the guest value (falling back to `0755` when the guest
 passes `0`, so the directory is enterable).
 
+`$4D` (`sys_ftruncate`, maize-179) mirrors the Linux x86-64 number (77). It is the fd
+form: `R0`=fd, `R1`=length (signed 64-bit). Only a hostfs-backed fd (`>= 3`) can be
+truncated; the core applies the same `:ro` / synthetic-root write-gate as the other
+mutating ops (`-EROFS`), rejects a negative length with `-EINVAL`, then resizes the open
+file to exactly `length` on its confined handle (a shrink drops the tail, an extend
+zero-fills; the file offset is unchanged). The stdio reservations `0`/`1`/`2` are not
+regular files, so truncating them is `-EINVAL`, matching Linux `ftruncate` on a pipe/tty.
+kilo's save rewrites the whole buffer after `ftruncate`, so a save-after-shrink is now
+byte-exact with no stale tail.
+
 The remaining out-of-scope path-based / mutating numbers (`$04` stat, `$54` rmdir via a
-distinct number, the `*at` family at `$101`+, symlink / chmod / truncate) are NOT
-dispatched in this POC and stay reserved for later cards.
+distinct number, the `*at` family at `$101`+, symlink / chmod, and the path form of
+`truncate` at `$4C`) are NOT dispatched in this POC and stay reserved for later cards.
 
 ## Numbering policy
 

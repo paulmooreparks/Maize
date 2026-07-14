@@ -81,6 +81,14 @@ int64_t hostfs_fstat(hostfs_table *t, int fd, uint8_t *out_stat);
 /* Packs linux_dirent64 records into buf (capacity `count`). */
 int64_t hostfs_getdents(hostfs_table *t, int fd, uint8_t *buf, uint64_t count);
 
+/* maize-179 fd-based truncate. Looks up the guest fd, applies the write-intent gate
+   (a :ro mount or the synthetic root returns -EROFS), rejects a negative length with
+   -EINVAL, then resizes the open file to exactly `length` (a shrink drops the tail, an
+   extend zero-fills; the file offset is unchanged). Mirrors hostfs_write's fd + gate
+   path. kilo's save rewrites the whole buffer after ftruncate, so a shrink now leaves
+   no stale tail. */
+int64_t hostfs_ftruncate(hostfs_table *t, int fd, int64_t length);
+
 /* maize-151 path-mutating dispatch. Each normalizes the guest path against the table
    cwd, longest-prefix matches a mount, applies the write-intent gate (a :ro mount or
    the synthetic root returns -EROFS, an unmounted path -ENOENT), then calls the
