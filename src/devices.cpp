@@ -953,6 +953,25 @@ namespace maize {
 				bool force_present = true;   // first frame and post-surface-swap force a present
 				std::uint32_t last_input_tick = SDL_GetTicks() - 1000u;
 
+				/* maize-176 wake/present scheduling. Two INDEPENDENT schedules replace the old
+				   poll-once-then-sleep(refresh_ms) that coupled input AND echo latency to the
+				   refresh rate:
+				     - next_vsync is an absolute-deadline schedule at the refresh_ms ("monitor")
+				       cadence: fb.on_display_refresh() fires when the deadline passes (the vsync
+				       IRQ / HALT-wake backstop) and the deadline advances by refresh_ms, so an
+				       early wake on input neither drifts nor double-fires it. It also paces the
+				       graphics-mode present at refresh_hz.
+				     - last_console_present drives the console (text) surface, which presents on
+				       demand no more than once per console_min_gap (~60Hz), so echo appears within
+				       ~16ms of the guest writing it at ANY refresh_hz, not once per refresh period.
+				   The loop blocks in SDL_WaitEventTimeout until the soonest of these (or the idle
+				   cursor blink) is due, so a keystroke wakes it immediately while an idle console
+				   never busy-spins. */
+				const std::uint32_t console_min_gap = 16u;   // ~60Hz console present cap
+				std::uint32_t next_vsync = SDL_GetTicks() + refresh_ms;
+				std::uint32_t last_console_present = SDL_GetTicks() - 1000u;
+				bool console_present_pending = false;   // dirty console content held off by the gap
+
 				bool running = true;
 				while (running && !guest_done.load(std::memory_order_acquire)) {
 					/* Switch to the framebuffer surface the first time a graphics program
@@ -972,35 +991,73 @@ namespace maize {
 						force_present = true;
 					}
 
+					/* maize-176: block until an event arrives OR the soonest scheduled tick is
+					   due, so input latency is independent of refresh_hz. The timeout is the ms
+					   until the nearest of: the next vsync tick, the next cursor-blink toggle (only
+					   when the cursor is idle/blinking), and a pending console present held off by
+					   the ~16ms gap. Clamp to >=1ms (never wait 0) and <= the vsync interval (so the
+					   on_display_refresh backstop still fires each period). */
+					std::uint32_t wake_now = SDL_GetTicks();
+					std::uint32_t timeout = refresh_ms;
+					{
+						std::uint32_t until_vsync = (std::int32_t)(next_vsync - wake_now) > 0
+							? (next_vsync - wake_now) : 0u;
+						if (until_vsync < timeout) { timeout = until_vsync; }
+					}
+					bool wake_cursor_solid = (wake_now - last_input_tick) < 500u;
+					if (!graphics_mode && con.cursor_visible() && !wake_cursor_solid) {
+						std::uint32_t until_blink = 500u - (wake_now % 500u);
+						if (until_blink < timeout) { timeout = until_blink; }
+					}
+					if (console_present_pending) {
+						std::uint32_t due = last_console_present + console_min_gap;
+						std::uint32_t until_present = (std::int32_t)(due - wake_now) > 0
+							? (due - wake_now) : 0u;
+						if (until_present < timeout) { timeout = until_present; }
+					}
+					if (timeout < 1u) { timeout = 1u; }
+					if (timeout > refresh_ms) { timeout = refresh_ms; }
+
+					/* Wait for the first event (or the timeout), then drain the rest with
+					   SDL_PollEvent so a burst is handled in one wake. */
 					SDL_Event e;
-					while (SDL_PollEvent(&e)) {
-						if (e.type == SDL_QUIT) {
-							running = false;
-						}
-						else if (e.type == SDL_KEYDOWN && e.key.repeat == 0) {
-							u_byte sc = map_scancode(e.key.keysym.scancode);
-							if (sc) {
-								/* Route keys to the active surface: the framebuffer keyboard
-								   device (DOOM polls its port) in graphics mode, the console
-								   keymap + line discipline (fd 0) otherwise. */
-								if (graphics_mode) { kbd.push_event(sc); }
+					if (SDL_WaitEventTimeout(&e, static_cast<int>(timeout))) {
+						do {
+							if (e.type == SDL_QUIT) {
+								running = false;
+							}
+							else if (e.type == SDL_KEYDOWN) {
+								if (graphics_mode) {
+									/* Graphics (DOOM): one make per physical press. DOOM tracks held
+									   keys via make/break, so injected key-repeat makes would confuse
+									   it; keep the repeat==0 filter on this path. */
+									if (e.key.repeat == 0) {
+										u_byte sc = map_scancode(e.key.keysym.scancode);
+										if (sc) { kbd.push_event(sc); }
+									}
+								}
 								else {
-									con.push_scancode(sc);
-									/* Note the keystroke so the cursor freezes solid while typing
-									   (see the dirty-present state above); SDL time stays on the
-									   SDL side, so the console needs no timestamp of its own. */
-									last_input_tick = SDL_GetTicks();
+									/* Console: process KEYDOWN INCLUDING repeats so a held key
+									   autorepeats at the OS repeat rate; refresh last_input_tick on
+									   repeats too so the cursor stays solid while a key is held (SDL
+									   time stays on the SDL side, so the console needs no timestamp
+									   of its own). */
+									u_byte sc = map_scancode(e.key.keysym.scancode);
+									if (sc) {
+										con.push_scancode(sc);
+										last_input_tick = SDL_GetTicks();
+									}
 								}
 							}
-						}
-						else if (e.type == SDL_KEYUP) {
-							u_byte sc = map_scancode(e.key.keysym.scancode);
-							if (sc) {
-								u_byte brk = static_cast<u_byte>(sc | 0x80);   // break code
-								if (graphics_mode) { kbd.push_event(brk); }
-								else { con.push_scancode(brk); }
+							else if (e.type == SDL_KEYUP) {
+								u_byte sc = map_scancode(e.key.keysym.scancode);
+								if (sc) {
+									u_byte brk = static_cast<u_byte>(sc | 0x80);   // break code
+									if (graphics_mode) { kbd.push_event(brk); }
+									else { con.push_scancode(brk); }
+								}
 							}
-						}
+						} while (SDL_PollEvent(&e));
 					}
 
 					if (show_perf) {
@@ -1022,12 +1079,28 @@ namespace maize {
 						}
 					}
 
-					/* maize-140 dirty gate: decide whether anything visible changed since the
-					   last present. The refresh sleep and fb.on_display_refresh() below run every
-					   iteration regardless; only this present block is skipped when nothing moved.
-					   Cursor timing: within 500 ms of the last keystroke the cursor is SOLID (it
-					   holds steady while the operator types, so echoes are the only presents), and
-					   after that idle window it BLINKS on the ~500 ms frame-clock phase. */
+					/* maize-176 vsync tick (absolute-deadline schedule): fire the once-per-refresh
+					   vblank IRQ / HALT-wake backstop when its deadline passes, then advance the
+					   deadline by refresh_ms so an early wake on input neither drifts nor double-
+					   fires it. If we fell a full period or more behind (e.g. a debugger pause),
+					   resync to now so we do not fire a catch-up burst. This tick also paces the
+					   graphics-mode present at refresh_hz (see present_due below). */
+					bool vsync_ticked = false;
+					if ((std::int32_t)(SDL_GetTicks() - next_vsync) >= 0) {
+						fb.on_display_refresh();
+						vsync_ticked = true;
+						next_vsync += refresh_ms;
+						if ((std::int32_t)(SDL_GetTicks() - next_vsync) >= 0) {
+							next_vsync = SDL_GetTicks() + refresh_ms;
+						}
+					}
+
+					/* maize-140 dirty gate: decide whether anything visible changed since the last
+					   present. Only this present block is skipped when nothing moved; the vsync tick
+					   above still fires each refresh period regardless. Cursor timing: within 500 ms
+					   of the last keystroke the cursor is SOLID (it holds steady while the operator
+					   types, so echoes are the only presents), and after that idle window it BLINKS
+					   on the ~500 ms frame-clock phase. */
 					std::uint32_t now_ticks = SDL_GetTicks();
 					bool cursor_solid = (now_ticks - last_input_tick) < 500u;
 					int cursor_phase = static_cast<int>((now_ticks / 500u) & 1u);
@@ -1051,7 +1124,19 @@ namespace maize {
 						if (show_perf && perf_str != last_perf_str) { dirty = true; }
 					}
 
-					if (dirty) {
+					/* maize-176 present scheduling (two INDEPENDENT schedules): the console (text)
+					   surface presents on demand at up to ~60Hz (>= console_min_gap between
+					   presents), so echo latency is bounded by ~16ms at ANY refresh_hz; the
+					   framebuffer (graphics) surface presents on the vsync tick, i.e. at refresh_hz.
+					   A forced present (first frame / surface swap) bypasses the gate. */
+					bool present_due;
+					if (graphics_mode) {
+						present_due = vsync_ticked;
+					} else {
+						present_due = (std::uint32_t)(now_ticks - last_console_present) >= console_min_gap;
+					}
+
+					if (dirty && (force_present || present_due)) {
 						bool presented = false;
 						if (graphics_mode) {
 							const std::vector<std::uint32_t>& frame = fb.frame();
@@ -1110,15 +1195,19 @@ namespace maize {
 							last_cursor_phase = cursor_phase;
 							last_perf_str = perf_str;
 							force_present = false;
+							/* Console surface just presented: reset its ~60Hz gap and clear any
+							   deferred-present flag. The graphics surface is paced by the vsync
+							   tick, so it does not touch the console schedule. */
+							if (!graphics_mode) {
+								last_console_present = now_ticks;
+								console_present_pending = false;
+							}
 						}
+					} else if (dirty && !graphics_mode) {
+						/* Dirty console content held off by the ~16ms present cap: remember it so
+						   the wait at the top of the loop schedules a wake when the gap elapses. */
+						console_present_pending = true;
 					}
-
-					/* Vblank: raise the vsync IRQ (if the guest enabled it) once per refresh, so a
-					   guest parked in HALT wakes at the monitor rate. Off-thread from the guest,
-					   so it also serves as the periodic backstop for interrupt-driven input. */
-					fb.on_display_refresh();
-
-					std::this_thread::sleep_for(std::chrono::milliseconds(refresh_ms));
 				}
 
 				/* Unblock a console fd-0 read parked on the scancode queue, then stop the VM,
