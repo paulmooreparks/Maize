@@ -1,5 +1,6 @@
 #include "maize.h"
 // #include "maize_sys.h"
+#include "console_io.h"
 #include "hostfs/hostfs_core.h"
 #include <cerrno>
 #include <chrono>
@@ -379,6 +380,11 @@ namespace maize {
                of read/write dispatch against this table. */
             hostfs_table* hostfs = nullptr;
 
+            /* maize-140: the bound window text console, or NULL (default / mazm / no
+               display). When non-NULL, fd 0/1/2 and the termios syscalls route here
+               instead of host stdio. */
+            console::console_io* console_dev = nullptr;
+
             /* maize-114: bounded guest-C-string copy-in (maize-79 trust boundary).
                Reads NUL-terminated bytes from guest memory at addr, capped at
                HOSTFS_PATH_MAX. Returns true on a NUL within the bound; false when
@@ -407,6 +413,11 @@ namespace maize {
         void set_hostfs_table(hostfs_table* table) {
             hostfs = table;
             hostfs_reset_fds();
+        }
+
+        /* maize-140: bind (or clear) the window text console. */
+        void set_console(console::console_io* c) {
+            console_dev = c;
         }
 
         int exit_code() {
@@ -442,6 +453,20 @@ namespace maize {
                     std::vector<u_byte> buf;
                     buf.resize(count);
                     u_byte* bufvec = buf.data();
+
+                    /* maize-140: when the window console is bound, fd 0 reads decoded
+                       keystrokes through its termios line discipline (blocking read that
+                       parks the CPU on empty input); the host-side buffer is then copied
+                       to guest memory exactly like the stdio path below. fd 1/2 remain
+                       write-only. */
+                    if (console_dev != nullptr && fd == 0) {
+                        long rc = console_dev->read_in(bufvec, count);
+                        u_word n = static_cast<u_word>(rc);
+                        for (u_word i = 0; i < n; ++i) {
+                            cpu::mm.write_byte(address + i, bufvec[i]);
+                        }
+                        return n;
+                    }
 
                     /* maize-114: fd >= 3 routes through the hostfs guest fd table
                        (lifting the M4 -EBADF restriction) when a mount table is
@@ -484,6 +509,14 @@ namespace maize {
 
                     std::vector<u_byte> str = mm.read(address, count);
                     u_byte const* buf {str.data()};
+
+                    /* maize-140: when the window console is bound, fd 1/2 render as
+                       glyphs through the VT-output engine instead of host stdout/stderr;
+                       the full count is always consumed. */
+                    if (console_dev != nullptr && (fd == 1 || fd == 2)) {
+                        console_dev->write_out(buf, count);
+                        return count;
+                    }
 
                     /* maize-114: fd >= 3 routes through the hostfs guest fd table
                        (a :ro mount returns -EROFS from the core); fds 0/1/2 stay
@@ -675,6 +708,44 @@ namespace maize {
                     auto ms  = std::chrono::duration_cast<std::chrono::milliseconds>(
                                    now - clock_baseline).count();
                     return static_cast<u_word>(ms);
+                }
+
+                /* sys_tcgetattr (maize-140): fd R0.H0, termios* R1. Copy the bound
+                   console's termios wire image (console::TERMIOS_SIZE bytes) out to guest
+                   memory. Maize-private high-block number ($F1; termios has no clean
+                   Linux-number mirror since Linux does it through ioctl TCGETS). Returns 0
+                   on success, -EBADF if no console is bound (host stdio has no termios) or
+                   the fd is not a tty. */
+                case 0x00F1U: {
+                    u_word fd {regs::r0.h0};
+                    u_word address {regs::r1.w0};
+                    if (console_dev == nullptr || fd > 2) {
+                        return static_cast<u_word>(-static_cast<long>(9));  /* -EBADF */
+                    }
+                    unsigned char img[console::TERMIOS_SIZE];
+                    console_dev->termios_get(img);
+                    for (u_word i = 0; i < console::TERMIOS_SIZE; ++i) {
+                        cpu::mm.write_byte(address + i, img[i]);
+                    }
+                    return 0;
+                }
+
+                /* sys_tcsetattr (maize-140): fd R0.H0, optional_actions R1 (accepted and
+                   applied immediately; TCSANOW/TCSADRAIN/TCSAFLUSH are equivalent for this
+                   line discipline), termios* R2. Adopt the guest's termios wire image.
+                   Returns 0 on success, -EBADF if no console is bound / not a tty. */
+                case 0x00F2U: {
+                    u_word fd {regs::r0.h0};
+                    u_word address {regs::r2.w0};
+                    if (console_dev == nullptr || fd > 2) {
+                        return static_cast<u_word>(-static_cast<long>(9));  /* -EBADF */
+                    }
+                    unsigned char img[console::TERMIOS_SIZE];
+                    for (u_word i = 0; i < console::TERMIOS_SIZE; ++i) {
+                        img[i] = cpu::mm.read_byte(address + i);
+                    }
+                    console_dev->termios_set(img);
+                    return 0;
                 }
             }
 

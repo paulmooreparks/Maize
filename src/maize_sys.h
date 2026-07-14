@@ -21,6 +21,10 @@
 struct hostfs_table;
 
 namespace maize {
+	/* maize-140: forward-declared so sys.cpp can hold a console_io* without pulling in
+	   the device models (mazm links sys.cpp but never devices.cpp). */
+	namespace console { class console_io; }
+
 	namespace sys {
 		void init();
 		u_word call(u_qword syscall_id);
@@ -39,6 +43,14 @@ namespace maize {
 		   (mazm never calls this). Forward-declared; the full type lives in the
 		   freestanding core header src/hostfs/hostfs.h. */
 		void set_hostfs_table(hostfs_table* table);
+
+		/* maize-140: bind the window text console to fd 0/1/2. NULL (the default, and
+		   always in mazm) leaves stdio routed to the host exactly as before; maize.cpp
+		   installs the text_console when the window console is active. When bound, fd 1/2
+		   writes render as glyphs, fd 0 reads pull decoded keystrokes through the console's
+		   termios line discipline, and SYS $F1/$F2 (tcgetattr/tcsetattr) reach its termios
+		   state. */
+		void set_console(console::console_io* c);
 	} // namespace sys
 
 	namespace syscall {

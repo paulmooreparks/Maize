@@ -8,10 +8,14 @@
    external dependency; the optional SDL2 window backend sits behind MAIZE_DISPLAY. */
 
 #include "maize_cpu.h"
+#include "console_io.h"
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <ostream>
+#include <string>
 #include <vector>
 
 namespace maize {
@@ -144,6 +148,16 @@ namespace maize {
 			   samples the delta over time to show the guest frame rate. */
 			std::uint64_t present_count() const { return present_count_.load(std::memory_order_relaxed); }
 
+			/* maize-140: the raw-framebuffer takeover signal (text/graphics arbitration, D3).
+			   A guest graphics program (DOOM) opts into owning the window by explicitly
+			   programming the framebuffer base port (writing a nonzero guest pixel-buffer
+			   address to port 0x53); that deliberate device programming latches this flag.
+			   The text console owns the window by default; once a program claims the
+			   framebuffer this reads true and the display switches to blitting the fb frame
+			   for the rest of the run (mutually exclusive per run). This is an explicit guest
+			   action, NOT host-side auto-detection of the output byte stream. */
+			bool graphics_claimed() const { return claimed_.load(std::memory_order_acquire); }
+
 			/* Called by the display thread once per refresh (vblank). If the guest has enabled
 			   the vsync IRQ (port $55 bit1), set vsync-pending and raise the framebuffer IRQ so
 			   a guest parked in HALT wakes at the refresh rate. This is the periodic "monitor"
@@ -173,20 +187,136 @@ namespace maize {
 			std::atomic<u_word> status_ {0};    // bit0 = vsync-pending
 			bool present_valid_ {false};
 			std::atomic<std::uint64_t> present_count_ {0};   // valid presents (guest frames)
+			/* maize-140: latched true when a guest programs a nonzero framebuffer base (the
+			   explicit raw-framebuffer takeover signal). Read by the display thread. */
+			std::atomic<bool> claimed_ {false};
 			std::vector<std::uint32_t> frame_;
+		};
+
+		/* maize-140: host/VM text console (approach (i)). The window becomes a first-class
+		   glass TTY: the guest writes BYTES on fd 1/2 and this device renders GLYPHS into a
+		   host pixel buffer (an 80x50 cell grid over font8x8 at a 640x400 default, distinct
+		   from the framebuffer's 320x200 DOOM default), interpreting the same VT/ANSI output
+		   subset the maize-121 term_core engine honors (LF/CR/BS/HT, CUU/CUD/CUF/CUB, CUP,
+		   ED, EL, SGR basic colors, right-margin wrap, bottom-of-screen scroll). Physical
+		   keys arrive as Set-1 scancodes, run through a shift/ctrl-aware keymap (printable +
+		   control bytes + arrow/nav VT INPUT escapes) and a full termios line discipline
+		   (cooked line editing with echo + Backspace, or raw byte-at-a-time with no echo),
+		   and are delivered on fd 0. A blocking fd-0 read with no input parks the CPU on the
+		   run-bit substrate (windowed) or on host stdin (headless), never busy-spinning.
+
+		   It is NOT a port device: it is bound to fd 0/1/2 through sys.cpp's console_io seam
+		   (maize.cpp installs it when the window console is active), so ordinary stdio guest
+		   programs work with zero special wiring. State is resident (survives across guest
+		   program runs within one VM), unlike term_core's per-program static state. */
+		class text_console : public console::console_io {
+		public:
+			/* The scancode source. STDIN is the headless deterministic path (each host
+			   stdin byte is one Set-1 scancode, mirroring `maize --input=keyboard`); QUEUE
+			   is the windowed path (the SDL thread feeds scancodes via push_scancode). */
+			enum class input_mode { STDIN, QUEUE };
+
+			text_console(unsigned width_px, unsigned height_px);
+
+			void set_input_mode(input_mode m) { input_mode_ = m; }
+
+			/* --- console_io (fd 0/1/2 + termios, called from sys.cpp on the CPU thread) --- */
+			void write_out(const unsigned char* buf, unsigned long count) override;
+			long read_in(unsigned char* buf, unsigned long count) override;
+			void termios_get(unsigned char* image) override;
+			void termios_set(const unsigned char* image) override;
+
+			/* --- windowed backend hooks (called from the SDL thread) --- */
+			/* Enqueue one Set-1 scancode (make or break) and wake a parked fd-0 read. */
+			void push_scancode(u_byte scancode);
+			/* Unblock any parked read and make further reads return EOF (window closing). */
+			void stop();
+
+			/* --- display blit + headless verification --- */
+			unsigned width() const { return width_px_; }
+			unsigned height() const { return height_px_; }
+			const std::uint32_t* pixels() const { return pixels_.data(); }
+			/* Dump the grid as text rows (trailing blanks trimmed) for the headless CI
+			   self-check, which cannot read the host pixel buffer from guest C. */
+			void dump_text(std::ostream& out) const;
+
+		private:
+			/* VT-output engine (ported from demos/terminal/term_core.h). */
+			void render_cell(int row, int col);
+			int cur_attr() const { return (bg_ << 4) | fg_; }
+			void clear_cell(int r, int c);
+			void scroll_up();
+			void newline();
+			void put_glyph(int ch);
+			void csi_dispatch(int final_byte);
+			void out_byte(int ch);   // one output byte through the VT parser
+
+			/* keymap + line discipline (the new INPUT half). */
+			void keymap(u_byte sc, std::string& out) const;   // scancode -> raw byte(s)
+			void feed_scancode(u_byte sc);                     // keymap + line discipline + echo
+			void deliver(unsigned char b) { delivered_.push_back(b); }
+			bool canonical() const { return (lflag_ & console::TERMIOS_ICANON) != 0; }
+			bool echo() const { return (lflag_ & console::TERMIOS_ECHO) != 0; }
+			void reset_termios_defaults();
+
+			/* Headless stdin scancode source: one blocking host-stdin byte, or -1 at EOF. */
+			int next_stdin_scancode();
+			/* Windowed scancode source: pop one queued scancode, parking the CPU while the
+			   queue is empty; returns -1 if the window closed with nothing pending. */
+			int next_queue_scancode();
+
+			unsigned width_px_;
+			unsigned height_px_;
+			int cols_;
+			int rows_;
+			std::vector<std::uint32_t> pixels_;   // width_px_ * height_px_, XRGB8888
+			std::vector<unsigned char> glyph_;    // cols_*rows_
+			std::vector<unsigned char> attr_;     // cols_*rows_
+			int row_ {0};
+			int col_ {0};
+			int fg_ {7};
+			int bg_ {0};
+			int pstate_ {0};
+			int param_[8] {0};
+			int pidx_ {0};
+			int pseen_ {0};
+
+			/* keyboard modifier state (Set-1). */
+			bool shift_ {false};
+			bool ctrl_ {false};
+
+			/* termios + line discipline. */
+			unsigned iflag_ {0};
+			unsigned oflag_ {0};
+			unsigned cflag_ {0};
+			unsigned lflag_ {0};
+			unsigned char cc_[console::TERMIOS_NCCS] {0};
+			std::string line_;                    // pending cooked line (raw typed bytes)
+			std::deque<unsigned char> delivered_; // bytes ready for fd-0 read
+
+			/* windowed scancode queue (SDL thread produces, CPU thread consumes). */
+			input_mode input_mode_ {input_mode::STDIN};
+			std::mutex q_mutex_;
+			std::condition_variable q_cv_;
+			std::deque<u_byte> scancode_q_;
+			bool stopped_ {false};
+			bool stdin_eof_ {false};
 		};
 
 #ifdef MAIZE_DISPLAY
 		/* SDL2 window backend (opt-in build, MAIZE_DISPLAY=ON). Runs the guest on a
 		   background thread while the SDL event loop pumps on the calling thread, blitting
-		   the framebuffer's captured frame and mapping host keys to Set-1 scancodes pushed
-		   into the keyboard. Never compiled in the default/headless build. */
+		   the active surface (the text console by default, or the framebuffer once a guest
+		   graphics program claims it) and mapping host keys to Set-1 scancodes. Never
+		   compiled in the default/headless build. */
 		namespace display {
 			/* refresh_hz is the "monitor" refresh rate: the cadence at which the window is
 			   re-presented and the vsync IRQ is raised (on_display_refresh). Lower it for
-			   undemanding workloads (fewer wakeups), raise it for smoother pacing. */
-			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale, bool show_perf,
-				unsigned refresh_hz);
+			   undemanding workloads (fewer wakeups), raise it for smoother pacing. con is the
+			   default surface (text console); fb takes over for a raw-framebuffer program
+			   (DOOM) once it claims the framebuffer, mutually exclusive per run. */
+			void run(framebuffer_device& fb, keyboard_device& kbd, text_console& con,
+				unsigned scale, bool show_perf, unsigned refresh_hz);
 		}
 #endif
 

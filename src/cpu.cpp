@@ -1166,6 +1166,24 @@ namespace maize {
             active_input_ptr = src;
         }
 
+        /* maize-140: idle-park hooks used by a blocking console read (see the
+           declaration in maize_cpu.h). set_running toggles the run bit under int_mutex
+           (the same latch HALT parks with); the console clears it while waiting on a
+           keypress so the MIPS readout idles and there is no busy-spin, then sets it
+           back before the SYS read returns. No notify is needed: the console's own
+           condition variable (or a blocking host stdin read) governs the wake, and the
+           run loop only re-reads the run bit after tick() returns, which cannot happen
+           while the CPU thread is parked inside the syscall. */
+        void set_running(bool on) {
+            std::lock_guard<std::mutex> lk(int_mutex);
+            running_flag = on;
+        }
+
+        bool is_powered() {
+            std::lock_guard<std::mutex> lk(int_mutex);
+            return is_power_on;
+        }
+
         /* A device raises an IRQ by making a vector pending (card maize-21). The flat
            controller coalesces multiple raises to the single pending-vector latch
            (last-raise-wins). Taking int_mutex and notifying int_event makes delivery

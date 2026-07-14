@@ -599,11 +599,19 @@ int main(int argc, char *argv[]) {
 	bool no_root = false;            // --no-root: disable the default sandbox root
 	std::string root_override;       // --root <hostpath>: redirect the sandbox root
 	bool display_requested = false;
+	bool console_dump = false;       // --console-dump: bind the text console headlessly and
+	                                 // dump its grid at exit (headless CI self-check channel)
 	bool show_perf = false;          // --show-perf: draw guest MIPS + FPS in the window corner
 	unsigned display_scale = 3;      // window = framebuffer size * scale (--display-scale)
 	unsigned refresh_hz = 60;        // "monitor" refresh + vsync-IRQ rate (--refresh-hz)
 	maize::u_hword fb_width = 320;   // framebuffer host config (OQ: default 320x200)
 	maize::u_hword fb_height = 200;
+	/* maize-140: the text console has its OWN default resolution, distinct from the
+	   framebuffer's 320x200 DOOM default (OQ2). 640x400 at font8x8 is an 80x50 cell grid,
+	   the >= 80-column floor the console targets; keeping it separate from fb_width/height
+	   means the framebuffer default (and DOOM's geometry guard) is untouched. */
+	maize::u_hword console_width = 640;
+	maize::u_hword console_height = 400;
 	std::string input_source;        // "" = SYS console (default); "keyboard" | "console"
 
 	/* maize-169 / maize-170: before parsing CLI options, seed launcher flag
@@ -786,6 +794,17 @@ int main(int argc, char *argv[]) {
 			/* Opt-in host window. Only honored when a display backend is compiled in
 			   (MAIZE_DISPLAY); otherwise the run stays headless with a note. */
 			display_requested = true;
+			++idx;
+			continue;
+		}
+		if (arg == "--console-dump") {
+			/* maize-140: headless console-verification channel. Binds the window text
+			   console to fd 0/1/2 even without a display backend (the console engine has
+			   no SDL dependency), sourcing keystrokes from host stdin as Set-1 scancodes,
+			   and dumps the rendered grid as text to stdout at exit. The headless
+			   run-ctest self-check uses this to verify VT output + the keymap + cooked/raw
+			   delivery; a normal run (no flag) is completely unaffected. */
+			console_dump = true;
 			++idx;
 			continue;
 		}
@@ -1070,6 +1089,14 @@ int main(int argc, char *argv[]) {
 	devices::framebuffer_device framebuffer(fb_width, fb_height);
 	framebuffer.attach();
 
+	/* maize-140: the host/VM text console (approach (i)). It owns its own pixel buffer at
+	   the console default resolution (640x400 -> 80x50 cells), separate from the
+	   framebuffer. It is bound to fd 0/1/2 (below) only when the window console is active
+	   (a compiled-in --display window, or --console-dump for the headless CI self-check);
+	   otherwise fd 0/1/2 keep host stdio and this object is inert. Constructed
+	   unconditionally so its lifetime spans cpu::run(); binding is what activates it. */
+	devices::text_console console_dev(console_width, console_height);
+
 	cpu::device block_lba;
 	cpu::device block_data;
 	cpu::device block_control;
@@ -1105,6 +1132,26 @@ int main(int argc, char *argv[]) {
 	   guest runs). mazm never calls this, so its hostfs paths stay inert. */
 	sys::set_hostfs_table(&hostfs_tab);
 
+	/* maize-140: bind the window text console to fd 0/1/2 when the console is active.
+	   Active means a compiled-in --display window (the guest's stdout/stderr become
+	   glyphs in the window and physical keys become stdin), OR --console-dump (the
+	   headless CI self-check path: the same engine runs with no window, sourcing
+	   scancodes from host stdin and dumping the grid at exit). Without either, fd 0/1/2
+	   keep host stdio unchanged (pipes, CI, no-display runs). The windowed source is the
+	   SDL scancode queue; the headless source is host stdin (each byte one Set-1
+	   scancode). A --display run without a compiled backend falls back to headless and
+	   does NOT bind the console (host stdio, as before), unless --console-dump is set. */
+	bool windowed_console = false;
+#ifdef MAIZE_DISPLAY
+	windowed_console = display_requested;
+#endif
+	if (windowed_console || console_dump) {
+		console_dev.set_input_mode(windowed_console
+			? devices::text_console::input_mode::QUEUE
+			: devices::text_console::input_mode::STDIN);
+		sys::set_console(&console_dev);
+	}
+
 	sys::init();
 
 	/* Headless by default (no window, no display dependency). A window is created only
@@ -1114,10 +1161,12 @@ int main(int argc, char *argv[]) {
 	   keyboard. */
 	if (display_requested) {
 #ifdef MAIZE_DISPLAY
-		devices::display::run(framebuffer, keyboard, display_scale, show_perf, refresh_hz);
+		devices::display::run(framebuffer, keyboard, console_dev, display_scale, show_perf, refresh_hz);
 #else
-		std::cerr << "maize: --display requested but no display backend was compiled in "
-			<< "(build with -DMAIZE_DISPLAY=ON); running headless" << std::endl;
+		if (!console_dump) {
+			std::cerr << "maize: --display requested but no display backend was compiled in "
+				<< "(build with -DMAIZE_DISPLAY=ON); running headless" << std::endl;
+		}
 		cpu::run();
 #endif
 	}
@@ -1125,8 +1174,21 @@ int main(int argc, char *argv[]) {
 		cpu::run();
 	}
 #ifdef __linux__
-	std::cout << std::endl;
+	/* maize-140: the trailing-newline convenience (a Linux-only readability nicety on
+	   host stdout) is suppressed when the console owns fd 1: console output is the grid
+	   dump below, and a stray host-stdout newline would corrupt the self-check channel. */
+	if (!console_dump) {
+		std::cout << std::endl;
+	}
 #endif
+
+	/* maize-140: headless verification channel. With the console bound but no window,
+	   the guest's rendered screen lives only in the host grid; dump it as text so the
+	   run-ctest self-check can assert the VT output, keymap, and cooked/raw delivery. */
+	if (console_dump) {
+		console_dev.dump_text(std::cout);
+	}
+
 	sys::exit();
 
 	/* card maize-58: surface main's return value as the host process's own exit

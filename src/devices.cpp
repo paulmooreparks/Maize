@@ -5,6 +5,8 @@
 
 #include "maize.h"
 #include "devices.h"
+#include "../demos/terminal/font8x8.h"
+#include <cstring>
 
 namespace maize {
 	namespace devices {
@@ -238,6 +240,14 @@ namespace maize {
 			switch (role) {
 				case ROLE_BASE:
 					base_ = bits;
+					/* maize-140: a nonzero base is the explicit raw-framebuffer takeover
+					   signal (D3). Programming the framebuffer's pixel-buffer address is a
+					   deliberate guest action a graphics program (DOOM's DG_Init) takes and
+					   a text-console program never does, so it latches graphics mode for the
+					   display's text/graphics arbitration. */
+					if (bits != 0) {
+						claimed_.store(true, std::memory_order_release);
+					}
 					break;
 				case ROLE_PRESENT:
 					/* Pure frame copy. The vsync IRQ is driven by the display refresh
@@ -277,6 +287,408 @@ namespace maize {
 			if (control_.load(std::memory_order_acquire) & 0x2) {
 				status_.fetch_or(0x1, std::memory_order_acq_rel);   // vsync-pending
 				cpu::raise_irq(cpu::fb_irq_vector);
+			}
+		}
+
+		// ---- Host text console (maize-140) -----------------------------------------------
+
+		/* 8 basic ANSI colors as XRGB8888, identical to term_core's term_palette so the
+		   host console renders the SGR 30-47 colors the same way the maize-121 engine does. */
+		static const std::uint32_t con_palette[8] = {
+			0x000000u, 0xAA0000u, 0x00AA00u, 0xAA5500u,
+			0x0000AAu, 0xAA00AAu, 0x00AAAAu, 0xAAAAAAu
+		};
+
+		/* Set-1 (XT) make-code -> ASCII (US layout), the exact tables term_core.h uses.
+		   Index by make code 0..0x3F; 0 = no glyph. The upper table is selected while shift
+		   is held. Enter (0x1C), Backspace (0x0E), Tab (0x0F) and the nav keys are handled
+		   specially in keymap(), so their slots here are unused for those codes. */
+		static const unsigned char con_sc_lower[0x40] = {
+			/* 0x00 */ 0,    0,   '1', '2', '3', '4', '5', '6',
+			/* 0x08 */ '7',  '8', '9', '0', '-', '=', 0x08, 0x09,
+			/* 0x10 */ 'q',  'w', 'e', 'r', 't', 'y', 'u', 'i',
+			/* 0x18 */ 'o',  'p', '[', ']', 0x0D, 0,  'a', 's',
+			/* 0x20 */ 'd',  'f', 'g', 'h', 'j', 'k', 'l', ';',
+			/* 0x28 */ '\'', '`', 0,   '\\','z', 'x', 'c', 'v',
+			/* 0x30 */ 'b',  'n', 'm', ',', '.', '/', 0,   '*',
+			/* 0x38 */ 0,    ' ', 0,   0,   0,   0,   0,   0
+		};
+		static const unsigned char con_sc_upper[0x40] = {
+			/* 0x00 */ 0,    0,   '!', '@', '#', '$', '%', '^',
+			/* 0x08 */ '&',  '*', '(', ')', '_', '+', 0x08, 0x09,
+			/* 0x10 */ 'Q',  'W', 'E', 'R', 'T', 'Y', 'U', 'I',
+			/* 0x18 */ 'O',  'P', '{', '}', 0x0D, 0,  'A', 'S',
+			/* 0x20 */ 'D',  'F', 'G', 'H', 'J', 'K', 'L', ':',
+			/* 0x28 */ '"',  '~', 0,   '|', 'Z', 'X', 'C', 'V',
+			/* 0x30 */ 'B',  'N', 'M', '<', '>', '?', 0,   '*',
+			/* 0x38 */ 0,    ' ', 0,   0,   0,   0,   0,   0
+		};
+
+		text_console::text_console(unsigned width_px, unsigned height_px)
+			: width_px_(width_px), height_px_(height_px),
+			  cols_(static_cast<int>(width_px / 8)),
+			  rows_(static_cast<int>(height_px / 8)),
+			  pixels_(static_cast<size_t>(width_px) * height_px, 0u) {
+			if (cols_ < 1) { cols_ = 1; }
+			if (rows_ < 1) { rows_ = 1; }
+			glyph_.assign(static_cast<size_t>(cols_) * rows_, 0x20);
+			attr_.assign(static_cast<size_t>(cols_) * rows_, static_cast<unsigned char>(cur_attr()));
+			reset_termios_defaults();
+			for (int r = 0; r < rows_; ++r) {
+				for (int c = 0; c < cols_; ++c) { render_cell(r, c); }
+			}
+		}
+
+		void text_console::reset_termios_defaults() {
+			/* Cooked TTY defaults (ICANON+ECHO+ISIG), a real glass-TTY line discipline. */
+			iflag_ = console::TERMIOS_ICRNL;
+			oflag_ = console::TERMIOS_OPOST | console::TERMIOS_ONLCR;
+			cflag_ = 0;
+			lflag_ = console::TERMIOS_ICANON | console::TERMIOS_ECHO | console::TERMIOS_ISIG;
+			std::memset(cc_, 0, sizeof(cc_));
+			cc_[console::TERMIOS_VERASE] = 0x7F;   // Backspace erases (DEL)
+			cc_[console::TERMIOS_VEOF] = 0x04;     // Ctrl-D
+			cc_[console::TERMIOS_VMIN] = 1;        // raw read returns after >=1 byte
+			cc_[console::TERMIOS_VTIME] = 0;
+		}
+
+		void text_console::render_cell(int row, int col) {
+			int ch = glyph_[static_cast<size_t>(row) * cols_ + col];
+			int a = attr_[static_cast<size_t>(row) * cols_ + col];
+			std::uint32_t fg = con_palette[a & 7];
+			std::uint32_t bg = con_palette[(a >> 4) & 7];
+			if (ch < FONT_FIRST || ch > FONT_LAST) { ch = 0x20; }
+			int idx = ch - FONT_FIRST;
+			for (int gy = 0; gy < 8; ++gy) {
+				int bits = font8x8[idx][gy];
+				size_t base = (static_cast<size_t>(row) * 8 + gy) * width_px_ + static_cast<size_t>(col) * 8;
+				for (int gx = 0; gx < 8; ++gx) {
+					pixels_[base + gx] = ((bits >> gx) & 1) ? fg : bg;
+				}
+			}
+		}
+
+		void text_console::clear_cell(int r, int c) {
+			glyph_[static_cast<size_t>(r) * cols_ + c] = 0x20;
+			attr_[static_cast<size_t>(r) * cols_ + c] = static_cast<unsigned char>(cur_attr());
+			render_cell(r, c);
+		}
+
+		void text_console::scroll_up() {
+			for (int r = 0; r < rows_ - 1; ++r) {
+				for (int c = 0; c < cols_; ++c) {
+					glyph_[static_cast<size_t>(r) * cols_ + c] = glyph_[static_cast<size_t>(r + 1) * cols_ + c];
+					attr_[static_cast<size_t>(r) * cols_ + c] = attr_[static_cast<size_t>(r + 1) * cols_ + c];
+				}
+			}
+			for (int c = 0; c < cols_; ++c) {
+				glyph_[static_cast<size_t>(rows_ - 1) * cols_ + c] = 0x20;
+				attr_[static_cast<size_t>(rows_ - 1) * cols_ + c] = static_cast<unsigned char>(cur_attr());
+			}
+			for (int r = 0; r < rows_; ++r) {
+				for (int c = 0; c < cols_; ++c) { render_cell(r, c); }
+			}
+		}
+
+		void text_console::newline() {
+			col_ = 0;
+			row_++;
+			if (row_ >= rows_) { row_ = rows_ - 1; scroll_up(); }
+		}
+
+		void text_console::put_glyph(int ch) {
+			glyph_[static_cast<size_t>(row_) * cols_ + col_] = static_cast<unsigned char>(ch);
+			attr_[static_cast<size_t>(row_) * cols_ + col_] = static_cast<unsigned char>(cur_attr());
+			render_cell(row_, col_);
+			col_++;
+			if (col_ >= cols_) {
+				col_ = 0;
+				row_++;
+				if (row_ >= rows_) { row_ = rows_ - 1; scroll_up(); }
+			}
+		}
+
+		void text_console::csi_dispatch(int final_byte) {
+			int np = pidx_ + 1;
+			int n = param_[0];
+			switch (final_byte) {
+			case 'A':
+				if (!pseen_ || n == 0) { n = 1; }
+				row_ -= n; if (row_ < 0) { row_ = 0; }
+				break;
+			case 'B':
+				if (!pseen_ || n == 0) { n = 1; }
+				row_ += n; if (row_ > rows_ - 1) { row_ = rows_ - 1; }
+				break;
+			case 'C':
+				if (!pseen_ || n == 0) { n = 1; }
+				col_ += n; if (col_ > cols_ - 1) { col_ = cols_ - 1; }
+				break;
+			case 'D':
+				if (!pseen_ || n == 0) { n = 1; }
+				col_ -= n; if (col_ < 0) { col_ = 0; }
+				break;
+			case 'H':
+			case 'f': {
+				int rr = pseen_ ? param_[0] : 1;
+				int cc = (np >= 2) ? param_[1] : 1;
+				if (rr < 1) { rr = 1; }
+				if (cc < 1) { cc = 1; }
+				row_ = rr - 1; col_ = cc - 1;
+				if (row_ > rows_ - 1) { row_ = rows_ - 1; }
+				if (col_ > cols_ - 1) { col_ = cols_ - 1; }
+				break;
+			}
+			case 'J': {
+				int m = pseen_ ? param_[0] : 0;
+				if (m == 2) {
+					for (int r = 0; r < rows_; ++r) { for (int c = 0; c < cols_; ++c) { clear_cell(r, c); } }
+				} else if (m == 0) {
+					for (int c = col_; c < cols_; ++c) { clear_cell(row_, c); }
+					for (int r = row_ + 1; r < rows_; ++r) { for (int c = 0; c < cols_; ++c) { clear_cell(r, c); } }
+				} else if (m == 1) {
+					for (int r = 0; r < row_; ++r) { for (int c = 0; c < cols_; ++c) { clear_cell(r, c); } }
+					for (int c = 0; c <= col_; ++c) { clear_cell(row_, c); }
+				}
+				break;
+			}
+			case 'K': {
+				int m = pseen_ ? param_[0] : 0;
+				if (m == 0) {
+					for (int c = col_; c < cols_; ++c) { clear_cell(row_, c); }
+				} else if (m == 1) {
+					for (int c = 0; c <= col_; ++c) { clear_cell(row_, c); }
+				} else if (m == 2) {
+					for (int c = 0; c < cols_; ++c) { clear_cell(row_, c); }
+				}
+				break;
+			}
+			case 'm':
+				if (!pseen_) {
+					fg_ = 7; bg_ = 0;
+				} else {
+					for (int i = 0; i < np; ++i) {
+						int p = param_[i];
+						if (p == 0) { fg_ = 7; bg_ = 0; }
+						else if (p >= 30 && p <= 37) { fg_ = p - 30; }
+						else if (p >= 40 && p <= 47) { bg_ = p - 40; }
+					}
+				}
+				break;
+			default:
+				break;   /* unknown final byte: consumed and ignored */
+			}
+		}
+
+		void text_console::out_byte(int chi) {
+			unsigned char ch = static_cast<unsigned char>(chi);
+			if (pstate_ == 0) {
+				if (ch == 0x1B) { pstate_ = 1; return; }
+				if (ch == 0x0D) { col_ = 0; return; }
+				if (ch == 0x0A) { newline(); return; }
+				if (ch == 0x08) { if (col_ > 0) { col_--; } return; }
+				if (ch == 0x09) {
+					int nc = (col_ & ~7) + 8;
+					if (nc > cols_ - 1) { nc = cols_ - 1; }
+					col_ = nc;
+					return;
+				}
+				if (ch >= 0x20 && ch <= 0x7E) { put_glyph(ch); return; }
+				return;   /* other control bytes ignored */
+			}
+			if (pstate_ == 1) {
+				if (ch == '[') {
+					pstate_ = 2; pidx_ = 0; param_[0] = 0; pseen_ = 0;
+					return;
+				}
+				pstate_ = 0;   /* unsupported / incomplete ESC sequence: consumed defensively */
+				return;
+			}
+			/* pstate_ == 2: CSI, collecting parameters. */
+			if (ch >= '0' && ch <= '9') {
+				param_[pidx_] = param_[pidx_] * 10 + (ch - '0');
+				pseen_ = 1;
+				return;
+			}
+			if (ch == ';') {
+				if (pidx_ < 7) { pidx_++; param_[pidx_] = 0; }
+				return;
+			}
+			csi_dispatch(ch);
+			pstate_ = 0;
+		}
+
+		void text_console::write_out(const unsigned char* buf, unsigned long count) {
+			for (unsigned long i = 0; i < count; ++i) { out_byte(buf[i]); }
+		}
+
+		/* Translate one Set-1 scancode into the raw byte(s) it produces (before line
+		   discipline). Enter -> CR (cooked ICRNL later maps it to NL for the delivered
+		   line; raw delivers CR verbatim). Backspace -> DEL (the VERASE default). Arrow /
+		   Home / End / PageUp / PageDown / Delete / Insert -> VT INPUT escape sequences
+		   (the encoding is DEFINED here; maize-172 kilo proves it against a real editor).
+		   Printable keys index the shift-aware table; Ctrl-<key> folds to a control byte. */
+		void text_console::keymap(u_byte sc, std::string& out) const {
+			out.clear();
+			if (sc == 0x1C) { out.push_back('\r'); return; }          // Enter
+			if (sc == 0x0E) { out.push_back(0x7F); return; }          // Backspace -> DEL
+			if (sc == 0x0F) { out.push_back('\t'); return; }          // Tab
+			switch (sc) {                                             // extended nav keys
+			case 0x48: out = "\x1b[A"; return;   // Up
+			case 0x50: out = "\x1b[B"; return;   // Down
+			case 0x4D: out = "\x1b[C"; return;   // Right
+			case 0x4B: out = "\x1b[D"; return;   // Left
+			case 0x47: out = "\x1b[H"; return;   // Home
+			case 0x4F: out = "\x1b[F"; return;   // End
+			case 0x49: out = "\x1b[5~"; return;  // PageUp
+			case 0x51: out = "\x1b[6~"; return;  // PageDown
+			case 0x53: out = "\x1b[3~"; return;  // Delete
+			case 0x52: out = "\x1b[2~"; return;  // Insert
+			default: break;
+			}
+			if (sc >= 0x40) { return; }                               // outside the make table
+			unsigned char a = shift_ ? con_sc_upper[sc] : con_sc_lower[sc];
+			if (a == 0) { return; }
+			if (ctrl_ && a >= 0x40 && a <= 0x7F) {
+				a = static_cast<unsigned char>(a & 0x1F);            // Ctrl-A..Z -> 0x01..0x1A, etc.
+			}
+			out.push_back(static_cast<char>(a));
+		}
+
+		void text_console::feed_scancode(u_byte sc) {
+			/* Modifier make/break first (shift + ctrl), so the shift/ctrl state is set
+			   before the key it modifies is decoded. */
+			if (sc == 0x2A || sc == 0x36) { shift_ = true; return; }
+			if (sc == 0xAA || sc == 0xB6) { shift_ = false; return; }
+			if (sc == 0x1D) { ctrl_ = true; return; }
+			if (sc == 0x9D) { ctrl_ = false; return; }
+			if (sc & 0x80) { return; }   // any other break code: ignored
+
+			std::string raw;
+			keymap(sc, raw);
+			if (raw.empty()) { return; }
+
+			if (canonical()) {
+				for (unsigned char b : raw) {
+					if (b == cc_[console::TERMIOS_VERASE]) {
+						/* Backspace edits the pending line and erases the echoed cell. */
+						if (!line_.empty()) {
+							line_.pop_back();
+							if (echo()) { out_byte(0x08); out_byte(' '); out_byte(0x08); }
+						}
+					} else if (b == '\r') {
+						/* Enter: ICRNL delivers the line terminated with NL; echo a newline. */
+						line_.push_back('\n');
+						if (echo()) { out_byte('\r'); out_byte('\n'); }
+						for (unsigned char lb : line_) { deliver(lb); }
+						line_.clear();
+					} else {
+						line_.push_back(static_cast<char>(b));
+						if (echo()) { out_byte(b); }
+					}
+				}
+			} else {
+				/* Raw / non-canonical: deliver each byte as it arrives, no line editing. */
+				for (unsigned char b : raw) {
+					deliver(b);
+					if (echo()) { out_byte(b); }
+				}
+			}
+		}
+
+		int text_console::next_stdin_scancode() {
+			if (stdin_eof_) { return -1; }
+			cpu::set_running(false);   // park: MIPS idle while blocked on host stdin
+			unsigned char b = 0;
+			u_word nr = maize::syscall::read(0, &b, 1);
+			cpu::set_running(true);
+			if (nr != 1) { stdin_eof_ = true; return -1; }
+			return b;
+		}
+
+		int text_console::next_queue_scancode() {
+			std::unique_lock<std::mutex> lk(q_mutex_);
+			while (scancode_q_.empty()) {
+				if (stopped_) { return -1; }
+				cpu::set_running(false);   // park on the run-bit substrate: no busy-spin
+				q_cv_.wait(lk);
+				cpu::set_running(true);
+			}
+			u_byte sc = scancode_q_.front();
+			scancode_q_.pop_front();
+			return sc;
+		}
+
+		long text_console::read_in(unsigned char* buf, unsigned long count) {
+			if (count == 0) { return 0; }
+			while (delivered_.empty()) {
+				int sc = (input_mode_ == input_mode::STDIN)
+					? next_stdin_scancode() : next_queue_scancode();
+				if (sc < 0) { break; }   // end of input (host EOF or window closed)
+				feed_scancode(static_cast<u_byte>(sc));
+			}
+			unsigned long n = 0;
+			while (n < count && !delivered_.empty()) {
+				buf[n++] = delivered_.front();
+				delivered_.pop_front();
+			}
+			return static_cast<long>(n);
+		}
+
+		void text_console::push_scancode(u_byte scancode) {
+			{
+				std::lock_guard<std::mutex> lk(q_mutex_);
+				scancode_q_.push_back(scancode);
+			}
+			q_cv_.notify_one();
+		}
+
+		void text_console::stop() {
+			{
+				std::lock_guard<std::mutex> lk(q_mutex_);
+				stopped_ = true;
+			}
+			q_cv_.notify_all();
+		}
+
+		/* termios wire image <-> host flag state (little-endian 32-bit flag words + cc[]). */
+		void text_console::termios_get(unsigned char* image) {
+			auto put32 = [](unsigned char* p, unsigned v) {
+				p[0] = static_cast<unsigned char>(v & 0xFF);
+				p[1] = static_cast<unsigned char>((v >> 8) & 0xFF);
+				p[2] = static_cast<unsigned char>((v >> 16) & 0xFF);
+				p[3] = static_cast<unsigned char>((v >> 24) & 0xFF);
+			};
+			put32(image + console::TERMIOS_OFF_IFLAG, iflag_);
+			put32(image + console::TERMIOS_OFF_OFLAG, oflag_);
+			put32(image + console::TERMIOS_OFF_CFLAG, cflag_);
+			put32(image + console::TERMIOS_OFF_LFLAG, lflag_);
+			std::memcpy(image + console::TERMIOS_OFF_CC, cc_, console::TERMIOS_NCCS);
+		}
+
+		void text_console::termios_set(const unsigned char* image) {
+			auto get32 = [](const unsigned char* p) -> unsigned {
+				return static_cast<unsigned>(p[0])
+					| (static_cast<unsigned>(p[1]) << 8)
+					| (static_cast<unsigned>(p[2]) << 16)
+					| (static_cast<unsigned>(p[3]) << 24);
+			};
+			iflag_ = get32(image + console::TERMIOS_OFF_IFLAG);
+			oflag_ = get32(image + console::TERMIOS_OFF_OFLAG);
+			cflag_ = get32(image + console::TERMIOS_OFF_CFLAG);
+			lflag_ = get32(image + console::TERMIOS_OFF_LFLAG);
+			std::memcpy(cc_, image + console::TERMIOS_OFF_CC, console::TERMIOS_NCCS);
+		}
+
+		void text_console::dump_text(std::ostream& out) const {
+			for (int r = 0; r < rows_; ++r) {
+				std::string line;
+				for (int c = 0; c < cols_; ++c) {
+					unsigned char ch = glyph_[static_cast<size_t>(r) * cols_ + c];
+					line.push_back((ch >= 0x20 && ch <= 0x7E) ? static_cast<char>(ch) : ' ');
+				}
+				while (!line.empty() && line.back() == ' ') { line.pop_back(); }
+				out << line << "\n";
 			}
 		}
 
@@ -371,6 +783,21 @@ namespace maize {
 					case SDL_SCANCODE_F10: return 0x44;
 					case SDL_SCANCODE_F11: return 0x57;
 					case SDL_SCANCODE_F12: return 0x58;
+					/* maize-140: punctuation + navigation keys the text console needs for a
+					   usable typing experience (the DOOM key path ignores the extras). */
+					case SDL_SCANCODE_SEMICOLON: return 0x27;
+					case SDL_SCANCODE_APOSTROPHE: return 0x28;
+					case SDL_SCANCODE_GRAVE: return 0x29;
+					case SDL_SCANCODE_LEFTBRACKET: return 0x1A;
+					case SDL_SCANCODE_RIGHTBRACKET: return 0x1B;
+					case SDL_SCANCODE_BACKSLASH: return 0x2B;
+					case SDL_SCANCODE_SLASH: return 0x35;
+					case SDL_SCANCODE_HOME: return 0x47;
+					case SDL_SCANCODE_END: return 0x4F;
+					case SDL_SCANCODE_PAGEUP: return 0x49;
+					case SDL_SCANCODE_PAGEDOWN: return 0x51;
+					case SDL_SCANCODE_DELETE: return 0x53;
+					case SDL_SCANCODE_INSERT: return 0x52;
 					default: return 0;
 				}
 			}
@@ -419,8 +846,8 @@ namespace maize {
 				}
 			}
 
-			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale, bool show_perf,
-				unsigned refresh_hz) {
+			void run(framebuffer_device& fb, keyboard_device& kbd, text_console& con,
+				unsigned scale, bool show_perf, unsigned refresh_hz) {
 				kbd.use_window_source();
 
 				/* Refresh period from the requested rate (the "monitor" cadence). Clamp to a sane
@@ -436,24 +863,32 @@ namespace maize {
 					return;
 				}
 
-				int w = static_cast<int>(fb.width());
-				int h = static_cast<int>(fb.height());
 				if (scale < 1) { scale = 1; }
 
-				/* The guest renders at the native framebuffer resolution (w x h); the window
-				   opens at that size magnified by `scale` and is resizable. A logical render
-				   size of w x h lets SDL scale the presented frame to any window size while
-				   preserving aspect ratio (letterboxing as needed), so drag-resize and
-				   maximize stay correct. */
+				/* maize-140: text/graphics arbitration (D3). The text console owns the window
+				   by default, so the window opens at the CONSOLE resolution (cw x ch, e.g.
+				   640x400 -> 80x50 cells). When a guest graphics program (DOOM) explicitly
+				   claims the framebuffer, we switch to the framebuffer surface and resize the
+				   window to the framebuffer resolution (fbw x fbh) so DOOM's window geometry is
+				   exactly what it was before this card. The two surfaces have their own
+				   streaming textures; only one is presented per frame. */
+				int cw = static_cast<int>(con.width());
+				int ch = static_cast<int>(con.height());
+				int fbw = static_cast<int>(fb.width());
+				int fbh = static_cast<int>(fb.height());
+
 				SDL_Window* win = SDL_CreateWindow("Maize",
 					SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-					w * static_cast<int>(scale), h * static_cast<int>(scale),
+					cw * static_cast<int>(scale), ch * static_cast<int>(scale),
 					SDL_WINDOW_RESIZABLE);
 				SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
-				SDL_RenderSetLogicalSize(ren, w, h);
+				SDL_RenderSetLogicalSize(ren, cw, ch);
 				SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);   // alpha for the fps box
-				SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
-					SDL_TEXTUREACCESS_STREAMING, w, h);
+				SDL_Texture* con_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
+					SDL_TEXTUREACCESS_STREAMING, cw, ch);
+				SDL_Texture* fb_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
+					SDL_TEXTUREACCESS_STREAMING, fbw, fbh);
+				bool graphics_mode = false;   // false = console surface; true = framebuffer
 
 				/* --show-perf overlay state: every ~500 ms, sample the present counter -> FPS
 				   (guest frames produced) and the guest instruction counter -> MIPS (VM work
@@ -477,6 +912,15 @@ namespace maize {
 
 				bool running = true;
 				while (running && !guest_done.load(std::memory_order_acquire)) {
+					/* Switch to the framebuffer surface the first time a graphics program
+					   claims it (DOOM's DG_Init, essentially at startup), resizing the window
+					   to the framebuffer geometry so DOOM's window is unchanged from before. */
+					if (!graphics_mode && fb.graphics_claimed()) {
+						graphics_mode = true;
+						SDL_SetWindowSize(win, fbw * static_cast<int>(scale), fbh * static_cast<int>(scale));
+						SDL_RenderSetLogicalSize(ren, fbw, fbh);
+					}
+
 					SDL_Event e;
 					while (SDL_PollEvent(&e)) {
 						if (e.type == SDL_QUIT) {
@@ -485,13 +929,19 @@ namespace maize {
 						else if (e.type == SDL_KEYDOWN && e.key.repeat == 0) {
 							u_byte sc = map_scancode(e.key.keysym.scancode);
 							if (sc) {
-								kbd.push_event(sc);
+								/* Route keys to the active surface: the framebuffer keyboard
+								   device (DOOM polls its port) in graphics mode, the console
+								   keymap + line discipline (fd 0) otherwise. */
+								if (graphics_mode) { kbd.push_event(sc); }
+								else { con.push_scancode(sc); }
 							}
 						}
 						else if (e.type == SDL_KEYUP) {
 							u_byte sc = map_scancode(e.key.keysym.scancode);
 							if (sc) {
-								kbd.push_event(static_cast<u_byte>(sc | 0x80));   // break code
+								u_byte brk = static_cast<u_byte>(sc | 0x80);   // break code
+								if (graphics_mode) { kbd.push_event(brk); }
+								else { con.push_scancode(brk); }
 							}
 						}
 					}
@@ -515,17 +965,30 @@ namespace maize {
 						}
 					}
 
-					const std::vector<std::uint32_t>& frame = fb.frame();
-					if (!frame.empty()) {
-						SDL_UpdateTexture(tex, nullptr, frame.data(),
-							w * static_cast<int>(sizeof(std::uint32_t)));
+					bool presented = false;
+					if (graphics_mode) {
+						const std::vector<std::uint32_t>& frame = fb.frame();
+						if (!frame.empty()) {
+							SDL_UpdateTexture(fb_tex, nullptr, frame.data(),
+								fbw * static_cast<int>(sizeof(std::uint32_t)));
+							SDL_RenderClear(ren);
+							SDL_RenderCopy(ren, fb_tex, nullptr, nullptr);
+							presented = true;
+						}
+					} else {
+						/* Console surface: blit the host grid pixel buffer every refresh. */
+						SDL_UpdateTexture(con_tex, nullptr, con.pixels(),
+							cw * static_cast<int>(sizeof(std::uint32_t)));
 						SDL_RenderClear(ren);
-						SDL_RenderCopy(ren, tex, nullptr, nullptr);
+						SDL_RenderCopy(ren, con_tex, nullptr, nullptr);
+						presented = true;
+					}
 
+					if (presented) {
 						if (show_perf) {
-							/* Top-left overlay in logical (w x h) space, so SDL scales it with
-							   the frame: a translucent box behind green "M<mips> F<fps>" text at
-							   a small font (px == 1 logical pixel per font pixel). */
+							/* Top-left overlay in logical space, so SDL scales it with the
+							   surface: a translucent box behind green "M<mips> F<fps>" text at a
+							   small font (px == 1 logical pixel per font pixel). */
 							int px = 1;
 							int boxw = static_cast<int>(perf_str.size()) * 4 * px + 2;
 							int boxh = 5 * px + 2;
@@ -535,7 +998,6 @@ namespace maize {
 							SDL_SetRenderDrawColor(ren, 0, 255, 0, 255);
 							draw_text(ren, 2, 2, px, perf_str);
 						}
-
 						SDL_RenderPresent(ren);
 					}
 
@@ -547,6 +1009,9 @@ namespace maize {
 					std::this_thread::sleep_for(std::chrono::milliseconds(refresh_ms));
 				}
 
+				/* Unblock a console fd-0 read parked on the scancode queue, then stop the VM,
+				   so a guest blocked in read() at window-close does not wedge the join below. */
+				con.stop();
 				cpu::power_off();
 				if (guest.joinable()) {
 					guest.join();
@@ -563,7 +1028,8 @@ namespace maize {
 						"Maize performance", msg.c_str(), win);
 				}
 
-				SDL_DestroyTexture(tex);
+				SDL_DestroyTexture(con_tex);
+				SDL_DestroyTexture(fb_tex);
 				SDL_DestroyRenderer(ren);
 				SDL_DestroyWindow(win);
 				SDL_Quit();
