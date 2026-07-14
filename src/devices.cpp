@@ -463,6 +463,15 @@ namespace maize {
 				}
 				break;
 			}
+			case 'h':
+				/* DECSET: ESC[?25h shows the (host-drawn) cursor. Only the private
+				   cursor-visibility mode is honored; other modes are consumed and ignored. */
+				if (priv_ && n == 25) { cursor_visible_ = true; }
+				break;
+			case 'l':
+				/* DECRST: ESC[?25l hides the cursor overlay. */
+				if (priv_ && n == 25) { cursor_visible_ = false; }
+				break;
 			case 'm':
 				if (!pseen_) {
 					fg_ = 7; bg_ = 0;
@@ -498,13 +507,14 @@ namespace maize {
 			}
 			if (pstate_ == 1) {
 				if (ch == '[') {
-					pstate_ = 2; pidx_ = 0; param_[0] = 0; pseen_ = 0;
+					pstate_ = 2; pidx_ = 0; param_[0] = 0; pseen_ = 0; priv_ = 0;
 					return;
 				}
 				pstate_ = 0;   /* unsupported / incomplete ESC sequence: consumed defensively */
 				return;
 			}
 			/* pstate_ == 2: CSI, collecting parameters. */
+			if (ch == '?') { priv_ = 1; return; }   /* private-mode intro, e.g. ESC[?25h/l */
 			if (ch >= '0' && ch <= '9') {
 				param_[pidx_] = param_[pidx_] * 10 + (ch - '0');
 				pseen_ = 1;
@@ -520,6 +530,9 @@ namespace maize {
 
 		void text_console::write_out(const unsigned char* buf, unsigned long count) {
 			for (unsigned long i = 0; i < count; ++i) { out_byte(buf[i]); }
+			/* One content render per flush (a guest write() syscall), so --show-perf reports
+			   a non-zero rate while output is flowing and 0 when the console is idle. */
+			if (count > 0) { render_count_.fetch_add(1, std::memory_order_relaxed); }
 		}
 
 		/* Translate one Set-1 scancode into the raw byte(s) it produces (before line
@@ -547,7 +560,12 @@ namespace maize {
 			default: break;
 			}
 			if (sc >= 0x40) { return; }                               // outside the make table
-			unsigned char a = shift_ ? con_sc_upper[sc] : con_sc_lower[sc];
+			/* Caps Lock affects ALPHABETIC keys only: the effective shift for a letter is
+			   (shift_ XOR caps_), so Shift and Caps Lock cancel on letters, while digits and
+			   symbols always follow shift_ alone. */
+			bool is_alpha = (con_sc_lower[sc] >= 'a' && con_sc_lower[sc] <= 'z');
+			bool eff_shift = is_alpha ? (shift_ != caps_) : shift_;
+			unsigned char a = eff_shift ? con_sc_upper[sc] : con_sc_lower[sc];
 			if (a == 0) { return; }
 			if (ctrl_ && a >= 0x40 && a <= 0x7F) {
 				a = static_cast<unsigned char>(a & 0x1F);            // Ctrl-A..Z -> 0x01..0x1A, etc.
@@ -562,6 +580,7 @@ namespace maize {
 			if (sc == 0xAA || sc == 0xB6) { shift_ = false; return; }
 			if (sc == 0x1D) { ctrl_ = true; return; }
 			if (sc == 0x9D) { ctrl_ = false; return; }
+			if (sc == 0x3A) { caps_ = !caps_; return; }   // Caps Lock make toggles; break ignored
 			if (sc & 0x80) { return; }   // any other break code: ignored
 
 			std::string raw;
@@ -594,6 +613,10 @@ namespace maize {
 					if (echo()) { out_byte(b); }
 				}
 			}
+
+			/* A locally-echoed keystroke repainted the grid, so count it toward the console
+			   FPS (a raw-mode read with ECHO off relies on the guest's own write_out instead). */
+			if (echo()) { render_count_.fetch_add(1, std::memory_order_relaxed); }
 		}
 
 		int text_console::next_stdin_scancode() {
@@ -890,11 +913,15 @@ namespace maize {
 					SDL_TEXTUREACCESS_STREAMING, fbw, fbh);
 				bool graphics_mode = false;   // false = console surface; true = framebuffer
 
-				/* --show-perf overlay state: every ~500 ms, sample the present counter -> FPS
-				   (guest frames produced) and the guest instruction counter -> MIPS (VM work
-				   rate), track the peak of each for the on-exit report, and render both as one
-				   line "M<mips> F<fps>". FPS is distinct from the ~60 Hz window refresh below. */
-				std::uint64_t perf_last_present = fb.present_count();
+				/* --show-perf overlay state: every ~500 ms, sample the FPS source -> FPS and the
+				   guest instruction counter -> MIPS (VM work rate), track the peak of each for
+				   the on-exit report, and render both as one line "M<mips> F<fps>". The FPS
+				   source depends on the active surface: the framebuffer present counter in
+				   graphics mode (guest frames produced), the console render counter otherwise
+				   (a console program never presents a framebuffer, so it would read a flat 0).
+				   FPS is distinct from the ~60 Hz window refresh below. Init from the console
+				   counter since the text console owns the window until a graphics claim. */
+				std::uint64_t perf_last_present = con.render_count();
 				std::uint64_t perf_last_insn = cpu::instruction_count();
 				std::uint32_t perf_last_ticks = SDL_GetTicks();
 				std::string perf_str = "M0 F0";
@@ -919,6 +946,11 @@ namespace maize {
 						graphics_mode = true;
 						SDL_SetWindowSize(win, fbw * static_cast<int>(scale), fbh * static_cast<int>(scale));
 						SDL_RenderSetLogicalSize(ren, fbw, fbh);
+						/* The FPS source switches from the console counter to the framebuffer
+						   present counter here; rebaseline so the swap does not register a
+						   bogus one-sample spike from the counters' differing magnitudes. */
+						perf_last_present = fb.present_count();
+						perf_last_ticks = SDL_GetTicks();
 					}
 
 					SDL_Event e;
@@ -950,7 +982,7 @@ namespace maize {
 						std::uint32_t now = SDL_GetTicks();
 						std::uint32_t dt = now - perf_last_ticks;
 						if (dt >= 500) {
-							std::uint64_t p = fb.present_count();
+							std::uint64_t p = graphics_mode ? fb.present_count() : con.render_count();
 							std::uint64_t ic = cpu::instruction_count();
 							int fps = static_cast<int>((p - perf_last_present) * 1000ull / dt);
 							/* MIPS = delta-instructions / (dt_ms * 1000). */
@@ -985,6 +1017,22 @@ namespace maize {
 					}
 
 					if (presented) {
+						/* Blinking block cursor: a present-time overlay (drawn like the perf
+						   box), never written into the console pixel buffer, so it needs no
+						   cell-restore bookkeeping and cannot leave artifacts on move/scroll.
+						   Console surface only; honor the guest's ESC[?25l hide. The ~500 ms
+						   on/off phase is derived from the frame clock (the loop already sleeps
+						   per refresh, so no busy wait). The cell is an 8x8 block at
+						   (col*8, row*8) in logical space, which equals the console pixel space
+						   (RenderSetLogicalSize == console resolution), so SDL scales it by the
+						   same factor as the console texture. A translucent light fill reads as
+						   a classic inverted block while leaving the glyph legible. */
+						if (!graphics_mode && con.cursor_visible()
+							&& ((SDL_GetTicks() / 500u) & 1u) == 0u) {
+							SDL_Rect cur { con.cursor_col() * 8, con.cursor_row() * 8, 8, 8 };
+							SDL_SetRenderDrawColor(ren, 0xC0, 0xC0, 0xC0, 0xA0);
+							SDL_RenderFillRect(ren, &cur);
+						}
 						if (show_perf) {
 							/* Top-left overlay in logical space, so SDL scales it with the
 							   surface: a translucent box behind green "M<mips> F<fps>" text at a

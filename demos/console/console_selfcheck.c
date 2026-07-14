@@ -16,8 +16,11 @@
  *      console (which lands in the grid dump) only when both are correct.
  *
  * Injected scancodes (in run-ctest.sh): 0x23 'h', 0x2C 'Z', 0x0E Backspace, 0x17 'i',
- * 0x1C Enter, 0x2D 'x'. In the cooked read the Backspace edits the pending line (erasing
- * the erroneous 'Z'), so it returns "hi\n"; raw mode then returns the single 'x'.
+ * 0x1C Enter, 0x2D 'x', then 0x3A CapsLock, 0x1E 'a', 0x02 '1'. In the cooked read the
+ * Backspace edits the pending line (erasing the erroneous 'Z'), so it returns "hi\n"; raw
+ * mode then returns the single 'x'. The CapsLock make latches Caps Lock (it delivers no
+ * byte), so the following 'a' raw-reads as 'A' (letters obey Caps Lock) while the '1'
+ * raw-reads as '1' (digits do not), proving the alphabetic-only Caps Lock rule headlessly.
  */
 #include "syscall.h"
 #include "termios.h"
@@ -38,6 +41,7 @@ main(void)
 	struct termios t;
 	int cooked_ok;
 	int raw_ok;
+	int caps_ok;
 
 	/* ---------------- Phase A: VT output (verified via the grid dump) ---------------- */
 
@@ -79,9 +83,23 @@ main(void)
 		}
 	}
 
+	/* ---------------- Phase D: Caps Lock (raw mode, alphabetic-only effect) --------- */
+	/* Still in raw mode (no echo, VMIN=1). The injected CapsLock make (0x3A) latches Caps
+	   Lock without delivering a byte; the following 'a' scancode must therefore read back as
+	   'A' (letters follow shift XOR caps), and the '1' scancode as '1' (digits ignore Caps
+	   Lock). This is the headless proof of the alphabetic-only rule. */
+	caps_ok = 0;
+	if (raw_ok) {
+		n = read(0, &c, 1);
+		if (n == 1 && c == 'A') {
+			n = read(0, &c, 1);
+			caps_ok = (n == 1 && c == '1');
+		}
+	}
+
 	/* Result line (on its own row, so the grep is exact). */
 	emit("\x1b[24;1H");
-	emit((cooked_ok && raw_ok) ? "console: PASS" : "console: FAIL");
+	emit((cooked_ok && raw_ok && caps_ok) ? "console: PASS" : "console: FAIL");
 
 	return 0;
 }

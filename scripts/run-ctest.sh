@@ -1005,13 +1005,15 @@ run_console_selfcheck() {
         FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
 
-    # Scancodes: 0x23 'h', 0x2C 'Z', 0x0E Backspace, 0x17 'i', 0x1C Enter, 0x2D 'x'
-    # (octal 043 054 016 027 034 055). The cooked read consumes h/Z/BS/i/Enter and the
-    # Backspace edits the pending line, so it delivers "hi\n" (the erroneous Z erased);
-    # raw mode then returns the single 'x'. This exercises cooked line editing (Backspace)
-    # in addition to echo + deliver-on-Enter.
+    # Scancodes: 0x23 'h', 0x2C 'Z', 0x0E Backspace, 0x17 'i', 0x1C Enter, 0x2D 'x',
+    # 0x3A CapsLock, 0x1E 'a', 0x02 '1' (octal 043 054 016 027 034 055 072 036 002). The
+    # cooked read consumes h/Z/BS/i/Enter and the Backspace edits the pending line, so it
+    # delivers "hi\n" (the erroneous Z erased); raw mode then returns the single 'x'. The
+    # CapsLock make latches Caps Lock (no byte), so the following 'a' raw-reads as 'A'
+    # (letters obey Caps Lock) and '1' as '1' (digits do not). This exercises cooked line
+    # editing (Backspace) plus echo + deliver-on-Enter plus the alphabetic-only Caps Lock rule.
     set +e
-    dump=$(printf '\043\054\016\027\034\055' \
+    dump=$(printf '\043\054\016\027\034\055\072\036\002' \
         | "$MAIZE" --no-root --console-dump "$mzx" 2>/dev/null)
     set -e
 

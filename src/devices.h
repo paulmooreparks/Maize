@@ -236,6 +236,24 @@ namespace maize {
 			unsigned width() const { return width_px_; }
 			unsigned height() const { return height_px_; }
 			const std::uint32_t* pixels() const { return pixels_.data(); }
+
+			/* Cursor state for the present-time overlay (maize-140). The display thread
+			   reads these once per frame to place the blinking block; the CPU thread mutates
+			   row_/col_ through the VT engine. They are shared lock-free exactly like the
+			   pixels_ buffer above (which SDL_UpdateTexture reads while write_out mutates
+			   it): a torn read only misplaces the cosmetic cursor for a single blink frame
+			   and self-corrects. cursor_visible_ tracks the guest's ESC[?25h/l show/hide. */
+			int cursor_row() const { return row_; }
+			int cursor_col() const { return col_; }
+			bool cursor_visible() const { return cursor_visible_; }
+
+			/* Monotonic count of console content renders (write_out flushes + echoed
+			   keystrokes), the console-mode analog of framebuffer_device::present_count().
+			   The --show-perf sampler reads it as the FPS source while the text console owns
+			   the window, so typing / output shows a small non-zero rate and an idle prompt
+			   shows 0. Atomic to match present_count_'s cross-thread discipline. */
+			std::uint64_t render_count() const { return render_count_.load(std::memory_order_relaxed); }
+
 			/* Dump the grid as text rows (trailing blanks trimmed) for the headless CI
 			   self-check, which cannot read the host pixel buffer from guest C. */
 			void dump_text(std::ostream& out) const;
@@ -280,10 +298,17 @@ namespace maize {
 			int param_[8] {0};
 			int pidx_ {0};
 			int pseen_ {0};
+			int priv_ {0};                 // CSI private-mode intro seen ('?'), e.g. ESC[?25h/l
+			bool cursor_visible_ {true};   // guest ESC[?25l hides the overlay cursor; ESC[?25h shows
+
+			/* Count of content renders (write_out flushes + echoed keystrokes); the FPS
+			   source for --show-perf while the console owns the window. See render_count(). */
+			std::atomic<std::uint64_t> render_count_ {0};
 
 			/* keyboard modifier state (Set-1). */
 			bool shift_ {false};
 			bool ctrl_ {false};
+			bool caps_ {false};            // Caps Lock latch (0x3A make toggles); affects letters only
 
 			/* termios + line discipline. */
 			unsigned iflag_ {0};
