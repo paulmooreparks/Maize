@@ -10,11 +10,15 @@ parks the CPU).
 
 ## Layout
 
-- `kilo.c`: the vendored editor, `github.com/antirez/kilo`, BSD-2-Clause. PRISTINE
-  and UNMODIFIED (its upstream license header and body, including any en/em dashes
-  in the original comments, are preserved verbatim). Every accommodation kilo
-  needed to build and run on Maize lives OUTSIDE this file, in the shared C runtime
-  (`toolchain/rt`) and the host console (`src/devices.cpp`), never as a kilo edit.
+- `kilo.c`: the vendored editor, `github.com/antirez/kilo`, BSD-2-Clause. The PORT
+  needed NO source changes: it compiled clean through cproc + qbe with no
+  register-pressure wall, and every build/run accommodation lives OUTSIDE this file,
+  in the shared C runtime (`toolchain/rt`) and the host console (`src/devices.cpp`).
+  The ONLY edits to kilo.c are a small, clearly-marked "Maize-local patch" block in
+  editorProcessKeypress (maize-172 acceptance round) for basic editor usability:
+  a real forward-delete on the DEL key, plus Home/End handlers, three keys upstream
+  kilo left unhandled (DEL was aliased to Backspace; Home/End fell to default-insert).
+  The upstream license header and the rest of the body are preserved verbatim.
 - `LICENSE`: kilo's upstream BSD-2-Clause license, copied verbatim.
 
 ## Build

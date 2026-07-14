@@ -1217,7 +1217,12 @@ void editorProcessKeypress(int fd) {
         break;
     case BACKSPACE:     /* Backspace */
     case CTRL_H:        /* Ctrl-h */
-    case DEL_KEY:
+        editorDelChar();
+        break;
+    case DEL_KEY:       /* Maize-local patch: real forward delete. Upstream kilo aliased
+                         * DEL to Backspace (delete-left); move right then delete-left so the
+                         * character under the cursor is removed. */
+        editorMoveCursor(ARROW_RIGHT);
         editorDelChar();
         break;
     case PAGE_UP:
@@ -1240,6 +1245,22 @@ void editorProcessKeypress(int fd) {
     case ARROW_RIGHT:
         editorMoveCursor(c);
         break;
+    case HOME_KEY: {    /* Maize-local patch: jump to start of line. Upstream kilo had no
+                         * Home/End handler, so they fell to default-insert. Reuse the proven
+                         * editorMoveCursor so column-offset and scrolling stay correct. */
+        int filecol = E.coloff + E.cx;
+        while (filecol-- > 0) editorMoveCursor(ARROW_LEFT);
+        break;
+    }
+    case END_KEY: {     /* Maize-local patch: jump to end of the current line. */
+        int filerow = E.rowoff + E.cy;
+        erow *row = (filerow < E.numrows) ? &E.row[filerow] : NULL;
+        if (row) {
+            int filecol = E.coloff + E.cx;
+            while (filecol++ < row->size) editorMoveCursor(ARROW_RIGHT);
+        }
+        break;
+    }
     case CTRL_L: /* ctrl+l, clear screen */
         /* Just refresht the line as side effect. */
         break;
