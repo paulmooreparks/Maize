@@ -1212,6 +1212,84 @@ run_multi_usage_test "multifile_emit_reject" "only when compiling a single" \
     --emit -o "${WORK_DIR}/multifile_emit_reject.mzx" \
     "${CTEST_DIR}/multifile_main.c" "${CTEST_DIR}/multifile_lib.c"
 
+# maize-169 / maize-170 launcher defaults (~/.maize/config + ~/.maize/env). Redirects
+# HOME to a FRESH temp dir so the operator's REAL ~/.maize is never read or written,
+# writes a config + env there, and proves both features plus their CLI-override
+# precedence. It reuses two already-built fixtures: args (dumps argv then envp, so a
+# guest env var is directly observable) and hello (any runnable image). Config
+# observability uses the `root` key: maize itself creates the sandbox skeleton
+# (home/user, tmp) under the configured root host dir, so the default landing and its
+# CLI --root override are visible on the host filesystem with no extra fixture.
+run_launcher_defaults() {
+    name="launcher_defaults"
+    TOTAL=$((TOTAL + 1))
+
+    compile_c "args" || return
+    args_bin="$BIN"
+    compile_c "hello" || return
+    hello_bin="$BIN"
+    # compile_c assigns the global `name` (no `local` in POSIX sh), so restore our label
+    # after the two fixture compiles before it feeds the PASS/FAIL lines below.
+    name="launcher_defaults"
+
+    # A throwaway HOME so we touch neither the operator's real ~/.maize nor global state.
+    fake_home="${WORK_DIR}/launcher_home"
+    rm -rf "$fake_home"
+    mkdir -p "$fake_home/.maize"
+    printf 'GREETING=fromdefault\n' > "$fake_home/.maize/env"
+
+    dirA="${WORK_DIR}/launcher_rootA"      # the config default sandbox root
+    dirC="${WORK_DIR}/launcher_rootC"      # the CLI-override sandbox root
+    rm -rf "$dirA" "$dirC"
+    nat_home=$(host_to_native "$fake_home")
+    nat_dirA=$(host_to_native "$dirA")
+    nat_dirC=$(host_to_native "$dirC")
+    # display-scale is a harmless headless-invisible filler; root is the observable key.
+    printf 'display-scale=7\nroot=%s\n' "$nat_dirA" > "$fake_home/.maize/config"
+
+    ok=1
+
+    # (a1) ~/.maize/env reaches the guest: args dumps envp, GREETING=fromdefault present.
+    set +e
+    out_def=$(HOME="$nat_home" "$MAIZE" --no-root "$args_bin" 2>/dev/null)
+    set -e
+    printf '%s\n' "$out_def" | grep -qx 'GREETING=fromdefault' || ok=0
+
+    # (a2) a CLI -e overrides the default (last-wins): only the override reaches the guest.
+    set +e
+    out_ovr=$(HOME="$nat_home" "$MAIZE" --no-root -e GREETING=override "$args_bin" 2>/dev/null)
+    set -e
+    printf '%s\n' "$out_ovr" | grep -qx 'GREETING=override' || ok=0
+    if printf '%s\n' "$out_ovr" | grep -qx 'GREETING=fromdefault'; then ok=0; fi
+
+    # (b1) the config default is applied: root=dirA, so maize builds the dirA skeleton.
+    rm -rf "$dirA"
+    set +e
+    HOME="$nat_home" "$MAIZE" "$hello_bin" >/dev/null 2>&1
+    set -e
+    [ -d "$dirA/home/user" ] || ok=0
+
+    # (b2) a CLI --root overrides the config default: the skeleton lands in dirC, and the
+    # config's dirA is NOT recreated for this run.
+    rm -rf "$dirA" "$dirC"
+    set +e
+    HOME="$nat_home" "$MAIZE" --root "$nat_dirC" "$hello_bin" >/dev/null 2>&1
+    set -e
+    [ -d "$dirC/home/user" ] || ok=0
+    [ ! -e "$dirA" ] || ok=0
+
+    if [ "$ok" -eq 1 ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        default-env dump:  \"${out_def}\""
+        echo "        override-env dump: \"${out_ovr}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_launcher_defaults
+
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then
     echo "C toolchain: ${TOTAL} passed, 0 failed."

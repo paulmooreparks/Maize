@@ -269,23 +269,72 @@ absolute path, and passes any following arguments through to the guest.
 
 ### Setting the program's environment
 
-A program's environment is built only from what you pass on the command line;
-`maize` never inherits your shell's own environment, so a run is deterministic.
+A program's environment is built only from what you pass on the command line
+plus the optional standing default file `~/.maize/env`; `maize` never inherits
+your shell's own environment, so a run is deterministic.
 
 - `-e KEY=VAL`, `--env KEY=VAL`, or `--env=KEY=VAL` adds one variable. Repeatable.
 - `--env-file <path>` adds variables from a file of `KEY=VAL` lines. Blank lines
   and lines whose first non-whitespace character is `#` are ignored. Repeatable.
+- `~/.maize/env` (if present) is a persistent, operator-owned default environment
+  in the same `KEY=VAL` format. It is loaded into every guest first, then any
+  `-e`/`--env`/`--env-file` entry appends to it (or overrides a key it defines).
 
 `KEY` must match `[A-Za-z_][A-Za-z0-9_]*`; the value is everything after the first
 `=` (it may contain further `=` characters or be empty, and there is no shell
-quoting or `$`-expansion). Entries are kept in the order given, with no
-de-duplication. With no env flags the program still receives a valid, empty
-environment.
+quoting or `$`-expansion). A key defined more than once takes its last value, so a
+CLI entry overrides a `~/.maize/env` default of the same key; the guest sees one
+entry per key. With no env flags and no default file the program still receives a
+valid, empty environment. The host environment is never inherited even with
+`~/.maize/env`: that file is a standing default you control, not a leak of the
+ambient host environment (the deny-by-default posture holds). It is not shipped
+with any values; sensible entries an operator might add are `HOME=/home/user`,
+`USER=user`, `PWD=/home/user`, `TMPDIR=/tmp`, and a `TERM`.
 
 ```sh
 maize --env GREETING=hi --env TARGET=world hello.mzb alpha beta
 maize --env-file run.env prog.mzb
 ```
+
+### Startup defaults (`~/.maize/config`)
+
+A long invocation collapses if you record the flag values you always use in an
+optional `~/.maize/config` file. It supplies the **default** value for the scalar
+and boolean launcher flags, so the precedence is built-in default < `~/.maize/config`
+< CLI flag: a flag you pass on the command line always wins, and the config only
+changes the value a flag starts from. The file is optional; when it is absent the
+built-in defaults stand and behavior is unchanged.
+
+The format mirrors `--env-file`: one `key=value` per line, with blank lines and
+lines whose first non-whitespace character is `#` ignored. Keys are the long flag
+names **without** the leading dashes:
+
+- `display-scale` = 1..16
+- `refresh-hz` = 1..1000
+- `resolution` = `<width>x<height>` (e.g. `320x200`)
+- `root` = host path for the sandbox root (as `--root`)
+- `input` = `sys`, `keyboard`, or `console`
+- `show-perf` = boolean
+- `display` = boolean
+- `no-root` = boolean
+
+Booleans accept `true`/`false`, `1`/`0`, or `yes`/`no`. Parsing is fail-soft: an
+unknown key or a malformed value is reported on stderr and ignored, so a bad line
+never bricks the launcher. Repeatable `--mount` grants are not expressible in the
+config file in v1 (a future extension); it covers the scalar and boolean flags
+only.
+
+```
+# ~/.maize/config
+display-scale=4
+refresh-hz=20
+input=keyboard
+show-perf=true
+```
+
+With that file in place, `maize --display doom.mzx` behaves as if you had also
+typed `--display-scale 4 --refresh-hz 20 --input=keyboard --show-perf`, and you
+can still override any of them on the command line (e.g. `--display-scale 6`).
 
 ### The sandbox root and mounting host directories
 

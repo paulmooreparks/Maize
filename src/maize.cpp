@@ -124,8 +124,21 @@ static void print_usage(std::ostream &out) {
 		"                             an empty filesystem (only explicit --mount grants)\n"
 		"  --                         end options; the next token is <image>\n"
 		"\n"
-		"The program's environment is built only from -e/--env and --env-file; the\n"
-		"host's own environment is never inherited.\n"
+		"The program's environment is built only from -e/--env, --env-file, and the\n"
+		"optional standing default file ~/.maize/env (loaded first, then overridden by\n"
+		"any -e/--env/--env-file entry); the host's own environment is never inherited.\n"
+		"\n"
+		"Two optional operator files under ~/.maize (HOME/USERPROFILE) tune startup:\n"
+		"  ~/.maize/config   default values for the launcher flags, one key=value per\n"
+		"                    line (blank and #-comment lines ignored). Keys are the long\n"
+		"                    flag names without dashes: display-scale, refresh-hz,\n"
+		"                    resolution, root, show-perf, display, input, no-root.\n"
+		"                    Booleans accept true/false, 1/0, or yes/no. Precedence is\n"
+		"                    built-in default < ~/.maize/config < CLI flag (a CLI flag\n"
+		"                    always wins). A bad key or value is warned and ignored.\n"
+		"  ~/.maize/env      a default guest environment (same KEY=VAL format as\n"
+		"                    --env-file) loaded into every guest before -e/--env entries.\n"
+		"Both files are optional; absent means the built-in defaults and an empty env.\n"
 		"\n"
 		"By default the guest gets a persistent sandbox root filesystem: a dedicated\n"
 		"host directory (~/.maize/root, created on first run with /home/user and /tmp)\n"
@@ -175,6 +188,20 @@ static bool add_env_entry(const std::string &entry, std::vector<std::string> &en
 		std::cerr << "maize: invalid environment key '" << key
 			<< "' (must match [A-Za-z_][A-Za-z0-9_]*)" << std::endl;
 		return false;
+	}
+	/* maize-170: a KEY defined more than once takes its LAST value. A later -e /
+	   --env / --env-file entry (and any CLI env entry over a ~/.maize/env default)
+	   overrides an earlier one, replacing it in place so the guest's envp holds a
+	   single entry per key with a stable position. Without this the first-wins
+	   scan order of a guest getenv would make the standing default shadow a CLI
+	   override, defeating the intended default-then-override precedence. */
+	std::string prefix = key + "=";
+	for (std::string &existing : env) {
+		if (existing.size() >= prefix.size()
+			&& existing.compare(0, prefix.size(), prefix) == 0) {
+			existing = entry;
+			return true;
+		}
 	}
 	env.push_back(entry);
 	return true;
@@ -353,6 +380,142 @@ static bool resolve_home(const std::string &override_path, std::string &home) {
 	return true;
 }
 
+/* maize-169: parse a config boolean. Accepts true/false, 1/0, yes/no
+   (case-insensitive). Returns false if the token is not a recognized boolean so
+   the caller can warn and ignore the line (fail-soft). */
+static bool parse_config_bool(const std::string &val, bool &out) {
+	std::string v;
+	for (char c : val) {
+		v.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+	}
+	if (v == "true" || v == "1" || v == "yes") { out = true; return true; }
+	if (v == "false" || v == "0" || v == "no") { out = false; return true; }
+	return false;
+}
+
+/* maize-169: seed launcher flag DEFAULTS from ~/.maize/config. The format mirrors
+   --env-file: one `key=value` per line, blank lines and lines whose first
+   non-whitespace character is '#' ignored. Keys are the long flag names WITHOUT
+   the leading dashes. Covered keys (scalar + boolean launcher flags only):
+   display-scale, refresh-hz, resolution, root, show-perf, display, input, and the
+   boolean no-root. Precedence is built-in default < config < CLI, so this runs
+   BEFORE the CLI argument loop and only changes the value each flag STARTS from; a
+   CLI flag always wins because the loop overrides afterward. Fail-soft (per the
+   card): an unknown key or a malformed value produces a stderr warning and is
+   ignored, never a hard error, so one bad line cannot brick the launcher. The file
+   is optional; an absent file leaves the built-in defaults untouched. Repeatable
+   --mount grants are intentionally out of scope for v1 (a future extension). */
+static void load_config_file(const std::string &path,
+	unsigned &display_scale, unsigned &refresh_hz,
+	maize::u_hword &fb_width, maize::u_hword &fb_height,
+	std::string &root_override, bool &show_perf,
+	bool &display_requested, std::string &input_source, bool &no_root) {
+	std::ifstream f(path);
+	if (!f.is_open()) {
+		return;   /* optional file absent: built-in defaults stand (unchanged behavior) */
+	}
+	std::string line;
+	while (std::getline(f, line)) {
+		if (!line.empty() && line.back() == '\r') {
+			line.pop_back();   /* tolerate CRLF checkouts, like load_env_file */
+		}
+		std::string::size_type start = line.find_first_not_of(" \t");
+		if (start == std::string::npos) {
+			continue;          /* blank line */
+		}
+		if (line[start] == '#') {
+			continue;          /* comment line */
+		}
+		std::string::size_type eq = line.find('=', start);
+		if (eq == std::string::npos) {
+			std::cerr << "maize: ignoring malformed config line '" << line.substr(start)
+				<< "' in " << path << " (expected key=value)" << std::endl;
+			continue;
+		}
+		/* key = trimmed text before '=' (allow trailing whitespace before the '='). */
+		std::string key = line.substr(start, eq - start);
+		std::string::size_type kend = key.find_last_not_of(" \t");
+		key = (kend == std::string::npos) ? std::string() : key.substr(0, kend + 1);
+		/* value = text after '=', surrounding whitespace trimmed. */
+		std::string val = line.substr(eq + 1);
+		std::string::size_type vstart = val.find_first_not_of(" \t");
+		if (vstart == std::string::npos) {
+			val.clear();
+		} else {
+			std::string::size_type vend = val.find_last_not_of(" \t");
+			val = val.substr(vstart, vend - vstart + 1);
+		}
+
+		if (key == "display-scale") {
+			int s = std::atoi(val.c_str());
+			if (s < 1 || s > 16) {
+				std::cerr << "maize: ignoring config display-scale '" << val
+					<< "' (must be between 1 and 16)" << std::endl;
+				continue;
+			}
+			display_scale = static_cast<unsigned>(s);
+		} else if (key == "refresh-hz") {
+			int hz = std::atoi(val.c_str());
+			if (hz < 1 || hz > 1000) {
+				std::cerr << "maize: ignoring config refresh-hz '" << val
+					<< "' (must be between 1 and 1000)" << std::endl;
+				continue;
+			}
+			refresh_hz = static_cast<unsigned>(hz);
+		} else if (key == "resolution") {
+			maize::u_hword w = 0;
+			maize::u_hword h = 0;
+			if (!parse_resolution(val, w, h)) {
+				std::cerr << "maize: ignoring config resolution '" << val
+					<< "' (expected <width>x<height>, e.g. 320x200)" << std::endl;
+				continue;
+			}
+			fb_width = w;
+			fb_height = h;
+		} else if (key == "root") {
+			if (val.empty()) {
+				std::cerr << "maize: ignoring config root (empty host path)" << std::endl;
+				continue;
+			}
+			root_override = val;
+		} else if (key == "input") {
+			if (val != "sys" && val != "keyboard" && val != "console") {
+				std::cerr << "maize: ignoring config input '" << val
+					<< "' (expected sys, keyboard, or console)" << std::endl;
+				continue;
+			}
+			input_source = (val == "sys") ? std::string() : val;
+		} else if (key == "show-perf") {
+			bool b = false;
+			if (!parse_config_bool(val, b)) {
+				std::cerr << "maize: ignoring config show-perf '" << val
+					<< "' (expected true/false, 1/0, or yes/no)" << std::endl;
+				continue;
+			}
+			show_perf = b;
+		} else if (key == "display") {
+			bool b = false;
+			if (!parse_config_bool(val, b)) {
+				std::cerr << "maize: ignoring config display '" << val
+					<< "' (expected true/false, 1/0, or yes/no)" << std::endl;
+				continue;
+			}
+			display_requested = b;
+		} else if (key == "no-root") {
+			bool b = false;
+			if (!parse_config_bool(val, b)) {
+				std::cerr << "maize: ignoring config no-root '" << val
+					<< "' (expected true/false, 1/0, or yes/no)" << std::endl;
+				continue;
+			}
+			no_root = b;
+		} else {
+			std::cerr << "maize: ignoring unknown config key '" << key
+				<< "' in " << path << std::endl;
+		}
+	}
+}
+
 /* maize-60: build the System V-style process-start block at the top of RAM and point
    RS at its base (&argc). Layout (low -> high address), all 8-byte-aligned:
 
@@ -442,6 +605,53 @@ int main(int argc, char *argv[]) {
 	maize::u_hword fb_width = 320;   // framebuffer host config (OQ: default 320x200)
 	maize::u_hword fb_height = 200;
 	std::string input_source;        // "" = SYS console (default); "keyboard" | "console"
+
+	/* maize-169 / maize-170: before parsing CLI options, seed launcher flag
+	   DEFAULTS from ~/.maize/config and load ~/.maize/env as the standing default
+	   guest environment. Both files are OPTIONAL: absent means today's built-in
+	   defaults and an empty starting environment, so behavior is unchanged when the
+	   operator has not created them. The home directory is resolved with the same
+	   HOME/USERPROFILE resolver used for the sandbox root (resolve_home), so a test
+	   can redirect both files by pointing HOME at a scratch dir. Precedence for the
+	   flags is built-in default < config < CLI (the loop below overrides whatever the
+	   config seeded). For the environment the ~/.maize/env defaults load FIRST and
+	   the -e / --env / --env-file entries then append or override them (add_env_entry
+	   is last-wins per key). The host's own environment is still NEVER inherited:
+	   ~/.maize/env is a standing default the OPERATOR owns, not the ambient host env,
+	   so the deny-by-default posture holds. */
+	{
+		std::string cfg_home;
+		if (resolve_home("", cfg_home)) {
+			std::filesystem::path base = std::filesystem::path(cfg_home) / ".maize";
+			load_config_file((base / "config").string(),
+				display_scale, refresh_hz, fb_width, fb_height,
+				root_override, show_perf, display_requested, input_source, no_root);
+			if (show_perf) {
+				/* config-supplied default: match the --show-perf side effect (the CLI
+				   path also calls this; enable_perf_counter just sets a bool, so a
+				   second call from --show-perf is harmless). */
+				cpu::enable_perf_counter();
+			}
+			std::error_code ec;
+			std::string env_path = (base / "env").string();
+			if (std::filesystem::exists(env_path, ec)) {
+				/* maize-170: fail-soft like the config file. A malformed default env
+				   file warns and applies no default rather than bricking every guest
+				   launch. Load into a temp so a partial parse leaves env_entries
+				   empty (the CLI -e/--env entries then start from a clean slate). */
+				std::vector<std::string> defaults;
+				if (load_env_file(env_path, defaults)) {
+					for (const std::string &e : defaults) {
+						env_entries.push_back(e);
+					}
+				} else {
+					std::cerr << "maize: ignoring the default env file " << env_path
+						<< " (~/.maize/env); no default environment applied" << std::endl;
+				}
+			}
+		}
+	}
+
 	int idx = 1;
 	while (idx < argc) {
 		std::string arg {argv[idx]};
