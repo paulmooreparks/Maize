@@ -1049,17 +1049,16 @@ namespace maize {
 		void raise_irq(u_byte vector);
 		void set_active_timer(timer_device* timer);
 
-		/* maize-140: idle-park hooks for a blocking console read (fd 0). A blocking
+		/* maize-140: idle-park hook for a blocking console read (fd 0). A blocking
 		   read with no input available parks the CPU by clearing the run bit (bit_running
 		   in RF) so the MIPS readout drops to idle and there is no busy-spin; the host
 		   console clears it while it waits on the keyboard event, then restores it before
 		   the syscall returns. This reuses the HALT/run-bit substrate (card maize-21) that
 		   HALT itself parks with, rather than inventing a second idle mechanism; the wait
 		   itself is on the console's own scancode condition (windowed) or a blocking host
-		   stdin read (headless deterministic source). is_powered lets the console break its
-		   wait if the VM was powered off (window close) while it was parked. */
+		   stdin read (headless deterministic source), and the console breaks its wait on
+		   window close via its own stopped_ latch (see text_console::stop). */
 		void set_running(bool on);
-		bool is_powered();
 
 
 	} // namespace cpu;

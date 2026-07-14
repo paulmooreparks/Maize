@@ -1179,11 +1179,6 @@ namespace maize {
             running_flag = on;
         }
 
-        bool is_powered() {
-            std::lock_guard<std::mutex> lk(int_mutex);
-            return is_power_on;
-        }
-
         /* A device raises an IRQ by making a vector pending (card maize-21). The flat
            controller coalesces multiple raises to the single pending-vector latch
            (last-raise-wins). Taking int_mutex and notifying int_event makes delivery

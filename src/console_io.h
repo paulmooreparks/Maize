@@ -62,7 +62,8 @@ namespace maize {
 			virtual void write_out(const unsigned char* buf, unsigned long count) = 0;
 
 			/* fd 0: block until the line discipline can deliver at least one byte
-			   (cooked: a full line on Enter; raw: VMIN bytes), copy up to count bytes
+			   (cooked: a full line on Enter; raw: each byte as it arrives, VMIN=1),
+			   copy up to count bytes
 			   into buf, and return the number delivered. Returns 0 on end of input
 			   (host stdin EOF in the headless source, or window close). Never busy-
 			   spins: it parks the CPU (windowed) or blocks on host stdin (headless). */
