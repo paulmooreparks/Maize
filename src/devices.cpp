@@ -351,6 +351,26 @@ namespace maize {
 					case SDL_SCANCODE_LEFT: return 0x4B;
 					case SDL_SCANCODE_RIGHT: return 0x4D;
 					case SDL_SCANCODE_DOWN: return 0x50;
+					case SDL_SCANCODE_TAB: return 0x0F;         // automap
+					case SDL_SCANCODE_MINUS: return 0x0C;       // reduce view / zoom out
+					case SDL_SCANCODE_EQUALS: return 0x0D;      // increase view / zoom in
+					case SDL_SCANCODE_BACKSPACE: return 0x0E;
+					case SDL_SCANCODE_RCTRL: return 0x1D;       // right ctrl also fires
+					case SDL_SCANCODE_RSHIFT: return 0x36;      // right shift also runs
+					case SDL_SCANCODE_RALT: return 0x38;        // right alt also strafes
+					case SDL_SCANCODE_PAUSE: return 0x45;
+					case SDL_SCANCODE_F1: return 0x3B;
+					case SDL_SCANCODE_F2: return 0x3C;
+					case SDL_SCANCODE_F3: return 0x3D;
+					case SDL_SCANCODE_F4: return 0x3E;
+					case SDL_SCANCODE_F5: return 0x3F;
+					case SDL_SCANCODE_F6: return 0x40;
+					case SDL_SCANCODE_F7: return 0x41;
+					case SDL_SCANCODE_F8: return 0x42;
+					case SDL_SCANCODE_F9: return 0x43;
+					case SDL_SCANCODE_F10: return 0x44;
+					case SDL_SCANCODE_F11: return 0x57;
+					case SDL_SCANCODE_F12: return 0x58;
 					default: return 0;
 				}
 			}

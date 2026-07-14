@@ -64,6 +64,8 @@ static const unsigned char scancode_to_doom[128] = {
     [0x01] = KEY_ESCAPE,
     [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4', [0x06] = '5',
     [0x07] = '6', [0x08] = '7', [0x09] = '8', [0x0A] = '9', [0x0B] = '0',
+    [0x0C] = KEY_MINUS, [0x0D] = KEY_EQUALS,   /* view size / automap zoom out, in */
+    [0x0E] = KEY_BACKSPACE,                     /* menu text editing */
     [0x0F] = KEY_TAB,
     [0x10] = 'q', [0x11] = 'w', [0x12] = 'e', [0x13] = 'r', [0x14] = 't',
     [0x15] = 'y', [0x16] = 'u', [0x17] = 'i', [0x18] = 'o', [0x19] = 'p',
@@ -76,11 +78,16 @@ static const unsigned char scancode_to_doom[128] = {
     [0x2A] = KEY_RSHIFT,    /* LShift -> DOOM run/strafe modifier */
     [0x2C] = 'z', [0x2D] = 'x', [0x2E] = 'c', [0x2F] = 'v', [0x30] = 'b',
     [0x31] = 'n', [0x32] = 'm',
-    [0x33] = KEY_STRAFE_L,  /* comma  -> strafe left  (DOOM's key_strafeleft default) */
-    [0x34] = KEY_STRAFE_R,  /* period -> strafe right (DOOM's key_straferight default) */
-    [0x38] = KEY_RALT,      /* LAlt -> DOOM strafe modifier */
+    /* comma (0x33) / period (0x34) intentionally unmapped: strafe is Alt + arrow (the
+       official binding on the HELP screen), so the , / . strafe keys are omitted. */
+    [0x36] = KEY_RSHIFT,    /* RShift -> run/strafe modifier (same as LShift) */
+    [0x38] = KEY_RALT,      /* Alt -> DOOM strafe modifier (key_strafe default) */
     [0x39] = KEY_USE,       /* space -> use: DOOM binds key_use = KEY_USE (0xa2), NOT the
                                ' ' character; mirrors doomgeneric_sdl.c's SPACE -> KEY_USE. */
+    [0x3B] = KEY_F1,  [0x3C] = KEY_F2,  [0x3D] = KEY_F3,  [0x3E] = KEY_F4,
+    [0x3F] = KEY_F5,  [0x40] = KEY_F6,  [0x41] = KEY_F7,  [0x42] = KEY_F8,
+    [0x43] = KEY_F9,  [0x44] = KEY_F10, [0x57] = KEY_F11, [0x58] = KEY_F12,
+    [0x45] = KEY_PAUSE,     /* SDL Pause is mapped to the otherwise-free Set-1 slot 0x45 */
     [0x48] = KEY_UPARROW,
     [0x4B] = KEY_LEFTARROW,
     [0x4D] = KEY_RIGHTARROW,
