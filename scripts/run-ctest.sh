@@ -387,7 +387,7 @@ run_hostfs_cat() {
     nat=$(host_to_native "$root/ro")
 
     set +e
-    actual=$("$MAIZE" --mount "${nat}=/ro:ro" "$bin" 2>/dev/null)
+    actual=$("$MAIZE" --no-root --mount "${nat}=/ro:ro" "$bin" 2>/dev/null)
     set -e
     expected=$(printf '%s\n' "$CAT_PAYLOAD")
 
@@ -415,7 +415,7 @@ run_hostfs_ls() {
     nat=$(host_to_native "$root/ro")
 
     set +e
-    actual=$("$MAIZE" --mount "${nat}=/ro:ro" "$bin" 2>/dev/null | grep -v '^$' | sort)
+    actual=$("$MAIZE" --no-root --mount "${nat}=/ro:ro" "$bin" 2>/dev/null | grep -v '^$' | sort)
     set -e
     expected=$(printf 'alpha.txt\nbeta.txt\npayload.txt\n' | sort)
 
@@ -451,7 +451,7 @@ run_hostfs_escape() {
     nat=$(host_to_native "$root/esc")
 
     set +e
-    actual=$("$MAIZE" --mount "${nat}=/esc:ro" "$bin" 2>/dev/null | grep -v '^$')
+    actual=$("$MAIZE" --no-root --mount "${nat}=/esc:ro" "$bin" 2>/dev/null | grep -v '^$')
     set -e
 
     if [ "$actual" = "escape: PASS" ]; then
@@ -476,7 +476,7 @@ run_hostfs_stat() {
     nat=$(host_to_native "$root/ro")
 
     set +e
-    actual=$("$MAIZE" --mount "${nat}=/ro:ro" "$bin" 2>/dev/null | grep -v '^$')
+    actual=$("$MAIZE" --no-root --mount "${nat}=/ro:ro" "$bin" 2>/dev/null | grep -v '^$')
     set -e
 
     if [ "$actual" = "stat: PASS" ]; then
@@ -501,7 +501,7 @@ run_hostfs_rofs() {
     nat=$(host_to_native "$root/ro")
 
     set +e
-    actual=$("$MAIZE" --mount "${nat}=/ro:ro" "$bin" 2>/dev/null | grep -v '^$')
+    actual=$("$MAIZE" --no-root --mount "${nat}=/ro:ro" "$bin" 2>/dev/null | grep -v '^$')
     set -e
 
     if [ "$actual" = "rofs: PASS" ]; then
@@ -539,7 +539,7 @@ run_hostfs_stdio() {
     nat_rw=$(host_to_native "$root/rw")
 
     set +e
-    actual=$("$MAIZE" --mount "${nat_ro}=/ro:ro" --mount "${nat_rw}=/rw:rw" "$bin" \
+    actual=$("$MAIZE" --no-root --mount "${nat_ro}=/ro:ro" --mount "${nat_rw}=/rw:rw" "$bin" \
         2>/dev/null | grep -v '^$')
     set -e
 
@@ -553,7 +553,7 @@ run_hostfs_stdio() {
 
     # AC 8276 negative: a _Exit() run must NOT flush, so noflush.dat exists but is empty.
     set +e
-    "$MAIZE" --mount "${nat_rw}=/rw:rw" "$bin" noflush >/dev/null 2>&1
+    "$MAIZE" --no-root --mount "${nat_rw}=/rw:rw" "$bin" noflush >/dev/null 2>&1
     set -e
     if [ ! -f "$root/rw/noflush.dat" ] || [ -s "$root/rw/noflush.dat" ]; then
         ok=0
@@ -887,7 +887,7 @@ run_terminal_selfcheck() {
     # 39(space). Octal for printf: 1E=036 2A=052 AA=252 02=002 39=071.
     set +e
     actual=$(printf '\036\052\036\252\002\052\002\252\071' \
-        | "$MAIZE" --input=keyboard "$mzx" 2>/dev/null | grep -v '^$')
+        | "$MAIZE" --no-root --input=keyboard "$mzx" 2>/dev/null | grep -v '^$')
     set -e
 
     if [ "$actual" = "terminal: PASS" ]; then
@@ -1011,7 +1011,7 @@ run_doom_selfcheck() {
     # 4D(right)/50(down)/1D(ctrl->fire)/39(space->use)/1C(enter)/01(esc)/0F(tab).
     set +e
     actual=$(printf '\036\236\110\113\115\120\035\071\034\001\017' \
-        | "$MAIZE" --input=keyboard --mount "${nat}=/ro:ro" "$mzx" 2>/dev/null | grep -v '^$')
+        | "$MAIZE" --no-root --input=keyboard --mount "${nat}=/ro:ro" "$mzx" 2>/dev/null | grep -v '^$')
     set -e
 
     if [ "$actual" = "doom: PASS" ]; then
@@ -1108,7 +1108,7 @@ run_doom_render() {
     # `C:\...` path (host_to_native/cygpath -w) and is left untouched, and `$mzx` (a
     # non-/ro host path) is still converted normally. Harmless on non-MSYS shells.
     set +e
-    actual=$(MSYS2_ARG_CONV_EXCL='/ro' "$MAIZE" --mount "${nat}=/ro:ro" "$mzx" \
+    actual=$(MSYS2_ARG_CONV_EXCL='/ro' "$MAIZE" --no-root --mount "${nat}=/ro:ro" "$mzx" \
         -iwad /ro/min.wad -warp 1 1 -nomonsters 2>/dev/null | grep -v '^$')
     set -e
 

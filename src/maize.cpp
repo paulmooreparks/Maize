@@ -118,12 +118,23 @@ static void print_usage(std::ostream &out) {
 		"      --mount HOST=/GUEST[:ro|:rw]  grant the guest a *nix view of a host\n"
 		"                             directory (repeatable; read-only unless :rw)\n"
 		"      --mount-home[=HOST]    map the host home to /home/user, read-write\n"
+		"      --root <hostpath>      use this host dir as the sandbox root instead\n"
+		"                             of the default ~/.maize/root\n"
+		"      --no-root              disable the sandbox root; the guest starts with\n"
+		"                             an empty filesystem (only explicit --mount grants)\n"
 		"  --                         end options; the next token is <image>\n"
 		"\n"
 		"The program's environment is built only from -e/--env and --env-file; the\n"
-		"host's own environment is never inherited. The guest filesystem is empty\n"
-		"unless a --mount / --mount-home grant is given (capability model): nothing\n"
-		"outside a granted mount is reachable.\n"
+		"host's own environment is never inherited.\n"
+		"\n"
+		"By default the guest gets a persistent sandbox root filesystem: a dedicated\n"
+		"host directory (~/.maize/root, created on first run with /home/user and /tmp)\n"
+		"is mounted read-write as the guest root '/', and the startup working directory\n"
+		"is /home/user. A relative guest path resolves against that cwd, so a program\n"
+		"that writes ./file lands under the sandbox root and persists across runs.\n"
+		"Your real filesystem is NOT reachable: only the sandbox root plus any explicit\n"
+		"--mount / --mount-home overlays (which layer on top of the root). Pass\n"
+		"--no-root for the empty, deny-by-default filesystem.\n"
 		"\n"
 		"Example:\n"
 		"  maize --env GREETING=hi hello.mzb alpha beta\n";
@@ -422,6 +433,8 @@ int main(int argc, char *argv[]) {
 	   the host's ambient environment is never inherited. */
 	std::vector<std::string> env_entries;
 	std::vector<mount_grant> grants;
+	bool no_root = false;            // --no-root: disable the default sandbox root
+	std::string root_override;       // --root <hostpath>: redirect the sandbox root
 	bool display_requested = false;
 	bool show_perf = false;          // --show-perf: draw guest MIPS + FPS in the window corner
 	unsigned display_scale = 3;      // window = framebuffer size * scale (--display-scale)
@@ -525,6 +538,37 @@ int main(int argc, char *argv[]) {
 			g.guest = "/home/user";
 			g.mode = HOSTFS_RW;   /* the one rw-by-default convenience (OQ 7790) */
 			grants.push_back(g);
+			++idx;
+			continue;
+		}
+		if (arg == "--root" || arg.rfind("--root=", 0) == 0) {
+			/* maize-132: redirect the sandbox root to a different host dir. */
+			std::string val;
+			if (arg.rfind("--root=", 0) == 0) {   /* "--root=" is 7 chars */
+				val = arg.substr(7);
+				++idx;
+			}
+			else if (idx + 1 < argc) {
+				val = argv[idx + 1];
+				idx += 2;
+			}
+			else {
+				std::cerr << "maize: option '--root' requires a <host-path> argument"
+					<< std::endl;
+				print_usage(std::cerr);
+				return 2;
+			}
+			if (val.empty()) {
+				std::cerr << "maize: --root requires a non-empty host path" << std::endl;
+				return 2;
+			}
+			root_override = val;
+			continue;
+		}
+		if (arg == "--no-root") {
+			/* maize-132: disable the default sandbox root; the guest sees the empty
+			   deny-by-default filesystem (only explicit --mount grants). */
+			no_root = true;
 			++idx;
 			continue;
 		}
@@ -656,6 +700,59 @@ int main(int argc, char *argv[]) {
 		return 2;
 	}
 
+	/* card maize-132: unless --no-root, mount a dedicated host directory as the guest
+	   root "/", read-write, auto-created with a minimal skeleton (/home/user, /tmp) on
+	   first run. Default host location ~/.maize/root (HOME/USERPROFILE; a plain host
+	   dir the operator can open in a file manager); --root <hostpath> redirects it.
+	   Everything the guest writes (DOOM saves, .default.cfg) persists under that dir,
+	   and the startup cwd is /home/user, so a relative guest path resolves to a
+	   writable location with no per-program config. --mount / --mount-home overlay on
+	   top (longest-prefix wins; the root is the fallback). The operator's REAL
+	   filesystem is NOT reachable by default: only this sandbox dir plus any explicit
+	   overlay grants. root_host + cwd live in main's scope so the const char* views the
+	   mount table and hostfs_table hold stay valid through cpu::run(). */
+	std::string root_host;
+	std::string cwd = "/";
+	if (!no_root) {
+		std::filesystem::path root;
+		bool have_root = true;
+		if (!root_override.empty()) {
+			root = std::filesystem::path(root_override);
+		}
+		else {
+			std::string home;
+			if (resolve_home("", home)) {
+				root = std::filesystem::path(home) / ".maize" / "root";
+			}
+			else {
+				/* No host home and no --root: fall back to deny-by-default rather
+				   than abort, so a bare invocation still runs. The real FS stays
+				   unreachable (secure default); only the sandbox is lost. */
+				std::cerr << "maize: no host home for the default sandbox root "
+					<< "(set HOME/USERPROFILE, pass --root <dir>, or --no-root); "
+					<< "running with an empty filesystem" << std::endl;
+				have_root = false;
+			}
+		}
+		if (have_root) {
+			std::error_code ec;
+			std::filesystem::create_directories(root / "home" / "user", ec);
+			std::filesystem::create_directories(root / "tmp", ec);
+			if (!std::filesystem::is_directory(root, ec)) {
+				std::cerr << "maize: cannot create the sandbox root '"
+					<< root.string() << "'" << std::endl;
+				return 2;
+			}
+			root_host = root.string();
+			mount_grant rg;
+			rg.host = root_host;
+			rg.guest = "/";
+			rg.mode = HOSTFS_RW;
+			grants.push_back(rg);
+			cwd = "/home/user";
+		}
+	}
+
 	/* card maize-114: validate the collected --mount / --mount-home grants and build
 	   the hostfs mount table BEFORE any VM setup (fail-closed: a bad grant exits
 	   nonzero here, before the guest is loaded or the VM's device/IO machinery is
@@ -672,6 +769,7 @@ int main(int argc, char *argv[]) {
 	hostfs_tab.mounts = hostfs_mounts.empty() ? nullptr : hostfs_mounts.data();
 	hostfs_tab.count = static_cast<unsigned>(hostfs_mounts.size());
 	hostfs_tab.ops = hostfs_backend_ops_get();
+	hostfs_tab.cwd = cwd.c_str();   /* maize-132: base for relative-path resolution */
 
 	/* Guest argv: argv[0] = <image> as invoked; argv[1..] = the post-image tokens
 	   verbatim. The launcher/crt0 must NOT basename or rewrite argv[0]. */

@@ -86,9 +86,15 @@ int hostfs_flags_write_intent(int flags) {
     return 0;
 }
 
-/* Longest-prefix match. Because overlapping guest prefixes are rejected at
-   startup, at most one mount matches. On a match returns the mount and copies the
-   host-relative remainder into rel ("." for the mount root itself). */
+/* Longest-prefix match over an already-normalized absolute guest path. Because
+   overlapping guest prefixes are rejected at startup, at most one mount matches at
+   each prefix length; the longest prefix wins, so a root "/" mount (maize-132) is
+   the fallback that yields to any deeper overlay. On a match returns the mount and
+   copies the host-relative remainder into rel ("." for the mount root itself).
+
+   A root prefix "/" (plen 1) matches every absolute path: its boundary character
+   is the leading '/' itself, so the pfx[plen] boundary test that guards deeper
+   prefixes ("/a" must not match "/ab") does not apply to it. */
 static hostfs_mount *match_mount(hostfs_table *t, const char *path,
                                  char *rel, uint64_t relcap) {
     hostfs_mount *best = 0;
@@ -96,8 +102,9 @@ static hostfs_mount *match_mount(hostfs_table *t, const char *path,
     for (unsigned i = 0; i < t->count; ++i) {
         const char *pfx = t->mounts[i].guest_prefix;
         size_t plen = strlen(pfx);
+        int is_root_pfx = (plen == 1 && pfx[0] == '/');
         if (strncmp(path, pfx, plen) == 0
-            && (path[plen] == '\0' || path[plen] == '/')) {
+            && (is_root_pfx || path[plen] == '\0' || path[plen] == '/')) {
             if (plen > bestlen) {
                 bestlen = plen;
                 best = &t->mounts[i];
@@ -125,6 +132,95 @@ static hostfs_mount *match_mount(hostfs_table *t, const char *path,
     }
     memcpy(rel, rem, rlen + 1);
     return best;
+}
+
+/* maize-132: normalize a guest path for mount selection. A path that does not begin
+   with '/' is joined onto the table cwd (default "/"); then "." components are
+   dropped, "//" runs collapse, and ".." pops the last component, clamping at the
+   root so ".." can never rise above "/". The result written to out is a canonical
+   absolute path that always begins with '/' (and is exactly "/" for the root).
+
+   This normalizes ONLY the guest path used to pick the mount and its host-relative
+   remainder; it does NOT weaken the backend's host-side confinement. The backend
+   still resolves that remainder beneath the mount anchor (openat2 RESOLVE_BENEATH /
+   the Win32 canonical prefix-child check), so a crafted host path cannot escape a
+   mount even though the guest-path ".." was already collapsed here.
+
+   Returns 1 on success, or 0 when the joined/normalized path would overflow a
+   buffer (the caller maps that to -ENAMETOOLONG). */
+static int normalize_path(hostfs_table *t, const char *path,
+                          char *out, uint64_t outcap) {
+    /* 1. Join a relative path onto the cwd into a scratch buffer. */
+    char joined[HOSTFS_PATH_MAX * 2];
+    uint64_t ji = 0;
+    if (path[0] != '/') {
+        const char *cwd = (t && t->cwd && t->cwd[0]) ? t->cwd : "/";
+        while (*cwd) {
+            if (ji + 1 >= sizeof(joined)) {
+                return 0;
+            }
+            joined[ji++] = *cwd++;
+        }
+        if (ji + 1 >= sizeof(joined)) {
+            return 0;
+        }
+        joined[ji++] = '/';
+    }
+    while (*path) {
+        if (ji + 1 >= sizeof(joined)) {
+            return 0;
+        }
+        joined[ji++] = *path++;
+    }
+    joined[ji] = '\0';
+
+    /* 2. Resolve components onto out. out holds either "/" (the root) or a
+          "/seg1/seg2" form with no trailing slash. */
+    if (outcap < 2) {
+        return 0;
+    }
+    uint64_t oi = 1;
+    out[0] = '/';
+    uint64_t i = 0;
+    while (joined[i]) {
+        if (joined[i] == '/') {
+            ++i;
+            continue;
+        }
+        uint64_t j = i;
+        while (joined[j] != '\0' && joined[j] != '/') {
+            ++j;
+        }
+        uint64_t clen = j - i;
+        if (clen == 1 && joined[i] == '.') {
+            /* "." : current directory, drop it. */
+        } else if (clen == 2 && joined[i] == '.' && joined[i + 1] == '.') {
+            /* ".." : pop the last segment, clamping at the root. */
+            if (oi > 1) {
+                uint64_t k = oi;
+                while (k > 1 && out[k - 1] != '/') {
+                    --k;
+                }
+                oi = (k > 1) ? (k - 1) : 1;
+            }
+        } else {
+            /* A real segment: append "[/]seg". */
+            if (oi > 1) {
+                if (oi + 1 >= outcap) {
+                    return 0;
+                }
+                out[oi++] = '/';
+            }
+            if (oi + clen >= outcap) {
+                return 0;
+            }
+            memcpy(out + oi, joined + i, (size_t)clen);
+            oi += clen;
+        }
+        i = j;
+    }
+    out[oi] = '\0';
+    return 1;
 }
 
 /* --- byte-ABI composition --------------------------------------------------- */
@@ -260,9 +356,44 @@ int64_t hostfs_open(hostfs_table *t, const char *path, int flags, int mode) {
     if (!t || !t->ops) {
         return -HOSTFS_ENOENT;   /* nothing mounted */
     }
-    if (strcmp(path, "/") == 0) {
+
+    /* maize-132: normalize (join onto cwd, resolve . / .. / //) BEFORE mount
+       selection, so a relative path (DOOM's ./.savegame/temp.dsg) resolves against
+       the cwd and lands in the right mount. */
+    char norm[HOSTFS_PATH_MAX];
+    if (!normalize_path(t, path, norm, sizeof(norm))) {
+        return -HOSTFS_ENAMETOOLONG;
+    }
+
+    char rel[HOSTFS_PATH_MAX];
+    hostfs_mount *m = match_mount(t, norm, rel, sizeof(rel));
+    if (m) {
+        if (m->mode == HOSTFS_RO && hostfs_flags_write_intent(flags)) {
+            return -HOSTFS_EROFS;
+        }
+        void *handle = 0;
+        int64_t rc = t->ops->confine(m, rel, flags, &handle);
+        if (rc < 0) {
+            return rc;
+        }
+        int fd = alloc_fd();
+        if (fd < 0) {
+            t->ops->close(handle);
+            return -HOSTFS_ENOMEM;
+        }
+        hostfs_fd_slot *s = slot_for_fd(fd);
+        s->mount = m;
+        s->handle = handle;
+        return fd;
+    }
+
+    /* No mount matched. The synthetic read-only root is the fallback for the
+       --no-root case (no "/" mount): "/" enumerates the top-level mount names and
+       is never writable. When a "/" root mount IS present it matches above, so this
+       path is not reached for it. */
+    if (strcmp(norm, "/") == 0) {
         if (hostfs_flags_write_intent(flags)) {
-            return -HOSTFS_EROFS;   /* the root is never writable */
+            return -HOSTFS_EROFS;   /* the synthetic root is never writable */
         }
         int fd = alloc_fd();
         if (fd < 0) {
@@ -273,29 +404,7 @@ int64_t hostfs_open(hostfs_table *t, const char *path, int flags, int mode) {
         s->root_cursor = 0;
         return fd;
     }
-
-    char rel[HOSTFS_PATH_MAX];
-    hostfs_mount *m = match_mount(t, path, rel, sizeof(rel));
-    if (!m) {
-        return -HOSTFS_ENOENT;   /* unmounted path (indistinguishable from absent) */
-    }
-    if (m->mode == HOSTFS_RO && hostfs_flags_write_intent(flags)) {
-        return -HOSTFS_EROFS;
-    }
-    void *handle = 0;
-    int64_t rc = t->ops->confine(m, rel, flags, &handle);
-    if (rc < 0) {
-        return rc;
-    }
-    int fd = alloc_fd();
-    if (fd < 0) {
-        t->ops->close(handle);
-        return -HOSTFS_ENOMEM;
-    }
-    hostfs_fd_slot *s = slot_for_fd(fd);
-    s->mount = m;
-    s->handle = handle;
-    return fd;
+    return -HOSTFS_ENOENT;   /* unmounted path (indistinguishable from absent) */
 }
 
 int64_t hostfs_close(hostfs_table *t, int fd) {

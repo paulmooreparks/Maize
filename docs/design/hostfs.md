@@ -54,9 +54,21 @@ The nine contract surfaces:
   the synthetic root (for example `/proj`).
 - Posture is **read-only unless `:rw` is given**. The `:ro` suffix is the
   explicit default and may be written for clarity.
-- **Nothing is mounted without an explicit grant.** Absent any `--mount` /
-  `--mount-home` flag, the guest sees only the synthetic root with no entries
-  (WASI-preopen capability model, ratified maize-74/75).
+- **Sandbox root by default (maize-132).** Unless `--no-root` is given, a dedicated
+  host directory (`~/.maize/root`, auto-created on first run with a `/home/user`,
+  `/tmp` skeleton; redirected by `--root <hostpath>`) is mounted read-write as the
+  guest root `/`, and the startup working directory is `/home/user`. A relative
+  guest path is normalized against that cwd (`.`, `..`, duplicate slashes resolved;
+  `..` clamps at the root) before mount selection, so a program writing `./file`
+  lands under the sandbox root and persists. `--mount` / `--mount-home` overlay on
+  top of the root (longest guest-path prefix wins; the root is the fallback). The
+  operator's real filesystem stays unreachable: only the sandbox root plus explicit
+  overlays. The guest-path normalization only selects the mount; the host-side
+  confinement (section 5) is unchanged, so `..` can never escape a mount's host dir.
+- **`--no-root` restores deny-by-default.** With `--no-root`, nothing is mounted
+  without an explicit grant: absent any `--mount` / `--mount-home` flag the guest
+  sees only the synthetic root with no entries (WASI-preopen capability model,
+  ratified maize-74/75), and the cwd is `/`.
 - `--mount-home` is sugar mapping the host home to `/home/user`. The host home is
   derived from `HOME` (POSIX) or `USERPROFILE` (Windows), or an explicit
   `--mount-home=<host-home>` override. It is mounted **read-write** (operator
@@ -483,6 +495,8 @@ typedef struct hostfs_table {
     hostfs_mount            *mounts;   /* sorted; longest-prefix match */
     unsigned                 count;
     const hostfs_backend_ops *ops;     /* the active backend */
+    const char              *cwd;      /* maize-132: base for relative-path
+                                          resolution; NULL/empty means "/" */
 } hostfs_table;
 ```
 

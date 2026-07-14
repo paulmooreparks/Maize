@@ -107,6 +107,12 @@ typedef struct hostfs_table {
     hostfs_mount             *mounts;   /* longest-prefix match */
     unsigned                  count;
     const hostfs_backend_ops *ops;      /* the active backend */
+    const char               *cwd;      /* maize-132: base for relative-path
+                                           resolution (a *nix absolute path). NULL
+                                           or empty is treated as "/". The core
+                                           normalizes each guest path against this
+                                           before selecting a mount; the backend's
+                                           host-side confinement is unchanged. */
 } hostfs_table;
 
 /* --- (c) Linux-numbered errno constants (doc section 6c) -------------------- */

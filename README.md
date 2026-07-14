@@ -64,6 +64,11 @@ The same run on Linux:
 build/linux-release/maize --display --display-scale 4 --refresh-hz 20 --input=keyboard --mount "$HOME/Downloads=/wad:ro" demos/doom/doom.mzx -iwad /wad/doom1.wad -warp 1 1
 ```
 
+Saves just work: DOOM writes them to a relative path (`./.savegame/...`), which
+resolves against the guest's `/home/user` working directory in the persistent
+sandbox root (`~/.maize/root`), so no writable mount is needed and your saves and
+config survive across runs. (Pass `--no-root` to opt out of the sandbox root.)
+
 For how the DOOM port itself is built and tested (the vendored doomgeneric tree, the headless
 render gate, and the license-clean synthetic IWAD used by CI), see
 [demos/doom/README.md](demos/doom/README.md).
@@ -282,29 +287,43 @@ maize --env GREETING=hi --env TARGET=world hello.mzb alpha beta
 maize --env-file run.env prog.mzb
 ```
 
-### Mounting host directories
+### The sandbox root and mounting host directories
 
-By default the guest filesystem is empty: nothing is mounted, no host file is
-reachable, and only the stdio fds exist. Each mount is an explicit grant (a
-WASI-preopen-style capability model), read-only unless opted into read-write:
+By default the guest gets a persistent sandbox root filesystem: a dedicated host
+directory (`~/.maize/root`, created on first run with a `/home/user` and `/tmp`
+skeleton) is mounted read-write as the guest root `/`, and the startup working
+directory is `/home/user`. A relative guest path resolves against that cwd, so a
+program that writes `./file` (or DOOM saving to `./.savegame/...`) lands under the
+sandbox root and persists across runs with no per-program configuration. Your real
+filesystem is NOT reachable: only the sandbox root plus any explicit overlay grants.
+
+- `--root <hostpath>` uses a different host directory as the sandbox root.
+- `--no-root` disables the sandbox root; the guest starts with an empty,
+  deny-by-default filesystem (only explicit `--mount` grants are reachable), the
+  WASI-preopen-style capability model.
+
+Mounts are explicit grants that overlay on top of the root (read-only unless opted
+into read-write; longest guest-path prefix wins, so the root is the fallback):
 
 - `--mount HOST=/GUEST[:ro|:rw]` grants the guest a *nix view of one host
   directory. Repeatable. `HOST` may be a native Windows path (`C:\work`,
-  `C:/work`) or a POSIX path; `/GUEST` is always a *nix absolute path under the
-  guest's synthetic root and cannot be `/` itself. `:ro` is the explicit
-  default; `:rw` opts into writes.
-- `--mount-home[=HOST]` is sugar mapping the host home directory to
+  `C:/work`) or a POSIX path; `/GUEST` is always a *nix absolute path and cannot
+  be `/` itself. `:ro` is the explicit default; `:rw` opts into writes.
+- `--mount-home[=HOST]` is sugar mapping the host home directory over
   `/home/user`, read-write.
 
 ```sh
 maize --mount C:/work=/proj:rw prog.mzx
 maize --mount /home/paul/data=/data --mount-home prog.mzx
+maize --no-root --mount /srv/data=/data:ro prog.mzx
 ```
 
-Within a granted mount the guest uses the Linux-mirroring file syscalls (open,
-close, fstat, lseek, getdents64, plus read/write on the granted fds; see the
-syscall table below). Every path resolution is confined to its mount root, and
-startup fails closed on a malformed or unreachable grant. The full contract,
+Within a mount the guest uses the Linux-mirroring file syscalls (open, close,
+fstat, lseek, getdents64, plus read/write on the granted fds; see the syscall
+table below). Guest paths are normalized (`.`, `..`, and duplicate slashes are
+resolved, `..` clamped at the root) to select the mount, and every host-side
+resolution is then confined to its mount root, so `..` can never escape a mount.
+Startup fails closed on a malformed or unreachable grant. The full contract,
 including the binary-ABI structures, lives in
 [docs/design/hostfs.md](docs/design/hostfs.md).
 
