@@ -1173,10 +1173,22 @@ namespace maize {
            back before the SYS read returns. No notify is needed: the console's own
            condition variable (or a blocking host stdin read) governs the wake, and the
            run loop only re-reads the run bit after tick() returns, which cannot happen
-           while the CPU thread is parked inside the syscall. */
+           while the CPU thread is parked inside the syscall.
+
+           maize-175: the un-park (set_running(true)) is gated on is_power_on so it can
+           never re-animate a core that has already been powered off. The window-close
+           shutdown path calls con.stop() (which wakes a queue-parked read) and then
+           power_off() (running_flag=false, is_power_on=false) back to back. The woken
+           read re-acquires q_mutex_ and calls set_running(true), which must take
+           int_mutex, the very lock power_off() is holding, so set_running(true) reliably
+           runs AFTER power_off(). Without this gate it would set running_flag=true again
+           while is_power_on is false; tick() only tests running_flag (never is_power_on),
+           so the guest would resume executing (read() returning 0 in a tight loop) and
+           the process would orphan with its window gone. Gating on is_power_on makes the
+           lagging un-park a no-op, so the guest falls out of tick() and run() returns. */
         void set_running(bool on) {
             std::lock_guard<std::mutex> lk(int_mutex);
-            running_flag = on;
+            running_flag = on && is_power_on;
         }
 
         /* A device raises an IRQ by making a vector pending (card maize-21). The flat
