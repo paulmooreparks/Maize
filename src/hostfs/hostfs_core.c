@@ -493,3 +493,98 @@ int64_t hostfs_getdents(hostfs_table *t, int fd, uint8_t *buf, uint64_t count) {
     }
     return t->ops->getdents(s->handle, buf, count);
 }
+
+/* --- path-mutating dispatch (maize-151) ------------------------------------- */
+
+/* Shared front half of every path-mutating op: normalize the guest path against the
+   cwd, longest-prefix match a mount, and apply the write-intent gate. On success fills
+   *out_mount and copies the host-relative remainder into rel; on any gate failure
+   returns the negative errno the op must return verbatim:
+     -ENAMETOOLONG  the joined/normalized path overflowed a buffer
+     -EROFS         a :ro mount, or the synthetic root (never writable)
+     -ENOENT        no mount matched (indistinguishable from absent)
+   This mirrors hostfs_open's normalize -> match -> :ro-gate sequence so a mutating op
+   and an open agree on which paths are writable. */
+static int64_t resolve_writable(hostfs_table *t, const char *path,
+                                char *rel, uint64_t relcap,
+                                hostfs_mount **out_mount) {
+    char norm[HOSTFS_PATH_MAX];
+    if (!normalize_path(t, path, norm, sizeof(norm))) {
+        return -HOSTFS_ENAMETOOLONG;
+    }
+    hostfs_mount *m = match_mount(t, norm, rel, relcap);
+    if (!m) {
+        /* The synthetic root matches no mount but is never writable, so a
+           write-intent op on it is EROFS rather than ENOENT (mirrors hostfs_open). */
+        if (strcmp(norm, "/") == 0) {
+            return -HOSTFS_EROFS;
+        }
+        return -HOSTFS_ENOENT;
+    }
+    if (m->mode == HOSTFS_RO) {
+        return -HOSTFS_EROFS;
+    }
+    *out_mount = m;
+    return 0;
+}
+
+int64_t hostfs_mkdir(hostfs_table *t, const char *path, int mode) {
+    if (!t || !t->ops) {
+        return -HOSTFS_ENOENT;   /* nothing mounted */
+    }
+    char rel[HOSTFS_PATH_MAX];
+    hostfs_mount *m = 0;
+    int64_t rc = resolve_writable(t, path, rel, sizeof(rel), &m);
+    if (rc < 0) {
+        return rc;
+    }
+    if (!t->ops->mkdir) {
+        return -HOSTFS_ENOSYS;
+    }
+    return t->ops->mkdir(m, rel, mode);
+}
+
+int64_t hostfs_unlink(hostfs_table *t, const char *path) {
+    if (!t || !t->ops) {
+        return -HOSTFS_ENOENT;
+    }
+    char rel[HOSTFS_PATH_MAX];
+    hostfs_mount *m = 0;
+    int64_t rc = resolve_writable(t, path, rel, sizeof(rel), &m);
+    if (rc < 0) {
+        return rc;
+    }
+    if (!t->ops->unlink) {
+        return -HOSTFS_ENOSYS;
+    }
+    return t->ops->unlink(m, rel);
+}
+
+int64_t hostfs_rename(hostfs_table *t, const char *oldp, const char *newp) {
+    if (!t || !t->ops) {
+        return -HOSTFS_ENOENT;
+    }
+    char relold[HOSTFS_PATH_MAX];
+    char relnew[HOSTFS_PATH_MAX];
+    hostfs_mount *mo = 0;
+    hostfs_mount *mn = 0;
+    int64_t rc = resolve_writable(t, oldp, relold, sizeof(relold), &mo);
+    if (rc < 0) {
+        return rc;
+    }
+    rc = resolve_writable(t, newp, relnew, sizeof(relnew), &mn);
+    if (rc < 0) {
+        return rc;
+    }
+    /* Both paths must land in the SAME mount: the backend renameat / MoveFileEx is a
+       single host operation and cannot cross host directories, and a cross-mount move
+       could leak content between differently-posture'd grants. -EXDEV is the code the
+       C library's rename() maps to a failed cross-device move. */
+    if (mo != mn) {
+        return -HOSTFS_EXDEV;
+    }
+    if (!t->ops->rename) {
+        return -HOSTFS_ENOSYS;
+    }
+    return t->ops->rename(mo, relold, relnew);
+}

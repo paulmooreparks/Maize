@@ -571,6 +571,55 @@ namespace maize {
                     return static_cast<u_word>(rc);
                 }
 
+                /* maize-151 sys_rename: oldpath R0, newpath R1. Copy both paths in
+                   (bounded), then let the hostfs core normalize BOTH against the cwd,
+                   require them to land in the same rw mount (else -EXDEV / -EROFS), and
+                   confine each remainder beneath the mount anchor before the backend
+                   rename. Returns 0 or -errno; DOOM renames temp.dsg to the save slot. */
+                case 0x0052U: {
+                    u_word oldaddr {regs::r0.w0};
+                    u_word newaddr {regs::r1.w0};
+
+                    std::string oldp;
+                    std::string newp;
+                    if (!copy_in_path(oldaddr, oldp) || !copy_in_path(newaddr, newp)) {
+                        return static_cast<u_word>(-static_cast<long>(HOSTFS_ENAMETOOLONG));
+                    }
+                    int64_t rc = hostfs_rename(hostfs, oldp.c_str(), newp.c_str());
+                    return static_cast<u_word>(rc);
+                }
+
+                /* maize-151 sys_mkdir: path R0, mode R1. Copy the path in (bounded),
+                   then let the hostfs core normalize + mount-resolve + write-gate it and
+                   confine the remainder beneath the mount anchor before the backend
+                   mkdir. Returns 0 or -errno; DOOM creates ./.savegame before a save. */
+                case 0x0053U: {
+                    u_word address {regs::r0.w0};
+                    int mode {static_cast<int>(regs::r1.w0)};
+
+                    std::string path;
+                    if (!copy_in_path(address, path)) {
+                        return static_cast<u_word>(-static_cast<long>(HOSTFS_ENAMETOOLONG));
+                    }
+                    int64_t rc = hostfs_mkdir(hostfs, path.c_str(), mode);
+                    return static_cast<u_word>(rc);
+                }
+
+                /* maize-151 sys_unlink: path R0. Copy the path in (bounded), then let the
+                   hostfs core normalize + mount-resolve + write-gate it and confine the
+                   remainder beneath the mount anchor before the backend unlink. Returns 0
+                   or -errno. */
+                case 0x0057U: {
+                    u_word address {regs::r0.w0};
+
+                    std::string path;
+                    if (!copy_in_path(address, path)) {
+                        return static_cast<u_word>(-static_cast<long>(HOSTFS_ENAMETOOLONG));
+                    }
+                    int64_t rc = hostfs_unlink(hostfs, path.c_str());
+                    return static_cast<u_word>(rc);
+                }
+
                 /* sys_exit: record main's status and terminate the VM. The exit
                    code is the first integer argument in R0 (same ABI slot fd
                    uses for sys_read/sys_write). We record the low 8 bits only;

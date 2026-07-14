@@ -81,6 +81,17 @@ int64_t hostfs_fstat(hostfs_table *t, int fd, uint8_t *out_stat);
 /* Packs linux_dirent64 records into buf (capacity `count`). */
 int64_t hostfs_getdents(hostfs_table *t, int fd, uint8_t *buf, uint64_t count);
 
+/* maize-151 path-mutating dispatch. Each normalizes the guest path against the table
+   cwd, longest-prefix matches a mount, applies the write-intent gate (a :ro mount or
+   the synthetic root returns -EROFS, an unmounted path -ENOENT), then calls the
+   backend op with the host-relative remainder. rename normalizes BOTH paths and
+   requires them to land in the SAME mount (else -EXDEV; the backend rename cannot
+   cross mounts). The backend confines the remainder beneath the mount anchor exactly
+   as open does, so neither the guest nor a host symlink can escape the mount. */
+int64_t hostfs_mkdir(hostfs_table *t, const char *path, int mode);
+int64_t hostfs_unlink(hostfs_table *t, const char *path);
+int64_t hostfs_rename(hostfs_table *t, const char *oldp, const char *newp);
+
 /* Reset the whole guest fd table (called at provider init so a reused process
    image starts clean). */
 void hostfs_reset_fds(void);

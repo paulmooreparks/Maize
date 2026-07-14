@@ -93,6 +93,9 @@ Mirrors the Linux x86-64 table by construction. Frozen:
 | `$03` | `sys_close` | `R0`=fd | `RV`=0 or `-errno` |
 | `$05` | `sys_fstat` | `R0`=fd, `R1`=statbuf | `RV`=0 or `-errno` |
 | `$08` | `sys_lseek` | `R0`=fd, `R1`=offset, `R2`=whence | `RV`=new offset or `-errno` |
+| `$52` | `sys_rename` | `R0`=oldpath, `R1`=newpath | `RV`=0 or `-errno` |
+| `$53` | `sys_mkdir` | `R0`=path, `R1`=mode | `RV`=0 or `-errno` |
+| `$57` | `sys_unlink` | `R0`=path | `RV`=0 or `-errno` |
 | `$0C` | `sys_brk` | `R0`=new break (0=query) | `RV`=new (or current) break; never `-errno` |
 | `$3C` | `_exit` (`sys_exit`) | `R0`=code | does not return |
 | `$A9` | `sys_reboot` | reserved (VM stub) | reserved |
@@ -107,11 +110,26 @@ band in any realistic runtime (that band begins at ~5.8e8 years of milliseconds)
 
 `$02`/`$03`/`$05`/`$08`/`$D9` are the hostfs file syscalls (design of record
 `docs/design/hostfs.md`), each mirroring its Linux x86-64 number. They are guest-visible
-only when a `--mount` / `--mount-home` grant installs a mount table; `read`/`write` for a
-granted fd `>= 3` resolve through that table (lifting the M4 real-file restriction). The
-`*at` family (`$101`+) and the out-of-scope path-based / mutating numbers
-(`$04`/`$52`/`$53`/`$54`/`$57`) are NOT dispatched in this POC and stay reserved for
-later cards.
+only when a `--mount` / `--mount-home` grant installs a mount table (or the default
+sandbox root is present); `read`/`write` for a granted fd `>= 3` resolve through that
+table (lifting the M4 real-file restriction).
+
+`$52`/`$53`/`$57` (`sys_rename` / `sys_mkdir` / `sys_unlink`, maize-151) are the
+path-mutating hostfs syscalls, mirroring their Linux x86-64 numbers (82 / 83 / 87). Each
+takes guest path pointer(s) rather than an fd: the core normalizes the path against the
+cwd, longest-prefix matches a mount, and applies the write-intent gate before the backend
+touches the host. A `:ro` mount and the synthetic root reject them with `-EROFS` (30); an
+unmounted path is `-ENOENT` (2); a `rename` whose two paths land in different mounts is
+`-EXDEV` (18), because the backend rename is a single host operation that cannot cross
+mounts. The backend confines the remainder beneath the mount anchor exactly as `open`
+does (openat2 `RESOLVE_BENEATH` on Linux; the canonical prefix-child + reparse-point
+check on Windows), so neither a guest `..` nor an escaping host symlink can leave the
+mount. `mkdir`'s `mode` follows the guest value (falling back to `0755` when the guest
+passes `0`, so the directory is enterable).
+
+The remaining out-of-scope path-based / mutating numbers (`$04` stat, `$54` rmdir via a
+distinct number, the `*at` family at `$101`+, symlink / chmod / truncate) are NOT
+dispatched in this POC and stay reserved for later cards.
 
 ## Numbering policy
 

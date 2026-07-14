@@ -20,6 +20,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <stdio.h>          /* renameat */
 #include <sys/stat.h>
 #include <sys/syscall.h>
 
@@ -249,26 +250,143 @@ static int64_t posix_getdents(void *handle, void *buf, uint64_t count) {
     return (int64_t)off;
 }
 
-/* Out-of-scope ops (owned by later cards, doc section 8): not guest-reachable in
-   this POC because the core routes open through confine and dispatches no path-based
-   or mutating number. Present so the ops struct is never partially NULL. */
+/* maize-151 confinement for the path-mutating ops. The *at() family cannot resolve
+   the whole path under RESOLVE_BENEATH the way openat2 does for open(), so we split the
+   (already core-normalized) remainder into a parent directory and a final component,
+   openat2(RESOLVE_BENEATH) the PARENT beneath the mount anchor, and then operate on the
+   single final component within that confined parent fd. Because the core's
+   normalize_path has already collapsed every "." / ".." / "//", the final component is a
+   lone path element that cannot itself traverse; and RESOLVE_BENEATH rejects a `..` or
+   an escaping symlink anywhere in the parent, exactly as open's confine does. The
+   returned parent fd is an O_PATH|O_DIRECTORY handle valid as the dirfd of mkdirat /
+   unlinkat / renameat. Returns 0 (fills *pfd + copies the final component into base) or
+   a negative errno. */
+static int64_t confine_parent(hostfs_mount *mount, const char *rel,
+                              int *pfd, char *base, uint64_t basecap) {
+    int anchor = (int)(intptr_t)mount->anchor;
+
+    char parent[HOSTFS_PATH_MAX];
+    const char *slash = strrchr(rel, '/');
+    const char *final;
+    if (!slash) {
+        /* A lone component (e.g. ".savegame") or "." itself: the parent is the mount
+           root, addressed as "." beneath the anchor. */
+        parent[0] = '.';
+        parent[1] = '\0';
+        final = rel;
+    } else {
+        uint64_t plen = (uint64_t)(slash - rel);
+        if (plen + 1 > sizeof(parent)) {
+            return -(int64_t)HOSTFS_ENAMETOOLONG;
+        }
+        memcpy(parent, rel, (size_t)plen);
+        parent[plen] = '\0';
+        final = slash + 1;
+    }
+
+    uint64_t flen = strlen(final);
+    if (flen + 1 > basecap) {
+        return -(int64_t)HOSTFS_ENAMETOOLONG;
+    }
+    memcpy(base, final, (size_t)flen + 1);
+
+    struct hostfs_open_how how;
+    memset(&how, 0, sizeof(how));
+    how.flags = (uint64_t)(O_PATH | O_DIRECTORY | O_CLOEXEC);
+    how.resolve = HOSTFS_RESOLVE_BENEATH;
+    long fd = syscall(SYS_openat2, anchor, parent, &how, sizeof(how));
+    if (fd < 0) {
+        return map_errno(errno);
+    }
+    *pfd = (int)fd;
+    return 0;
+}
+
+/* Out-of-scope ops (owned by later cards, doc section 8): not guest-reachable because
+   the core routes open through confine and dispatches no path-based open/stat number.
+   Present so the ops struct is never partially NULL. */
 static int64_t posix_open(hostfs_mount *m, const char *p, int fl, int mode) {
     (void)m; (void)p; (void)fl; (void)mode; return -(int64_t)HOSTFS_ENOSYS;
 }
 static int64_t posix_stat(hostfs_mount *m, const char *p, hostfs_stat *o) {
     (void)m; (void)p; (void)o; return -(int64_t)HOSTFS_ENOSYS;
 }
+
+/* maize-151 path-mutating ops (confined via confine_parent above). The core has already
+   applied the :ro / synthetic-root write-gate before dispatching here. */
 static int64_t posix_mkdir(hostfs_mount *m, const char *p, int mode) {
-    (void)m; (void)p; (void)mode; return -(int64_t)HOSTFS_ENOSYS;
+    int pfd = -1;
+    char base[HOSTFS_PATH_MAX];
+    int64_t rc = confine_parent(m, p, &pfd, base, sizeof(base));
+    if (rc < 0) {
+        return rc;
+    }
+    /* A guest that passes mode 0 would otherwise create an unusable 0000 directory;
+       fall back to 0755 so the created dir is enterable (umask still applies). */
+    mode_t md = (mode_t)(mode & 0777);
+    if (md == 0) {
+        md = 0755;
+    }
+    int r = mkdirat(pfd, base, md);
+    int e = errno;
+    close(pfd);
+    if (r < 0) {
+        return map_errno(e);
+    }
+    return 0;
 }
 static int64_t posix_rmdir(hostfs_mount *m, const char *p) {
-    (void)m; (void)p; return -(int64_t)HOSTFS_ENOSYS;
+    int pfd = -1;
+    char base[HOSTFS_PATH_MAX];
+    int64_t rc = confine_parent(m, p, &pfd, base, sizeof(base));
+    if (rc < 0) {
+        return rc;
+    }
+    int r = unlinkat(pfd, base, AT_REMOVEDIR);
+    int e = errno;
+    close(pfd);
+    if (r < 0) {
+        return map_errno(e);
+    }
+    return 0;
 }
 static int64_t posix_unlink(hostfs_mount *m, const char *p) {
-    (void)m; (void)p; return -(int64_t)HOSTFS_ENOSYS;
+    int pfd = -1;
+    char base[HOSTFS_PATH_MAX];
+    int64_t rc = confine_parent(m, p, &pfd, base, sizeof(base));
+    if (rc < 0) {
+        return rc;
+    }
+    int r = unlinkat(pfd, base, 0);
+    int e = errno;
+    close(pfd);
+    if (r < 0) {
+        return map_errno(e);
+    }
+    return 0;
 }
 static int64_t posix_rename(hostfs_mount *m, const char *o, const char *n) {
-    (void)m; (void)o; (void)n; return -(int64_t)HOSTFS_ENOSYS;
+    int ofd = -1;
+    int nfd = -1;
+    char obase[HOSTFS_PATH_MAX];
+    char nbase[HOSTFS_PATH_MAX];
+    int64_t rc = confine_parent(m, o, &ofd, obase, sizeof(obase));
+    if (rc < 0) {
+        return rc;
+    }
+    rc = confine_parent(m, n, &nfd, nbase, sizeof(nbase));
+    if (rc < 0) {
+        close(ofd);
+        return rc;
+    }
+    int r = renameat(ofd, obase, nfd, nbase);
+    int e = errno;
+    close(ofd);
+    close(nfd);
+    if (r < 0) {
+        return map_errno(e);
+    }
+    return 0;
 }
 
 static const hostfs_backend_ops g_posix_ops = {

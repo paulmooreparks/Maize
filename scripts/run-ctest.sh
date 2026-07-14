@@ -569,6 +569,79 @@ run_hostfs_stdio() {
     fi
 }
 
+# maize-151 path-mutating positive: the DOOM save shape (mkdir a dir, create+write a
+# file in it, rename it, stat/read it back, unlink it) end-to-end against a WRITABLE
+# filesystem. Uses the DEFAULT sandbox root (redirected to a fresh scratch dir via
+# --root, so the run is deterministic and the cwd is /home/user, NOT --no-root), and the
+# fixture uses relative paths so they resolve against that cwd exactly as DOOM does.
+run_hostfs_savefs() {
+    name="savefs_hostfs"
+    TOTAL=$((TOTAL + 1))
+    compile_c "$name" || return
+    bin="$BIN"
+
+    # A fresh, empty sandbox root; maize creates the /home/user + /tmp skeleton in it.
+    root="${WORK_DIR}/hostfs_savefs"
+    rm -rf "$root"; mkdir -p "$root"
+    nat=$(host_to_native "$root")
+
+    set +e
+    actual=$("$MAIZE" --root "${nat}" "$bin" 2>/dev/null | grep -v '^$')
+    set -e
+
+    if [ "$actual" = "savefs: PASS" ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"savefs: PASS\""
+        echo "        actual:   \"${actual}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+# maize-151 path-mutating security: the write-gate + confinement guarantees for the
+# mutating ops. A default sandbox root (mounted "/" rw via --root) plus a :ro overlay at
+# /ro (NOT --no-root). The guest asserts mkdir/rename on the :ro mount are EROFS and a
+# `..` open cannot reach a host file outside every mount; the harness additionally proves
+# a `..`-laden mkdir created nothing OUTSIDE the sandbox on the host, and the :ro mkdir
+# left no directory behind.
+run_hostfs_savefs_neg() {
+    name="savefs_neg_hostfs"
+    TOTAL=$((TOTAL + 1))
+    compile_c "$name" || return
+    bin="$BIN"
+
+    esc="${WORK_DIR}/hostfs_savefs_neg"
+    rm -rf "$esc"; mkdir -p "$esc/sandbox" "$esc/ro"
+    printf 'x\n' > "$esc/ro/a.txt"
+    # A host file OUTSIDE every mount: the sandbox is $esc/sandbox and the :ro mount is
+    # $esc/ro, so a file at $esc/ is unreachable by any guest path.
+    printf 'secret\n' > "$esc/escape_target.txt"
+    nat_root=$(host_to_native "$esc/sandbox")
+    nat_ro=$(host_to_native "$esc/ro")
+
+    set +e
+    actual=$("$MAIZE" --root "${nat_root}" --mount "${nat_ro}=/ro:ro" "$bin" 2>/dev/null | grep -v '^$')
+    set -e
+
+    ok=1
+    [ "$actual" = "savefsneg: PASS" ] || ok=0
+    # The `..` mkdir must not have created anything OUTSIDE the sandbox on the host (a
+    # contained landing INSIDE the sandbox is fine; the escape location is what matters).
+    [ ! -e "$esc/pwned" ] || ok=0
+    # The :ro mkdir must not have created its target under the :ro host dir.
+    [ ! -e "$esc/ro/newdir" ] || ok=0
+
+    if [ "$ok" -eq 1 ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"savefsneg: PASS\" + host escape locations empty"
+        echo "        actual:   \"${actual}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
 # maize-138 multi-file compile/link. Builds N C sources into one .mzx through the
 # extended driver's multi-source path (an explicit -o over several positional
 # sources), runs the linked image, and diffs stdout against ctest/<name>.expected
@@ -857,6 +930,9 @@ run_hostfs_escape
 run_hostfs_rofs
 # maize-120 FILE* stdio + dirent layer over the hostfs stubs.
 run_hostfs_stdio
+# maize-151 path-mutating syscalls (mkdir/unlink/rename) over the confined hostfs.
+run_hostfs_savefs
+run_hostfs_savefs_neg
 
 # maize-121 self-hosted framebuffer terminal headless self-check. The fixture is a
 # guest-C program under demos/terminal/ that additionally links the mzdev device-access

@@ -55,13 +55,12 @@ GLOBAL sys_getdents64
 ; Raw `SYS $F0; RET`; no args, RV = monotonic ms since VM start; never -errno.
 GLOBAL sys_clock_ms
 
-; maize-148 path-mutating stubs for the DOOM Phase A link: sys_unlink ($57) and
-; sys_mkdir ($53), the canonical Linux x86-64 numbers (87/83) already reserved for
-; these calls (SYSCALL-ABI.md), plus sys_rename ($52, canonical 82) added in maize-152.
-; LINK-ONLY: src/sys.cpp does NOT dispatch $52/$53/$57 yet, so the VM's unknown-number
-; default returns 0 (an interim no-op, benign for the demo which does no deleting/
-; creating/renaming). The real path-mutating VM+hostfs backends and the ABI freeze are
-; the spawned card maize-151. remove()/mkdir()/rename() (errno.c) wrap these.
+; path-mutating stubs: sys_unlink ($57), sys_mkdir ($53), sys_rename ($52), the
+; canonical Linux x86-64 numbers (87/83/82). maize-151 wires these through the confined
+; hostfs backends: src/sys.cpp dispatches $52/$53/$57 to hostfs_rename/mkdir/unlink, each
+; normalizing + mount-resolving + write-gating the path(s) before the host touch, so a
+; guest returns real 0/-errno (EROFS on a :ro mount or the synthetic root, EXDEV on a
+; cross-mount rename). remove()/mkdir()/rename() (errno.c) wrap these.
 GLOBAL sys_unlink
 GLOBAL sys_mkdir
 GLOBAL sys_rename
@@ -103,15 +102,15 @@ sys_clock_ms:
     RET
 
 sys_unlink:
-    SYS $57                 ; R0=path; RV = 0 or -errno (interim: VM default returns 0)
+    SYS $57                 ; R0=path; RV = 0 or -errno
     RET
 
 sys_mkdir:
-    SYS $53                 ; R0=path, R1=mode; RV = 0 or -errno (interim: VM default returns 0)
+    SYS $53                 ; R0=path, R1=mode; RV = 0 or -errno
     RET
 
 sys_rename:
-    SYS $52                 ; R0=old, R1=new; RV = 0 or -errno (interim: VM default returns 0)
+    SYS $52                 ; R0=old, R1=new; RV = 0 or -errno
     RET
 
 _exit:

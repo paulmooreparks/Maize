@@ -124,6 +124,7 @@ typedef struct hostfs_table {
 #define HOSTFS_ENOMEM    12
 #define HOSTFS_EACCES    13
 #define HOSTFS_EEXIST    17
+#define HOSTFS_EXDEV     18
 #define HOSTFS_ENOTDIR   20
 #define HOSTFS_EISDIR    21
 #define HOSTFS_EINVAL    22

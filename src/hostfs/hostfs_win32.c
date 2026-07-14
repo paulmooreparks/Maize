@@ -450,6 +450,114 @@ static int64_t win_getdents(void *handle, void *buf, uint64_t count) {
     return (int64_t)off;
 }
 
+/* maize-151 confinement for the path-mutating ops. A mutating op cannot open+canonicalize
+   the target itself (mkdir's target does not exist yet; unlink/rename's may be about to
+   vanish), so we confine the PARENT: split the (core-normalized) remainder at the last
+   backslash, open+canonicalize the parent directory, reject a reparse point, and verify
+   it is a prefix-child of the mount root exactly as win_confine does for open(). The
+   returned target is canon_parent + "\\" + final-component; because the core's
+   normalize_path already collapsed every "." / ".." / "//", the final component is a lone
+   element that cannot traverse out of the verified parent. Caller frees *out. Returns 0
+   or a negative errno. */
+static int64_t win_confine_target(win_anchor *anc, const char *rel, wchar_t **out) {
+    *out = NULL;
+
+    wchar_t *wrel = widen(rel);
+    if (!wrel) {
+        return -(int64_t)HOSTFS_ENOMEM;
+    }
+    for (wchar_t *p = wrel; *p; ++p) {
+        if (*p == L'/') {
+            *p = L'\\';
+        }
+    }
+
+    /* Split at the last backslash into parent-rel + final component. A lone component
+       (or "." for the mount root itself) leaves the parent as the mount root. */
+    wchar_t *slash = wcsrchr(wrel, L'\\');
+    const wchar_t *final;
+    const wchar_t *parent_rel;
+    if (slash) {
+        *slash = L'\0';
+        parent_rel = wrel;
+        final = slash + 1;
+    } else {
+        parent_rel = L"";
+        final = wrel;
+    }
+
+    /* Build the parent wide path: canon_root [ + "\\" + parent_rel ]. */
+    size_t rootl = wcslen(anc->canon_root);
+    size_t prl = wcslen(parent_rel);
+    wchar_t *ptarget = (wchar_t *)malloc((rootl + prl + 2) * sizeof(wchar_t));
+    if (!ptarget) {
+        free(wrel);
+        return -(int64_t)HOSTFS_ENOMEM;
+    }
+    memcpy(ptarget, anc->canon_root, rootl * sizeof(wchar_t));
+    size_t pl = rootl;
+    if (prl) {
+        ptarget[pl++] = L'\\';
+        memcpy(ptarget + pl, parent_rel, prl * sizeof(wchar_t));
+        pl += prl;
+    }
+    ptarget[pl] = L'\0';
+
+    /* Open + reparse-check + canonicalize + prefix-verify the parent against the root. */
+    HANDLE ph = CreateFileW(ptarget, GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            NULL, OPEN_EXISTING,
+                            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    free(ptarget);
+    if (ph == INVALID_HANDLE_VALUE) {
+        free(wrel);
+        return map_last_error(GetLastError());
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(ph, &info)) {
+        CloseHandle(ph);
+        free(wrel);
+        return -(int64_t)HOSTFS_EIO;
+    }
+    if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        CloseHandle(ph);
+        free(wrel);
+        return -(int64_t)HOSTFS_EACCES;
+    }
+    wchar_t *canon_parent = canon_of(ph);
+    CloseHandle(ph);
+    if (!canon_parent) {
+        free(wrel);
+        return -(int64_t)HOSTFS_EIO;
+    }
+    if (!is_beneath(anc->canon_root, canon_parent)) {
+        free(canon_parent);
+        free(wrel);
+        return -(int64_t)HOSTFS_EACCES;
+    }
+
+    /* Compose canon_parent + "\\" + final component. */
+    size_t cpl = wcslen(canon_parent);
+    size_t fl = wcslen(final);
+    wchar_t *target = (wchar_t *)malloc((cpl + fl + 2) * sizeof(wchar_t));
+    if (!target) {
+        free(canon_parent);
+        free(wrel);
+        return -(int64_t)HOSTFS_ENOMEM;
+    }
+    memcpy(target, canon_parent, cpl * sizeof(wchar_t));
+    size_t tl = cpl;
+    target[tl++] = L'\\';
+    memcpy(target + tl, final, fl * sizeof(wchar_t));
+    tl += fl;
+    target[tl] = L'\0';
+
+    free(canon_parent);
+    free(wrel);
+    *out = target;
+    return 0;
+}
+
 /* Out-of-scope ops (doc section 8): not guest-reachable in this POC. */
 static int64_t win_open(hostfs_mount *m, const char *p, int fl, int mode) {
     (void)m; (void)p; (void)fl; (void)mode; return -(int64_t)HOSTFS_ENOSYS;
@@ -457,17 +565,76 @@ static int64_t win_open(hostfs_mount *m, const char *p, int fl, int mode) {
 static int64_t win_stat(hostfs_mount *m, const char *p, hostfs_stat *o) {
     (void)m; (void)p; (void)o; return -(int64_t)HOSTFS_ENOSYS;
 }
+
+/* maize-151 path-mutating ops (confined via win_confine_target above). The core has
+   already applied the :ro / synthetic-root write-gate before dispatching here. */
 static int64_t win_mkdir(hostfs_mount *m, const char *p, int mode) {
-    (void)m; (void)p; (void)mode; return -(int64_t)HOSTFS_ENOSYS;
+    (void)mode;   /* Windows has no POSIX mode bits on a directory. */
+    win_anchor *anc = (win_anchor *)m->anchor;
+    wchar_t *target = NULL;
+    int64_t rc = win_confine_target(anc, p, &target);
+    if (rc < 0) {
+        return rc;
+    }
+    BOOL ok = CreateDirectoryW(target, NULL);
+    DWORD e = GetLastError();
+    free(target);
+    if (!ok) {
+        return map_last_error(e);
+    }
+    return 0;
 }
 static int64_t win_rmdir(hostfs_mount *m, const char *p) {
-    (void)m; (void)p; return -(int64_t)HOSTFS_ENOSYS;
+    win_anchor *anc = (win_anchor *)m->anchor;
+    wchar_t *target = NULL;
+    int64_t rc = win_confine_target(anc, p, &target);
+    if (rc < 0) {
+        return rc;
+    }
+    BOOL ok = RemoveDirectoryW(target);
+    DWORD e = GetLastError();
+    free(target);
+    if (!ok) {
+        return map_last_error(e);
+    }
+    return 0;
 }
 static int64_t win_unlink(hostfs_mount *m, const char *p) {
-    (void)m; (void)p; return -(int64_t)HOSTFS_ENOSYS;
+    win_anchor *anc = (win_anchor *)m->anchor;
+    wchar_t *target = NULL;
+    int64_t rc = win_confine_target(anc, p, &target);
+    if (rc < 0) {
+        return rc;
+    }
+    BOOL ok = DeleteFileW(target);
+    DWORD e = GetLastError();
+    free(target);
+    if (!ok) {
+        return map_last_error(e);
+    }
+    return 0;
 }
 static int64_t win_rename(hostfs_mount *m, const char *o, const char *n) {
-    (void)m; (void)o; (void)n; return -(int64_t)HOSTFS_ENOSYS;
+    win_anchor *anc = (win_anchor *)m->anchor;
+    wchar_t *otarget = NULL;
+    wchar_t *ntarget = NULL;
+    int64_t rc = win_confine_target(anc, o, &otarget);
+    if (rc < 0) {
+        return rc;
+    }
+    rc = win_confine_target(anc, n, &ntarget);
+    if (rc < 0) {
+        free(otarget);
+        return rc;
+    }
+    BOOL ok = MoveFileExW(otarget, ntarget, MOVEFILE_REPLACE_EXISTING);
+    DWORD e = GetLastError();
+    free(otarget);
+    free(ntarget);
+    if (!ok) {
+        return map_last_error(e);
+    }
+    return 0;
 }
 
 static const hostfs_backend_ops g_win_ops = {

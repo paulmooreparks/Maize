@@ -75,12 +75,12 @@ fstat(int fd, void *statbuf)
     return (int)__syscall_ret(sys_fstat(fd, statbuf));
 }
 
-/* maize-148/152 path-mutating wrappers over the raw stubs, mirroring the open/close
- * pattern above. LINK-COMPLETE only: the VM does not dispatch $52/$53/$57 yet, so the
- * raw stubs return 0 (interim no-op) and these return 0 (apparent success, no
- * filesystem effect), which is benign for DOOM Phase A's link + boot. The real
- * -errno-producing dispatch + confined hostfs backends are the spawned card
- * (maize-151), where the checked filesystem acceptance criteria live. */
+/* path-mutating wrappers over the raw stubs, mirroring the open/close pattern above.
+ * maize-151 wires $52/$53/$57 through the confined hostfs backends, so these now produce
+ * real filesystem effects and the familiar errno + -1 contract: a create/remove/rename
+ * on a writable mount succeeds, and a :ro mount / synthetic root / cross-mount rename
+ * sets errno (EROFS / EXDEV) and returns -1. DOOM's save path (mkdir ./.savegame, write
+ * temp.dsg, rename to the slot) runs through mkdir()/rename() here. */
 int
 remove(const char *path)
 {
