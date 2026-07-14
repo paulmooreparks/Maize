@@ -937,6 +937,22 @@ namespace maize {
 				std::atomic<bool> guest_done {false};
 				std::thread guest([&guest_done]() { cpu::run(); guest_done = true; });
 
+				/* maize-140 dirty-present state: present (texture upload + clear + copy +
+				   overlays + RenderPresent) only when something visibly changed since the last
+				   present, so an idle console with a solid cursor stops re-uploading and
+				   re-presenting the same frame every refresh (the blink-driven repaint was the
+				   palpable typing slowdown). The refresh sleep and fb.on_display_refresh() below
+				   stay UNCONDITIONAL regardless of this gate. last_input_tick is the SDL tick of
+				   the most recent keystroke pushed to the console; within 500 ms of it the cursor
+				   is drawn solid (steady while typing), after which it resumes blinking. Init it
+				   ~1 s in the past (modular subtraction) so the console starts idle/blinking. */
+				std::uint64_t last_render_count = 0;
+				std::uint64_t last_present_count = 0;
+				std::string last_perf_str;
+				int last_cursor_phase = -1;
+				bool force_present = true;   // first frame and post-surface-swap force a present
+				std::uint32_t last_input_tick = SDL_GetTicks() - 1000u;
+
 				bool running = true;
 				while (running && !guest_done.load(std::memory_order_acquire)) {
 					/* Switch to the framebuffer surface the first time a graphics program
@@ -951,6 +967,9 @@ namespace maize {
 						   bogus one-sample spike from the counters' differing magnitudes. */
 						perf_last_present = fb.present_count();
 						perf_last_ticks = SDL_GetTicks();
+						/* The presented surface just changed; force one present so the swap is
+						   not swallowed by the dirty gate. */
+						force_present = true;
 					}
 
 					SDL_Event e;
@@ -965,7 +984,13 @@ namespace maize {
 								   device (DOOM polls its port) in graphics mode, the console
 								   keymap + line discipline (fd 0) otherwise. */
 								if (graphics_mode) { kbd.push_event(sc); }
-								else { con.push_scancode(sc); }
+								else {
+									con.push_scancode(sc);
+									/* Note the keystroke so the cursor freezes solid while typing
+									   (see the dirty-present state above); SDL time stays on the
+									   SDL side, so the console needs no timestamp of its own. */
+									last_input_tick = SDL_GetTicks();
+								}
 							}
 						}
 						else if (e.type == SDL_KEYUP) {
@@ -997,56 +1022,95 @@ namespace maize {
 						}
 					}
 
-					bool presented = false;
+					/* maize-140 dirty gate: decide whether anything visible changed since the
+					   last present. The refresh sleep and fb.on_display_refresh() below run every
+					   iteration regardless; only this present block is skipped when nothing moved.
+					   Cursor timing: within 500 ms of the last keystroke the cursor is SOLID (it
+					   holds steady while the operator types, so echoes are the only presents), and
+					   after that idle window it BLINKS on the ~500 ms frame-clock phase. */
+					std::uint32_t now_ticks = SDL_GetTicks();
+					bool cursor_solid = (now_ticks - last_input_tick) < 500u;
+					int cursor_phase = static_cast<int>((now_ticks / 500u) & 1u);
+					bool blink_on = (cursor_phase == 0);
+					bool cursor_on = !graphics_mode && con.cursor_visible()
+						&& (cursor_solid || blink_on);
+
+					std::uint64_t render_count = con.render_count();
+					std::uint64_t present_count = fb.present_count();
+					bool dirty = force_present;
 					if (graphics_mode) {
-						const std::vector<std::uint32_t>& frame = fb.frame();
-						if (!frame.empty()) {
-							SDL_UpdateTexture(fb_tex, nullptr, frame.data(),
-								fbw * static_cast<int>(sizeof(std::uint32_t)));
-							SDL_RenderClear(ren);
-							SDL_RenderCopy(ren, fb_tex, nullptr, nullptr);
-							presented = true;
-						}
+						if (present_count != last_present_count) { dirty = true; }
 					} else {
-						/* Console surface: blit the host grid pixel buffer every refresh. */
-						SDL_UpdateTexture(con_tex, nullptr, con.pixels(),
-							cw * static_cast<int>(sizeof(std::uint32_t)));
-						SDL_RenderClear(ren);
-						SDL_RenderCopy(ren, con_tex, nullptr, nullptr);
-						presented = true;
+						if (render_count != last_render_count) { dirty = true; }
+						/* A blinking (not solid) cursor toggles ~2x/sec: present on each phase
+						   flip so it visibly blinks; a solid cursor needs no timer-driven present. */
+						if (!cursor_solid && con.cursor_visible()
+							&& cursor_phase != last_cursor_phase) {
+							dirty = true;
+						}
+						if (show_perf && perf_str != last_perf_str) { dirty = true; }
 					}
 
-					if (presented) {
-						/* Blinking block cursor: a present-time overlay (drawn like the perf
-						   box), never written into the console pixel buffer, so it needs no
-						   cell-restore bookkeeping and cannot leave artifacts on move/scroll.
-						   Console surface only; honor the guest's ESC[?25l hide. The ~500 ms
-						   on/off phase is derived from the frame clock (the loop already sleeps
-						   per refresh, so no busy wait). The cell is an 8x8 block at
-						   (col*8, row*8) in logical space, which equals the console pixel space
-						   (RenderSetLogicalSize == console resolution), so SDL scales it by the
-						   same factor as the console texture. A translucent light fill reads as
-						   a classic inverted block while leaving the glyph legible. */
-						if (!graphics_mode && con.cursor_visible()
-							&& ((SDL_GetTicks() / 500u) & 1u) == 0u) {
-							SDL_Rect cur { con.cursor_col() * 8, con.cursor_row() * 8, 8, 8 };
-							SDL_SetRenderDrawColor(ren, 0xC0, 0xC0, 0xC0, 0xA0);
-							SDL_RenderFillRect(ren, &cur);
+					if (dirty) {
+						bool presented = false;
+						if (graphics_mode) {
+							const std::vector<std::uint32_t>& frame = fb.frame();
+							if (!frame.empty()) {
+								SDL_UpdateTexture(fb_tex, nullptr, frame.data(),
+									fbw * static_cast<int>(sizeof(std::uint32_t)));
+								SDL_RenderClear(ren);
+								SDL_RenderCopy(ren, fb_tex, nullptr, nullptr);
+								presented = true;
+							}
+						} else {
+							/* Console surface: blit the host grid pixel buffer. */
+							SDL_UpdateTexture(con_tex, nullptr, con.pixels(),
+								cw * static_cast<int>(sizeof(std::uint32_t)));
+							SDL_RenderClear(ren);
+							SDL_RenderCopy(ren, con_tex, nullptr, nullptr);
+							presented = true;
 						}
-						if (show_perf) {
-							/* Top-left overlay in logical space, so SDL scales it with the
-							   surface: a translucent box behind green "M<mips> F<fps>" text at a
-							   small font (px == 1 logical pixel per font pixel). */
-							int px = 1;
-							int boxw = static_cast<int>(perf_str.size()) * 4 * px + 2;
-							int boxh = 5 * px + 2;
-							SDL_Rect box { 1, 1, boxw, boxh };
-							SDL_SetRenderDrawColor(ren, 0, 0, 0, 180);
-							SDL_RenderFillRect(ren, &box);
-							SDL_SetRenderDrawColor(ren, 0, 255, 0, 255);
-							draw_text(ren, 2, 2, px, perf_str);
+
+						if (presented) {
+							/* Block cursor: a present-time overlay (drawn like the perf box),
+							   never written into the console pixel buffer, so it needs no
+							   cell-restore bookkeeping and cannot leave artifacts on move/scroll.
+							   Console surface only; honor the guest's ESC[?25l hide. Drawn when
+							   the cursor is solid (recent typing) or the blink phase is on. The
+							   cell is an 8x8 block at (col*8, row*8) in logical space, which
+							   equals the console pixel space (RenderSetLogicalSize == console
+							   resolution), so SDL scales it by the same factor as the console
+							   texture. A translucent light fill reads as a classic inverted block
+							   while leaving the glyph legible. */
+							if (cursor_on) {
+								SDL_Rect cur { con.cursor_col() * 8, con.cursor_row() * 8, 8, 8 };
+								SDL_SetRenderDrawColor(ren, 0xC0, 0xC0, 0xC0, 0xA0);
+								SDL_RenderFillRect(ren, &cur);
+							}
+							if (show_perf) {
+								/* Top-left overlay in logical space, so SDL scales it with the
+								   surface: a translucent box behind green "M<mips> F<fps>" text at
+								   a small font (px == 1 logical pixel per font pixel). */
+								int px = 1;
+								int boxw = static_cast<int>(perf_str.size()) * 4 * px + 2;
+								int boxh = 5 * px + 2;
+								SDL_Rect box { 1, 1, boxw, boxh };
+								SDL_SetRenderDrawColor(ren, 0, 0, 0, 180);
+								SDL_RenderFillRect(ren, &box);
+								SDL_SetRenderDrawColor(ren, 0, 255, 0, 255);
+								draw_text(ren, 2, 2, px, perf_str);
+							}
+							SDL_RenderPresent(ren);
+
+							/* Latch what we just presented so the next iteration can tell whether
+							   anything moved. Only updated on an actual present, so a graphics-mode
+							   empty frame leaves force_present set until real content arrives. */
+							last_render_count = render_count;
+							last_present_count = present_count;
+							last_cursor_phase = cursor_phase;
+							last_perf_str = perf_str;
+							force_present = false;
 						}
-						SDL_RenderPresent(ren);
 					}
 
 					/* Vblank: raise the vsync IRQ (if the guest enabled it) once per refresh, so a
