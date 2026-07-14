@@ -103,10 +103,25 @@ namespace maize {
 			window_source_ = true;
 		}
 
+		void keyboard_device::pump_latch() {
+			/* Caller holds queue_mutex_. Move one queued scancode into the latch and raise the
+			   keyboard IRQ, if a key is pending and the latch is free. Because this runs from
+			   whichever thread supplies the key, a CPU parked in HALT is woken by an SDL-thread
+			   key press (raise_irq notifies the run()-loop park), not only by on_input_tick. */
+			if (!available_.load(std::memory_order_relaxed) && !queue_.empty()) {
+				scancode_ = queue_.front();
+				queue_.pop_front();
+				queue_size_.store(queue_.size(), std::memory_order_release);
+				available_.store(true, std::memory_order_release);
+				cpu::raise_irq(cpu::keyboard_irq_vector);
+			}
+		}
+
 		void keyboard_device::push_event(u_byte scancode) {
 			std::lock_guard<std::mutex> lk(queue_mutex_);
 			queue_.push_back(scancode);
 			queue_size_.store(queue_.size(), std::memory_order_release);
+			pump_latch();   // latch + raise IRQ now (wakes a HALT-parked CPU)
 		}
 
 		void keyboard_device::port_write(int /*role*/, reg_value const& /*value*/, subreg_enum /*value_subreg*/) {
@@ -118,51 +133,57 @@ namespace maize {
 			reg_value out;
 			if (role == ROLE_DATA) {
 				unsigned char b = 0;
-				if (available_) {
+				if (window_source_) {
+					/* Consume the latch and immediately refill it from the queue (raising the
+					   IRQ for the next key), all under the lock so scancode_ stays consistent
+					   with the SDL thread's push_event. */
+					std::lock_guard<std::mutex> lk(queue_mutex_);
+					if (available_.load(std::memory_order_relaxed)) {
+						b = static_cast<unsigned char>(scancode_);
+						available_.store(false, std::memory_order_release);
+						pump_latch();
+					}
+				}
+				else if (available_.load(std::memory_order_relaxed)) {
 					b = static_cast<unsigned char>(scancode_);
-					available_ = false;   // reading the data register clears key-available
+					available_.store(false, std::memory_order_release);   // reading data clears key-available
 				}
 				out.w0 = b;
 			}
 			else {
-				out.w0 = available_ ? 0x1 : 0x0;   // bit0 key-available
+				out.w0 = available_.load(std::memory_order_acquire) ? 0x1 : 0x0;   // bit0 key-available
 			}
 			return out;
 		}
 
 		void keyboard_device::on_input_tick() {
-			if (available_) {
+			if (available_.load(std::memory_order_acquire)) {
 				return;   // a scancode is already latched, waiting to be read
 			}
-			u_word code = 0;
 			if (window_source_) {
-				/* Lock-free early out: no scancode pending (the overwhelmingly common
-				   case), so skip the per-instruction mutex acquisition entirely. */
+				/* Backstop only. Windowed input is driven by push_event (latch + IRQ on the SDL
+				   thread) and port_read (drain the queue on consume), so active_input is not set
+				   for the window source and this path is normally never reached. Kept correct for
+				   safety: drain one queued key if one slipped in while the latch was full. */
 				if (queue_size_.load(std::memory_order_acquire) == 0) {
 					return;
 				}
 				std::lock_guard<std::mutex> lk(queue_mutex_);
-				if (queue_.empty()) {
-					return;
-				}
-				code = queue_.front();
-				queue_.pop_front();
-				queue_size_.store(queue_.size(), std::memory_order_release);
+				pump_latch();
+				return;
 			}
-			else {
-				if (exhausted_) {
-					return;
-				}
-				unsigned char b = 0;
-				u_word n = maize::syscall::read(0, &b, 1);
-				if (n != 1) {
-					exhausted_ = true;   // EOF or error: no more injected scancodes
-					return;
-				}
-				code = b;   // headless: the injected stdin byte IS the Set-1 scancode
+			/* Headless deterministic injection: read one stdin byte as the Set-1 scancode. */
+			if (exhausted_) {
+				return;
 			}
-			scancode_ = code;
-			available_ = true;
+			unsigned char b = 0;
+			u_word n = maize::syscall::read(0, &b, 1);
+			if (n != 1) {
+				exhausted_ = true;   // EOF or error: no more injected scancodes
+				return;
+			}
+			scancode_ = b;
+			available_.store(true, std::memory_order_release);
 			cpu::raise_irq(cpu::keyboard_irq_vector);
 		}
 
@@ -219,16 +240,17 @@ namespace maize {
 					base_ = bits;
 					break;
 				case ROLE_PRESENT:
-					if (present_frame() && (control_ & 0x2)) {
-						/* vsync-IRQ is guest-opt-in (bit1); generation is disabled by
-						   default, so the deterministic headless suite never fires it. */
-						status_ |= 0x1;
-						cpu::raise_irq(cpu::fb_irq_vector);
-					}
+					/* Pure frame copy. The vsync IRQ is driven by the display refresh
+					   (on_display_refresh), not by the guest's present, so a guest parked in
+					   HALT still wakes at the refresh rate. */
+					present_frame();
 					break;
 				case ROLE_STATUS:
-					control_ = (bits & 0x2);                       // vsync-IRQ-enable
-					status_ &= ~static_cast<u_word>(0x1);     // ack: clear vsync-pending
+					/* bit1 = vsync-IRQ-enable (guest opt-in; default off, so the deterministic
+					   headless suite, which has no display thread, never fires it). Writing the
+					   register also acks: clear vsync-pending. */
+					control_.store(bits & 0x2, std::memory_order_release);
+					status_.fetch_and(~static_cast<u_word>(0x1), std::memory_order_acq_rel);
 					break;
 				default:
 					/* WIDTH / HEIGHT / FORMAT are read-only host config; a write is a
@@ -245,10 +267,17 @@ namespace maize {
 				case ROLE_FORMAT:  out.w0 = cpu::fb_format_xrgb8888; break;
 				case ROLE_BASE:    out.w0 = base_; break;
 				case ROLE_PRESENT: out.w0 = present_valid_ ? 0x1 : 0x0; break;
-				case ROLE_STATUS:  out.w0 = status_ & 0x1; break;
+				case ROLE_STATUS:  out.w0 = status_.load(std::memory_order_acquire) & 0x1; break;
 				default:           out.w0 = 0; break;
 			}
 			return out;
+		}
+
+		void framebuffer_device::on_display_refresh() {
+			if (control_.load(std::memory_order_acquire) & 0x2) {
+				status_.fetch_or(0x1, std::memory_order_acq_rel);   // vsync-pending
+				cpu::raise_irq(cpu::fb_irq_vector);
+			}
 		}
 
 	} // namespace devices
@@ -370,8 +399,16 @@ namespace maize {
 				}
 			}
 
-			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale, bool show_perf) {
+			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale, bool show_perf,
+				unsigned refresh_hz) {
 				kbd.use_window_source();
+
+				/* Refresh period from the requested rate (the "monitor" cadence). Clamp to a sane
+				   range; per-frame sleep is the integer-ms period. */
+				if (refresh_hz < 1) { refresh_hz = 1; }
+				if (refresh_hz > 1000) { refresh_hz = 1000; }
+				unsigned refresh_ms = 1000u / refresh_hz;
+				if (refresh_ms < 1) { refresh_ms = 1; }
 
 				if (SDL_Init(SDL_INIT_VIDEO) != 0) {
 					/* No display available: fall back to headless execution. */
@@ -482,7 +519,12 @@ namespace maize {
 						SDL_RenderPresent(ren);
 					}
 
-					std::this_thread::sleep_for(std::chrono::milliseconds(16));
+					/* Vblank: raise the vsync IRQ (if the guest enabled it) once per refresh, so a
+					   guest parked in HALT wakes at the monitor rate. Off-thread from the guest,
+					   so it also serves as the periodic backstop for interrupt-driven input. */
+					fb.on_display_refresh();
+
+					std::this_thread::sleep_for(std::chrono::milliseconds(refresh_ms));
 				}
 
 				cpu::power_off();

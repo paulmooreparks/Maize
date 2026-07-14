@@ -990,9 +990,10 @@ namespace maize {
             timer_device* active_timer_ptr = nullptr;
 
             /* The single active instruction-tick input source (device-plugin API). null
-               unless a host input device is selected as the sole stdin consumer; the run
-               loop calls its on_input_tick() once per executed instruction so it pulls its
-               bytes and raises its IRQ on the CPU thread. */
+               unless a headless stdin-injection device is selected as the sole stdin consumer;
+               the run loop then calls its on_input_tick() per executed instruction to pull
+               bytes and raise its IRQ on the CPU thread. A windowed keyboard leaves this null
+               and is driven off-thread (push_event latches + raises; port_read drains). */
             input_device* active_input_ptr = nullptr;
         }
 
@@ -3109,14 +3110,9 @@ namespace maize {
         void tick() {
             running_flag = true;
 
-            /* Host input is drained every input_poll_stride instructions rather than every
-               one: on_input_tick is a virtual call, and in windowed mode (a real keyboard
-               attached) paying it per instruction is pure overhead. A key press produces its
-               scancode within a few microseconds of stride instructions, far below human
-               perception, and the injection stays fully deterministic (just coarser). */
-            constexpr unsigned input_poll_stride {64};
-            unsigned input_poll_countdown {1};
-
+            /* active_input_ptr is set only for the headless stdin-injection path (the windowed
+               keyboard is driven off-thread by push_event/port_read and leaves it null), so this
+               drain runs per instruction only when a deterministic stdin source is attached. */
             static const void* dtbl[256];
             static bool dtbl_ready = false;
             if (!dtbl_ready) {
@@ -3339,10 +3335,7 @@ namespace maize {
                 if (!running_flag) { goto tick_exit; } \
                 try_deliver_interrupt(); \
                 if (active_timer_ptr != nullptr) { active_timer_ptr->on_instruction_tick(); } \
-                if (active_input_ptr != nullptr && --input_poll_countdown == 0) { \
-                    input_poll_countdown = input_poll_stride; \
-                    active_input_ptr->on_input_tick(); \
-                } \
+                if (active_input_ptr != nullptr) { active_input_ptr->on_input_tick(); } \
                 mm.read(regs::rp.w0, regs::ri, subreg_enum::w0); \
                 ++regs::rp.w0; \
                 run_state = run_states::execute; \
@@ -3352,15 +3345,23 @@ namespace maize {
 
             MAIZE_NEXT();   // enter the thread
                     LBL_halt_opcode: {
-                        /* HALT halts the core pending an interrupt; it does NOT
-                           carry an exit status. The VM has no interrupt source,
-                           so a halted core has nothing to wake it: clearing
-                           running_flag stops tick() and clearing is_power_on
-                           makes run() return instead of blocking on
-                           int_event.wait(). With no recorded exit code, maize
-                           exits 0. The status-carrying termination path is
-                           SYS $3C (sys_exit), see src/sys.cpp. */
-                        power_off();
+                        /* HALT is wait-for-interrupt (card maize-21 park). With interrupts
+                           ENABLED a source can wake the core, so park: drop out of tick()
+                           keeping power on (running_flag clear, is_power_on set), and run()'s
+                           wait-for-interrupt loop blocks on int_event until a deliverable IRQ
+                           arrives, then delivers it and re-enters tick(). With interrupts
+                           DISABLED nothing can ever wake the core, so HALT is a permanent halt
+                           and powers off (exit). This preserves every HALT-to-end program
+                           (hello.mzb and the whole asm suite start interrupts-disabled and end
+                           in HALT, so they exit exactly as before); only a guest that opts in
+                           with SETINT + an installed handler parks. It carries no exit status;
+                           the status-carrying path is SYS $3C (sys_exit), see src/sys.cpp. */
+                        if (interrupt_enabled_flag) {
+                            running_flag = false;   // park; is_power_on stays set
+                        }
+                        else {
+                            power_off();
+                        }
                         MAIZE_NEXT();
                     }
 
@@ -4551,8 +4552,14 @@ namespace maize {
            SYS $3C (sys_exit); both file-local flags live in cpu-internal
            anonymous namespaces, so this is the single exported stop primitive. */
         void power_off() {
+            /* Notify int_event under int_mutex: a core parked in HALT (run()'s wait-for-
+               interrupt loop) is released only by a notify, and once the display loop has
+               stopped there are no further vsync raises to wake it, so without this notify
+               the window-close path (power_off then guest.join()) would hang. */
+            std::lock_guard<std::mutex> lk(int_mutex);
             running_flag = false;
             is_power_on = false;
+            int_event.notify_all();
         }
 
         void run() {
@@ -4581,11 +4588,13 @@ namespace maize {
                            builds the shared four-word aux / cause / RF / PC frame, and
                            re-enters tick() so the handler runs.
 
-                           No shipped instruction parks with power on: HALT calls
-                           power_off(), which clears is_power_on, so the machine exits
-                           rather than waiting. This park is therefore currently
-                           unreachable; it is written to be correct if a wait-for-interrupt
-                           HALT (which keeps power on) is added later. */
+                           HALT reaches this park: with interrupts enabled it clears
+                           running_flag but leaves is_power_on set (a wait-for-interrupt
+                           halt), so tick() returns here and the core sleeps at ~0 MIPS
+                           until a source raises a deliverable IRQ (keyboard from the SDL
+                           thread, vsync from the display thread). With interrupts disabled
+                           HALT instead calls power_off() (a permanent halt with no possible
+                           wake), so HALT-to-end programs still exit. */
                         while (is_power_on && !(irq_pending && interrupt_enabled_flag)) {
                             int_event.wait(lk);
                         }
@@ -4595,8 +4604,16 @@ namespace maize {
                             irq_pending = false;
                             interrupt_set_flag = false;
                             lk.unlock();
-                            deliver_vectored(vector, 0, 0, regs::rp.w0);
+                            /* running_flag is a bit in RF (bit_running). HALT parked by clearing
+                               it, so RF currently has running=false. deliver_vectored saves RF
+                               into the interrupt frame; the handler's IRET restores it. Set
+                               running=true BEFORE deliver captures RF, otherwise IRET would
+                               restore running=false and tick() would exit again the instant the
+                               handler returns, re-parking without the guest ever advancing (an
+                               infinite park-deliver loop). The in-tick delivery path never hit
+                               this because there the guest is already running (RF running=true).*/
                             running_flag = true;
+                            deliver_vectored(vector, 0, 0, regs::rp.w0);
                         }
                     }
                 }

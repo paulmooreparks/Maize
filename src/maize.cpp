@@ -425,6 +425,7 @@ int main(int argc, char *argv[]) {
 	bool display_requested = false;
 	bool show_perf = false;          // --show-perf: draw guest MIPS + FPS in the window corner
 	unsigned display_scale = 3;      // window = framebuffer size * scale (--display-scale)
+	unsigned refresh_hz = 60;        // "monitor" refresh + vsync-IRQ rate (--refresh-hz)
 	maize::u_hword fb_width = 320;   // framebuffer host config (OQ: default 320x200)
 	maize::u_hword fb_height = 200;
 	std::string input_source;        // "" = SYS console (default); "keyboard" | "console"
@@ -565,6 +566,31 @@ int main(int argc, char *argv[]) {
 				return 2;
 			}
 			display_scale = static_cast<unsigned>(s);
+			continue;
+		}
+		if (arg == "--refresh-hz" || arg.rfind("--refresh-hz=", 0) == 0) {
+			/* Window refresh + vsync-IRQ cadence (the "monitor" refresh rate). Lower it for
+			   undemanding workloads (a terminal parks longer between wakeups), raise it for
+			   smoother pacing. The physical present is still bounded by the host display. */
+			std::string val;
+			if (arg.rfind("--refresh-hz=", 0) == 0) {   /* "--refresh-hz=" is 13 chars */
+				val = arg.substr(13);
+				++idx;
+			}
+			else if (idx + 1 < argc) {
+				val = argv[idx + 1];
+				idx += 2;
+			}
+			else {
+				std::cerr << "maize: --refresh-hz requires a value" << std::endl;
+				return 2;
+			}
+			int hz = std::atoi(val.c_str());
+			if (hz < 1 || hz > 1000) {
+				std::cerr << "maize: --refresh-hz must be between 1 and 1000" << std::endl;
+				return 2;
+			}
+			refresh_hz = static_cast<unsigned>(hz);
 			continue;
 		}
 		if (arg == "--resolution" || arg.rfind("--resolution=", 0) == 0) {
@@ -748,7 +774,20 @@ int main(int argc, char *argv[]) {
 	   fd. Default (empty): no injector runs and the SYS console path reads stdin on demand.
 	   A windowed run always sources keyboard events from the window, not stdin. */
 	if (input_source == "keyboard") {
-		cpu::set_active_input(&keyboard);
+		/* A windowed keyboard is driven entirely by the SDL thread: push_event latches the
+		   scancode and raises the keyboard IRQ, and port_read drains the queue on consume. It
+		   therefore needs no per-instruction tick-loop poll, so leave active_input unset for it.
+		   Only the headless stdin-injection path (no window) needs the tick-loop poll to read
+		   stdin. --display without a compiled backend falls back to headless, so key off the
+		   actual windowed path, not display_requested alone. */
+#ifdef MAIZE_DISPLAY
+		bool windowed_keyboard = display_requested;
+#else
+		bool windowed_keyboard = false;
+#endif
+		if (!windowed_keyboard) {
+			cpu::set_active_input(&keyboard);
+		}
 	}
 	else if (input_source == "console") {
 		cpu::set_active_input(&console);
@@ -767,7 +806,7 @@ int main(int argc, char *argv[]) {
 	   keyboard. */
 	if (display_requested) {
 #ifdef MAIZE_DISPLAY
-		devices::display::run(framebuffer, keyboard, display_scale, show_perf);
+		devices::display::run(framebuffer, keyboard, display_scale, show_perf, refresh_hz);
 #else
 		std::cerr << "maize: --display requested but no display backend was compiled in "
 			<< "(build with -DMAIZE_DISPLAY=ON); running headless" << std::endl;

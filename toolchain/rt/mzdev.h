@@ -45,4 +45,24 @@ void fb_present(void);
 /* Read bit0 last-present-valid (port $54 read): 1 after a valid present, else 0. */
 unsigned fb_present_valid(void);
 
+/* Interrupt-driven idle (HALT park). Instead of busy-polling a device, install a wake
+ * handler for its IRQ, enable interrupts, then wait_for_irq() parks the CPU until a
+ * keypress (immediate) or a vblank (~refresh rate) wakes it, so an idle guest drops to
+ * ~0 MIPS. Usage:
+ *
+ *     kbd_irq_install();          install the keyboard-IRQ wake handler
+ *     vsync_irq_enable();         install the vsync wake handler + turn on vsync generation
+ *     irq_enable();               unmask interrupts
+ *     while (!(kbd_status() & 1)) wait_for_irq();   park until a key is ready
+ *     unsigned sc = kbd_read();
+ *
+ * vsync_irq_enable is the periodic backstop that makes the wait race-free: a keypress that
+ * slips past the status check just before wait_for_irq() is still picked up at the next
+ * vblank. Enable it whenever you HALT-wait on the keyboard. */
+void irq_enable(void);
+void irq_disable(void);
+void wait_for_irq(void);
+void kbd_irq_install(void);
+void vsync_irq_enable(void);
+
 #endif /* MAIZE_MZDEV_H */

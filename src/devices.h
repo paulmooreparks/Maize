@@ -84,18 +84,25 @@ namespace maize {
 			cpu::reg_value port_read(int role, cpu::subreg_enum dst_subreg) override;
 
 		private:
+			/* Fill the one-scancode latch (scancode_/available_) from the window queue and
+			   raise the keyboard IRQ, if a key is pending and the latch is free. Caller must
+			   hold queue_mutex_. Called from push_event (SDL thread) and port_read/on_input_tick
+			   (CPU thread): because it raises the IRQ from whichever thread supplies the key, a
+			   CPU parked in HALT is woken by an SDL-thread key press, not only by on_input_tick. */
+			void pump_latch();
+
 			device_port data_port_;
 			device_port status_port_;
 			u_word scancode_ {0};
-			bool available_ {false};
+			/* available_ is read lock-free by the status-port poll and written under
+			   queue_mutex_ by pump_latch; atomic so the cross-thread read is well-defined. */
+			std::atomic<bool> available_ {false};
 			bool exhausted_ {false};
 			bool window_source_ {false};
 			std::mutex queue_mutex_;
 			std::deque<u_byte> queue_;
-			/* Lock-free fast path for on_input_tick, which runs once per executed guest
-			   instruction: taking queue_mutex_ every instruction just to test emptiness
-			   dominates the windowed hot loop. This mirrors queue_.size() (updated under
-			   the lock) so the common no-key-pending tick returns without locking. */
+			/* Lock-free fast path for on_input_tick: mirrors queue_.size() (updated under the
+			   lock) so the common no-key-pending tick returns without locking. */
 			std::atomic<size_t> queue_size_ {0};
 		};
 
@@ -137,6 +144,15 @@ namespace maize {
 			   samples the delta over time to show the guest frame rate. */
 			std::uint64_t present_count() const { return present_count_.load(std::memory_order_relaxed); }
 
+			/* Called by the display thread once per refresh (vblank). If the guest has enabled
+			   the vsync IRQ (port $55 bit1), set vsync-pending and raise the framebuffer IRQ so
+			   a guest parked in HALT wakes at the refresh rate. This is the periodic "monitor"
+			   vblank, distinct from a guest present; it is the backstop that makes HALT-idle
+			   race-free (a keypress that slips past the wait's status check is still picked up
+			   at the next vblank). Only the SDL backend calls it, so the headless deterministic
+			   suite never fires it. */
+			void on_display_refresh();
+
 		private:
 			bool present_frame();   // read the guest buffer into frame_; returns validity
 
@@ -151,8 +167,10 @@ namespace maize {
 			u_hword height_;
 			u_word pixel_count_;
 			u_word base_ {0};
-			u_word control_ {0};   // bit1 = vsync-IRQ-enable
-			u_word status_ {0};    // bit0 = vsync-pending
+			/* control_/status_ are touched by both the guest thread (port_write/port_read) and
+			   the display thread (on_display_refresh), so they are atomic. */
+			std::atomic<u_word> control_ {0};   // bit1 = vsync-IRQ-enable
+			std::atomic<u_word> status_ {0};    // bit0 = vsync-pending
 			bool present_valid_ {false};
 			std::atomic<std::uint64_t> present_count_ {0};   // valid presents (guest frames)
 			std::vector<std::uint32_t> frame_;
@@ -164,7 +182,11 @@ namespace maize {
 		   the framebuffer's captured frame and mapping host keys to Set-1 scancodes pushed
 		   into the keyboard. Never compiled in the default/headless build. */
 		namespace display {
-			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale, bool show_perf);
+			/* refresh_hz is the "monitor" refresh rate: the cadence at which the window is
+			   re-presented and the vsync IRQ is raised (on_display_refresh). Lower it for
+			   undemanding workloads (fewer wakeups), raise it for smoother pacing. */
+			void run(framebuffer_device& fb, keyboard_device& kbd, unsigned scale, bool show_perf,
+				unsigned refresh_hz);
 		}
 #endif
 

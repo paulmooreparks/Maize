@@ -44,6 +44,11 @@ GLOBAL fb_format
 GLOBAL fb_set_base
 GLOBAL fb_present
 GLOBAL fb_present_valid
+GLOBAL irq_enable
+GLOBAL irq_disable
+GLOBAL wait_for_irq
+GLOBAL kbd_irq_install
+GLOBAL vsync_irq_enable
 
 ; unsigned kbd_status(void) -> RV = bit0 key-available (port $11)
 kbd_status:
@@ -90,3 +95,69 @@ fb_present_valid:
     CLR RV
     IN $54 RV.B0
     RET
+
+; ==================================================================================
+; Interrupt-driven idle (maize-21 HALT park). These let a guest-C program stop busy-
+; polling a device and instead park the CPU in HALT until an interrupt wakes it, so an
+; idle guest drops to ~0 MIPS. Model:
+;
+;   kbd_irq_install();    install the wake handler for the keyboard IRQ (vector 34)
+;   vsync_irq_enable();   install the wake handler for the framebuffer vsync IRQ
+;                         (vector 36) AND turn on vsync generation (port $55 bit1)
+;   irq_enable();         unmask interrupts (SETINT)
+;   while (!ready) wait_for_irq();   HALT until a keypress (immediate) or vblank (~refresh
+;                                    rate) wakes the CPU; re-check the device and loop
+;
+; The vsync IRQ is the periodic backstop that makes this race-free: a keypress that slips
+; past the ready-check between the check and the HALT is still picked up at the next
+; vblank, so no wakeup is ever lost. The shared handler's only job is to wake the CPU;
+; the main loop services the device (reads the scancode) after waking.
+;
+; Vector table: entry[N] lives at $1000 + N*8. keyboard = 34 -> $1110, fb vsync = 36 ->
+; $1120 (see asm/test_keyboard.mazm for the same install pattern).
+; ==================================================================================
+
+; void irq_enable(void) -> SETINT (unmask interrupts)
+irq_enable:
+    SETINT
+    RET
+
+; void irq_disable(void) -> CLRINT (mask interrupts)
+irq_disable:
+    CLRINT
+    RET
+
+; void wait_for_irq(void) -> HALT. With interrupts enabled the CPU parks until an enabled
+; interrupt arrives; the wake handler IRETs back here and RET returns to the caller.
+wait_for_irq:
+    HALT
+    RET
+
+; void kbd_irq_install(void) -> entry[34] = wake_isr
+kbd_irq_install:
+    CLR R0
+    CP wake_isr R0.H0
+    CLR R1
+    CP $1110 R1
+    ST R0 @R1
+    RET
+
+; void vsync_irq_enable(void) -> entry[36] = wake_isr; enable vsync generation (port $55 bit1)
+vsync_irq_enable:
+    CLR R0
+    CP wake_isr R0.H0
+    CLR R1
+    CP $1120 R1
+    ST R0 @R1
+    CLR R0
+    CP $02 R0             ; bit1 = vsync-IRQ-enable
+    OUT R0 $55
+    RET
+
+; Shared no-op wake handler for the device IRQs above. On entry SP points at aux (frame is,
+; from SP upward: aux, cause, RF, PC); discard the two trap-only words and IRET, which pops
+; RF (re-enabling interrupts) and PC (resume after the HALT). It touches no callee-saved
+; register and reads no device: waking is its whole job.
+wake_isr:
+    ADD $10 SP           ; discard aux + cause (2 words); SP now at the saved RF
+    IRET

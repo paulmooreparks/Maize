@@ -261,10 +261,19 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	/* Layout: fixed order CODE, RODATA, DATA, BSS. Assign each contributing
-	   section a load address from base 0, honoring per-section alignment. */
+	/* Layout: fixed order CODE, RODATA, DATA, BSS. Assign each contributing section a
+	   load address, honoring per-section alignment.
+
+	   The base is NOT 0: the CPU's interrupt/trap vector table is a fixed hardware region
+	   at [0x1000, 0x1800) (trap_vector_table_base + 256 * 8, src/maize_cpu.h). A program
+	   that installs interrupt handlers writes entries there, so its own code/data must not
+	   occupy it. Laying out from 0 let any image larger than 4 KB overlap the table, so an
+	   interrupt-using C program corrupted itself (and non-interrupt programs only escaped
+	   because they never read the table). Start above the table, page-aligned; this also
+	   leaves [0, 0x2000) unmapped as a null-pointer guard. */
+	const std::uint64_t image_base = 0x2000;
 	const std::uint8_t order[] = { SEC_CODE, SEC_RODATA, SEC_DATA, SEC_BSS };
-	std::uint64_t cursor = 0;
+	std::uint64_t cursor = image_base;
 	for (std::uint8_t k : order) {
 		for (auto &obj : objects) {
 			for (auto &s : obj.sections) {
