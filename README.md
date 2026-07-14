@@ -15,22 +15,65 @@ that targets the VM, with a small set of Unix-style system calls already impleme
 milestones are devices bridging the virtual environment to the host machine, a "BIOS" layer above
 the virtual devices, and a simple OS; see [ROADMAP.md](ROADMAP.md) for the sequencing.
 
-> **📘 [The Maize ISA Reference (v1.0)](https://paulmooreparks.github.io/Maize/):** the
-> complete, frozen instruction-set specification, published as a book. The register and
-> subregister model, instruction encoding, every instruction's operation and flag effects,
-> and the memory, trap, device-facing, and floating-point models, plus the conformance
-> rules. This is the authoritative reference for the machine (source under
-> [docs/spec/](docs/spec/README.md)).
-
----
-
 ## UPDATE: Maize Runs DOOM!
 
 As of 13 July 2026, Maize can run a version of DOOM compiled to Maize bytecode from C sources!
 
 <img src="doom.png" alt="DOOM running on Maize">
 
----
+It's not screaming fast (it tops out around 9fps on my workstation), but it's playable. You
+just need to provide your own DOOM WAD (the shareware `doom1.wad` works).
+
+### Build a display-enabled `maize`
+
+The SDL2 window backend is opt-in (`-DMAIZE_DISPLAY=ON`); the default build is headless and
+has no SDL2 dependency. The compiled DOOM image, `demos/doom/doom.mzx`, is already in the
+repo, so you only need to build the `maize` VM with the window backend, then bring a WAD.
+
+**Windows** (PowerShell, from the repo root). SDL2 is bundled under `.toolchains/`, so there
+is nothing extra to install:
+
+``` powershell
+cmake --preset windows-llvm-mingw-release -DMAIZE_DISPLAY=ON
+cmake --build --preset windows-llvm-mingw-release --target maize
+```
+
+**Linux** (bash, from the repo root). Install the SDL2 development package first, then build:
+
+``` bash
+sudo apt-get install -y libsdl2-dev        # Debian/Ubuntu; use your distro's SDL2 -dev package
+cmake --preset linux-release -DMAIZE_DISPLAY=ON
+cmake --build --preset linux-release --target maize
+```
+
+### Run it
+
+Here is how I run it in PowerShell on my workstation, from the repo root. Point `--mount` at
+the folder that holds your WAD:
+
+``` powershell
+build\windows-llvm-mingw-release\maize.exe --display --display-scale 4 --refresh-hz 20 --input=keyboard --mount "C:\Users\paul\Downloads=/wad:ro" demos/doom/doom.mzx -iwad /wad/doom1.wad -warp 1 1
+```
+
+The same run on Linux:
+
+``` bash
+build/linux-release/maize --display --display-scale 4 --refresh-hz 20 --input=keyboard --mount "$HOME/Downloads=/wad:ro" demos/doom/doom.mzx -iwad /wad/doom1.wad -warp 1 1
+```
+
+For how the DOOM port itself is built and tested (the vendored doomgeneric tree, the headless
+render gate, and the license-clean synthetic IWAD used by CI), see
+[demos/doom/README.md](demos/doom/README.md).
+
+## The Maize ISA Reference
+
+**[The Maize ISA Reference (v1.0)](https://paulmooreparks.github.io/Maize/)** is the
+complete, frozen instruction-set specification, published as a book. The register and
+subregister model, instruction encoding, every instruction's operation and flag effects,
+and the memory, trap, device-facing, and floating-point models, plus the conformance
+rules. This is the authoritative reference for the machine (source under
+[docs/spec/](docs/spec/README.md)).
+
 
 ## What It Is, Basically
 
