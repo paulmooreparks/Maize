@@ -983,7 +983,8 @@ Trap taxonomy and reserved cause / vector numbers:
     5      Segment / bounds violation             Fault  Reserved number; mechanism ships with segments
     6      Stack fault                            Fault  Reserved number; mechanism ships with segments
     7      SYS / syscall entry                    Trap   Reserved number; SYS dispatches directly today, trap-vector delivery + ABI owned by maize-82 / maize-21
-    8..31  (reserved)                             n/a    Future synchronous traps
+    8      Page fault                             Fault  Live under Sv48 (maize-194): a translation with no valid mapping or a permission violation; CR1 = faulting VA, CR2 = error code (PRESENT / ACCESS_KIND / USER)
+    9..31  (reserved)                             n/a    Future synchronous traps
     32..   External / device interrupts           Intr   Device / timer sources (the timer is the first)
 
 The cause number is also the vector-table index. A cause that multiplexes conditions carries a
@@ -999,7 +1000,10 @@ Explicitly defined, non-trapping behaviors (defined outcomes, not gaps in the ta
 - **Out-of-range shift count is defined**: `n == 0` leaves flags unaffected; `1 <= n <= bits`
   shifts normally; `n > bits` yields result 0 with C / V / N cleared and Z set (Z = 1).
 - **Unmapped / sparse memory access is defined**: a read of never-written memory returns 0; a
-  write allocates a zero-filled block. No EFAULT, no page fault in the flat v1.0 model.
+  write allocates a zero-filled block. No EFAULT and no page fault in Bare mode (the flat v1.0
+  model, and the reset default). Under the Sv48 extension (CR0 SATP.MODE = 1, card maize-194)
+  an access with no valid page-table mapping instead raises the cause-8 page fault above; this
+  sparse-is-defined rule describes Bare mode, which every v1.0 program runs in.
 - **Misaligned multi-byte access is defined-allow**: stitched byte-wise across blocks, no
   alignment requirement, no trap, no vector spent.
 - **Undefined immediate-size field decodes to a defined default**: immediate-size 4..7 decodes

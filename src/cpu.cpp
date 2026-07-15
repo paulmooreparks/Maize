@@ -4914,6 +4914,9 @@ namespace maize {
                             if (bw != w) raise_illegal_fp("FMA operands must be the same width (binary32 with binary32, binary64 with binary64)");
                         }
                         u_byte src_size = op1_imm_size();
+                        /* FMADD/FMSUB immAddr reads the FMA `a` operand from its address
+                           literal; the dereference is translated inside copy_memaddr_reg
+                           (choke point #2). This is the FMA immAddr form, not FCMP. */
                         copy_memaddr_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
                         u_word a = alu.op1_reg.w0;
                         u_word b = read_subreg_bits(op2_reg(), op2_subreg_flag());

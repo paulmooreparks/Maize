@@ -644,9 +644,11 @@ unmasked (this is what lets a handler's IRET restore the full saved RF).
   `crn`. The control-register file is a small, privileged, flat-indexed bank reached only
   through MOVTCR / MOVFCR, distinct from device ports and the syscall surface: CR0 `SATP`
   (address-translation control), CR1 `FAULT_VA`, CR2 `FAULT_ERR` (Chapter 12). A write to an
-  undefined CR index (> 2) is discarded, mirroring the unpopulated-port convention. Under the
-  MMU foundation (card maize-180) the stored values are inert: CR0.MODE is accepted and stored
-  but no translation runs (bare mode always); the Sv48 walk that consults them is maize-194.
+  undefined CR index (> 2) is discarded, mirroring the unpopulated-port convention. CR0 `SATP`
+  is live (card maize-194): writing MODE = 1 (Sv48) into bits [3:0] with a root page-table PPN
+  in bits [63:12] activates the 4-level Sv48 walk on every subsequent guest memory access;
+  MODE = 0 (Bare, the reset default) is the identity passthrough. A CR0 write also flushes the
+  whole software TLB. Reserved SATP bits [11:4] are forced to 0 on write.
 - **Forms:** `$26` regVal-imm (`MOVTCR Rsrc, crn`, source in a register, trailing immediate CR
   index), `$66` immVal-imm (`MOVTCR imm, crn`, immediate source). `$E6` reserved.
 - **Flags:** C/N/V/Z/P unaffected.
@@ -663,17 +665,19 @@ unmasked (this is what lets a handler's IRET restore the full saved RF).
 - **Traps:** privileged-operation fault (cause 4) in user mode.
 
 ### TLBINV (invalidate all TLB entries, privileged)
-- **Operation:** invalidate every software-TLB entry. Under the MMU foundation (card
-  maize-180) there is no software TLB yet, so this is a privileged **no-op**; maize-194 gives
-  it a body (clear every entry) alongside the Sv48 walk.
+- **Operation:** invalidate every software-TLB entry (card maize-194). The 64-entry
+  direct-mapped software TLB caches successful level-0 (4 KiB) Sv48 leaf translations; this
+  instruction clears every entry, forcing a fresh walk on the next access to any VA. (A CR0
+  SATP write flushes the whole TLB implicitly; TLBINV is the explicit same-address-space
+  flush after a kernel edits a live page table.)
 - **Forms:** `$28` (zero-operand).
 - **Flags:** C/N/V/Z/P unaffected.
 - **Traps:** privileged-operation fault (cause 4) in user mode.
 
 ### TLBINVA (invalidate one TLB entry, privileged)
 - **Operation:** invalidate the single software-TLB entry whose tag is the VA in the register
-  operand, shifted right by the page size. A privileged **no-op** under card maize-180 (no TLB
-  yet); maize-194 gives it a body.
+  operand, shifted right by the page size (card maize-194). Used after a kernel edits one
+  page's mapping, to drop just that VA's cached translation without flushing the whole TLB.
 - **Forms:** `$68` regVal (one register operand naming the VA). `$A8` / `$E8` reserved.
 - **Flags:** C/N/V/Z/P unaffected.
 - **Traps:** privileged-operation fault (cause 4) in user mode.

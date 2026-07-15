@@ -312,21 +312,22 @@ extension can define the rung inside or outside v1.0 without any renumbering.
 ## 7. Paging and MMU headroom, and the versioning hook
 
 So a future Sv48-style paging extension can arrive without touching v1.0 binaries, v1.0
-reserved the following. Card maize-180 (the paging MMU foundation) has since landed the
-opcode and control-register pieces; the Sv48 translation itself (the four-level walk, the
-software TLB behaviour, the page-fault trap) is carried by maize-194 on that foundation:
+reserved the following. Card maize-180 (the paging MMU foundation) landed the opcode and
+control-register pieces; the Sv48 translation itself (the four-level walk, the software TLB
+behaviour, the page-fault trap) has since landed via card maize-194 on that foundation:
 
 - **Opcode headroom** for a paging-enable control and a TLB-invalidate instruction, drawn
-  from base slot `$28` (section 1). **Landed** (card maize-180): TLBINV `$28` / TLBINVA `$68`
-  (no-ops until translation lands in maize-194). Paging-enable needs no dedicated opcode; it is
-  a MOVTCR write to CR0.MODE.
+  from base slot `$28` (section 1). **Landed** (card maize-180 opcodes; card maize-194 behaviour):
+  TLBINV `$28` (flush all) / TLBINVA `$68` (flush one), live under Sv48. Paging-enable needs no
+  dedicated opcode; it is a MOVTCR write to CR0.MODE.
 - **A privileged control-register namespace** for the page-table-base register and the
   paging-enable bit, allocated from the section 5 control-register numbering space alongside
   the segment base and limit registers. **Landed** (card maize-180): CR0 `SATP` carries both
   the MODE (paging-enable) field and the root page-table PPN.
 - **A page-fault trap class**, reserved from the trap taxonomy's future range (causes 8
   through 31), reporting the faulting address and an error code, joining the reserved bounds
-  (cause 5) and stack (cause 6) classes.
+  (cause 5) and stack (cause 6) classes. **Landed** (card maize-194): cause 8, with the
+  faulting VA in CR1 FAULT_VA and a PRESENT / ACCESS_KIND / USER error code in CR2 FAULT_ERR.
 - **A versioning and capability hook.** v1.0 reserves a read-only way for software to detect
   the machine's extension level: an ISA major and minor version plus a supported-extension
   bitmap covering floating point, atomics and SMP, segments, and paging, analogous to

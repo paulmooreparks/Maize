@@ -63,7 +63,8 @@ single-step trap, matching the x86 lineage a reader will expect.
 | 5 | Segment / bounds violation | Fault | An access falls outside a segment window, once segments exist | Faulting address |
 | 6 | Stack fault | Fault | A stack access violates the stack limit, once a stack bound exists | Faulting address |
 | 7 | SYS / syscall entry | Trap | The `SYS` instruction executes (a deliberate synchronous software trap into the kernel syscall dispatcher) | 0 (syscall number and arguments travel in registers per the syscall ABI) |
-| 8..31 | (reserved) | n/a | Future synchronous traps | n/a |
+| 8 | Page fault | Fault | An Sv48 address translation (CR0 SATP.MODE = 1) finds no valid mapping (a PTE with V=0, or a non-leaf PTE at walk level 0) or a mapping that violates the requested access (X for a fetch, R for a load, W for a store, or the U bit for a user-mode access) | Faulting VA in CR1 FAULT_VA; a packed error code in CR2 FAULT_ERR |
+| 9..31 | (reserved) | n/a | Future synchronous traps | n/a |
 | 32.. | External / device interrupts | Interrupt | Device / timer sources; the timer is the first source | Source-defined |
 
 Cause subcodes: where one cause number multiplexes distinct conditions, the cause word
@@ -139,6 +140,27 @@ of the **following** instruction, so IRET resumes the program at the instruction
 chapter only reserves the vector and names `SYS` as its source. In the reference VM `SYS`
 today dispatches directly to the BIOS / syscall surface (`src/sys.cpp`) rather than
 through the trap table; routing it through the trap table is a future path.
+
+**Cause 8, Page fault (fault, live under Sv48).** Raised by the Sv48 address-translation
+layer (card maize-194) when CR0 SATP.MODE = 1 (Sv48) and a guest memory access cannot be
+translated. Two failure classes: no valid mapping (a PTE with V=0, or a non-leaf PTE
+reached at walk level 0) and a permission violation (a leaf that lacks the bit the access
+requires: X for a fetch, R for a load, W for a store; or a U-clear leaf accessed from user
+mode, since supervisor bypasses the U check). The A and D bits are software-managed and
+never cause a fault. Unlike the reserved causes above, page fault is delivered through the
+real trap table so a kernel handler can run: `raise_page_fault` latches the faulting VA
+into CR1 FAULT_VA and a packed error code into CR2 FAULT_ERR, then vectors through
+entry[8]. It is FAULT-class (captures the faulting instruction's own PC, so a handler that
+repairs the mapping can IRET and re-execute it), not trap-class like SYS. With no handler
+installed (entry[8] = 0) it is a deterministic halt with the cause surfaced. A page fault
+raised from inside the trap-frame push itself (an unmapped or read-only kernel stack) is a
+double fault: it halts deterministically rather than recursing.
+
+CR2 FAULT_ERR bit layout: bit 0 PRESENT (0 = no valid mapping, 1 = a mapping was found but
+violates the requested permission); bits 2:1 ACCESS_KIND (0 = fetch, 1 = load, 2 = store);
+bit 3 USER (1 if the faulting access ran in user mode); bits 63:4 reserved, written 0.
+Bare mode (MODE = 0, the reset default) never page-faults: translation is the identity and
+every access passes through unchanged.
 
 ## Defined non-trapping behavior
 
@@ -321,6 +343,13 @@ The reference VM (`src/cpu.cpp`, `src/maize_cpu.h`) grounds this chapter:
   sparse memory model has no out-of-bounds access and no stack bound, so neither fires.
 - **SYS / syscall entry (cause 7)**: reserved number; `SYS` ($34) dispatches directly to
   the BIOS / syscall surface today, with trap-vector delivery reserved.
+- **Page fault (cause 8)**: live under Sv48 (card maize-194). When CR0 SATP.MODE = 1 the
+  memory-access path translates every guest access through a 64-entry software TLB backed
+  by a 4-level Sv48 walk; a not-present or permission failure calls `raise_page_fault`,
+  which latches CR1 FAULT_VA and CR2 FAULT_ERR and vectors through entry[8] so a kernel
+  handler can run (FAULT-class: the saved PC is the faulting instruction's own). CR0 writes
+  and TLBINV flush the whole TLB; TLBINVA flushes one entry. Bare mode (MODE = 0, reset
+  default) is the identity passthrough and never faults.
 - **Interrupt delivery substrate**: live for external interrupts. RF carries the
   interrupt-enable and interrupt-set bits; SETINT / CLRINT toggle the enable bit; IRET
   pops RF then PC. At each instruction boundary the run loop delivers a pending, enabled
