@@ -527,6 +527,7 @@ namespace maize {
 			const u_byte cause_segment_bounds		{5}; // reserved (maize-92): segment / bounds violation
 			const u_byte cause_stack_fault			{6}; // reserved (maize-92): stack-limit violation
 			const u_byte cause_syscall				{7}; // reserved: SYS / syscall entry (deliberate software trap; ABI owned by maize-82 / maize-21)
+			const u_byte cause_page_fault			{8}; // Sv48 page-table walk: not-present or permission violation (maize-194)
 		}
 
 		/* Shared trap / interrupt vector table format (card maize-21, co-authored with

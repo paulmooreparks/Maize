@@ -533,6 +533,20 @@ namespace maize {
             reg fcsr {0x0000000000000000}; // FP control/status: FRM(bits7-5)+FFLAGS(bits4-0); reset RNE, flags clear (maize-122)
         }
 
+        /* Sv48 address translation + software-TLB control (card maize-194). Declared
+           here, ahead of the anonymous-namespace choke-point helpers (copy_regaddr_reg
+           etc.) that call translate() by name, so every translated memory-access site
+           resolves it via enclosing-namespace lookup. The definitions live below
+           deliver_vectored (raise_page_fault vectors a cause-8 fault through it). In Bare
+           mode (CR0 SATP.MODE != 1) translate() is a single mode check that returns the
+           VA unchanged, so identity accesses pay no walk / no TLB probe. access_kind
+           classifies the access for the CR2 FAULT_ERR error code and the leaf permission
+           check (X for fetch, R for load, W for store). */
+        enum class access_kind : u_byte { fetch = 0, load = 1, store = 2 };
+        u_word translate(u_word va, access_kind kind);
+        void tlb_flush_all();
+        void tlb_flush_va(u_word va);
+
         namespace {
             flag<bit_carryout> carryout_flag {regs::rf};
             flag<bit_negative> negative_flag {regs::rf};
@@ -771,7 +785,7 @@ namespace maize {
                 commit_reg_w0(dst, (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask));
             }
 
-            void copy_memval_reg(u_word address, size_t size, reg_value &op2_reg, subreg_enum dst_subreg) {
+            void copy_memval_reg(u_word address, size_t size, reg_value &op2_reg, subreg_enum dst_subreg, access_kind kind) {
                 /* Read the size-byte immediate, then sign-extend it to the destination
                    subregister width (card maize-29). A narrow immediate copied into a wider
                    register fills the upper bytes by sign, matching register-to-register CP
@@ -787,7 +801,7 @@ namespace maize {
                    immediate source subreg is low-aligned (offset 0), so the source value is the
                    raw word. */
                 u_word raw = 0;
-                mm.read_into(address, reinterpret_cast<u_byte*>(&raw), size);
+                mm.read_into(translate(address, kind), reinterpret_cast<u_byte*>(&raw), size);
                 subreg_enum src_subreg = imm_size_subreg_map[static_cast<size_t>(size)];
                 if (raw & subreg_sign_bit[static_cast<int>(src_subreg)]) {
                     raw |= subreg_neg_bits[static_cast<int>(src_subreg)];
@@ -798,13 +812,13 @@ namespace maize {
                     | ((raw << dst_offset) & static_cast<u_word>(dst_mask)));
             }
 
-            void copy_memval_reg_zext(u_word address, size_t size, reg_value &op2_reg, subreg_enum dst_subreg) {
+            void copy_memval_reg_zext(u_word address, size_t size, reg_value &op2_reg, subreg_enum dst_subreg, access_kind kind) {
                 /* Zero-extending immediate value for CPZ (card maize-29): a narrow immediate fills
                    the destination's upper bytes with zero, the unsigned counterpart to
                    copy_memval_reg's sign-extension. read_into into a zeroed word is already the
                    zero-extended value; no reg_value temporary. */
                 u_word raw = 0;
-                mm.read_into(address, reinterpret_cast<u_byte*>(&raw), size);
+                mm.read_into(translate(address, kind), reinterpret_cast<u_byte*>(&raw), size);
                 auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
                 auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
                 commit_reg_w0(op2_reg, (~static_cast<u_word>(dst_mask) & op2_reg.w0)
@@ -826,7 +840,7 @@ namespace maize {
                 u_word src_address = (static_cast<u_word>(src_mask) & src.w0) >> src_offset;
                 reg src_data;
                 src_data.w0 = 0;
-                mm.read(src_address, src_data, subreg_size_map[static_cast<size_t>(dst_subreg)], 0);
+                mm.read(translate(src_address, access_kind::load), src_data, subreg_size_map[static_cast<size_t>(dst_subreg)], 0);
 
                 commit_reg_w0(dst, (~static_cast<u_word>(dst_mask) & dst.w0) | (src_data.w0 << dst_offset) & static_cast<u_word>(dst_mask));
             }
@@ -838,14 +852,14 @@ namespace maize {
                    8 bytes over-reads into the following instruction bytes and computes a garbage
                    address when the address is encoded in fewer than 8 bytes (card maize-40). */
                 reg src_address;
-                mm.read(address, src_address, size, 0);
+                mm.read(translate(address, access_kind::fetch), src_address, size, 0);
 
                 /* The load width is the destination subregister size, not a fixed 8 (card
                    maize-29): read exactly as many bytes from the target address as the destination
                    holds, so `LD @imm R0.B0` reads one byte and the rest of R0 is preserved. */
                 reg src_data;
                 src_data.w0 = 0;
-                mm.read(src_address.w0, src_data, subreg_size_map[static_cast<size_t>(dst_subreg)], 0);
+                mm.read(translate(src_address.w0, access_kind::load), src_data, subreg_size_map[static_cast<size_t>(dst_subreg)], 0);
 
                 auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
                 auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
@@ -861,7 +875,7 @@ namespace maize {
             void jump_to_immediate() {
                 u_byte imm_size = op1_imm_size();
                 reg target;
-                mm.read(regs::rp.w0, target, imm_size, 0);
+                mm.read(translate(regs::rp.w0, access_kind::fetch), target, imm_size, 0);
                 regs::rp.w0 = target.w0;
             }
 
@@ -919,7 +933,7 @@ namespace maize {
 
                 reg_value src_data;
                 src_data.w0 = static_cast<s_word>((src.w0 & static_cast<u_word>(src_mask)) >> src_offset);
-                u_word dst_address = (dst.w0 & static_cast<u_word>(dst_mask)) >> dst_offset;
+                u_word dst_address = translate((dst.w0 & static_cast<u_word>(dst_mask)) >> dst_offset, access_kind::store);
 
                 switch (size) {
                     case 1: {
@@ -952,8 +966,8 @@ namespace maize {
                 auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
                 reg_value src_data;
-                mm.read(address, src_data, size, 0);
-                u_word dst_address = (dst.w0 & static_cast<u_word>(dst_mask)) >> dst_offset;
+                mm.read(translate(address, access_kind::fetch), src_data, size, 0);
+                u_word dst_address = translate((dst.w0 & static_cast<u_word>(dst_mask)) >> dst_offset, access_kind::store);
 
                 switch (size) {
                     case 1: {
@@ -1013,6 +1027,31 @@ namespace maize {
                values are inert (no translation runs and no fault path writes CR1/CR2). */
             static constexpr size_t control_reg_count = 3;
             reg control_regs[control_reg_count] {};
+
+            /* Software TLB + page-fault-delivery state (card maize-194), placed alongside
+               control_regs. translate() / raise_page_fault() below (namespace cpu) read
+               these anonymous-namespace globals via enclosing-scope visibility. The TLB is
+               64-entry direct-mapped, indexed by the low 6 bits of the VPN (VA >> 12), the
+               same direct-mapped-by-low-bits shape as memory_module's L1 block cache; a
+               miss simply overwrites its one candidate slot (no LRU). Only a successful
+               level-0 4 KiB leaf is cached; superpage leaves are used but never installed
+               (decision). */
+            struct tlb_entry {
+                bool valid = false;
+                u_word tag = 0;   // VPN = VA >> 12 (VA[63:48] already discarded)
+                u_word ppn = 0;   // physical page base, low 12 bits already 0
+                bool r = false, w = false, x = false, u = false;
+            };
+            static constexpr size_t tlb_size = 64;
+            tlb_entry software_tlb[tlb_size] {};
+
+            /* Page fault is FAULT-class: the saved PC is the faulting instruction's own
+               entry PC, captured at the top of MAIZE_NEXT() before the opcode fetch, not
+               the advanced PC. delivering_trap guards the double-fault case: a fault raised
+               from inside deliver_vectored's own trap-frame push halts deterministically
+               instead of recursing. */
+            u_word current_instr_pc = 0;
+            bool delivering_trap = false;
 
             bool is_power_on = false;
 
@@ -1134,8 +1173,10 @@ namespace maize {
             if (crn == 0) {
                 /* SATP reserved bits [11:4] read as zero: mask them off on write. */
                 control_regs[0].w0 &= ~static_cast<u_word>(0x0FF0);
-                /* maize-194: a CR0 write flushes the software TLB here. No TLB exists
-                   under maize-180, so there is nothing to flush yet. */
+                /* A CR0 (SATP) write changes the address space, so every cached
+                   translation is now potentially stale: flush the whole software TLB
+                   (card maize-194). */
+                tlb_flush_all();
             }
         }
 
@@ -1216,6 +1257,154 @@ namespace maize {
             interrupt_enabled_flag = false;
 
             regs::rp.w0 = handler;
+        }
+
+        /* ---- Sv48 address translation, software TLB, page fault (card maize-194) ----
+           Defined here, below deliver_vectored (raise_page_fault vectors a cause-8 fault
+           through it) and below control_regs / software_tlb / privilege_flag (all in the
+           anonymous namespace above, visible here in the enclosing namespace). translate()
+           and the two TLB-flush helpers were forward-declared before the choke-point
+           helpers so every translated access site can call them by name. */
+
+        /* Thrown by raise_page_fault once deliver_vectored has installed the cause-8 trap
+           frame and redirected RP to the guest handler: it unwinds the aborted faulting
+           instruction back to run(), which re-enters tick() at the handler. Distinct from
+           the std::logic_error faults, which propagate to main() and exit the VM; a page
+           fault instead runs the guest handler. */
+        struct page_fault_redirect {};
+
+        /* Raw physical PTE read. Mirrors read_vector_entry: always physical, NEVER through
+           translate(), so the walker never recursively translates the page tables it is
+           walking (spec exclusion). */
+        u_word read_pte(u_word pa) {
+            reg entry;
+            entry.w0 = 0;
+            mm.read(pa, entry, 8, 0);
+            return entry.w0;
+        }
+
+        /* Latch CR1 FAULT_VA / CR2 FAULT_ERR and vector a cause-8 page fault through the
+           trap table so a guest handler can run (spec item 5). Page fault is FAULT-class:
+           the saved PC is the faulting instruction's own entry PC (current_instr_pc),
+           captured at the top of MAIZE_NEXT before the opcode fetch, not the advanced PC,
+           so a handler's IRET re-executes the faulting instruction. A fault raised while a
+           trap frame is already being pushed (delivering_trap set) is a double fault: halt
+           deterministically rather than recurse (spec item 5, narrow guard scoped to the
+           frame-push). CR2 layout: bit0 PRESENT (0=no mapping, 1=perm violation),
+           bits[2:1] ACCESS_KIND (fetch/load/store), bit3 USER, bits[63:4] reserved-zero. */
+        [[noreturn]] void raise_page_fault(u_word va, access_kind kind, bool present) {
+            if (delivering_trap) {
+                std::stringstream err {};
+                err << "double fault: page fault at VA 0x" << std::hex << va
+                    << " during trap-frame delivery (cause "
+                    << std::dec << static_cast<int>(trap::cause_page_fault) << ")";
+                throw std::logic_error(err.str());
+            }
+            control_regs[1].w0 = va;                                        // CR1 FAULT_VA
+            control_regs[2].w0 = (present ? u_word {1} : u_word {0})        // bit0 PRESENT
+                | (static_cast<u_word>(kind) << 1)                          // bits[2:1] ACCESS_KIND
+                | (privilege_flag ? u_word {0} : (u_word {1} << 3));        // bit3 USER
+            delivering_trap = true;
+            deliver_vectored(trap::cause_page_fault, 0, 0, current_instr_pc);
+            delivering_trap = false;
+            throw page_fault_redirect {};
+        }
+
+        /* Permission check for a leaf mapping: required bit is X for a fetch, R for a load,
+           W for a store; a user-mode access (privilege_flag clear) also needs U. Supervisor
+           bypasses the U check (no SUM-equivalent). A and D are software-managed and never
+           consulted. */
+        bool leaf_permits(access_kind kind, bool r, bool w, bool x, bool u) {
+            bool kind_ok = (kind == access_kind::fetch) ? x
+                         : (kind == access_kind::load)  ? r
+                         :                                w;   // store
+            if (!kind_ok) { return false; }
+            if (!privilege_flag && !u) { return false; }
+            return true;
+        }
+
+        /* Sv48 4-level walk (card maize-194). 9 VPN index bits per level, 4 KiB pages,
+           8-byte PTEs (Maize-native packing: PPN in bits [63:12], flags V/R/W/X/U/A/D
+           mirroring RISC-V Sv48). Leaf iff R|W|X != 0; non-leaf iff V=1 & R=W=X=0; V=0 is
+           no mapping. Returns the physical address on success; raise_page_fault (which
+           never returns) on any failure. A successful level-0 4 KiB leaf is installed into
+           the software TLB; superpage leaves (level 1-3) are used but never cached. */
+        u_word sv48_walk(u_word va, access_kind kind) {
+            /* VA[63:48] is ignored: no canonical-form check, no fault (decision). */
+            u_word table_base = control_regs[0].w0 & ~static_cast<u_word>(0xFFF);
+            for (int level = 3; level >= 0; --level) {
+                u_word vpn = (va >> (12 + level * 9)) & static_cast<u_word>(0x1FF);
+                u_word pte = read_pte(table_base + vpn * 8);
+                if ((pte & 0x1) == 0) {
+                    raise_page_fault(va, kind, false);   // V=0: no mapping
+                }
+                bool r = pte & 0x2, w = pte & 0x4, x = pte & 0x8, u = pte & 0x10;
+                if (r || w || x) {
+                    /* Leaf. */
+                    if (!leaf_permits(kind, r, w, x, u)) {
+                        raise_page_fault(va, kind, true);   // mapping present, perm violation
+                    }
+                    u_word offset_mask = (u_word {1} << (12 + level * 9)) - 1;
+                    u_word pa = (pte & ~static_cast<u_word>(0xFFF)) | (va & offset_mask);
+                    if (level == 0) {
+                        /* Only a 4 KiB leaf is cached; superpages never (decision). */
+                        size_t idx = (va >> 12) & (tlb_size - 1);
+                        software_tlb[idx].valid = true;
+                        software_tlb[idx].tag = va >> 12;
+                        software_tlb[idx].ppn = pte & ~static_cast<u_word>(0xFFF);
+                        software_tlb[idx].r = r;
+                        software_tlb[idx].w = w;
+                        software_tlb[idx].x = x;
+                        software_tlb[idx].u = u;
+                    }
+                    return pa;
+                }
+                /* Non-leaf (V=1, R=W=X=0): descend. At level 0 there is nothing left to
+                   descend to, so treat it as not-present rather than walking off the end. */
+                if (level == 0) {
+                    raise_page_fault(va, kind, false);
+                }
+                table_base = pte & ~static_cast<u_word>(0xFFF);
+            }
+            raise_page_fault(va, kind, false);   // unreachable: level 0 always returns/faults
+        }
+
+        /* Translate a guest virtual address to a physical address for an access of the
+           given kind (card maize-194). Bare mode (CR0 SATP.MODE != 1, including undefined
+           MODE 2-15) is the identity fast path: a single mode check, no TLB probe, no walk,
+           VA == PA. Sv48 mode (MODE == 1) checks the software TLB, then walks on a miss. */
+        u_word translate(u_word va, access_kind kind) {
+            if ((control_regs[0].w0 & 0xF) != 1) {
+                return va;   // Bare / undefined MODE: passthrough, zero added cost
+            }
+            size_t idx = (va >> 12) & (tlb_size - 1);
+            tlb_entry const& e = software_tlb[idx];
+            if (e.valid && e.tag == (va >> 12)) {
+                /* Hit: re-check permission against the cached bits, since privilege/kind
+                   can differ access-to-access on the same cached page. */
+                if (!leaf_permits(kind, e.r, e.w, e.x, e.u)) {
+                    raise_page_fault(va, kind, true);
+                }
+                return e.ppn | (va & static_cast<u_word>(0xFFF));
+            }
+            return sv48_walk(va, kind);
+        }
+
+        /* Invalidate the whole software TLB: called from cr_write on any CR0 (SATP) write
+           and from TLBINV (card maize-194). */
+        void tlb_flush_all() {
+            for (size_t i = 0; i < tlb_size; ++i) {
+                software_tlb[i].valid = false;
+            }
+        }
+
+        /* Invalidate the single TLB entry that would cache `va`, if present: called from
+           TLBINVA Rn (card maize-194). */
+        void tlb_flush_va(u_word va) {
+            size_t idx = (va >> 12) & (tlb_size - 1);
+            if (software_tlb[idx].valid && software_tlb[idx].tag == (va >> 12)) {
+                software_tlb[idx].valid = false;
+            }
         }
 
         /* Single delivery seam (card maize-21). Checked at the instruction boundary in
@@ -3459,7 +3648,8 @@ namespace maize {
                 try_deliver_interrupt(); \
                 if (active_timer_ptr != nullptr) { active_timer_ptr->on_instruction_tick(); } \
                 if (active_input_ptr != nullptr) { active_input_ptr->on_input_tick(); } \
-                mm.read(regs::rp.w0, regs::ri, subreg_enum::w0); \
+                current_instr_pc = regs::rp.w0; \
+                mm.read(translate(regs::rp.w0, access_kind::fetch), regs::ri, subreg_enum::w0); \
                 ++regs::rp.w0; \
                 run_state = run_states::execute; \
                 if (perf_count_enabled) { ++perf_insn_count; } \
@@ -3527,7 +3717,7 @@ namespace maize {
                     LBL_cp_immVal_reg: {
                         regs::rp.w0 += 2;
                         u_hword imm_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, imm_size, op2_reg(), op2_subreg_flag());
+                        copy_memval_reg(regs::rp.w0, imm_size, op2_reg(), op2_subreg_flag(), access_kind::fetch);
                         regs::rp.w0 += imm_size;
                         MAIZE_NEXT();
                     }
@@ -3555,7 +3745,7 @@ namespace maize {
                     LBL_cpz_immVal_reg: {
                         regs::rp.w0 += 2;
                         u_hword imm_size = op1_imm_size();
-                        copy_memval_reg_zext(regs::rp.w0, imm_size, op2_reg(), op2_subreg_flag());
+                        copy_memval_reg_zext(regs::rp.w0, imm_size, op2_reg(), op2_subreg_flag(), access_kind::fetch);
                         regs::rp.w0 += imm_size;
                         MAIZE_NEXT();
                     }
@@ -3632,7 +3822,7 @@ namespace maize {
                     LBL_test_immVal_reg: {
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0, access_kind::fetch);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
                         alu.b0 = regs::ri.b0;
                         alu.b1 = src_size;
@@ -3735,7 +3925,7 @@ namespace maize {
                     {
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0, access_kind::fetch);
                         copy_regaddr_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, op2_subreg_flag());
                         regs::rp.w0 += src_size;
                         alu.b0 = regs::ri.b0;
@@ -3796,7 +3986,7 @@ namespace maize {
 
                         if (cmp_regval_reg(op3_reg(), op3_subreg_flag(), op2_reg(), op2_subreg_flag())) {
                             zero_flag = 1;
-                            copy_memval_reg(regs::rp.w0, src_size, op2_reg(), op2_subreg_flag());
+                            copy_memval_reg(regs::rp.w0, src_size, op2_reg(), op2_subreg_flag(), access_kind::fetch);
                         }
                         else {
                             zero_flag = 0;
@@ -3859,7 +4049,7 @@ namespace maize {
                     LBL_lea_immVal_regreg: {
                         regs::rp.w0 += 3;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0, access_kind::fetch);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
                         alu.b0 = instr::add_immVal_reg;
                         alu.b1 = src_size;
@@ -3912,7 +4102,7 @@ namespace maize {
                     LBL_umulw_immVal_regreg: {
                         regs::rp.w0 += 3;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0, access_kind::fetch);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
                         alu.b0 = regs::ri.b0;
                         alu.b1 = src_size;
@@ -3974,7 +4164,7 @@ namespace maize {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte dst_size = op2_imm_size();
-                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0, access_kind::fetch);
                         port_write(operand2.q0, op1_reg(), op1_subreg_flag());
                         regs::rp.w0 += dst_size;
                         MAIZE_NEXT();
@@ -3984,10 +4174,10 @@ namespace maize {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0, access_kind::fetch);
                         regs::rp.w0 += src_size;
                         u_byte dst_size = op2_imm_size();
-                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0, access_kind::fetch);
                         port_write(operand2.q0, operand1, subreg_enum::w0);
                         regs::rp.w0 += dst_size;
                         MAIZE_NEXT();
@@ -4003,7 +4193,7 @@ namespace maize {
                         regs::rp.w0 += 2;
                         copy_regaddr_reg(op1_reg(), op1_subreg_flag(), operand1, subreg_enum::w0);
                         u_byte dst_size = op2_imm_size();
-                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0, access_kind::fetch);
                         port_write(operand2.q0, operand1, subreg_enum::w0);
                         regs::rp.w0 += dst_size;
                         MAIZE_NEXT();
@@ -4016,7 +4206,7 @@ namespace maize {
                         copy_memaddr_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
                         u_byte dst_size = op2_imm_size();
-                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0, access_kind::fetch);
                         port_write(operand2.q0, operand1, subreg_enum::w0);
                         regs::rp.w0 += dst_size;
                         MAIZE_NEXT();
@@ -4040,7 +4230,7 @@ namespace maize {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0, access_kind::fetch);
                         regs::rp.w0 += src_size;
                         port_write(op2_reg().q0, operand1, subreg_enum::w0);
                         MAIZE_NEXT();
@@ -4075,7 +4265,7 @@ namespace maize {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0, access_kind::fetch);
                         regs::rp.w0 += src_size;
                         port_read(operand1.q0, op2_reg(), op2_subreg_flag());
                         MAIZE_NEXT();
@@ -4113,7 +4303,7 @@ namespace maize {
                     LBL_sys_immVal: {
                         regs::rp.w0 += 1;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0, access_kind::fetch);
                         regs::rp.w0 += src_size;
                         if (syscall_guest_flag) {
                             deliver_vectored(trap::cause_syscall, 0, operand1.b0, regs::rp.w0);
@@ -4136,7 +4326,7 @@ namespace maize {
                     LBL_pop_opcode: {
                         regs::rp.w0 += 1;
                         auto src_size = op1_subreg_size();
-                        copy_memval_reg(regs::rs.w0, src_size, op1_reg(), op1_subreg_flag());
+                        copy_memval_reg(regs::rs.w0, src_size, op1_reg(), op1_subreg_flag(), access_kind::load);
                         regs::rs.w0 += src_size;
                         MAIZE_NEXT();
                     }
@@ -4173,7 +4363,7 @@ namespace maize {
                         regs::rp.w0 += 1;                                          // past the param byte
                         u_byte src_size = op1_imm_size();
                         reg target;
-                        mm.read(regs::rp.w0, target, src_size, 0);
+                        mm.read(translate(regs::rp.w0, access_kind::fetch), target, src_size, 0);
                         regs::rp.w0 += src_size;                                   // PC now at the return address
                         regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
@@ -4199,12 +4389,12 @@ namespace maize {
                         regs::rp.w0 += 1;                                          // past the param byte
                         u_byte src_size = op1_imm_size();
                         reg addr_literal;
-                        mm.read(regs::rp.w0, addr_literal, src_size, 0);
+                        mm.read(translate(regs::rp.w0, access_kind::fetch), addr_literal, src_size, 0);
                         regs::rp.w0 += src_size;                                   // PC now at the return address
                         regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
                         reg target;
-                        mm.read(addr_literal.w0, target, subreg_size_map[static_cast<size_t>(subreg_enum::w0)], 0);
+                        mm.read(translate(addr_literal.w0, access_kind::load), target, subreg_size_map[static_cast<size_t>(subreg_enum::w0)], 0);
                         regs::rp.w0 = target.w0;
                         MAIZE_NEXT();
                     }
@@ -4212,7 +4402,7 @@ namespace maize {
                     LBL_ret_opcode: {
                         /* Pop the full 64-bit return address (maize-41). */
                         u_byte src_size = subreg_size_map[static_cast<size_t>(subreg_enum::w0)];
-                        copy_memval_reg(regs::rs.w0, src_size, regs::rp, subreg_enum::w0);
+                        copy_memval_reg(regs::rs.w0, src_size, regs::rp, subreg_enum::w0, access_kind::load);
                         regs::rs.w0 += src_size;
                         MAIZE_NEXT();
                     }
@@ -4229,9 +4419,9 @@ namespace maize {
                            saved RF whose privilege bit is clear. */
                         if (!privilege_flag) { raise_privileged_op(); }
                         auto src_size = subreg_size_map[static_cast<size_t>(subreg_enum::w0)];
-                        copy_memval_reg(regs::rs.w0, src_size, regs::rf, subreg_enum::w0);
+                        copy_memval_reg(regs::rs.w0, src_size, regs::rf, subreg_enum::w0, access_kind::load);
                         regs::rs.w0 += src_size;
-                        copy_memval_reg(regs::rs.w0, src_size, regs::rp, subreg_enum::w0);
+                        copy_memval_reg(regs::rs.w0, src_size, regs::rp, subreg_enum::w0, access_kind::load);
                         regs::rs.w0 += src_size;
                         MAIZE_NEXT();
                     }
@@ -4346,7 +4536,7 @@ namespace maize {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte dst_size = op2_imm_size();
-                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0, access_kind::fetch);
                         cr_write(operand2.q0, op1_reg(), op1_subreg_flag());
                         regs::rp.w0 += dst_size;
                         MAIZE_NEXT();
@@ -4356,10 +4546,10 @@ namespace maize {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0, access_kind::fetch);
                         regs::rp.w0 += src_size;
                         u_byte dst_size = op2_imm_size();
-                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0, access_kind::fetch);
                         cr_write(operand2.q0, operand1, subreg_enum::w0);
                         regs::rp.w0 += dst_size;
                         MAIZE_NEXT();
@@ -4369,7 +4559,7 @@ namespace maize {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 2;
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0, access_kind::fetch);
                         regs::rp.w0 += src_size;
                         cr_read(operand1.q0, op2_reg(), op2_subreg_flag());
                         MAIZE_NEXT();
@@ -4377,17 +4567,17 @@ namespace maize {
 
                     LBL_tlbinv_opcode: {
                         if (!privilege_flag) { raise_privileged_op(); }
-                        /* maize-180: no software TLB exists yet, so invalidate-all is a
-                           no-op. maize-194 clears every software-TLB entry here. */
+                        /* Invalidate the entire software TLB (card maize-194). */
+                        tlb_flush_all();
                         MAIZE_NEXT();
                     }
 
                     LBL_tlbinva_opcode: {
                         if (!privilege_flag) { raise_privileged_op(); }
                         regs::rp.w0 += 1;   // consume the register operand byte
-                        /* maize-180: no software TLB exists yet, so invalidate-one is a
-                           no-op. maize-194 invalidates the entry whose tag is
-                           VA(op1_reg()) >> 12 here. */
+                        /* Invalidate the single software-TLB entry whose tag is
+                           VA(op1_reg()) >> 12 (card maize-194). */
+                        tlb_flush_va(op1_reg().w0);
                         MAIZE_NEXT();
                     }
 
@@ -4452,7 +4642,7 @@ namespace maize {
                         u_byte w = fp_width_from_subreg(op2_subreg_flag());
                         if (!w) raise_illegal_fp("FP destination subregister must be H0/H1 (binary32) or W0 (binary64)");
                         u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
+                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0, access_kind::fetch);
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
                         alu.b0 = regs::ri.b0;
                         alu.b2 = w;
@@ -4473,7 +4663,7 @@ namespace maize {
                         {
                             u_word addr = read_subreg_bits(op1_reg(), op1_subreg_flag());
                             reg tmp; tmp.w0 = 0;
-                            mm.read(addr, tmp, w, 0);
+                            mm.read(translate(addr, access_kind::load), tmp, w, 0);
                             alu.op1_reg.w0 = tmp.w0;
                         }
                         copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
@@ -4524,7 +4714,7 @@ namespace maize {
                         if (!w) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
                         u_byte src_size = op1_imm_size();
                         reg tmp; tmp.w0 = 0;
-                        mm.read(regs::rp.w0, tmp, src_size, 0);
+                        mm.read(translate(regs::rp.w0, access_kind::fetch), tmp, src_size, 0);
                         u_word a = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         do_fcmp(a, tmp.w0, w);
                         regs::rp.w0 += src_size;
@@ -4537,7 +4727,7 @@ namespace maize {
                         if (!w) raise_illegal_fp("FCMP operand subregister must be H0/H1 or W0");
                         u_word addr = read_subreg_bits(op1_reg(), op1_subreg_flag());
                         reg tmp; tmp.w0 = 0;
-                        mm.read(addr, tmp, w, 0);
+                        mm.read(translate(addr, access_kind::load), tmp, w, 0);
                         u_word a = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         do_fcmp(a, tmp.w0, w);
                         MAIZE_NEXT();
@@ -4678,7 +4868,7 @@ namespace maize {
                         }
                         u_byte src_size = op1_imm_size();
                         reg tmp; tmp.w0 = 0;
-                        mm.read(regs::rp.w0, tmp, src_size, 0);
+                        mm.read(translate(regs::rp.w0, access_kind::fetch), tmp, src_size, 0);
                         u_word a = tmp.w0;
                         u_word b = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         u_word c = read_subreg_bits(op3_reg(), op3_subreg_flag());
@@ -4702,7 +4892,7 @@ namespace maize {
                         }
                         u_word addr = read_subreg_bits(op1_reg(), op1_subreg_flag());
                         reg tmp; tmp.w0 = 0;
-                        mm.read(addr, tmp, w, 0);
+                        mm.read(translate(addr, access_kind::load), tmp, w, 0);
                         u_word a = tmp.w0;
                         u_word b = read_subreg_bits(op2_reg(), op2_subreg_flag());
                         u_word c = read_subreg_bits(op3_reg(), op3_subreg_flag());
@@ -4800,7 +4990,15 @@ namespace maize {
             int_event.notify_all();
 
             while (is_power_on) {
-                tick();
+                try {
+                    tick();
+                }
+                catch (const page_fault_redirect&) {
+                    /* A page fault aborted the faulting instruction mid-flight;
+                       deliver_vectored has already installed the cause-8 frame and pointed
+                       RP at the guest handler. Re-enter tick() to run it (card maize-194). */
+                    continue;
+                }
 
                 {
                     std::unique_lock<std::mutex> lk(int_mutex);

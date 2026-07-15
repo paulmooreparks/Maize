@@ -2,24 +2,27 @@
 ; Regression test for card maize-180 (MMU foundation): control-register round trip.
 ;
 ; From supervisor mode (the boot default), MOVTCR writes a distinct nonzero pattern to
-; CR0 (SATP, with MODE=1 / Sv48 in bits [3:0] and a nonzero PPN, reserved bits [11:4]
+; CR0 (SATP, with MODE=0 / Bare in bits [3:0] and a nonzero PPN, reserved bits [11:4]
 ; clear), CR1 (FAULT_VA) and CR2 (FAULT_ERR); MOVFCR reads each back and confirms it
-; matches exactly. A nonzero CR0.MODE is accepted and stored with NO observable
-; translation side effect (this card ships no translation; bare mode is always in
-; force). Finally an undefined CR index (> 2) is exercised: the write is discarded and
-; the read yields 0, per the unpopulated-port convention.
+; matches exactly. CR0 keeps MODE=0 here so the machine stays in Bare mode: this test
+; exercises CR read/write fidelity, not translation. Under maize-194 CR0.MODE=1 (Sv48)
+; is no longer inert; it activates the page-table walk, so a MODE=1 pattern with a
+; garbage PPN would page-fault on the very next instruction fetch. Activation and the
+; walk itself are covered by the dedicated paging tests (test_mmu_translate_rw et al.).
+; Finally an undefined CR index (> 2) is exercised: the write is discarded and the read
+; yields 0, per the unpopulated-port convention.
 ;
 ; RF privilege bit is set at boot, so every MOVTCR/MOVFCR here executes privileged and
 ; the round trip completes; a failure prints "cr-roundtrip: FAIL".
 ; **********************************************************************************
 
 $0000`0000:
-    ; ---- CR0 SATP: MODE=1, PPN nonzero, reserved bits [11:4] = 0 ----
+    ; ---- CR0 SATP: MODE=0 (Bare), PPN nonzero, reserved bits [11:4] = 0 ----
     CLR R0
-    CP $01 R0.B0            ; bits [7:0]  = $01 -> MODE (bits [3:0]) = 1, bits [7:4] = 0
+    CP $00 R0.B0            ; bits [7:0]  = $00 -> MODE (bits [3:0]) = 0 (Bare), bits [7:4] = 0
     CP $10 R0.B1            ; bits [15:8] = $10 -> bits [11:8] = 0, bit 12 = 1 (PPN)
     CP $AB R0.B4            ; bits [39:32] = $AB (PPN)
-    MOVTCR R0 $00           ; CR0 = $000000AB`00001001
+    MOVTCR R0 $00           ; CR0 = $000000AB`00001000
     MOVFCR $00 R3
     CMP R0 R3
     JNZ fail                ; CR0 did not read back exactly
