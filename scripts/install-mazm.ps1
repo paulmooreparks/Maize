@@ -26,7 +26,8 @@
 [CmdletBinding()]
 param(
     [string]$Preset = 'windows-llvm-mingw-release',
-    [string]$InstallDir = (Join-Path $HOME 'bin')
+    [string]$InstallDir = (Join-Path $HOME 'bin'),
+    [switch]$Headless
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,21 +38,35 @@ $RepoRoot  = Resolve-Path (Join-Path $ScriptDir '..')
 $BuildDir  = Join-Path $RepoRoot "build/$Preset"
 
 # --- SDL2 window backend (MAIZE_DISPLAY) ------------------------------------------
-# maize's --display window backend needs the vendored mingw SDL2 (dev config + DLL).
-# When it is present, configure with MAIZE_DISPLAY=ON and point find_package at it,
-# and install SDL2.dll next to maize.exe. When it is absent (a headless machine),
-# warn and build without the window backend rather than failing the build task.
+# maize's --display window backend needs the vendored mingw SDL2 (dev config + DLL)
+# under .toolchains/SDL2. This install is display-supporting BY DEFAULT: when the SDL2
+# libs are missing (fresh checkout, a clean, .toolchains wiped) they are auto-fetched
+# via bootstrap-sdl2.ps1 (pinned + SHA256-verified, the counterpart of
+# bootstrap-toolchain.ps1) rather than silently degrading to a headless maize. Pass
+# -Headless to opt out (e.g. a headless server). Both branches pass MAIZE_DISPLAY
+# EXPLICITLY: a bare configure would inherit a stale MAIZE_DISPLAY=ON from a prior
+# CMakeCache and then hard-fail find_package(SDL2 REQUIRED) once SDL2 went missing,
+# which was the recurring "install suddenly breaks" trap.
 $Sdl2Root     = Join-Path $RepoRoot '.toolchains/SDL2/x86_64-w64-mingw32'
 $Sdl2CmakeDir = Join-Path $Sdl2Root 'lib/cmake/SDL2'
 $Sdl2Dll      = Join-Path $Sdl2Root 'bin/SDL2.dll'
-$displayArgs  = @()
-$displayOn    = $false
-if (Test-Path $Sdl2CmakeDir) {
-    $displayOn   = $true
-    $displayArgs = @('-DMAIZE_DISPLAY=ON', "-DSDL2_DIR=$(($Sdl2CmakeDir) -replace '\\','/')")
+
+if ($Headless) {
+    Write-Warning "-Headless: building maize WITHOUT the --display window backend."
+    $displayOn   = $false
+    $displayArgs = @('-DMAIZE_DISPLAY=OFF')
 }
 else {
-    Write-Warning "Vendored SDL2 not found at $Sdl2CmakeDir; building headless (no --display window). Fetch the SDL2 toolchain to enable the window backend."
+    if (-not (Test-Path $Sdl2CmakeDir)) {
+        Write-Host "Vendored SDL2 not found at $Sdl2CmakeDir; fetching it via bootstrap-sdl2.ps1 ..."
+        & (Join-Path $ScriptDir 'bootstrap-sdl2.ps1')
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $Sdl2CmakeDir)) {
+            Write-Error "SDL2 provisioning failed (bootstrap-sdl2.ps1 exit $LASTEXITCODE). The --display build requires SDL2; run 'scripts/bootstrap-sdl2.ps1' to diagnose, or pass -Headless to build without the window backend. Refusing to silently build a headless maize."
+            exit 2
+        }
+    }
+    $displayOn   = $true
+    $displayArgs = @('-DMAIZE_DISPLAY=ON', "-DSDL2_DIR=$(($Sdl2CmakeDir) -replace '\\','/')")
 }
 
 # --- Resolve cmake the same way run-tests.ps1 does ------------------------------

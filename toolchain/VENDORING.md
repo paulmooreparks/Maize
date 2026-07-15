@@ -48,6 +48,28 @@ in-tree vendored copies.
 The qbe pin (`4420727`, master) is a stable snapshot; bump it when the Maize target
 needs a newer qbe.
 
+## SDL2 (Windows `--display` window backend)
+
+The maize VM's opt-in `--display` window backend (`MAIZE_DISPLAY=ON`, `src/devices.cpp`)
+links SDL2. On Linux/macOS SDL2 comes from the system package manager
+(`libsdl2-dev` / `sdl2-config`). On Windows it is a pinned, downloaded dependency,
+NOT a submodule and NOT committed, fetched into the gitignored `.toolchains/SDL2/`
+by `scripts/bootstrap-sdl2.ps1` (the SDL2 counterpart of
+`scripts/bootstrap-toolchain.ps1` for llvm-mingw).
+
+| Dep  | Path (Windows)                          | Source                                   | Pinned version | SHA256 (asset) | License |
+|------|-----------------------------------------|------------------------------------------|----------------|----------------|---------|
+| SDL2 | `.toolchains/SDL2/x86_64-w64-mingw32/`  | github.com/libsdl-org/SDL (mingw devel)  | `2.32.8`       | `2f0a74c2…7249e2` (`SDL2-devel-2.32.8-mingw.zip`) | zlib |
+
+`scripts/install-mazm.ps1` auto-invokes `bootstrap-sdl2.ps1` when the SDL2 dir is
+missing and refuses to silently degrade to a headless maize (pass `-Headless` to opt
+out). This closes the recurring "install suddenly breaks" trap: previously SDL2 was a
+manually-placed, unpinned, undocumented directory with no fetch script, so when it
+was cleaned or lost, `find_package(SDL2 REQUIRED)` hard-failed the configure and the
+whole tool install died. To bump the pin: change `$Version` + `$Sha256` in
+`bootstrap-sdl2.ps1` together (recompute the hash with `Get-FileHash` on the asset).
+2.32.x is the final SDL2 (2.x) series.
+
 ## Fresh-clone / build
 
 ```

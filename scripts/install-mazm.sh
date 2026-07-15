@@ -19,12 +19,16 @@ fi
 
 # Enable the maize SDL2 window backend (--display) when system SDL2 dev files are
 # present; otherwise build headless rather than failing the task on a server host.
-display_args=()
+# MAIZE_DISPLAY is passed EXPLICITLY either way: a bare configure would inherit a
+# stale MAIZE_DISPLAY=ON from a prior CMakeCache and then hard-fail find_package(SDL2)
+# once system SDL2 went missing. (On Windows install-mazm.ps1 instead auto-fetches a
+# vendored SDL2; on Linux/WSL, SDL2 comes from the system package manager.)
 if command -v sdl2-config >/dev/null 2>&1 || pkg-config --exists sdl2 2>/dev/null; then
     display_args=(-DMAIZE_DISPLAY=ON)
     echo "SDL2 found; building maize with the --display window backend."
 else
-    echo "note: SDL2 dev files not found; building headless (no --display window)." >&2
+    display_args=(-DMAIZE_DISPLAY=OFF)
+    echo "note: SDL2 dev files not found; building headless (no --display window). Install libsdl2-dev to enable it." >&2
 fi
 
 # Always reconfigure (idempotent) so the display cache var is applied even to a build
