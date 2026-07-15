@@ -749,6 +749,28 @@ namespace maize {
                 return (src.w0 & static_cast<u_word>(mask)) >> off;
             }
 
+            /* card maize-198: sign-extending subregister read, the value-returning
+               twin of copy_regval_reg's source handling. The in-place ALU handlers
+               read the source operand of a register-register op directly (no staging
+               bank), and the source must be sign-extended from its OWN encoded subreg
+               width to a full word BEFORE the op body truncates it to the destination
+               width (Decision D3): when src and dst widths differ (e.g. ADD R0.B0,
+               R1.W0), copy_regval_reg used to sign-extend the narrow source, and that
+               is real observable behavior. Uses the identical subreg_sign_bit[] /
+               subreg_neg_bits[] tables copy_regval_reg uses, so the extended value is
+               bit-identical. read_subreg_bits (zero-extending) is used for the
+               destination read, where op_size always equals the destination's own
+               width, so no extension hazard exists there. */
+            u_word read_subreg_signext(reg_value const &src, subreg_enum src_subreg) {
+                auto off = subreg_offset_map[static_cast<size_t>(src_subreg)];
+                auto mask = subreg_mask_map[static_cast<size_t>(src_subreg)];
+                u_word value = (src.w0 & static_cast<u_word>(mask)) >> off;
+                if (value & subreg_sign_bit[static_cast<int>(src_subreg)]) {
+                    value |= subreg_neg_bits[static_cast<int>(src_subreg)];
+                }
+                return value;
+            }
+
             /* card maize-180 (§9 RF-write closure). Single choke point for every guest
                register-destination write: if the destination register is RF and the CPU
                is in user mode (privilege_flag clear), the privileged RF.H1 bits
@@ -3256,6 +3278,417 @@ namespace maize {
             }
         }
 
+        /* ---- card maize-198: in-place, per-op ALU computation functions ---------------
+           Each function below is the width-specialized body lifted VERBATIM from the
+           corresponding run_alu case, with two mechanical substitutions: the shared
+           alu.op1_reg / alu.op2_reg staging-bank reads become the passed-in src_in /
+           dst_in locals (truncated per width exactly as the run_alu case read
+           alu.op1_reg.b0/q0/h0/w0 and alu.op2_reg.b0/q0/h0/w0), and the
+           `alu.op2_reg.w0 = result` store becomes the returned value. Every function
+           still calls stage_pending_flags(op_kind, op_size, dst_before, src, result)
+           with the identical arguments run_alu staged, so materialize_flags()
+           (maize-197) yields bit-identical flags; flags are NOT computed eagerly.
+
+           op_kind is passed rather than hardcoded so CMP can reuse alu_sub and TEST can
+           reuse alu_and while each stages under its own opcode (Decision D5), mirroring
+           run_alu's shared case blocks (cmp/cmpind share sub's; test/testind share
+           and's). src_in arrives already sign-extended from its own encoded subreg
+           width to a full word (Decision D3). The caller writes the returned value back
+           via write_subreg_bits EXCEPT for CMP/TEST, which discard it (Decision D2, the
+           in-place replacement for the alu_op2_entry snapshot/restore). run_alu() and
+           the alu.op1_reg/op2_reg staging bank stay in place for the out-of-scope call
+           sites (unary INC/DEC/NOT/NEG, CMPIND/TESTIND, LEA, MULW/UMULW, FP). */
+
+        u_word alu_add(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            /* Carry (C) is the unsigned carry-out; overflow (V) is the signed-overflow
+               test (same-sign operands, result sign differs). See card maize-1.
+               Flags deferred: staged here, resolved by materialize_flags (maize-197). */
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte dst_before = static_cast<u_byte>(dst_in); u_byte src = static_cast<u_byte>(src_in);
+                    u_byte result = dst_before + src; ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 2: { u_qword dst_before = static_cast<u_qword>(dst_in); u_qword src = static_cast<u_qword>(src_in);
+                    u_qword result = dst_before + src; ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 4: { u_hword dst_before = static_cast<u_hword>(dst_in); u_hword src = static_cast<u_hword>(src_in);
+                    u_hword result = dst_before + src; ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 8: { u_word dst_before = dst_in; u_word src = src_in;
+                    u_word result = dst_before + src; ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+            }
+            return ret;
+        }
+
+        u_word alu_sub(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            /* Carry (C) is the unsigned borrow (x86 convention: C=1 means dst_before <u src);
+               overflow (V) is the signed-overflow test. See card maize-1. Also serves CMP
+               (op_kind = cmp_opcode), whose caller discards the result. */
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte dst_before = static_cast<u_byte>(dst_in); u_byte src = static_cast<u_byte>(src_in);
+                    u_byte result = dst_before - src; ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 2: { u_qword dst_before = static_cast<u_qword>(dst_in); u_qword src = static_cast<u_qword>(src_in);
+                    u_qword result = dst_before - src; ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 4: { u_hword dst_before = static_cast<u_hword>(dst_in); u_hword src = static_cast<u_hword>(src_in);
+                    u_hword result = dst_before - src; ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 8: { u_word dst_before = dst_in; u_word src = src_in;
+                    u_word result = dst_before - src; ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+            }
+            return ret;
+        }
+
+        u_word alu_adc(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            /* Add with carry: dst + src + C (card maize-6). card maize-197: the carry-in
+               read is a flag CONSUMER; resolve any deferred flags before reading
+               carryout_flag, then stage ADC's own descriptor (result bakes in the carry). */
+            materialize_flags();
+            unsigned carry_in = (bool)carryout_flag ? 1u : 0u;
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte dst_before = static_cast<u_byte>(dst_in); u_byte src = static_cast<u_byte>(src_in);
+                    u_byte sum1 = dst_before + src; u_byte result = sum1 + static_cast<u_byte>(carry_in); ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 2: { u_qword dst_before = static_cast<u_qword>(dst_in); u_qword src = static_cast<u_qword>(src_in);
+                    u_qword sum1 = dst_before + src; u_qword result = sum1 + static_cast<u_qword>(carry_in); ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 4: { u_hword dst_before = static_cast<u_hword>(dst_in); u_hword src = static_cast<u_hword>(src_in);
+                    u_hword sum1 = dst_before + src; u_hword result = sum1 + static_cast<u_hword>(carry_in); ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 8: { u_word dst_before = dst_in; u_word src = src_in;
+                    u_word sum1 = dst_before + src; u_word result = sum1 + static_cast<u_word>(carry_in); ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+            }
+            return ret;
+        }
+
+        u_word alu_sbb(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            /* Subtract with borrow: dst - src - C (card maize-6). Same carry-in-consumer
+               ordering as ADC (materialize before reading carryout_flag). */
+            materialize_flags();
+            unsigned borrow_in = (bool)carryout_flag ? 1u : 0u;
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte dst_before = static_cast<u_byte>(dst_in); u_byte src = static_cast<u_byte>(src_in);
+                    u_byte diff1 = dst_before - src; u_byte result = diff1 - static_cast<u_byte>(borrow_in); ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 2: { u_qword dst_before = static_cast<u_qword>(dst_in); u_qword src = static_cast<u_qword>(src_in);
+                    u_qword diff1 = dst_before - src; u_qword result = diff1 - static_cast<u_qword>(borrow_in); ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 4: { u_hword dst_before = static_cast<u_hword>(dst_in); u_hword src = static_cast<u_hword>(src_in);
+                    u_hword diff1 = dst_before - src; u_hword result = diff1 - static_cast<u_hword>(borrow_in); ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 8: { u_word dst_before = dst_in; u_word src = src_in;
+                    u_word diff1 = dst_before - src; u_word result = diff1 - static_cast<u_word>(borrow_in); ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+            }
+            return ret;
+        }
+
+        u_word alu_mul(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            /* Overflow (V) is the signed-overflow test on the pre-op operands; C mirrors V.
+               materialize_flags recomputes ovf from the stored operands (maize-197). */
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte dst_before = static_cast<u_byte>(dst_in); u_byte src = static_cast<u_byte>(src_in);
+                    u_byte result = dst_before * src; ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 2: { u_qword dst_before = static_cast<u_qword>(dst_in); u_qword src = static_cast<u_qword>(src_in);
+                    u_qword result = dst_before * src; ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 4: { u_hword dst_before = static_cast<u_hword>(dst_in); u_hword src = static_cast<u_hword>(src_in);
+                    u_hword result = dst_before * src; ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+                case 8: { u_word dst_before = dst_in; u_word src = src_in;
+                    u_word result = dst_before * src; ret = result;
+                    stage_pending_flags(op_kind, op_size, dst_before, src, result); break; }
+            }
+            return ret;
+        }
+
+        u_word alu_div(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            /* Signed division (card maize-5). C/V cleared; N/Z from the result. Divide-by-
+               zero and INT_MIN/-1 overflow trap BEFORE any destination write. */
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { s_byte divisor = static_cast<u_byte>(src_in); s_byte dividend = static_cast<u_byte>(dst_in);
+                    if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                    if (divisor == -1 && dividend == std::numeric_limits<s_byte>::min()) { raise_divide_error("signed division overflow"); }
+                    s_byte result = dividend / divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_byte>(result)); ret = static_cast<u_byte>(result); break; }
+                case 2: { s_qword divisor = static_cast<u_qword>(src_in); s_qword dividend = static_cast<u_qword>(dst_in);
+                    if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                    if (divisor == -1 && dividend == std::numeric_limits<s_qword>::min()) { raise_divide_error("signed division overflow"); }
+                    s_qword result = dividend / divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_qword>(result)); ret = static_cast<u_qword>(result); break; }
+                case 4: { s_hword divisor = static_cast<u_hword>(src_in); s_hword dividend = static_cast<u_hword>(dst_in);
+                    if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                    if (divisor == -1 && dividend == std::numeric_limits<s_hword>::min()) { raise_divide_error("signed division overflow"); }
+                    s_hword result = dividend / divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_hword>(result)); ret = static_cast<u_hword>(result); break; }
+                case 8: { s_word divisor = src_in; s_word dividend = dst_in;
+                    if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                    if (divisor == -1 && dividend == std::numeric_limits<s_word>::min()) { raise_divide_error("signed division overflow"); }
+                    s_word result = dividend / divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, result); ret = static_cast<u_word>(result); break; }
+            }
+            return ret;
+        }
+
+        u_word alu_mod(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            /* Signed remainder (card maize-5). Same trap cases as signed DIV. */
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { s_byte divisor = static_cast<u_byte>(src_in); s_byte dividend = static_cast<u_byte>(dst_in);
+                    if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                    if (divisor == -1 && dividend == std::numeric_limits<s_byte>::min()) { raise_divide_error("signed division overflow"); }
+                    s_byte result = dividend % divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_byte>(result)); ret = static_cast<u_byte>(result); break; }
+                case 2: { s_qword divisor = static_cast<u_qword>(src_in); s_qword dividend = static_cast<u_qword>(dst_in);
+                    if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                    if (divisor == -1 && dividend == std::numeric_limits<s_qword>::min()) { raise_divide_error("signed division overflow"); }
+                    s_qword result = dividend % divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_qword>(result)); ret = static_cast<u_qword>(result); break; }
+                case 4: { s_hword divisor = static_cast<u_hword>(src_in); s_hword dividend = static_cast<u_hword>(dst_in);
+                    if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                    if (divisor == -1 && dividend == std::numeric_limits<s_hword>::min()) { raise_divide_error("signed division overflow"); }
+                    s_hword result = dividend % divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_hword>(result)); ret = static_cast<u_hword>(result); break; }
+                case 8: { s_word divisor = src_in; s_word dividend = dst_in;
+                    if (divisor == 0) { raise_divide_error("signed divide by zero"); }
+                    if (divisor == -1 && dividend == std::numeric_limits<s_word>::min()) { raise_divide_error("signed division overflow"); }
+                    s_word result = dividend % divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, result); ret = static_cast<u_word>(result); break; }
+            }
+            return ret;
+        }
+
+        u_word alu_udiv(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            /* Unsigned division (card maize-5). Divide-by-zero traps. */
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte divisor = static_cast<u_byte>(src_in);
+                    if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                    u_byte result = static_cast<u_byte>(dst_in) / divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_byte>(result)); ret = result; break; }
+                case 2: { u_qword divisor = static_cast<u_qword>(src_in);
+                    if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                    u_qword result = static_cast<u_qword>(dst_in) / divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_qword>(result)); ret = result; break; }
+                case 4: { u_hword divisor = static_cast<u_hword>(src_in);
+                    if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                    u_hword result = static_cast<u_hword>(dst_in) / divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_hword>(result)); ret = result; break; }
+                case 8: { u_word divisor = src_in;
+                    if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                    u_word result = dst_in / divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, result); ret = result; break; }
+            }
+            return ret;
+        }
+
+        u_word alu_umod(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            /* Unsigned remainder (card maize-5). Divide-by-zero traps. */
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte divisor = static_cast<u_byte>(src_in);
+                    if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                    u_byte result = static_cast<u_byte>(dst_in) % divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_byte>(result)); ret = result; break; }
+                case 2: { u_qword divisor = static_cast<u_qword>(src_in);
+                    if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                    u_qword result = static_cast<u_qword>(dst_in) % divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_qword>(result)); ret = result; break; }
+                case 4: { u_hword divisor = static_cast<u_hword>(src_in);
+                    if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                    u_hword result = static_cast<u_hword>(dst_in) % divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_hword>(result)); ret = result; break; }
+                case 8: { u_word divisor = src_in;
+                    if (divisor == 0) { raise_divide_error("unsigned divide by zero"); }
+                    u_word result = dst_in % divisor;
+                    stage_pending_flags(op_kind, op_size, 0, 0, result); ret = result; break; }
+            }
+            return ret;
+        }
+
+        u_word alu_and(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            /* Logic: Z/N from result, C/V cleared. Also serves TEST (op_kind = test_opcode),
+               whose caller discards the result. */
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte result = static_cast<u_byte>(dst_in) & static_cast<u_byte>(src_in);
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_byte>(result)); ret = result; break; }
+                case 2: { u_qword result = static_cast<u_qword>(dst_in) & static_cast<u_qword>(src_in);
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_qword>(result)); ret = result; break; }
+                case 4: { u_hword result = static_cast<u_hword>(dst_in) & static_cast<u_hword>(src_in);
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_hword>(result)); ret = result; break; }
+                case 8: { u_word result = dst_in & src_in;
+                    stage_pending_flags(op_kind, op_size, 0, 0, result); ret = result; break; }
+            }
+            return ret;
+        }
+
+        u_word alu_or(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte result = static_cast<u_byte>(dst_in) | static_cast<u_byte>(src_in);
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_byte>(result)); ret = result; break; }
+                case 2: { u_qword result = static_cast<u_qword>(dst_in) | static_cast<u_qword>(src_in);
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_qword>(result)); ret = result; break; }
+                case 4: { u_hword result = static_cast<u_hword>(dst_in) | static_cast<u_hword>(src_in);
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_hword>(result)); ret = result; break; }
+                case 8: { u_word result = dst_in | src_in;
+                    stage_pending_flags(op_kind, op_size, 0, 0, result); ret = result; break; }
+            }
+            return ret;
+        }
+
+        u_word alu_nor(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte result = ~(static_cast<u_byte>(dst_in) | static_cast<u_byte>(src_in));
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_byte>(result)); ret = result; break; }
+                case 2: { u_qword result = ~(static_cast<u_qword>(dst_in) | static_cast<u_qword>(src_in));
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_qword>(result)); ret = result; break; }
+                case 4: { u_hword result = ~(static_cast<u_hword>(dst_in) | static_cast<u_hword>(src_in));
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_hword>(result)); ret = result; break; }
+                case 8: { u_word result = ~(dst_in | src_in);
+                    stage_pending_flags(op_kind, op_size, 0, 0, result); ret = result; break; }
+            }
+            return ret;
+        }
+
+        u_word alu_nand(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte result = ~(static_cast<u_byte>(dst_in) & static_cast<u_byte>(src_in));
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_byte>(result)); ret = result; break; }
+                case 2: { u_qword result = ~(static_cast<u_qword>(dst_in) & static_cast<u_qword>(src_in));
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_qword>(result)); ret = result; break; }
+                case 4: { u_hword result = ~(static_cast<u_hword>(dst_in) & static_cast<u_hword>(src_in));
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_hword>(result)); ret = result; break; }
+                case 8: { u_word result = ~(dst_in & src_in);
+                    stage_pending_flags(op_kind, op_size, 0, 0, result); ret = result; break; }
+            }
+            return ret;
+        }
+
+        u_word alu_xor(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte result = static_cast<u_byte>(dst_in) ^ static_cast<u_byte>(src_in);
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_byte>(result)); ret = result; break; }
+                case 2: { u_qword result = static_cast<u_qword>(dst_in) ^ static_cast<u_qword>(src_in);
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_qword>(result)); ret = result; break; }
+                case 4: { u_hword result = static_cast<u_hword>(dst_in) ^ static_cast<u_hword>(src_in);
+                    stage_pending_flags(op_kind, op_size, 0, 0, static_cast<u_hword>(result)); ret = result; break; }
+                case 8: { u_word result = dst_in ^ src_in;
+                    stage_pending_flags(op_kind, op_size, 0, 0, result); ret = result; break; }
+            }
+            return ret;
+        }
+
+        /* Shift count edge cases (cards maize-1 / maize-31): n==0 leaves the destination
+           value unchanged (a same-value write, per open_question 8826) and stages NO flags,
+           so a still-pending descriptor from a prior instruction is neither clobbered nor
+           superseded; 1<=n<=bits shifts normally; n>bits (SHL/SHR) yields 0. Never pass an
+           out-of-range count to C++'s shift operators. Returns dst_before for n==0. */
+        u_word alu_shl(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte dst_before = static_cast<u_byte>(dst_in); u_word n = static_cast<u_byte>(src_in); const u_word bits = 8;
+                    if (n == 0) { ret = dst_before; }
+                    else if (n <= bits) { u_byte result = (n == bits) ? u_byte(0) : u_byte(dst_before << n); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); }
+                    else { ret = 0; stage_pending_flags(op_kind, op_size, dst_before, n, 0); } break; }
+                case 2: { u_qword dst_before = static_cast<u_qword>(dst_in); u_word n = static_cast<u_qword>(src_in); const u_word bits = 16;
+                    if (n == 0) { ret = dst_before; }
+                    else if (n <= bits) { u_qword result = (n == bits) ? u_qword(0) : u_qword(dst_before << n); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); }
+                    else { ret = 0; stage_pending_flags(op_kind, op_size, dst_before, n, 0); } break; }
+                case 4: { u_hword dst_before = static_cast<u_hword>(dst_in); u_word n = static_cast<u_hword>(src_in); const u_word bits = 32;
+                    if (n == 0) { ret = dst_before; }
+                    else if (n <= bits) { u_hword result = (n == bits) ? u_hword(0) : u_hword(dst_before << n); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); }
+                    else { ret = 0; stage_pending_flags(op_kind, op_size, dst_before, n, 0); } break; }
+                case 8: { u_word dst_before = dst_in; u_word n = src_in; const u_word bits = 64;
+                    if (n == 0) { ret = dst_before; }
+                    else if (n <= bits) { u_word result = (n == bits) ? u_word(0) : u_word(dst_before << n); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); }
+                    else { ret = 0; stage_pending_flags(op_kind, op_size, dst_before, n, 0); } break; }
+            }
+            return ret;
+        }
+
+        u_word alu_shr(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte dst_before = static_cast<u_byte>(dst_in); u_word n = static_cast<u_byte>(src_in); const u_word bits = 8;
+                    if (n == 0) { ret = dst_before; }
+                    else if (n <= bits) { u_byte result = (n == bits) ? u_byte(0) : u_byte(dst_before >> n); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); }
+                    else { ret = 0; stage_pending_flags(op_kind, op_size, dst_before, n, 0); } break; }
+                case 2: { u_qword dst_before = static_cast<u_qword>(dst_in); u_word n = static_cast<u_qword>(src_in); const u_word bits = 16;
+                    if (n == 0) { ret = dst_before; }
+                    else if (n <= bits) { u_qword result = (n == bits) ? u_qword(0) : u_qword(dst_before >> n); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); }
+                    else { ret = 0; stage_pending_flags(op_kind, op_size, dst_before, n, 0); } break; }
+                case 4: { u_hword dst_before = static_cast<u_hword>(dst_in); u_word n = static_cast<u_hword>(src_in); const u_word bits = 32;
+                    if (n == 0) { ret = dst_before; }
+                    else if (n <= bits) { u_hword result = (n == bits) ? u_hword(0) : u_hword(dst_before >> n); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); }
+                    else { ret = 0; stage_pending_flags(op_kind, op_size, dst_before, n, 0); } break; }
+                case 8: { u_word dst_before = dst_in; u_word n = src_in; const u_word bits = 64;
+                    if (n == 0) { ret = dst_before; }
+                    else if (n <= bits) { u_word result = (n == bits) ? u_word(0) : u_word(dst_before >> n); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); }
+                    else { ret = 0; stage_pending_flags(op_kind, op_size, dst_before, n, 0); } break; }
+            }
+            return ret;
+        }
+
+        u_word alu_sar(u_byte op_kind, u_byte op_size, u_word src_in, u_word dst_in) {
+            /* Arithmetic (sign-preserving) right shift (card maize-54). n==0 leaves the
+               value unchanged and stages no flags; n>=bits saturates to the sign fill. */
+            u_word ret = 0;
+            switch (op_size) {
+                case 1: { u_byte dst_before = static_cast<u_byte>(dst_in); u_word n = static_cast<u_byte>(src_in); const u_word bits = 8;
+                    bool sign = (dst_before >> (bits - 1)) & 1;
+                    if (n == 0) { ret = dst_before; }
+                    else if (n < bits) { u_byte result = u_byte(s_byte(dst_before) >> n); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); }
+                    else { u_byte result = sign ? u_byte(0xFF) : u_byte(0); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); } break; }
+                case 2: { u_qword dst_before = static_cast<u_qword>(dst_in); u_word n = static_cast<u_qword>(src_in); const u_word bits = 16;
+                    bool sign = (dst_before >> (bits - 1)) & 1;
+                    if (n == 0) { ret = dst_before; }
+                    else if (n < bits) { u_qword result = u_qword(s_qword(dst_before) >> n); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); }
+                    else { u_qword result = sign ? u_qword(0xFFFF) : u_qword(0); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); } break; }
+                case 4: { u_hword dst_before = static_cast<u_hword>(dst_in); u_word n = static_cast<u_hword>(src_in); const u_word bits = 32;
+                    bool sign = (dst_before >> (bits - 1)) & 1;
+                    if (n == 0) { ret = dst_before; }
+                    else if (n < bits) { u_hword result = u_hword(s_hword(dst_before) >> n); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); }
+                    else { u_hword result = sign ? u_hword(0xFFFFFFFF) : u_hword(0); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); } break; }
+                case 8: { u_word dst_before = dst_in; u_word n = src_in; const u_word bits = 64;
+                    bool sign = (dst_before >> (bits - 1)) & 1;
+                    if (n == 0) { ret = dst_before; }
+                    else if (n < bits) { u_word result = u_word(s_word(dst_before) >> n); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); }
+                    else { u_word result = sign ? u_word(0xFFFFFFFFFFFFFFFF) : u_word(0); ret = result;
+                        stage_pending_flags(op_kind, op_size, dst_before, n, result); } break; }
+            }
+            return ret;
+        }
+
         /* Floating-point arithmetic runner (card maize-122), the FP analogue of
            run_alu for the four two-operand arithmetic ops. The caller loads the
            src operand into alu.op1_reg and the dst operand into alu.op2_reg (both
@@ -3670,135 +4103,199 @@ namespace maize {
                         MAIZE_NEXT();
                     }
 
-                    LBL_add_regVal_reg:
-                    LBL_sub_regVal_reg:
-                    LBL_mul_regVal_reg:
-                    LBL_div_regVal_reg:
-                    LBL_mod_regVal_reg:
-                    LBL_udiv_regVal_reg:
-                    LBL_adc_regVal_reg:
-                    LBL_sbb_regVal_reg:
-                    LBL_umod_regVal_reg:
-                    LBL_and_regVal_reg:
-                    LBL_or_regVal_reg:
-                    LBL_nor_regVal_reg:
-                    LBL_nand_regVal_reg:
-                    LBL_xor_regVal_reg:
-                    LBL_shl_regVal_reg:
-                    LBL_shr_regVal_reg:
-                    LBL_sar_regVal_reg:
-                    LBL_cmp_regVal_reg:
-                    LBL_test_regVal_reg: {
-                        regs::rp.w0 += 2;
-                        copy_regval_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
-                        copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
-                        alu.b0 = regs::ri.b0;
-                        alu.b1 = op1_subreg_size();
-                        alu.b2 = op2_subreg_size();
-                        run_alu();
-                        /* The value writeback is flag-neutral (card maize-4), so the ALU's
-                           per-width C/N/V/Z stand as computed. */
-                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        MAIZE_NEXT();
+                    /* card maize-198: in-place, per-op ALU dispatch. Each of the four
+                       addressing-mode families gets ONE label per op (19 ops), replacing
+                       the old shared block that staged both operands into the alu.op1_reg/
+                       op2_reg bank and re-decoded the opcode through run_alu's switch. Each
+                       label now reads the source (sign-extended, Decision D3) and the
+                       destination directly, calls its width-specialized computation function
+                       ONCE (no second dispatch), and writes the result back with
+                       write_subreg_bits, EXCEPT CMP/TEST which discard it (Decision D2). The
+                       destination register accessor op2_reg() is invoked twice (dst read +
+                       writeback), preserving the maize-197 RF-materialize hook semantics
+                       exactly as the old two-copy-through-op2_reg() shape did. src/dst reads
+                       precede the ADC/SBB carry-in materialize inside the compute function,
+                       matching run_alu's relative ordering (cpu.cpp carryout read). */
+
+                    /* regVal_reg: source is a register, read directly (no staging bank). */
+#define MAIZE_ALU_RV(FN, OPK) { \
+                        regs::rp.w0 += 2; \
+                        u_word alu_src = read_subreg_signext(op1_reg(), op1_subreg_flag()); \
+                        u_byte alu_size = op2_subreg_size(); \
+                        u_word alu_dst = read_subreg_bits(op2_reg(), op2_subreg_flag()); \
+                        u_word alu_res = FN(OPK, alu_size, alu_src, alu_dst); \
+                        write_subreg_bits(op2_reg(), op2_subreg_flag(), alu_res); \
+                        MAIZE_NEXT(); \
+                    }
+#define MAIZE_ALU_RV_NW(FN, OPK) { \
+                        regs::rp.w0 += 2; \
+                        u_word alu_src = read_subreg_signext(op1_reg(), op1_subreg_flag()); \
+                        u_byte alu_size = op2_subreg_size(); \
+                        u_word alu_dst = read_subreg_bits(op2_reg(), op2_subreg_flag()); \
+                        (void) FN(OPK, alu_size, alu_src, alu_dst); \
+                        MAIZE_NEXT(); \
+                    }
+                    /* immVal_reg: source is an instruction-stream immediate, fetched (and
+                       sign-extended) by copy_memval_reg into the alu.op1_reg scratch exactly
+                       as before, then read back as a full word. */
+#define MAIZE_ALU_IV(FN, OPK) { \
+                        regs::rp.w0 += 2; \
+                        u_byte alu_src_size = op1_imm_size(); \
+                        copy_memval_reg(regs::rp.w0, alu_src_size, alu.op1_reg, subreg_enum::w0, access_kind::fetch); \
+                        u_word alu_src = alu.op1_reg.w0; \
+                        u_byte alu_size = op2_subreg_size(); \
+                        u_word alu_dst = read_subreg_bits(op2_reg(), op2_subreg_flag()); \
+                        u_word alu_res = FN(OPK, alu_size, alu_src, alu_dst); \
+                        regs::rp.w0 += alu_src_size; \
+                        write_subreg_bits(op2_reg(), op2_subreg_flag(), alu_res); \
+                        MAIZE_NEXT(); \
+                    }
+#define MAIZE_ALU_IV_NW(FN, OPK) { \
+                        regs::rp.w0 += 2; \
+                        u_byte alu_src_size = op1_imm_size(); \
+                        copy_memval_reg(regs::rp.w0, alu_src_size, alu.op1_reg, subreg_enum::w0, access_kind::fetch); \
+                        u_word alu_src = alu.op1_reg.w0; \
+                        u_byte alu_size = op2_subreg_size(); \
+                        u_word alu_dst = read_subreg_bits(op2_reg(), op2_subreg_flag()); \
+                        (void) FN(OPK, alu_size, alu_src, alu_dst); \
+                        regs::rp.w0 += alu_src_size; \
+                        MAIZE_NEXT(); \
+                    }
+                    /* regAddr_reg: source is loaded indirectly through a register by
+                       copy_regaddr_reg into the alu.op1_reg scratch. */
+#define MAIZE_ALU_RA(FN, OPK) { \
+                        regs::rp.w0 += 2; \
+                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0); \
+                        u_word alu_src = alu.op1_reg.w0; \
+                        u_byte alu_size = op2_subreg_size(); \
+                        u_word alu_dst = read_subreg_bits(op2_reg(), op2_subreg_flag()); \
+                        u_word alu_res = FN(OPK, alu_size, alu_src, alu_dst); \
+                        write_subreg_bits(op2_reg(), op2_subreg_flag(), alu_res); \
+                        MAIZE_NEXT(); \
+                    }
+#define MAIZE_ALU_RA_NW(FN, OPK) { \
+                        regs::rp.w0 += 2; \
+                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0); \
+                        u_word alu_src = alu.op1_reg.w0; \
+                        u_byte alu_size = op2_subreg_size(); \
+                        u_word alu_dst = read_subreg_bits(op2_reg(), op2_subreg_flag()); \
+                        (void) FN(OPK, alu_size, alu_src, alu_dst); \
+                        MAIZE_NEXT(); \
+                    }
+                    /* immAddr_reg: source is loaded indirectly through an immediate address
+                       by copy_memaddr_reg into the alu.op1_reg scratch. */
+#define MAIZE_ALU_IA(FN, OPK) { \
+                        regs::rp.w0 += 2; \
+                        u_byte alu_src_size = op1_imm_size(); \
+                        copy_memaddr_reg(regs::rp.w0, alu_src_size, alu.op1_reg, subreg_enum::w0); \
+                        u_word alu_src = alu.op1_reg.w0; \
+                        u_byte alu_size = op2_subreg_size(); \
+                        u_word alu_dst = read_subreg_bits(op2_reg(), op2_subreg_flag()); \
+                        u_word alu_res = FN(OPK, alu_size, alu_src, alu_dst); \
+                        regs::rp.w0 += alu_src_size; \
+                        write_subreg_bits(op2_reg(), op2_subreg_flag(), alu_res); \
+                        MAIZE_NEXT(); \
+                    }
+#define MAIZE_ALU_IA_NW(FN, OPK) { \
+                        regs::rp.w0 += 2; \
+                        u_byte alu_src_size = op1_imm_size(); \
+                        copy_memaddr_reg(regs::rp.w0, alu_src_size, alu.op1_reg, subreg_enum::w0); \
+                        u_word alu_src = alu.op1_reg.w0; \
+                        u_byte alu_size = op2_subreg_size(); \
+                        u_word alu_dst = read_subreg_bits(op2_reg(), op2_subreg_flag()); \
+                        (void) FN(OPK, alu_size, alu_src, alu_dst); \
+                        regs::rp.w0 += alu_src_size; \
+                        MAIZE_NEXT(); \
                     }
 
-                    LBL_add_immVal_reg:
-                    LBL_sub_immVal_reg:
-                    LBL_mul_immVal_reg:
-                    LBL_div_immVal_reg:
-                    LBL_mod_immVal_reg:
-                    LBL_udiv_immVal_reg:
-                    LBL_adc_immVal_reg:
-                    LBL_sbb_immVal_reg:
-                    LBL_umod_immVal_reg:
-                    LBL_and_immVal_reg:
-                    LBL_or_immVal_reg:
-                    LBL_nor_immVal_reg:
-                    LBL_nand_immVal_reg:
-                    LBL_xor_immVal_reg:
-                    LBL_shl_immVal_reg:
-                    LBL_shr_immVal_reg:
-                    LBL_sar_immVal_reg:
-                    LBL_cmp_immVal_reg:
-                    LBL_test_immVal_reg: {
-                        regs::rp.w0 += 2;
-                        u_byte src_size = op1_imm_size();
-                        copy_memval_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0, access_kind::fetch);
-                        copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
-                        alu.b0 = regs::ri.b0;
-                        alu.b1 = src_size;
-                        alu.b2 = op2_subreg_size();
-                        run_alu();
-                        regs::rp.w0 += src_size;
-                        /* Value writeback is flag-neutral (card maize-4); the ALU's flags stand. */
-                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        MAIZE_NEXT();
-                    }
+                    LBL_add_regVal_reg:  MAIZE_ALU_RV(alu_add,  instr::add_opcode)
+                    LBL_sub_regVal_reg:  MAIZE_ALU_RV(alu_sub,  instr::sub_opcode)
+                    LBL_mul_regVal_reg:  MAIZE_ALU_RV(alu_mul,  instr::mul_opcode)
+                    LBL_div_regVal_reg:  MAIZE_ALU_RV(alu_div,  instr::div_opcode)
+                    LBL_mod_regVal_reg:  MAIZE_ALU_RV(alu_mod,  instr::mod_opcode)
+                    LBL_udiv_regVal_reg: MAIZE_ALU_RV(alu_udiv, instr::udiv_opcode)
+                    LBL_adc_regVal_reg:  MAIZE_ALU_RV(alu_adc,  instr::adc_opcode)
+                    LBL_sbb_regVal_reg:  MAIZE_ALU_RV(alu_sbb,  instr::sbb_opcode)
+                    LBL_umod_regVal_reg: MAIZE_ALU_RV(alu_umod, instr::umod_opcode)
+                    LBL_and_regVal_reg:  MAIZE_ALU_RV(alu_and,  instr::and_opcode)
+                    LBL_or_regVal_reg:   MAIZE_ALU_RV(alu_or,   instr::or_opcode)
+                    LBL_nor_regVal_reg:  MAIZE_ALU_RV(alu_nor,  instr::nor_opcode)
+                    LBL_nand_regVal_reg: MAIZE_ALU_RV(alu_nand, instr::nand_opcode)
+                    LBL_xor_regVal_reg:  MAIZE_ALU_RV(alu_xor,  instr::xor_opcode)
+                    LBL_shl_regVal_reg:  MAIZE_ALU_RV(alu_shl,  instr::shl_opcode)
+                    LBL_shr_regVal_reg:  MAIZE_ALU_RV(alu_shr,  instr::shr_opcode)
+                    LBL_sar_regVal_reg:  MAIZE_ALU_RV(alu_sar,  instr::sar_opcode)
+                    LBL_cmp_regVal_reg:  MAIZE_ALU_RV_NW(alu_sub, instr::cmp_opcode)
+                    LBL_test_regVal_reg: MAIZE_ALU_RV_NW(alu_and, instr::test_opcode)
 
-                    LBL_add_regAddr_reg:
-                    LBL_sub_regAddr_reg:
-                    LBL_mul_regAddr_reg:
-                    LBL_div_regAddr_reg:
-                    LBL_mod_regAddr_reg:
-                    LBL_udiv_regAddr_reg:
-                    LBL_adc_regAddr_reg:
-                    LBL_sbb_regAddr_reg:
-                    LBL_umod_regAddr_reg:
-                    LBL_and_regAddr_reg:
-                    LBL_or_regAddr_reg:
-                    LBL_nor_regAddr_reg:
-                    LBL_nand_regAddr_reg:
-                    LBL_xor_regAddr_reg:
-                    LBL_shl_regAddr_reg:
-                    LBL_shr_regAddr_reg:
-                    LBL_sar_regAddr_reg:
-                    LBL_cmp_regAddr_reg:
-                    LBL_test_regAddr_reg: {
-                        regs::rp.w0 += 2;
-                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0);
-                        copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
-                        alu.b0 = regs::ri.b0;
-                        alu.b1 = op1_subreg_size();
-                        alu.b2 = op2_subreg_size();
-                        run_alu();
-                        /* The value writeback is flag-neutral (card maize-4), so the ALU's
-                           per-width C/N/V/Z stand as computed. */
-                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        MAIZE_NEXT();
-                    }
+                    LBL_add_immVal_reg:  MAIZE_ALU_IV(alu_add,  instr::add_opcode)
+                    LBL_sub_immVal_reg:  MAIZE_ALU_IV(alu_sub,  instr::sub_opcode)
+                    LBL_mul_immVal_reg:  MAIZE_ALU_IV(alu_mul,  instr::mul_opcode)
+                    LBL_div_immVal_reg:  MAIZE_ALU_IV(alu_div,  instr::div_opcode)
+                    LBL_mod_immVal_reg:  MAIZE_ALU_IV(alu_mod,  instr::mod_opcode)
+                    LBL_udiv_immVal_reg: MAIZE_ALU_IV(alu_udiv, instr::udiv_opcode)
+                    LBL_adc_immVal_reg:  MAIZE_ALU_IV(alu_adc,  instr::adc_opcode)
+                    LBL_sbb_immVal_reg:  MAIZE_ALU_IV(alu_sbb,  instr::sbb_opcode)
+                    LBL_umod_immVal_reg: MAIZE_ALU_IV(alu_umod, instr::umod_opcode)
+                    LBL_and_immVal_reg:  MAIZE_ALU_IV(alu_and,  instr::and_opcode)
+                    LBL_or_immVal_reg:   MAIZE_ALU_IV(alu_or,   instr::or_opcode)
+                    LBL_nor_immVal_reg:  MAIZE_ALU_IV(alu_nor,  instr::nor_opcode)
+                    LBL_nand_immVal_reg: MAIZE_ALU_IV(alu_nand, instr::nand_opcode)
+                    LBL_xor_immVal_reg:  MAIZE_ALU_IV(alu_xor,  instr::xor_opcode)
+                    LBL_shl_immVal_reg:  MAIZE_ALU_IV(alu_shl,  instr::shl_opcode)
+                    LBL_shr_immVal_reg:  MAIZE_ALU_IV(alu_shr,  instr::shr_opcode)
+                    LBL_sar_immVal_reg:  MAIZE_ALU_IV(alu_sar,  instr::sar_opcode)
+                    LBL_cmp_immVal_reg:  MAIZE_ALU_IV_NW(alu_sub, instr::cmp_opcode)
+                    LBL_test_immVal_reg: MAIZE_ALU_IV_NW(alu_and, instr::test_opcode)
 
-                    LBL_add_immAddr_reg:
-                    LBL_sub_immAddr_reg:
-                    LBL_mul_immAddr_reg:
-                    LBL_div_immAddr_reg:
-                    LBL_mod_immAddr_reg:
-                    LBL_udiv_immAddr_reg:
-                    LBL_adc_immAddr_reg:
-                    LBL_sbb_immAddr_reg:
-                    LBL_umod_immAddr_reg:
-                    LBL_and_immAddr_reg:
-                    LBL_or_immAddr_reg:
-                    LBL_nor_immAddr_reg:
-                    LBL_nand_immAddr_reg:
-                    LBL_xor_immAddr_reg:
-                    LBL_shl_immAddr_reg:
-                    LBL_shr_immAddr_reg:
-                    LBL_sar_immAddr_reg:
-                    LBL_cmp_immAddr_reg:
-                    LBL_test_immAddr_reg: {
-                        regs::rp.w0 += 2;
-                        u_byte src_size = op1_imm_size();
-                        copy_memaddr_reg(regs::rp.w0, src_size, alu.op1_reg, subreg_enum::w0);
-                        copy_regval_reg(op2_reg(), op2_subreg_flag(), alu.op2_reg, subreg_enum::w0);
-                        alu.b0 = regs::ri.b0;
-                        alu.b1 = src_size;
-                        alu.b2 = op2_subreg_size();
-                        run_alu();
-                        regs::rp.w0 += src_size;
-                        /* Value writeback is flag-neutral (card maize-4); the ALU's flags stand. */
-                        copy_regval_reg(alu.op2_reg, subreg_enum::w0, op2_reg(), op2_subreg_flag());
-                        MAIZE_NEXT();
-                    }
+                    LBL_add_regAddr_reg:  MAIZE_ALU_RA(alu_add,  instr::add_opcode)
+                    LBL_sub_regAddr_reg:  MAIZE_ALU_RA(alu_sub,  instr::sub_opcode)
+                    LBL_mul_regAddr_reg:  MAIZE_ALU_RA(alu_mul,  instr::mul_opcode)
+                    LBL_div_regAddr_reg:  MAIZE_ALU_RA(alu_div,  instr::div_opcode)
+                    LBL_mod_regAddr_reg:  MAIZE_ALU_RA(alu_mod,  instr::mod_opcode)
+                    LBL_udiv_regAddr_reg: MAIZE_ALU_RA(alu_udiv, instr::udiv_opcode)
+                    LBL_adc_regAddr_reg:  MAIZE_ALU_RA(alu_adc,  instr::adc_opcode)
+                    LBL_sbb_regAddr_reg:  MAIZE_ALU_RA(alu_sbb,  instr::sbb_opcode)
+                    LBL_umod_regAddr_reg: MAIZE_ALU_RA(alu_umod, instr::umod_opcode)
+                    LBL_and_regAddr_reg:  MAIZE_ALU_RA(alu_and,  instr::and_opcode)
+                    LBL_or_regAddr_reg:   MAIZE_ALU_RA(alu_or,   instr::or_opcode)
+                    LBL_nor_regAddr_reg:  MAIZE_ALU_RA(alu_nor,  instr::nor_opcode)
+                    LBL_nand_regAddr_reg: MAIZE_ALU_RA(alu_nand, instr::nand_opcode)
+                    LBL_xor_regAddr_reg:  MAIZE_ALU_RA(alu_xor,  instr::xor_opcode)
+                    LBL_shl_regAddr_reg:  MAIZE_ALU_RA(alu_shl,  instr::shl_opcode)
+                    LBL_shr_regAddr_reg:  MAIZE_ALU_RA(alu_shr,  instr::shr_opcode)
+                    LBL_sar_regAddr_reg:  MAIZE_ALU_RA(alu_sar,  instr::sar_opcode)
+                    LBL_cmp_regAddr_reg:  MAIZE_ALU_RA_NW(alu_sub, instr::cmp_opcode)
+                    LBL_test_regAddr_reg: MAIZE_ALU_RA_NW(alu_and, instr::test_opcode)
+
+                    LBL_add_immAddr_reg:  MAIZE_ALU_IA(alu_add,  instr::add_opcode)
+                    LBL_sub_immAddr_reg:  MAIZE_ALU_IA(alu_sub,  instr::sub_opcode)
+                    LBL_mul_immAddr_reg:  MAIZE_ALU_IA(alu_mul,  instr::mul_opcode)
+                    LBL_div_immAddr_reg:  MAIZE_ALU_IA(alu_div,  instr::div_opcode)
+                    LBL_mod_immAddr_reg:  MAIZE_ALU_IA(alu_mod,  instr::mod_opcode)
+                    LBL_udiv_immAddr_reg: MAIZE_ALU_IA(alu_udiv, instr::udiv_opcode)
+                    LBL_adc_immAddr_reg:  MAIZE_ALU_IA(alu_adc,  instr::adc_opcode)
+                    LBL_sbb_immAddr_reg:  MAIZE_ALU_IA(alu_sbb,  instr::sbb_opcode)
+                    LBL_umod_immAddr_reg: MAIZE_ALU_IA(alu_umod, instr::umod_opcode)
+                    LBL_and_immAddr_reg:  MAIZE_ALU_IA(alu_and,  instr::and_opcode)
+                    LBL_or_immAddr_reg:   MAIZE_ALU_IA(alu_or,   instr::or_opcode)
+                    LBL_nor_immAddr_reg:  MAIZE_ALU_IA(alu_nor,  instr::nor_opcode)
+                    LBL_nand_immAddr_reg: MAIZE_ALU_IA(alu_nand, instr::nand_opcode)
+                    LBL_xor_immAddr_reg:  MAIZE_ALU_IA(alu_xor,  instr::xor_opcode)
+                    LBL_shl_immAddr_reg:  MAIZE_ALU_IA(alu_shl,  instr::shl_opcode)
+                    LBL_shr_immAddr_reg:  MAIZE_ALU_IA(alu_shr,  instr::shr_opcode)
+                    LBL_sar_immAddr_reg:  MAIZE_ALU_IA(alu_sar,  instr::sar_opcode)
+                    LBL_cmp_immAddr_reg:  MAIZE_ALU_IA_NW(alu_sub, instr::cmp_opcode)
+                    LBL_test_immAddr_reg: MAIZE_ALU_IA_NW(alu_and, instr::test_opcode)
+
+#undef MAIZE_ALU_RV
+#undef MAIZE_ALU_RV_NW
+#undef MAIZE_ALU_IV
+#undef MAIZE_ALU_IV_NW
+#undef MAIZE_ALU_RA
+#undef MAIZE_ALU_RA_NW
+#undef MAIZE_ALU_IA
+#undef MAIZE_ALU_IA_NW
 
                     /* Packed unary ALU family (card maize-64): INC ($31) / DEC ($71) /
                        NOT ($B1) / NEG ($F1) share base slot $31, distinguished by the
