@@ -1380,6 +1380,98 @@ run_doom_transition() {
 
 run_doom_transition
 
+# maize-156 DOOM ENGINE-LEVEL INPUT gate. Distinct from run_doom_render/run_doom_transition
+# (which boot the engine but inject ZERO keyboard input) and from run_doom_selfcheck (which
+# exercises DG_GetKey in isolation, no engine boot): this boots the WHOLE engine against the
+# synthetic min.wad AND injects real Set-1 scancodes through the SAME doomgeneric_maize.c
+# DG_GetKey path production input uses, then asserts the injected keys drove an in-SIM state
+# change. It closes the maize-155 gap (Ctrl mapped to a keycode no in-game binding matched
+# passed the render gate because nothing exercised in-game input end to end). Two MAKE-only
+# scancode bytes are piped on stdin via `maize --input=keyboard` (as run_doom_selfcheck does):
+# 0x48 (octal 110, KEY_UPARROW -> key_up) and 0x1D (octal 035, Ctrl -> KEY_FIRE, the exact
+# maize-155 physical key). A make with no break holds each binding down for the whole run, so
+# holding up moves the player (mo->x rises) and holding Ctrl fires the pistol (ammo[am_clip]
+# strictly decreases); the harness asserts BOTH within a bounded tick budget. Same non-
+# commercial min.wad, submodule-presence [SKIP] guard, --dev compile, mount, guest-argv and
+# MSYS2_ARG_CONV_EXCL='/ro' handling as run_doom_render. Gates on the exact "doom-input: PASS".
+run_doom_input() {
+    name="doom-input"
+    doom_dir="${REPO_ROOT}/demos/doom"
+    input_harness="${doom_dir}/doom_input_selfcheck.c"
+    platform="${doom_dir}/doomgeneric_maize.c"
+    sources="${doom_dir}/doom.sources"
+    generator="${doom_dir}/tools/make_min_iwad.c"
+    # Submodule presence probe: the doomgeneric core-loop TU. Absent => uninitialized.
+    probe="${doom_dir}/doomgeneric/doomgeneric/doomgeneric.c"
+
+    if [ ! -f "$probe" ]; then
+        echo "[SKIP] ${name}: demos/doom/doomgeneric submodule not initialized" \
+             "(run 'git submodule update --init demos/doom/doomgeneric'); skipping DOOM input gate"
+        return
+    fi
+
+    TOTAL=$((TOTAL + 1))
+
+    # System C compiler (mirrors run_doom_render): compile the committed generator and
+    # run it (non-commercial, single-room E1M1) into a dir we mount read-only at /ro.
+    gen_cc="${CC:-}"
+    if [ -z "$gen_cc" ]; then
+        if command -v cc >/dev/null 2>&1; then gen_cc=cc; else gen_cc=gcc; fi
+    fi
+    gen_exe="${WORK_DIR}/make_min_iwad_input"
+    if ! "$gen_cc" -O2 -o "$gen_exe" "$generator" >"${WORK_DIR}/doom-input.gen.log" 2>&1; then
+        echo "[FAIL] ${name}: min-IWAD generator failed to compile"
+        cat "${WORK_DIR}/doom-input.gen.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    waddir="${WORK_DIR}/doom-input-wad"
+    rm -rf "$waddir"; mkdir -p "$waddir"
+    if ! "$gen_exe" "${waddir}/min.wad" >>"${WORK_DIR}/doom-input.gen.log" 2>&1 \
+    || [ ! -f "${waddir}/min.wad" ]; then
+        echo "[FAIL] ${name}: min-IWAD generation failed"
+        cat "${WORK_DIR}/doom-input.gen.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    mzx="${WORK_DIR}/doom_input.mzx"
+    log="${WORK_DIR}/doom-input.cc.log"
+    rm -f "$mzx"
+    if ! "$CC_MAIZE" --preset "$PRESET" --dev \
+        -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
+        -o "$mzx" --sources "$sources" "$input_harness" "$platform" >"$log" 2>&1 \
+    || [ ! -f "$mzx" ]; then
+        echo "[FAIL] ${name}: input-gate C compile/link failed"; cat "$log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    nat=$(host_to_native "$waddir")
+    # Combine run_doom_selfcheck's scancode-on-stdin injection (`--input=keyboard`) with
+    # run_doom_render's mount + guest-argv shape. The make-only bytes 0x48 (up) and 0x1D
+    # (Ctrl/fire) hold both bindings down for the whole run. `-iwad /ro/min.wad` is a GUEST
+    # path; MSYS2_ARG_CONV_EXCL exempts /ro from the POSIX->Windows argv rewrite (see
+    # run_doom_render for the full rationale).
+    set +e
+    actual=$(printf '\110\035' \
+        | MSYS2_ARG_CONV_EXCL='/ro' "$MAIZE" --no-root --input=keyboard \
+            --mount "${nat}=/ro:ro" "$mzx" \
+            -iwad /ro/min.wad -warp 1 1 -nomonsters 2>/dev/null | grep -v '^$')
+    set -e
+
+    # The gate is the exact "doom-input: PASS" line (injected up moved the player AND
+    # injected Ctrl decremented clip ammo, both through the real DG_GetKey path).
+    if printf '%s\n' "$actual" | grep -qx "doom-input: PASS"; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected a \"doom-input: PASS\" line (injected key drove an in-sim change)"
+        echo "        actual:   \"$(printf '%s' "$actual" | tail -3 | tr '\n' '|')\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_doom_input
+
 # maize-138 multi-file compile/link: the primary-gate cross-object fixture, the
 # negative link-rejection case, and the two multi-source usage-error paths.
 run_multi_ctest "multifile" "multifile_main.c multifile_lib.c"

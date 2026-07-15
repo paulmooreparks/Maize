@@ -569,6 +569,22 @@ static int build_wad(Buf *wad, int commercial)
 
     strcpy(lumps[n].name, "S_START");  lumps[n++].key = K_NONE;
     strcpy(lumps[n].name, "PISGA0");   lumps[n++].key = K_PATCH;
+    /* maize-156 input-regression gate: holding fire drives the pistol weapon
+     * through its firing states (info.c S_PISTOL2/3 = SPR_PISG frames B and C,
+     * S_PISTOLFLASH = SPR_PISF frame A) and the hitscan spawns a bullet puff
+     * (MT_PUFF, SPR_PUFF frames A..D). R_DrawPSprite / R_ProjectSprite RANGECHECK
+     * each drawn frame against the sprite's numframes and I_Error if a frame lump
+     * is absent (observed: "R_ProjectSprite: invalid sprite frame 3 : 1" when only
+     * PISGA0 existed). These frames only need to EXIST (all reuse the one shared
+     * 8x8 K_PATCH); the render/transition gates never fire, so they stay on frame A
+     * and are unaffected. Rotation digit 0 = single rotation for all view angles. */
+    strcpy(lumps[n].name, "PISGB0");   lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "PISGC0");   lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "PISFA0");   lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "PUFFA0");   lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "PUFFB0");   lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "PUFFC0");   lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "PUFFD0");   lumps[n++].key = K_PATCH;
     strcpy(lumps[n].name, "PLAYA0");   lumps[n++].key = K_PATCH;
     strcpy(lumps[n].name, "S_END");    lumps[n++].key = K_NONE;
 
