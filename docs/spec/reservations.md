@@ -104,8 +104,14 @@ instruction's shape, at no cost to the free-slot count. These stay `reserved` an
 so the inventory is complete: the spare condition encodings `$D9` (Jcc) and `$ED` (SETcc),
 reserved for a future integer-overflow JO / JNO and SETO / SETNO; the reserved zero-operand
 row `$E7`; the reserved CPZ address-form rows `$93` and `$D3`; the FGETCSR / FSETCSR upper
-rows `$95` and `$D5`; the reserved FP rows `$E2`, `$F9`, `$BA`, `$FA`, `$B3`, `$F3`; and the
-reserved standalone byte `$E4`.
+rows `$95` and `$D5`; and the reserved FP rows `$E2`, `$F9`, `$BA`, `$FA`, `$B3`, `$F3`.
+
+The two spare rows of the `$24` INT slot, `$A4` and `$E4`, were allocated as the v1.x
+zero-operand pair SETSYSG / CLRSYSG (card maize-24): they set / clear the RF syscall-guest
+bit that selects whether `SYS` dispatches to the native provider (clear, the boot default)
+or traps through cause 7 to a guest-installed handler (set). This is a v1.x-compatible
+extension (default-clear preserves every v1.0 binary); the four free base slots stay
+reserved for their v1.x claimants.
 
 ## 2. Memory-ordering and atomics contract
 

@@ -257,6 +257,8 @@ namespace {
         add_zero_operand("SETCRY", instr_ns::setcry_opcode);
         add_zero_operand("CLRCRY", instr_ns::clrcry_opcode);
         add_zero_operand("CLRINT", instr_ns::clrint_opcode);
+        add_zero_operand("SETSYSG", instr_ns::setsysg_opcode);
+        add_zero_operand("CLRSYSG", instr_ns::clrsysg_opcode);
 
         add_zero_operand("NOP", instr_ns::nop_opcode);
         add_zero_operand("BRK", instr_ns::brk_opcode);

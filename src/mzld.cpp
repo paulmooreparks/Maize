@@ -205,6 +205,7 @@ static void print_usage(std::ostream &out) {
 		"options:\n"
 		"  -o <out.mzx>   output path for the linked executable (default: a.mzx)\n"
 		"  -e <entry>     entry-point symbol name (default: _start)\n"
+		"  -b <hex>       link base address in hex (default: 2000)\n"
 		"  -h, --help     show this help and exit\n"
 		"\n"
 		"At least one input .mzo object is required.\n";
@@ -214,6 +215,10 @@ int main(int argc, char *argv[]) {
 	std::string out_path = "a.mzx";
 	std::string entry_name = "_start";
 	std::vector<std::string> inputs;
+	/* card maize-24 (decision D8): the link base defaults to 0x2000 (see the layout
+	   comment below), overridable with -b <hex> so a resident image such as quesOS can
+	   link at a reserved non-default base clear of the 0x2000 children it execs. */
+	std::uint64_t image_base = 0x2000;
 
 	for (int i = 1; i < argc; ++i) {
 		std::string arg = argv[i];
@@ -226,6 +231,19 @@ int main(int argc, char *argv[]) {
 		}
 		else if (arg == "-e" && i + 1 < argc) {
 			entry_name = argv[++i];
+		}
+		else if (arg == "-b" && i + 1 < argc) {
+			std::string v = argv[++i];
+			std::size_t pos = 0;
+			try {
+				image_base = std::stoull(v, &pos, 16);
+			}
+			catch (...) {
+				return fail("invalid -b link base '" + v + "' (expected a hex address)");
+			}
+			if (pos != v.size()) {
+				return fail("invalid -b link base '" + v + "' (expected a hex address)");
+			}
 		}
 		else if (!arg.empty() && arg[0] == '-') {
 			return fail("unknown flag '" + arg + "'");
@@ -270,8 +288,10 @@ int main(int argc, char *argv[]) {
 	   occupy it. Laying out from 0 let any image larger than 4 KB overlap the table, so an
 	   interrupt-using C program corrupted itself (and non-interrupt programs only escaped
 	   because they never read the table). Start above the table, page-aligned; this also
-	   leaves [0, 0x2000) unmapped as a null-pointer guard. */
-	const std::uint64_t image_base = 0x2000;
+	   leaves [0, 0x2000) unmapped as a null-pointer guard. The base defaults to 0x2000
+	   and is overridable with -b <hex> (decision D8; parsed above). A non-default base
+	   is the caller's responsibility to keep clear of the vector table [0x1000, 0x1800)
+	   and of any other resident image it will share the flat address space with. */
 	const std::uint8_t order[] = { SEC_CODE, SEC_RODATA, SEC_DATA, SEC_BSS };
 	std::uint64_t cursor = image_base;
 	for (std::uint8_t k : order) {

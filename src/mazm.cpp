@@ -413,6 +413,8 @@ namespace {
         { "CLRINT", {cpu::instr::clrint_opcode , opcode_0param_tokenizer, no_operand_compiler}},
         { "SETCRY", {cpu::instr::setcry_opcode , opcode_0param_tokenizer, no_operand_compiler}},
         { "CLRCRY", {cpu::instr::clrcry_opcode , opcode_0param_tokenizer, no_operand_compiler}},
+        { "SETSYSG",{cpu::instr::setsysg_opcode, opcode_0param_tokenizer, no_operand_compiler}},
+        { "CLRSYSG",{cpu::instr::clrsysg_opcode, opcode_0param_tokenizer, no_operand_compiler}},
         { "SYS",    {cpu::instr::sys_opcode    , opcode_1param_tokenizer, regimm_compiler}},
         { "NOP",    {cpu::instr::nop_opcode    , opcode_0param_tokenizer, no_operand_compiler}},
         { "XCHG",   {cpu::instr::xchg_opcode   , opcode_2param_tokenizer, regimm_reg_compiler}},

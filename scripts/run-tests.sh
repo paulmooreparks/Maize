@@ -258,6 +258,7 @@ run_test "test_timer"        "test_timer.mazm"        "timer: PASS"             
 run_test "test_framebuffer"  "test_framebuffer.mazm"  "framebuffer: PASS"             0
 run_test "test_sysbrk"       "test_sysbrk.mazm"       "sysbrk: PASS"                  0
 run_test "test_syserrno"     "test_syserrno.mazm"     "syserrno: PASS"                0
+run_test "test_sysroute"     "test_sysroute.mazm"     "sysroute: PASS"                0
 run_test "test_tstind"       "test_tstind.mazm"       "tstind: PASS"                  0
 run_test "reject_bad_register"  "test_reject_badreg.mazm"        "unknown register 'R99'" 0 1
 run_test "reject_bad_literal"   "test_reject_badliteral.mazm"    "malformed hex literal"  0 1

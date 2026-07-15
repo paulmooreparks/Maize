@@ -887,6 +887,22 @@ namespace maize {
 			const opcode setcry_opcode {static_cast<opcode>(cond_row_2 | 0x29)}; // $A9
 			const opcode clrcry_opcode {static_cast<opcode>(cond_row_3 | 0x29)}; // $E9
 			const opcode clrint_opcode {static_cast<opcode>(cond_row_1 | 0x29)}; // $69
+
+			/* Syscall-provider mode select (card maize-24, decision D9 Shape B): two
+			   zero-operand set/clear ops mirroring SETINT/CLRINT. They toggle the RF
+			   syscall-guest bit (bit_syscall_guest) that selects which provider SYS
+			   dispatches to. CLEAR (boot default): SYS calls the native sys::call
+			   provider byte-identical to v1.0. SET: SYS traps through cause 7 to the
+			   guest-installed handler (deliver_vectored), the guest-owned dispatch path.
+			   quesOS sets the flag once its cause-7 handler is resident and toggles it
+			   clear/set around a re-issued SYS to pass file/IO calls through to native.
+			   Encoding: the two free reserved rows of the $24 INT (software-interrupt)
+			   slot, $A4 / $E4, an adjacent pair in the trap-model neighborhood. This
+			   spends no fully-free base slot ($26/$28/$37/$38 stay reserved for their
+			   v1.x claimants; $26/$28 feed the paging/segment control-register work in
+			   maize-180). Default-clear preserves every v1.0 binary (hello.mzb pinned). */
+			const opcode setsysg_opcode {static_cast<opcode>(cond_row_2 | 0x24)}; // $A4
+			const opcode clrsysg_opcode {static_cast<opcode>(cond_row_3 | 0x24)}; // $E4
 			/* DUP ($E4) and SWAP ($E5) are killed (card maize-64): header-only ghosts with
 			   no dispatch, mazm entry, or README row; removed before the freeze. */
 

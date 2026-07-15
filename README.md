@@ -1338,6 +1338,8 @@ bit 7 is interpreted as follows:
 
     %0010`0100  $24   INT       regVal          Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
     %0110`0100  $64   INT       immVal          Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
+    %1010`0100  $A4   SETSYSG                   Set the syscall-guest flag: route SYS through the cause-7 trap to the guest-installed handler (card maize-24)
+    %1110`0100  $E4   CLRSYSG                   Clear the syscall-guest flag: SYS calls the native provider directly (boot default; card maize-24)
 
     %0010`0110  $26                             reserved (v1.x privileged control-register access; see docs/spec/reservations.md)
 
@@ -1440,8 +1442,6 @@ bit 7 is interpreted as follows:
     %0111`0100  $74   SYS       immVal          Execute a system call using the immediate index
 
     %1110`0000  $E0   XCHG      reg     reg     Atomically exchange the values in two registers
-
-    %1110`0100  $E4                             reserved
 
     %1111`1111  $FF   BRK                       Breakpoint trap (cause 3; captures following-instruction PC; see Trap Model)
 
@@ -2147,7 +2147,7 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %1010`0001  $A1   FDIV      regAddr reg     FP divide destination register by value at address in source register
     %1010`0010  $A2   FABS      reg     reg     FP absolute value (sign-bit clear, exact, no flags) source register into destination register
     %1010`0011  $A3   FMADD     regAddr reg reg FP fused multiply-add: operand-3 = (value at address in operand 1) * operand-2 + operand-3
-    %1010`0100  $A4
+    %1010`0100  $A4   SETSYSG                   Set the syscall-guest flag: route SYS through the cause-7 trap to the guest-installed handler (card maize-24)
     %1010`0101  $A5   FMSUB     regAddr reg reg FP fused multiply-subtract: operand-3 = (value at address in operand 1) * operand-2 - operand-3
     %1010`0110  $A6
     %1010`0111  $A7   NOP                       No operation. Used as an instruction placeholder.
@@ -2211,7 +2211,7 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %1110`0001  $E1   FDIV      immAddr reg     FP divide destination register by value at immediate address
     %1110`0010  $E2                             reserved (FSQRT/FNEG/FABS slot, row 3)
     %1110`0011  $E3   FMADD     immAddr reg reg FP fused multiply-add: operand-3 = (value at immediate address) * operand-2 + operand-3
-    %1110`0100  $E4                             reserved
+    %1110`0100  $E4   CLRSYSG                   Clear the syscall-guest flag: SYS calls the native provider directly (boot default; card maize-24)
     %1110`0101  $E5   FMSUB     immAddr reg reg FP fused multiply-subtract: operand-3 = (value at immediate address) * operand-2 - operand-3
     %1110`0110  $E6
     %1110`0111  $E7                             reserved

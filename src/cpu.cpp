@@ -29,6 +29,7 @@ namespace maize {
             const u_word bit_interrupt_enabled =  0b0000000000000000000000000000001000000000000000000000000000000000;
             const u_word bit_interrupt_set =      0b0000000000000000000000000000010000000000000000000000000000000000;
             const u_word bit_running =            0b0000000000000000000000000000100000000000000000000000000000000000;
+            const u_word bit_syscall_guest =      0b0000000000000000000000000001000000000000000000000000000000000000;
 
             constexpr u_word subreg_sign_bit[] = {
                 0x0000000000000080,
@@ -531,6 +532,9 @@ namespace maize {
             flag<bit_sign> sign_flag {regs::rf};
             flag<bit_privilege> privilege_flag {regs::rf};
             flag<bit_interrupt_enabled> interrupt_enabled_flag {regs::rf};
+            /* card maize-24 (D9 Shape B): SET routes SYS through cause 7 to the guest
+               handler; CLEAR (boot default) keeps the native sys::call provider. */
+            flag<bit_syscall_guest> syscall_guest_flag {regs::rf};
             flag<bit_interrupt_set> interrupt_set_flag {regs::rf};
             flag<bit_running> running_flag {regs::rf};
 
@@ -3306,6 +3310,8 @@ namespace maize {
                 dtbl[instr::clrcry_opcode] = &&LBL_clrcry_opcode;
                 dtbl[instr::setint_opcode] = &&LBL_setint_opcode;
                 dtbl[instr::clrint_opcode] = &&LBL_clrint_opcode;
+                dtbl[instr::setsysg_opcode] = &&LBL_setsysg_opcode;
+                dtbl[instr::clrsysg_opcode] = &&LBL_clrsysg_opcode;
                 dtbl[instr::nop_opcode] = &&LBL_nop_opcode;
                 dtbl[instr::brk_opcode] = &&LBL_brk_opcode;
                 dtbl[instr::fadd_regVal_reg] = &&LBL_fadd_regVal_reg;
@@ -4000,18 +4006,37 @@ namespace maize {
                         MAIZE_NEXT();
                     }
 
+                    /* SYS provider select (card maize-24, D9 Shape B). With
+                       syscall_guest_flag CLEAR (boot default) SYS calls the native
+                       sys::call provider exactly as v1.0, byte-identical. With the flag
+                       SET, SYS instead traps through the shared trap table at cause 7
+                       (cause_syscall) into the guest-installed handler: the syscall
+                       number rides the frame's aux word, args stay in R0/R1/R2, and the
+                       result is returned in RV by the guest (per toolchain/rt/SYSCALL-ABI.md).
+                       regs::rp.w0 is fully advanced past the SYS instruction here, so the
+                       saved PC is the correct IRET-resume address. deliver_vectored halts
+                       (halt_no_interrupt_handler) if no cause-7 handler is installed, the
+                       same uniform no-handler rule as every other vector. */
                     LBL_sys_immVal: {
                         regs::rp.w0 += 1;
                         u_byte src_size = op1_imm_size();
                         copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
                         regs::rp.w0 += src_size;
-                        regs::rv.w0 = sys::call(operand1.b0);
+                        if (syscall_guest_flag) {
+                            deliver_vectored(trap::cause_syscall, 0, operand1.b0, regs::rp.w0);
+                        } else {
+                            regs::rv.w0 = sys::call(operand1.b0);
+                        }
                         MAIZE_NEXT();
                     }
 
                     LBL_sys_regVal: {
                         regs::rp.w0 += 1;
-                        regs::rv.w0 = sys::call(op1_reg().b0);
+                        if (syscall_guest_flag) {
+                            deliver_vectored(trap::cause_syscall, 0, op1_reg().b0, regs::rp.w0);
+                        } else {
+                            regs::rv.w0 = sys::call(op1_reg().b0);
+                        }
                         MAIZE_NEXT();
                     }
 
@@ -4185,6 +4210,20 @@ namespace maize {
 
                     LBL_clrint_opcode: {
                         interrupt_enabled_flag = false;
+                        MAIZE_NEXT();
+                    }
+
+                    /* Syscall-provider mode select (card maize-24, D9 Shape B): pure
+                       set/clear of syscall_guest_flag, mirroring setint/clrint above
+                       exactly. SET routes SYS through cause 7 to the guest handler;
+                       CLEAR restores the native sys::call provider. */
+                    LBL_setsysg_opcode: {
+                        syscall_guest_flag = true;
+                        MAIZE_NEXT();
+                    }
+
+                    LBL_clrsysg_opcode: {
+                        syscall_guest_flag = false;
                         MAIZE_NEXT();
                     }
 

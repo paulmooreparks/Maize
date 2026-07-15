@@ -52,7 +52,7 @@ slot; consult Chapter 7 or Chapter 8 for each instruction's full entry.
 | `$21` | FDIV | FP ALU | `$21` `$61` `$A1` `$E1` |
 | `$22` | FSQRT / FNEG / FABS | FP unary | `$22` / `$62` / `$A2` (`$E2` reserved) |
 | `$23` | FMADD | FP 3-op | `$23` `$63` `$A3` `$E3` |
-| `$24` | INT | interrupt | `$24` regVal, `$64` immVal (privileged; dispatch deferred) |
+| `$24` | INT / SETSYSG / CLRSYSG | interrupt / zero-op | INT `$24` regVal, `$64` immVal (privileged; dispatch deferred); SETSYSG `$A4`, CLRSYSG `$E4` (v1.x syscall-provider select, card maize-24) |
 | `$25` | FMSUB | FP 3-op | `$25` `$65` `$A5` `$E5` |
 | `$26` | reserved | - | control-register access (reserved) |
 | `$27` | RET / IRET / NOP | zero-op | RET `$27`, IRET `$67`, NOP `$A7` (`$E7` reserved) |
@@ -88,7 +88,7 @@ A few instructions occupy a single fixed byte rather than a base-slot family:
 | Byte | Mnemonic | Shape |
 |:----:|:---------|:------|
 | `$E0` | XCHG | reg reg |
-| `$E4` | reserved | - |
+| `$E4` | CLRSYSG | zero-op (v1.x syscall-provider select, row 3 of the `$24` slot; card maize-24) |
 | `$FF` | BRK | zero-op (breakpoint trap, cause 3) |
 
 ## A.3 Reserved bytes

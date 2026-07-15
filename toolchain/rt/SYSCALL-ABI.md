@@ -25,6 +25,23 @@ in scope today). `count`/size arguments are full 64-bit (`regs::r2.w0`); buffers
 full-64 addresses. The VM lands the result in `RV` (`src/cpu.cpp`:
 `regs::rv.w0 = sys::call(...)`), which is also the C return register.
 
+## Provider routing: native vs guest (card maize-24, decision D9)
+
+A new RF bit, the **syscall-guest flag** (toggled by the zero-operand `SETSYSG` /
+`CLRSYSG` instructions), selects which provider `SYS` dispatches to:
+
+- **Clear (boot default):** `SYS` calls the native `sys::call` provider, byte-identical
+  to v1.0. This is the firmware baseline that runs before / without a guest OS.
+- **Set:** `SYS` traps through the shared trap table at **cause 7** into the
+  guest-installed handler (`deliver_vectored`). The register ABI above is unchanged
+  (args in `R0`/`R1`/`R2`, result the guest writes to `RV`); the syscall number, which
+  the native path takes from the `SYS` operand, is delivered to the guest handler as the
+  trap frame's **aux word** (`[RS+0]` on handler entry, below cause / saved-RF / saved-PC).
+  A guest OS (quesOS) sets the flag once its cause-7 handler is resident, and toggles it
+  clear/set around a re-issued `SYS` to pass the already-native file/IO calls straight
+  through to `sys::call`. With no cause-7 handler installed, a `SYS` taken with the flag
+  set halts the VM under the uniform no-handler rule, exactly like any other vector.
+
 ## Error convention: negative result is `-errno`
 
 The raw layer returns `RV` **verbatim**, with no error interpretation. Following the
