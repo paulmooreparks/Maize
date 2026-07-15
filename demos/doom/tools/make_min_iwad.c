@@ -33,7 +33,17 @@
  * entry is (filepos,size,name) and many entries may share one filepos, so the
  * whole IWAD is a few KB.
  *
- * Usage: make_min_iwad <out.wad>
+ * maize-193 extends this generator with a `--commercial` mode that emits a
+ * two-map MAP01/MAP02 DOOM 2 IWAD plus the commercial intermission lump set, for
+ * the headless level-transition regression gate (run_doom_transition). MAP01/MAP02
+ * naming makes D_IdentifyVersion select gamemode=commercial, the code path the
+ * "maize exits at level completion" bug reproduces on. Both modes share every
+ * builder here; the commercial lump set was likewise traced by the run-it-and-
+ * read-I_Error protocol above (the CWILV, WI-prefixed, and INTERPIC intermission
+ * graphics and the d_runnin / d_stalks / d_dm2int music each W_GetNumForName-
+ * I_Error if absent).
+ *
+ * Usage: make_min_iwad [--commercial] <out.wad>
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -210,10 +220,30 @@ static const char *SWITCH_NAMES[] = {
 };
 #define NUM_SWITCH_NAMES ((int)(sizeof(SWITCH_NAMES) / sizeof(SWITCH_NAMES[0])))
 
-/* TEXTURE1: WALL, SKY1, and the shareware switch textures, all patch index 0. */
-static void build_texture1(Buf *out)
+/* Registered (episode 2) and commercial (episode 3) switch texture pairs. In
+ * commercial mode P_InitSwitchList sets episode=3 and consults every pair with
+ * episode <= 3, i.e. ALL of these plus the shareware set above, each an
+ * unconditional R_TextureNumForName that I_Errors if the texture is undefined
+ * (maize-193). */
+static const char *SWITCH_NAMES_EP23[] = {
+    "SW1BLUE", "SW2BLUE", "SW1CMT", "SW2CMT", "SW1GARG", "SW2GARG",
+    "SW1GSTON", "SW2GSTON", "SW1HOT", "SW2HOT", "SW1LION", "SW2LION",
+    "SW1SATYR", "SW2SATYR", "SW1SKIN", "SW2SKIN", "SW1VINE", "SW2VINE",
+    "SW1WOOD", "SW2WOOD",
+    "SW1PANEL", "SW2PANEL", "SW1ROCK", "SW2ROCK", "SW1MET2", "SW2MET2",
+    "SW1WDMET", "SW2WDMET", "SW1BRIK", "SW2BRIK", "SW1MOD1", "SW2MOD1",
+    "SW1ZIM", "SW2ZIM", "SW1STON6", "SW2STON6", "SW1TEK", "SW2TEK",
+    "SW1MARB", "SW2MARB", "SW1SKULL", "SW2SKULL"
+};
+#define NUM_SWITCH_NAMES_EP23 \
+    ((int)(sizeof(SWITCH_NAMES_EP23) / sizeof(SWITCH_NAMES_EP23[0])))
+
+/* TEXTURE1: WALL, SKY1, and the switch textures, all patch index 0. In commercial
+ * mode the episode 2 & 3 switch pairs are added so P_InitSwitchList's episode=3
+ * scan finds every texture it references. */
+static void build_texture1(Buf *out, int commercial)
 {
-    const char *names[2 + 64];
+    const char *names[2 + 128];
     int n = 0;
     int i, off;
     int body_len;
@@ -222,6 +252,11 @@ static void build_texture1(Buf *out)
     names[n++] = "SKY1";
     for (i = 0; i < NUM_SWITCH_NAMES; i++) {
         names[n++] = SWITCH_NAMES[i];
+    }
+    if (commercial) {
+        for (i = 0; i < NUM_SWITCH_NAMES_EP23; i++) {
+            names[n++] = SWITCH_NAMES_EP23[i];
+        }
     }
 
     /* Each maptexture_t body is fixed-size: name[8] + int masked + short w +
@@ -405,10 +440,80 @@ static void st_status_bar_names(Lump *lumps, int *pn)
     *pn = n;
 }
 
-static int build_wad(Buf *wad)
+/* Append one map's 10 ML_-ordered sublumps (maize-193, the commercial transition
+ * WAD reuses the single-room geometry for both MAP01 and MAP02). The header lump
+ * carries the map's name (MAP01 / MAP02); the sublumps share the same geometry
+ * payloads as the E1M1 room, so MAP02 loads and renders identically. */
+static void add_map_lumps(Lump *lumps, int *pn, const char *mapname)
+{
+    int n = *pn;
+    strcpy(lumps[n].name, mapname);    lumps[n++].key = K_NONE;
+    strcpy(lumps[n].name, "THINGS");   lumps[n++].key = K_THINGS;
+    strcpy(lumps[n].name, "LINEDEFS"); lumps[n++].key = K_LINEDEFS;
+    strcpy(lumps[n].name, "SIDEDEFS"); lumps[n++].key = K_SIDEDEFS;
+    strcpy(lumps[n].name, "VERTEXES"); lumps[n++].key = K_VERTEXES;
+    strcpy(lumps[n].name, "SEGS");     lumps[n++].key = K_SEGS;
+    strcpy(lumps[n].name, "SSECTORS"); lumps[n++].key = K_SSECTORS;
+    strcpy(lumps[n].name, "NODES");    lumps[n++].key = K_NONE;   /* 0-length */
+    strcpy(lumps[n].name, "SECTORS");  lumps[n++].key = K_SECTORS;
+    strcpy(lumps[n].name, "REJECT");   lumps[n++].key = K_REJECT;
+    strcpy(lumps[n].name, "BLOCKMAP"); lumps[n++].key = K_BLOCKMAP;
+    *pn = n;
+}
+
+/* The commercial (DOOM 2) intermission lump set that WI_loadData's commercial
+ * path (wi_stuff.c WI_loadUnloadData, gated `if (gamemode == commercial)`)
+ * W_CacheLumpName's unconditionally. Every one is a W_GetNumForName that I_Errors
+ * if absent (the run-it-and-read-I_Error discovery protocol make_min_iwad.c's
+ * header documents). All reuse the one shared 8x8 K_PATCH payload; the transition
+ * gate only needs them to EXIST so the intermission loads without terminating.
+ * The maps use MAP01/MAP02 naming so D_IdentifyVersion selects gamemode=commercial
+ * (d_main.c), which is the code path the reported bug reproduces on (CWILV%2.2d
+ * vs episode WILV%d%d). */
+static void add_commercial_intermission_names(Lump *lumps, int *pn)
+{
+    int n = *pn;
+    int i;
+    char nm[16];
+
+    for (i = 0; i < 32; i++) {           /* NUMCMAPS map-name graphics */
+        snprintf(nm, sizeof(nm), "CWILV%2.2d", i);
+        strcpy(lumps[n].name, nm); lumps[n++].key = K_PATCH;
+    }
+    strcpy(lumps[n].name, "INTERPIC"); lumps[n++].key = K_PATCH;  /* backdrop */
+    strcpy(lumps[n].name, "WIMINUS");  lumps[n++].key = K_PATCH;
+    for (i = 0; i < 10; i++) {
+        snprintf(nm, sizeof(nm), "WINUM%d", i);
+        strcpy(lumps[n].name, nm); lumps[n++].key = K_PATCH;
+    }
+    strcpy(lumps[n].name, "WIPCNT");  lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WIF");     lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WIENTER"); lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WIOSTK");  lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WIOSTS");  lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WISCRT2"); lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WIOSTI");  lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WIFRGS");  lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WICOLON"); lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WITIME");  lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WISUCKS"); lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WIPAR");   lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WIKILRS"); lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WIVCTMS"); lumps[n++].key = K_PATCH;
+    strcpy(lumps[n].name, "WIMSTT");  lumps[n++].key = K_PATCH;
+    for (i = 0; i < 4; i++) {            /* MAXPLAYERS: STPB0..3 / WIBP1..4 */
+        snprintf(nm, sizeof(nm), "STPB%d", i);
+        strcpy(lumps[n].name, nm); lumps[n++].key = K_PATCH;
+        snprintf(nm, sizeof(nm), "WIBP%d", i + 1);
+        strcpy(lumps[n].name, nm); lumps[n++].key = K_PATCH;
+    }
+    *pn = n;
+}
+
+static int build_wad(Buf *wad, int commercial)
 {
     Buf payloads[K_COUNT];
-    Lump lumps[320];
+    Lump lumps[512];
     long placed_pos[K_COUNT];
     long placed_size[K_COUNT];
     int placed[K_COUNT];
@@ -423,7 +528,7 @@ static int build_wad(Buf *wad)
     build_playpal(&payloads[K_PLAYPAL]);
     build_colormap(&payloads[K_COLORMAP]);
     build_pnames(&payloads[K_PNAMES]);
-    build_texture1(&payloads[K_TEXTURE1]);
+    build_texture1(&payloads[K_TEXTURE1], commercial);
     { static const unsigned char z[16] = {0};
       putbytes(&payloads[K_MUSIC], z, sizeof(z)); }   /* dummy level music */
     build_flat(&payloads[K_FLATFLOOR], CF);
@@ -445,7 +550,16 @@ static int build_wad(Buf *wad)
     strcpy(lumps[n].name, "COLORMAP"); lumps[n++].key = K_COLORMAP;
     strcpy(lumps[n].name, "PNAMES");   lumps[n++].key = K_PNAMES;
     strcpy(lumps[n].name, "TEXTURE1"); lumps[n++].key = K_TEXTURE1;
-    strcpy(lumps[n].name, "D_E1M1");   lumps[n++].key = K_MUSIC;
+    if (commercial) {
+        /* S_Start selects mus_runnin+gamemap-1 (MAP01 -> d_runnin, MAP02 ->
+         * d_stalks); WI_Ticker plays mus_dm2int (d_dm2int) at intermission start.
+         * Each is a W_GetNumForName that I_Errors if absent (s_sound.c). */
+        strcpy(lumps[n].name, "D_RUNNIN"); lumps[n++].key = K_MUSIC;
+        strcpy(lumps[n].name, "D_STALKS"); lumps[n++].key = K_MUSIC;
+        strcpy(lumps[n].name, "D_DM2INT"); lumps[n++].key = K_MUSIC;
+    } else {
+        strcpy(lumps[n].name, "D_E1M1");   lumps[n++].key = K_MUSIC;
+    }
 
     strcpy(lumps[n].name, "F_START");  lumps[n++].key = K_NONE;
     strcpy(lumps[n].name, "F_SKY1");   lumps[n++].key = K_FLATFLOOR;
@@ -465,17 +579,16 @@ static int build_wad(Buf *wad)
     }
     st_status_bar_names(lumps, &n);
 
-    strcpy(lumps[n].name, "E1M1");     lumps[n++].key = K_NONE;
-    strcpy(lumps[n].name, "THINGS");   lumps[n++].key = K_THINGS;
-    strcpy(lumps[n].name, "LINEDEFS"); lumps[n++].key = K_LINEDEFS;
-    strcpy(lumps[n].name, "SIDEDEFS"); lumps[n++].key = K_SIDEDEFS;
-    strcpy(lumps[n].name, "VERTEXES"); lumps[n++].key = K_VERTEXES;
-    strcpy(lumps[n].name, "SEGS");     lumps[n++].key = K_SEGS;
-    strcpy(lumps[n].name, "SSECTORS"); lumps[n++].key = K_SSECTORS;
-    strcpy(lumps[n].name, "NODES");    lumps[n++].key = K_NONE;   /* 0-length */
-    strcpy(lumps[n].name, "SECTORS");  lumps[n++].key = K_SECTORS;
-    strcpy(lumps[n].name, "REJECT");   lumps[n++].key = K_REJECT;
-    strcpy(lumps[n].name, "BLOCKMAP"); lumps[n++].key = K_BLOCKMAP;
+    if (commercial) {
+        /* Commercial intermission graphics (loaded on the MAP01 -> MAP02
+         * transition), then the two commercial maps. MAP01's presence makes
+         * D_IdentifyVersion select gamemode=commercial. */
+        add_commercial_intermission_names(lumps, &n);
+        add_map_lumps(lumps, &n, "MAP01");
+        add_map_lumps(lumps, &n, "MAP02");
+    } else {
+        add_map_lumps(lumps, &n, "E1M1");
+    }
 
     /* Place each unique payload once (first-reference order); build the data. */
     for (i = 0; i < K_COUNT; i++) {
@@ -524,27 +637,44 @@ int main(int argc, char **argv)
     Buf wad;
     int nlumps;
     FILE *f;
+    int commercial = 0;
+    const char *out = 0;
+    int a;
 
-    if (argc != 2) {
-        fprintf(stderr, "usage: make_min_iwad <out.wad>\n");
+    /* usage: make_min_iwad [--commercial] <out.wad>
+     * default          -> single-room E1M1 shareware IWAD (maize-154 render gate)
+     * --commercial     -> two-map MAP01/MAP02 DOOM 2 IWAD with the commercial
+     *                     intermission lump set (maize-193 transition gate). */
+    for (a = 1; a < argc; a++) {
+        if (strcmp(argv[a], "--commercial") == 0) {
+            commercial = 1;
+        } else if (!out) {
+            out = argv[a];
+        } else {
+            fprintf(stderr, "usage: make_min_iwad [--commercial] <out.wad>\n");
+            return 2;
+        }
+    }
+    if (!out) {
+        fprintf(stderr, "usage: make_min_iwad [--commercial] <out.wad>\n");
         return 2;
     }
     memset(&wad, 0, sizeof(wad));
-    nlumps = build_wad(&wad);
+    nlumps = build_wad(&wad, commercial);
 
-    f = fopen(argv[1], "wb");
+    f = fopen(out, "wb");
     if (!f) {
-        fprintf(stderr, "make_min_iwad: cannot open %s for writing\n", argv[1]);
+        fprintf(stderr, "make_min_iwad: cannot open %s for writing\n", out);
         return 2;
     }
     if (fwrite(wad.b, 1, wad.len, f) != wad.len) {
-        fprintf(stderr, "make_min_iwad: short write to %s\n", argv[1]);
+        fprintf(stderr, "make_min_iwad: short write to %s\n", out);
         fclose(f);
         return 2;
     }
     fclose(f);
     fprintf(stderr, "make_min_iwad: wrote %s (%lu bytes, %d lumps)\n",
-            argv[1], (unsigned long)wad.len, nlumps);
+            out, (unsigned long)wad.len, nlumps);
     free(wad.b);
     return 0;
 }

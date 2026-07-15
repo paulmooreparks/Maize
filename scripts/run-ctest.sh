@@ -1292,6 +1292,94 @@ run_doom_render() {
 
 run_doom_render
 
+# maize-193 DOOM LEVEL-TRANSITION gate. Distinct from run_doom_render (Phase C:
+# boots ONE level and asserts a single rendered frame): this boots MAP01 of a
+# two-map COMMERCIAL synthetic IWAD, drives the level transition (G_ExitLevel ->
+# intermission -> G_WorldDone -> next-map load), and asserts MAP02 loads
+# (gamemap == 2) and renders. It reproduces (and now guards against) the "maize
+# exits at level completion" defect (a qbe-maize register-name-collision
+# miscompile of the wi_stuff.c `bp[]` global that corrupted the intermission's
+# return address). The IWAD is produced AT TEST TIME by compiling the committed
+# generator demos/doom/tools/make_min_iwad.c with the system cc, run with
+# --commercial (D7: the auditable artifact is the generator source, never a
+# committed binary; every lump byte is generator-computed, zero copied DOOM
+# assets). Same submodule graceful-skip probe and CC_MAIZE compile/mount/guest-
+# argv shape as run_doom_render. Bounded tick budget (in the harness TU): a
+# transition that never completes FAILs rather than hangs.
+run_doom_transition() {
+    name="doom-transition"
+    doom_dir="${REPO_ROOT}/demos/doom"
+    transition="${doom_dir}/doom_transition_selfcheck.c"
+    platform="${doom_dir}/doomgeneric_maize.c"
+    sources="${doom_dir}/doom.sources"
+    generator="${doom_dir}/tools/make_min_iwad.c"
+    # Submodule presence probe: the doomgeneric core-loop TU. Absent => uninitialized.
+    probe="${doom_dir}/doomgeneric/doomgeneric/doomgeneric.c"
+
+    if [ ! -f "$probe" ]; then
+        echo "[SKIP] ${name}: demos/doom/doomgeneric submodule not initialized" \
+             "(run 'git submodule update --init demos/doom/doomgeneric'); skipping DOOM transition gate"
+        return
+    fi
+
+    TOTAL=$((TOTAL + 1))
+
+    # System C compiler (mirrors run_doom_render): compile the committed generator
+    # and run it with --commercial to produce the two-map DOOM 2 IWAD in a dir we
+    # mount read-only at /ro.
+    gen_cc="${CC:-}"
+    if [ -z "$gen_cc" ]; then
+        if command -v cc >/dev/null 2>&1; then gen_cc=cc; else gen_cc=gcc; fi
+    fi
+    gen_exe="${WORK_DIR}/make_min_iwad_c"
+    if ! "$gen_cc" -O2 -o "$gen_exe" "$generator" >"${WORK_DIR}/doom-transition.gen.log" 2>&1; then
+        echo "[FAIL] ${name}: min-IWAD generator failed to compile"
+        cat "${WORK_DIR}/doom-transition.gen.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    waddir="${WORK_DIR}/doom-transition-wad"
+    rm -rf "$waddir"; mkdir -p "$waddir"
+    if ! "$gen_exe" --commercial "${waddir}/min2.wad" >>"${WORK_DIR}/doom-transition.gen.log" 2>&1 \
+    || [ ! -f "${waddir}/min2.wad" ]; then
+        echo "[FAIL] ${name}: commercial min-IWAD generation failed"
+        cat "${WORK_DIR}/doom-transition.gen.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    mzx="${WORK_DIR}/doom_transition.mzx"
+    log="${WORK_DIR}/doom-transition.cc.log"
+    rm -f "$mzx"
+    if ! "$CC_MAIZE" --preset "$PRESET" --dev \
+        -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
+        -o "$mzx" --sources "$sources" "$transition" "$platform" >"$log" 2>&1 \
+    || [ ! -f "$mzx" ]; then
+        echo "[FAIL] ${name}: transition-gate C compile/link failed"; cat "$log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    nat=$(host_to_native "$waddir")
+    # -iwad /ro/min2.wad is a GUEST path; MSYS2_ARG_CONV_EXCL exempts /ro from the
+    # POSIX->Windows argv rewrite (see run_doom_render for the full rationale).
+    set +e
+    actual=$(MSYS2_ARG_CONV_EXCL='/ro' "$MAIZE" --no-root --mount "${nat}=/ro:ro" "$mzx" \
+        -iwad /ro/min2.wad -warp 1 1 -nomonsters 2>/dev/null | grep -v '^$')
+    set -e
+
+    # The gate is the exact "doom-transition: PASS" line (gamemap advanced to 2 AND
+    # a real 3D render of MAP02's viewport).
+    if printf '%s\n' "$actual" | grep -qx "doom-transition: PASS"; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected a \"doom-transition: PASS\" line (MAP01 -> MAP02 advance + render)"
+        echo "        actual:   \"$(printf '%s' "$actual" | tail -3 | tr '\n' '|')\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_doom_transition
+
 # maize-138 multi-file compile/link: the primary-gate cross-object fixture, the
 # negative link-rejection case, and the two multi-source usage-error paths.
 run_multi_ctest "multifile" "multifile_main.c multifile_lib.c"
