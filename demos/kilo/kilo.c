@@ -53,6 +53,9 @@
 #include <stdarg.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/stat.h>
+#include <syscall.h>
+#include <dirent.h>
 
 /* Syntax highlight types */
 #define HL_NORMAL 0
@@ -896,7 +899,8 @@ int editorOpen(char *filename) {
 int editorSave(int fd) {
     if (E.filename == NULL) {
         char path[KILO_PATH_LEN+1] = {0};
-        if (!editorPrompt(fd, "Save as: %s", path, sizeof(path))) {
+        int pr = editorPrompt(fd, "Save as: %s", path, sizeof(path));
+        if (pr <= 0) {
             editorSetStatusMessage("Save aborted");
             return 1;
         }
@@ -1095,6 +1099,12 @@ void editorSetStatusMessage(const char *fmt, ...) {
 
 #define KILO_QUERY_LEN 256
 
+/* maize-207 file picker constants. */
+#define KILO_PICKER_MAX_ENTRIES 512   /* cap; hitting it sets a truncation flag, never silent */
+#define KILO_PICKER_PATH_LEN 512      /* dir + '/' + one entry name; independent of KILO_PATH_LEN
+                                        * (the user-typed-prompt buffer), since a composed child
+                                        * path can exceed a single typed segment */
+
 void editorFind(int fd) {
     char query[KILO_QUERY_LEN+1] = {0};
     int qlen = 0;
@@ -1190,15 +1200,15 @@ void editorFind(int fd) {
     }
 }
 
-/* Generic single-line status-bar prompt (maize-206). `prompt` must contain
- * exactly one %s, filled on every keystroke via editorSetStatusMessage with
- * the buffer collected so far. Printable chars append; Backspace/Ctrl-H/
- * DEL_KEY remove the last char; ESC cancels (returns 0, status cleared,
- * *buf contents unspecified, caller must not read it); Enter accepts a
- * non-empty buffer (nul-terminates it, returns 1) or is treated as cancel
- * when the buffer is still empty (no accept-empty case for callers to
- * special-case). `bufsize` is the buffer's total capacity including the nul
- * terminator.
+/* Generic single-line status-bar prompt (maize-206; return contract widened
+ * to 3-state by maize-207). `prompt` must contain exactly one %s, filled on
+ * every keystroke via editorSetStatusMessage with the buffer collected so
+ * far. Printable chars append; Backspace/Ctrl-H/DEL_KEY remove the last
+ * char. Return: -1 = ESC (explicit cancel); 0 = Enter on an empty buffer
+ * (explicit "accept empty"); 1 = Enter on a non-empty buffer (accept).
+ * Buffer contents are cleared to "" on cancel/empty, unchanged (nul-
+ * terminated) on accept. `bufsize` is the buffer's total capacity including
+ * the nul terminator.
  *
  * Unlike editorFind's own prompt loop, this helper does not touch cursor or
  * viewport state and has no live-search callback: it is pure status-bar
@@ -1216,11 +1226,10 @@ int editorPrompt(int fd, const char *prompt, char *buf, size_t bufsize) {
             if (len != 0) buf[--len] = '\0';
         } else if (c == ESC) {
             editorSetStatusMessage("");
-            return 0;
+            return -1;
         } else if (c == ENTER) {
             editorSetStatusMessage("");
-            if (len == 0) return 0;
-            return 1;
+            return len == 0 ? 0 : 1;
         } else if (isprint(c) && len < bufsize - 1) {
             buf[len++] = c;
             buf[len] = '\0';
@@ -1228,14 +1237,290 @@ int editorPrompt(int fd, const char *prompt, char *buf, size_t bufsize) {
     }
 }
 
-/* Ctrl-O flow (maize-206): prompt for a path, then replace the current
- * buffer with it. Caller (editorProcessKeypress) has already cleared the
- * unsaved-changes guard before calling this. */
+/* ===================== In-editor file picker (maize-207) =================== *
+ * A full-screen directory browser built entirely on the guest-side dirent/
+ * fstat primitives the runtime already ships. See the card spec for the
+ * full behavior contract; the summary: Ctrl-O with an empty or directory
+ * path enters the picker, Up/Down/PageUp/PageDown navigate, Enter opens a
+ * file or descends into a directory (or ascends via the synthesized ".."),
+ * ESC returns to the editor with the buffer untouched. */
+
+typedef struct {
+    char *name;    /* malloc'd via strdup(3), toolchain/rt/string.h:40 */
+    int   is_dir;  /* from fstat's S_ISDIR -- NOT d_type, see decision below */
+    long  size;    /* st_size; meaningful only when !is_dir */
+} PickerEntry;
+
+/* True if `path` names a directory (fstat-based); false for a file, a path
+ * that can't be opened, or any fstat failure. Errno is left as open/fstat
+ * set it. One syscall trio, no loop -- kept small for the qbe-maize
+ * backend's no-spill register budget.
+ *
+ * Directory/file classification uses fstat's S_ISDIR rather than readdir's
+ * d_type: hostfs_posix.c copies d_type verbatim from the host's real
+ * getdents64, which per POSIX can legitimately report DT_UNKNOWN depending
+ * on filesystem support, while hostfs_win32.c always sets DT_DIR/DT_REG.
+ * Since fstat is already required per-entry for the size column, reusing
+ * st_mode for type too gives one code path correct on both backends. */
+static int editorPathIsDir(const char *path) {
+    int fd = open(path, O_RDONLY, 0);
+    if (fd < 0) return 0;
+    struct stat st;
+    int isdir = 0;
+    if (fstat(fd, &st) == 0) isdir = S_ISDIR(st.st_mode);
+    close(fd);
+    return isdir;
+}
+
+/* Directory to browse when Ctrl-O's prompt is accepted empty: the directory
+ * of the current file if one is open, else "/". Never fails -- falls back
+ * to "/" on every edge case (no E.filename, or an E.filename with no '/'). */
+static void editorPickerDefaultDir(char *buf, size_t bufsize) {
+    if (E.filename) {
+        char *slash = strrchr(E.filename, '/');
+        if (slash) {
+            size_t len = (size_t)(slash - E.filename);
+            if (len == 0) len = 1;                /* "/foo.c" -> "/" */
+            if (len >= bufsize) len = bufsize - 1;
+            memcpy(buf, E.filename, len);
+            buf[len] = '\0';
+            return;
+        }
+    }
+    buf[0] = '/';
+    buf[1] = '\0';
+}
+
+/* qsort comparator: directories first, then lexical by name. */
+static int pickerEntryCmp(const void *a, const void *b) {
+    const PickerEntry *ea = (const PickerEntry *)a;
+    const PickerEntry *eb = (const PickerEntry *)b;
+    if (ea->is_dir != eb->is_dir) return eb->is_dir - ea->is_dir;
+    return strcmp(ea->name, eb->name);
+}
+
+/* Scan `dir` into a malloc'd, qsort'd PickerEntry array (caller frees each
+ * ->name via free(), then the array itself, via editorFilePickerFree).
+ * Capped at KILO_PICKER_MAX_ENTRIES; *out_truncated is set (never silently)
+ * when the cap is hit. Returns 0 on success, -1 if `dir` could not be
+ * opened (errno set by opendir). One loop (the readdir drain) per
+ * function, matching dirent.c's own convention for this backend. */
+static int editorFilePickerScan(const char *dir, PickerEntry **out_entries,
+                                 int *out_n, int *out_truncated) {
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+
+    PickerEntry *entries = malloc(sizeof(PickerEntry) * KILO_PICKER_MAX_ENTRIES);
+    int n = 0, truncated = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (n >= KILO_PICKER_MAX_ENTRIES) { truncated = 1; break; }
+
+        char path[KILO_PICKER_PATH_LEN];
+        int plen = snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+        if (plen < 0 || (size_t)plen >= sizeof(path)) continue; /* composed
+            path too long for KILO_PICKER_PATH_LEN: skip this one entry
+            rather than fail the whole scan */
+
+        int is_dir = 0;
+        long size = 0;
+        int pf = open(path, O_RDONLY, 0);
+        if (pf >= 0) {
+            struct stat st;
+            if (fstat(pf, &st) == 0) {
+                is_dir = S_ISDIR(st.st_mode);
+                size = st.st_size;
+            }
+            close(pf);
+        }
+
+        entries[n].name = strdup(de->d_name);
+        entries[n].is_dir = is_dir;
+        entries[n].size = size;
+        n++;
+    }
+    closedir(d);
+
+    qsort(entries, n, sizeof(PickerEntry), pickerEntryCmp);
+    *out_entries = entries;
+    *out_n = n;
+    *out_truncated = truncated;
+    return 0;
+}
+
+static void editorFilePickerFree(PickerEntry *entries, int n) {
+    for (int j = 0; j < n; j++) free(entries[j].name);
+    free(entries);
+}
+
+/* One frame: header (current dir), entry rows (scrolled), footer (help /
+ * truncation notice). `sel` and `scroll` are absolute row indices into the
+ * virtual list (row 0 is the synthesized ".." when `has_dotdot`, otherwise
+ * entries[0]). Reuses the abuf machinery editorRefreshScreen already uses.
+ * The picker owns the WHOLE physical terminal while active, not just
+ * kilo's file-content rows: updateWindowSize() already does
+ * E.screenrows -= 2 to reserve kilo's own 2-row status bar, so recover the
+ * true terminal height as E.screenrows + 2 rather than reusing
+ * E.screenrows directly. */
+static void editorFilePickerDraw(const char *dir, PickerEntry *entries, int n,
+                                  int has_dotdot, int sel, int scroll,
+                                  int truncated) {
+    int term_rows = E.screenrows + 2;
+    int visible = term_rows - 2;
+    if (visible < 1) visible = 1;
+    int total = n + has_dotdot;
+
+    struct abuf ab = ABUF_INIT;
+    abAppend(&ab, "\x1b[?25l", 6);
+    abAppend(&ab, "\x1b[H", 3);
+
+    char hdr[256];
+    int hlen = snprintf(hdr, sizeof(hdr), "\x1b[7m%.*s\x1b[0m\x1b[0K\r\n",
+                         E.screencols, dir);
+    abAppend(&ab, hdr, hlen);
+
+    for (int i = 0; i < visible; i++) {
+        int row = scroll + i;
+        if (row >= total) {
+            abAppend(&ab, "~\x1b[0K\r\n", 7);
+            continue;
+        }
+        int is_sel = (row == sel);
+        char line[320];
+        int llen;
+        if (has_dotdot && row == 0) {
+            llen = snprintf(line, sizeof(line), "%s..%s/\x1b[0K\r\n",
+                             is_sel ? "\x1b[7m" : "", is_sel ? "" : "");
+        } else {
+            PickerEntry *e = &entries[row - has_dotdot];
+            if (e->is_dir) {
+                llen = snprintf(line, sizeof(line), "%s\x1b[34m%.240s/\x1b[39m%s\x1b[0K\r\n",
+                                 is_sel ? "\x1b[7m" : "", e->name,
+                                 is_sel ? "\x1b[0m" : "");
+            } else {
+                int namelen = (int)strlen(e->name);
+                int pad = 20 - namelen;
+                if (pad < 1) pad = 1;
+                llen = snprintf(line, sizeof(line), "%s%.240s%*s%ld\x1b[0m\x1b[0K\r\n",
+                                 is_sel ? "\x1b[7m" : "", e->name,
+                                 pad, " ", e->size);
+            }
+        }
+        abAppend(&ab, line, llen);
+    }
+
+    char foot[256];
+    int flen;
+    if (truncated) {
+        flen = snprintf(foot, sizeof(foot),
+            "\x1b[7mTRUNCATED at %d entries\x1b[0m -- Up/Down/PgUp/PgDn move, Enter open, Esc cancel\x1b[0K",
+            KILO_PICKER_MAX_ENTRIES);
+    } else {
+        flen = snprintf(foot, sizeof(foot),
+            "Up/Down/PgUp/PgDn move, Enter open, Esc cancel\x1b[0K");
+    }
+    abAppend(&ab, foot, flen);
+
+    write(STDOUT_FILENO, ab.b, ab.len);
+    abFree(&ab);
+}
+
+/* Full-screen directory picker. On success, copies the chosen file's full
+ * path into out_path (capacity out_cap) and returns 1 -- the CALLER is
+ * responsible for actually loading it (same probe+teardown+load flow as a
+ * manually typed Ctrl-O path; the picker does not call editorOpen itself,
+ * to avoid a second, divergent load path). Returns 0 if the user pressed
+ * ESC (editor untouched, no status message needed). Returns -1 if the
+ * initial (or any subsequent, on descend) opendir failed -- errno is left
+ * set from that failed opendir so the caller can report strerror(errno).
+ *
+ * A failed re-scan on descend aborts uniformly back to the caller with no
+ * attempt to redisplay the prior (now-freed) listing: one exit path, no
+ * "restore old state" branch to keep correct. */
+static int editorFilePicker(int fd, const char *start_dir, char *out_path,
+                             size_t out_cap) {
+    char dir[KILO_PICKER_PATH_LEN];
+    snprintf(dir, sizeof(dir), "%s", start_dir);
+
+    PickerEntry *entries; int n, truncated;
+    if (editorFilePickerScan(dir, &entries, &n, &truncated) < 0) return -1;
+
+    int sel = 0, scroll = 0;
+    while (1) {
+        int has_dotdot = strcmp(dir, "/") != 0;
+        int total = n + has_dotdot;
+        int visible = (E.screenrows + 2) - 2;
+        if (visible < 1) visible = 1;
+
+        if (sel < scroll) scroll = sel;
+        if (sel >= scroll + visible) scroll = sel - visible + 1;
+
+        editorFilePickerDraw(dir, entries, n, has_dotdot, sel, scroll, truncated);
+        int c = editorReadKey(fd);
+
+        if (c == ESC) {
+            editorFilePickerFree(entries, n);
+            return 0;
+        } else if (c == ARROW_UP) {
+            if (sel > 0) sel--;
+        } else if (c == ARROW_DOWN) {
+            if (sel < total - 1) sel++;
+        } else if (c == PAGE_UP) {
+            sel -= visible; if (sel < 0) sel = 0;
+        } else if (c == PAGE_DOWN) {
+            sel += visible; if (sel > total - 1) sel = total - 1;
+        } else if (c == ENTER) {
+            char next[KILO_PICKER_PATH_LEN];
+            int next_is_dotdot = has_dotdot && sel == 0;
+            if (next_is_dotdot) {
+                char *slash = strrchr(dir, '/');
+                if (slash == dir) snprintf(next, sizeof(next), "/");
+                else if (slash) {
+                    size_t len = (size_t)(slash - dir);
+                    memcpy(next, dir, len); next[len] = '\0';
+                } else snprintf(next, sizeof(next), "/");
+            } else {
+                PickerEntry *e = &entries[sel - has_dotdot];
+                snprintf(next, sizeof(next), "%s/%s", dir, e->name);
+                if (!e->is_dir) {
+                    snprintf(out_path, out_cap, "%s", next);
+                    editorFilePickerFree(entries, n);
+                    return 1;
+                }
+            }
+            editorFilePickerFree(entries, n);
+            snprintf(dir, sizeof(dir), "%s", next);
+            if (editorFilePickerScan(dir, &entries, &n, &truncated) < 0) return -1;
+            sel = 0; scroll = 0;
+        }
+        /* every other key is ignored: the picker has no text-entry mode */
+    }
+}
+
+/* Ctrl-O flow (maize-206; extended by maize-207 with the directory picker):
+ * prompt for a path, then replace the current buffer with it. Caller
+ * (editorProcessKeypress) has already cleared the unsaved-changes guard
+ * before calling this. */
 void editorOpenPrompt(int fd) {
     char path[KILO_PATH_LEN+1] = {0};
-    if (!editorPrompt(fd, "Open file: %s", path, sizeof(path))) {
+    int pr = editorPrompt(fd, "Open file: %s", path, sizeof(path));
+    if (pr < 0) {                              /* ESC */
         editorSetStatusMessage("");
         return;
+    }
+    if (pr == 0 || editorPathIsDir(path)) {
+        char dir[KILO_PATH_LEN+1];
+        if (pr == 0) editorPickerDefaultDir(dir, sizeof(dir));
+        else snprintf(dir, sizeof(dir), "%s", path);
+
+        char picked[KILO_PATH_LEN+1];
+        int pk = editorFilePicker(fd, dir, picked, sizeof(picked));
+        if (pk == 0) { editorSetStatusMessage(""); return; }         /* ESC in picker */
+        if (pk < 0) {
+            editorSetStatusMessage("Can't browse %.40s: %s", dir, strerror(errno));
+            return;
+        }
+        snprintf(path, sizeof(path), "%s", picked);
     }
 
     /* Probe BEFORE tearing down the current buffer. ENOENT is NOT a
