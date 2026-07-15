@@ -1,0 +1,17 @@
+; **********************************************************************************
+; mzdis round-trip fixture for card maize-180's four new instructions. Code-only and
+; SECTION-clean so the disassembler decodes every byte as an instruction; run-tests.sh
+; assembles it, disassembles it, asserts all four mnemonics decode (no unknown/malformed
+; lines), then reassembles mzdis's own output and diffs the resulting .mzb against the
+; original byte-for-byte. Exercises all six of the new encodings:
+;   $26 MOVTCR Rsrc,crn   $66 MOVTCR imm,crn   $A6 MOVFCR crn,Rdst
+;   $28 TLBINV            $68 TLBINVA Rn
+; **********************************************************************************
+
+$0000`0000:
+    MOVTCR R5 $00          ; $26 regVal-imm
+    MOVTCR $ABCD $01       ; $66 immVal-imm
+    MOVFCR $02 R6          ; $A6 immVal-reg
+    TLBINV                 ; $28 zero-op invalidate-all
+    TLBINVA R7             ; $68 regVal invalidate-one
+    HALT

@@ -907,6 +907,35 @@ namespace maize {
 			   dispatch, mazm entry, or README row. Its pair $E4 (former DUP) has since been
 			   reclaimed as clrsysg_opcode above (card maize-24). */
 
+			/* MMU foundation: control-register access + TLB control (card maize-180). Two
+			   privileged base slots the freeze reserved for the paging/MMU work
+			   (docs/spec/reservations.md §1: $26 control-register access, $28 paging / MMU
+			   control), row-packed the same way $24 row-packs INT / SETSYSG / CLRSYSG: the
+			   row bit selects a distinct privileged instruction, it is NOT an addressing-mode
+			   tag. All forms are privileged (cause-4 privileged-operation fault in user mode).
+
+			   MOVTCR / MOVFCR ($26) reach the small privileged control-register file (the D2
+			   access mechanism, distinct from device ports and the syscall path):
+			     $26 MOVTCR Rsrc, crn (regVal-imm)   $66 MOVTCR imm, crn (immVal-imm)
+			     $A6 MOVFCR crn, Rdst (immVal-reg)   $E6 reserved (future reg-indexed MOVFCR)
+			   MOVTCR's two forms follow the source-mode bit ($26 register source, $66
+			   immediate source); MOVFCR is a fixed opcode ($A6), its operands a leading
+			   immediate CR index and a trailing destination register.
+
+			   TLBINV / TLBINVA ($28) invalidate software-TLB entries. Under maize-180 both
+			   are privileged NO-OPS: no software TLB exists yet (maize-194 builds the walk +
+			   TLB and gives these bodies). They still assemble, decode, and privilege-gate.
+			     $28 TLBINV (zero-op, invalidate-all)   $68 TLBINVA Rn (invalidate-one)
+			     $A8 / $E8 reserved (future ASID-scoped invalidate).
+			   "Paging-enable" gets no dedicated opcode: it is a MOVTCR write to CR0.MODE. */
+			const opcode movtcr_opcode {0x26};
+			const opcode movtcr_regVal_imm {static_cast<opcode>(movtcr_opcode | opcode_flag_srcReg)};  // $26
+			const opcode movtcr_immVal_imm {static_cast<opcode>(movtcr_opcode | opcode_flag_srcImm)};  // $66
+			const opcode movfcr_immVal_reg {static_cast<opcode>(movtcr_opcode | opcode_flag_srcAddr)}; // $A6
+
+			const opcode tlbinv_opcode {0x28};                                    // $28 (row 0, zero-op)
+			const opcode tlbinva_opcode {static_cast<opcode>(cond_row_1 | 0x28)}; // $68 (row 1, one register operand)
+
 			const opcode brk_opcode {0xFF}; // $FF sentinel: a run of $FF-filled / erased memory traps, mirroring HALT at $00. Occupies only base $3F's mode-11 form; $3F/$7F/$BF stay free for future full-byte-dispatched ops (a mask-to-base ALU op cannot sit at base $3F, since its immAddr form would be $FF).
 
 			/* ===== Floating-point ISA (card maize-122) =====================

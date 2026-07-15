@@ -968,6 +968,21 @@ namespace maize {
             reg operand1;
             reg operand2;
 
+            /* Control-register file (card maize-180, the D2 access mechanism). A small,
+               privileged, flat-indexed register bank reached ONLY through MOVTCR / MOVFCR,
+               distinct from device ports (port_write / port_read) and the syscall surface.
+               Three registers are defined at freeze:
+                 CR0 SATP     translation control: MODE[3:0] + PPN[63:12], stored but INERT
+                              under this card (Bare behavior always; maize-194 attaches the
+                              walk). Reserved bits [11:4] are forced to 0 on write.
+                 CR1 FAULT_VA faulting VA latch (maize-194 writes it on page-fault; 0 here).
+                 CR2 FAULT_ERR page-fault error code latch (maize-194 writes it; 0 here).
+               Reset 0. An undefined index (> 2) mirrors the unpopulated-port convention:
+               a write is discarded and a read yields 0, with no trap. Under maize-180 the
+               values are inert (no translation runs and no fault path writes CR1/CR2). */
+            static constexpr size_t control_reg_count = 3;
+            reg control_regs[control_reg_count] {};
+
             bool is_power_on = false;
 
             /* --show-perf instrumentation. perf_count_enabled gates the per-instruction
@@ -1072,6 +1087,38 @@ namespace maize {
             copy_regval_reg(v, subreg_enum::w0, dst, dst_subreg);
         }
 
+        /* MOVTCR data transfer (card maize-180). Store the CPU-side operand value into
+           control register CR[crn]. CR0 (SATP): the MODE field [3:0] is accepted and
+           stored but INERT under this card (no translation runs regardless of MODE); the
+           PPN field [63:12] is stored and readable but unused; the reserved bits [11:4]
+           are forced to 0 (spec §1). A CR0 write unconditionally flushes the software TLB
+           when one exists; under this card that is a no-op (no TLB exists yet, maize-194
+           builds it). An undefined CR index (> 2) is the frozen unpopulated-port
+           write-discard no-op; the caller still advances PC past its operands. */
+        void cr_write(u_word crn, reg_value const& value, subreg_enum value_subreg) {
+            if (crn >= control_reg_count) {
+                return;
+            }
+            copy_regval_reg(value, value_subreg, control_regs[crn], subreg_enum::w0);
+            if (crn == 0) {
+                /* SATP reserved bits [11:4] read as zero: mask them off on write. */
+                control_regs[0].w0 &= ~static_cast<u_word>(0x0FF0);
+                /* maize-194: a CR0 write flushes the software TLB here. No TLB exists
+                   under maize-180, so there is nothing to flush yet. */
+            }
+        }
+
+        /* MOVFCR data transfer (card maize-180). Copy control register CR[crn] into the
+           destination sub-register. An undefined CR index (> 2) yields the frozen
+           unpopulated-port read-0 outcome (the destination receives 0; no CR is read). */
+        void cr_read(u_word crn, reg_value& dst, subreg_enum dst_subreg) {
+            if (crn >= control_reg_count) {
+                clr_reg(dst, dst_subreg);
+                return;
+            }
+            copy_regval_reg(control_regs[crn], subreg_enum::w0, dst, dst_subreg);
+        }
+
         /* Deterministic no-handler halt for a vectored interrupt (card maize-21). An
            enabled IRQ whose table entry is zero (uninstalled) halts the VM with the
            cause surfaced, mirroring the no-handler synchronous-trap rule, never a silent
@@ -1116,6 +1163,15 @@ namespace maize {
                 halt_no_interrupt_handler(vector);
             }
             u_word saved_rf = regs::rf.w0;
+
+            /* User -> supervisor transition on trap entry (card maize-180, §6). Force the
+               privilege bit true for the handler AFTER capturing saved_rf, so the frame
+               still carries the interrupted code's own privilege; the handler's IRET
+               restores it (dropping back to user when the saved privilege bit is clear).
+               Every trap/interrupt handler therefore runs supervisor and can execute the
+               now-privileged IRET; this is what makes gating IRET (§9) safe. */
+            privilege_flag = true;
+
             u_word cause = static_cast<u_word>(vector) | (static_cast<u_word>(subcode) << 8);
 
             push_word(saved_pc);   // SP + 24
@@ -3312,6 +3368,11 @@ namespace maize {
                 dtbl[instr::clrint_opcode] = &&LBL_clrint_opcode;
                 dtbl[instr::setsysg_opcode] = &&LBL_setsysg_opcode;
                 dtbl[instr::clrsysg_opcode] = &&LBL_clrsysg_opcode;
+                dtbl[instr::movtcr_regVal_imm] = &&LBL_movtcr_regVal_imm;
+                dtbl[instr::movtcr_immVal_imm] = &&LBL_movtcr_immVal_imm;
+                dtbl[instr::movfcr_immVal_reg] = &&LBL_movfcr_immVal_reg;
+                dtbl[instr::tlbinv_opcode] = &&LBL_tlbinv_opcode;
+                dtbl[instr::tlbinva_opcode] = &&LBL_tlbinva_opcode;
                 dtbl[instr::nop_opcode] = &&LBL_nop_opcode;
                 dtbl[instr::brk_opcode] = &&LBL_brk_opcode;
                 dtbl[instr::fadd_regVal_reg] = &&LBL_fadd_regVal_reg;
@@ -3387,6 +3448,7 @@ namespace maize {
                            in HALT, so they exit exactly as before); only a guest that opts in
                            with SETINT + an installed handler parks. It carries no exit status;
                            the status-carrying path is SYS $3C (sys_exit), see src/sys.cpp. */
+                        if (!privilege_flag) { raise_privileged_op(); }   // privileged (card maize-180, §9)
                         if (interrupt_enabled_flag) {
                             running_flag = false;   // park; is_power_on stays set
                         }
@@ -4125,6 +4187,16 @@ namespace maize {
                     }
 
                     LBL_iret_opcode: {
+                        /* IRET is privileged (card maize-180, §9). This closes the forged-RF
+                           escalation: an unguarded IRET pops the full RF word (privilege bit
+                           included) then RP off the user-writable RS, so a user process could
+                           forge an RF word with the privilege bit set and IRET straight into
+                           supervisor mode. Gating it (cause-4 in user mode) shuts that door;
+                           every trap/interrupt handler runs supervisor (deliver_vectored
+                           forces privilege_flag true on entry), so a handler's own IRET always
+                           executes from supervisor and correctly drops to user by restoring a
+                           saved RF whose privilege bit is clear. */
+                        if (!privilege_flag) { raise_privileged_op(); }
                         auto src_size = subreg_size_map[static_cast<size_t>(subreg_enum::w0)];
                         copy_memval_reg(regs::rs.w0, src_size, regs::rf, subreg_enum::w0);
                         regs::rs.w0 += src_size;
@@ -4204,11 +4276,13 @@ namespace maize {
                        clrcry_opcode above exactly. No interrupt-vector-table or delivery work
                        included (Open Question O1). */
                     LBL_setint_opcode: {
+                        if (!privilege_flag) { raise_privileged_op(); }   // privileged (card maize-180, §9)
                         interrupt_enabled_flag = true;
                         MAIZE_NEXT();
                     }
 
                     LBL_clrint_opcode: {
+                        if (!privilege_flag) { raise_privileged_op(); }   // privileged (card maize-180, §9)
                         interrupt_enabled_flag = false;
                         MAIZE_NEXT();
                     }
@@ -4216,14 +4290,73 @@ namespace maize {
                     /* Syscall-provider mode select (card maize-24, D9 Shape B): pure
                        set/clear of syscall_guest_flag, mirroring setint/clrint above
                        exactly. SET routes SYS through cause 7 to the guest handler;
-                       CLEAR restores the native sys::call provider. */
+                       CLEAR restores the native sys::call provider. Privileged
+                       (card maize-180, §9): only supervisor code selects the provider. */
                     LBL_setsysg_opcode: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         syscall_guest_flag = true;
                         MAIZE_NEXT();
                     }
 
                     LBL_clrsysg_opcode: {
+                        if (!privilege_flag) { raise_privileged_op(); }
                         syscall_guest_flag = false;
+                        MAIZE_NEXT();
+                    }
+
+                    /* Control-register + TLB control (card maize-180). All five forms are
+                       privileged: the head-of-dispatch guard raises the cause-4
+                       privileged-operation fault in user mode, exactly the IN / OUT / OUTR
+                       precedent above. MOVTCR / MOVFCR mirror the OUT / IN operand shapes
+                       with cr_write / cr_read in place of port_write / port_read. TLBINV /
+                       TLBINVA are no-ops here (no software TLB exists yet); maize-194 gives
+                       them bodies. */
+                    LBL_movtcr_regVal_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
+                        regs::rp.w0 += 2;
+                        u_byte dst_size = op2_imm_size();
+                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
+                        cr_write(operand2.q0, op1_reg(), op1_subreg_flag());
+                        regs::rp.w0 += dst_size;
+                        MAIZE_NEXT();
+                    }
+
+                    LBL_movtcr_immVal_imm: {
+                        if (!privilege_flag) { raise_privileged_op(); }
+                        regs::rp.w0 += 2;
+                        u_byte src_size = op1_imm_size();
+                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
+                        regs::rp.w0 += src_size;
+                        u_byte dst_size = op2_imm_size();
+                        copy_memval_reg(regs::rp.w0, dst_size, operand2, subreg_enum::w0);
+                        cr_write(operand2.q0, operand1, subreg_enum::w0);
+                        regs::rp.w0 += dst_size;
+                        MAIZE_NEXT();
+                    }
+
+                    LBL_movfcr_immVal_reg: {
+                        if (!privilege_flag) { raise_privileged_op(); }
+                        regs::rp.w0 += 2;
+                        u_byte src_size = op1_imm_size();
+                        copy_memval_reg(regs::rp.w0, src_size, operand1, subreg_enum::w0);
+                        regs::rp.w0 += src_size;
+                        cr_read(operand1.q0, op2_reg(), op2_subreg_flag());
+                        MAIZE_NEXT();
+                    }
+
+                    LBL_tlbinv_opcode: {
+                        if (!privilege_flag) { raise_privileged_op(); }
+                        /* maize-180: no software TLB exists yet, so invalidate-all is a
+                           no-op. maize-194 clears every software-TLB entry here. */
+                        MAIZE_NEXT();
+                    }
+
+                    LBL_tlbinva_opcode: {
+                        if (!privilege_flag) { raise_privileged_op(); }
+                        regs::rp.w0 += 1;   // consume the register operand byte
+                        /* maize-180: no software TLB exists yet, so invalidate-one is a
+                           no-op. maize-194 invalidates the entry whose tag is
+                           VA(op1_reg()) >> 12 here. */
                         MAIZE_NEXT();
                     }
 

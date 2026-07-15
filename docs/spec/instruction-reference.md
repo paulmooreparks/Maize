@@ -524,11 +524,14 @@ reserved for the future segment/bounds work (Chapter 12).
 ## 7.9 System and privileged instructions
 
 Instructions marked **(privileged)** require the RF privilege bit set. Executed in user mode
-(privilege bit clear) they raise the **privileged-operation fault (cause 4)**. The privilege
-bit exists and the machine starts privileged; the enforcement gate is a reserved
-mechanism whose code lands with the interrupt/port work (Chapters 10, 11). The candidate
-privileged set is IN / OUT / OUTR, SETINT / CLRINT, IRET, HALT, INT, and future
-control-register and segment writes.
+(privilege bit clear) they raise the **privileged-operation fault (cause 4)**. Enforcement is
+**live** (card maize-180): a head-of-dispatch privilege gate is applied at every privileged
+instruction below, and a trap or interrupt entry raises privilege to supervisor for the
+handler, so the handler's own IRET runs privileged and drops back to user by restoring a
+saved RF whose privilege bit is clear. The enforced privileged set is IN / OUT / OUTR,
+MOVTCR / MOVFCR, TLBINV / TLBINVA, SETINT / CLRINT, SETSYSG / CLRSYSG, IRET, and HALT. INT is
+privileged but has no active dispatch in v1.0, so its fault applies once its dispatch lands;
+future segment-write and other control instructions join the set as they land.
 
 ### SYS (system call)
 - **Operation:** enter the kernel syscall dispatcher with the syscall index in the operand.
@@ -552,7 +555,8 @@ control-register and segment writes.
   exists; INT has no active dispatch case in v1.0.
 - **Forms:** `$24` regVal (index in a register), `$64` immVal (immediate index).
 - **Flags:** C/N/V/Z/P unaffected.
-- **Traps:** privileged-operation fault (cause 4) in user mode once enforced.
+- **Traps:** privileged-operation fault (cause 4) in user mode. INT has no active dispatch in
+  v1.0, so this fault applies once its dispatch lands.
 
 ### IRET (interrupt return)
 - **Operation:** the shared return path for both traps and interrupts (there is no TRET).
@@ -562,14 +566,17 @@ control-register and segment writes.
   re-enables interrupts on a normal handler return. Privileged.
 - **Forms:** `$67` (zero-operand; row 1 of base `$27`).
 - **Flags:** RF (and thus C/N/V/Z/P) is **restored** from the saved frame, not computed.
-- **Traps:** privileged-operation fault (cause 4) in user mode once enforced.
+- **Traps:** privileged-operation fault (cause 4) in user mode. Making IRET privileged closes
+  the forged-RF escalation: only supervisor code (which every trap/interrupt handler is, since
+  entry raises privilege) can execute it, so user code cannot forge a privileged RF word on its
+  stack and IRET into supervisor mode (card maize-180).
 
 ### SETINT / CLRINT
 - **Operation:** SETINT sets the RF interrupt-enable bit (enabling maskable external
   interrupts); CLRINT clears it. Privileged.
 - **Forms:** SETINT `$29` (row 0 of base `$29`); CLRINT `$69` (row 1). Zero-operand.
 - **Flags:** the arithmetic/logic flags C/N/V/Z/P are unaffected (these write RF.H1).
-- **Traps:** privileged-operation fault (cause 4) in user mode once enforced.
+- **Traps:** privileged-operation fault (cause 4) in user mode.
 
 ### SETCRY / CLRCRY
 - **Operation:** SETCRY sets the Carry flag to 1; CLRCRY clears it to 0. The direct
@@ -578,6 +585,17 @@ control-register and segment writes.
 - **Flags:** C = 1 (SETCRY) or C = 0 (CLRCRY); N, V, Z, P unaffected.
 - **Traps:** none. (Not privileged; C is a user-mode arithmetic flag.)
 
+### SETSYSG / CLRSYSG (syscall-provider select, privileged)
+- **Operation:** SETSYSG sets the RF syscall-guest bit; CLRSYSG clears it (card maize-24). The
+  bit selects which provider SYS dispatches to: clear (boot default) calls the native
+  `sys::call` provider byte-identical to v1.0; set routes SYS through the shared trap table at
+  cause 7 into a guest-installed handler (the syscall number rides the frame's aux word; args
+  and result use the R0/R1/R2/RV ABI). A resident guest kernel toggles the bit around a
+  re-issued SYS to pass calls through to the native provider. Privileged.
+- **Forms:** SETSYSG `$A4` (row 2 of base `$24`); CLRSYSG `$E4` (row 3). Zero-operand.
+- **Flags:** the arithmetic/logic flags C/N/V/Z/P are unaffected (these write RF.H1).
+- **Traps:** privileged-operation fault (cause 4) in user mode.
+
 ### IN (port input, privileged)
 - **Operation:** read a value from the device on the selected port into the destination
   register. The port id is the low 16 bits (`.q0`) of the port operand. An IN from an
@@ -585,8 +603,7 @@ control-register and segment writes.
 - **Forms:** `$1F` regVal reg, `$5F` immVal reg, `$9F` regAddr reg, `$DF` immAddr reg (the
   first operand names the port; the destination is always a register).
 - **Flags:** C/N/V/Z/P unaffected.
-- **Traps:** privileged-operation fault (cause 4) in user mode (enforcement reserved,
-  Chapter 11).
+- **Traps:** privileged-operation fault (cause 4) in user mode.
 
 ### OUT (port output, immediate port, privileged)
 - **Operation:** write the source value (register / immediate / value-at-address) to the
@@ -594,14 +611,53 @@ control-register and segment writes.
   discarded (Chapter 11).
 - **Forms:** `$14` regVal imm, `$54` immVal imm, `$94` regAddr imm, `$D4` immAddr imm.
 - **Flags:** C/N/V/Z/P unaffected.
-- **Traps:** privileged-operation fault (cause 4) in user mode (enforcement reserved).
+- **Traps:** privileged-operation fault (cause 4) in user mode.
 
 ### OUTR (port output, register port, privileged)
 - **Operation:** OUT with the port named by a register operand rather than an immediate. The
   port id is the port register's `.q0`.
 - **Forms:** `$1E` regVal reg, `$5E` immVal reg, `$9E` regAddr reg, `$DE` immAddr reg.
 - **Flags:** C/N/V/Z/P unaffected.
-- **Traps:** privileged-operation fault (cause 4) in user mode (enforcement reserved).
+- **Traps:** privileged-operation fault (cause 4) in user mode.
+
+### MOVTCR (move to control register, privileged)
+- **Operation:** write a value into the control register named by the immediate CR index
+  `crn`. The control-register file is a small, privileged, flat-indexed bank reached only
+  through MOVTCR / MOVFCR, distinct from device ports and the syscall surface: CR0 `SATP`
+  (address-translation control), CR1 `FAULT_VA`, CR2 `FAULT_ERR` (Chapter 12). A write to an
+  undefined CR index (> 2) is discarded, mirroring the unpopulated-port convention. Under the
+  MMU foundation (card maize-180) the stored values are inert: CR0.MODE is accepted and stored
+  but no translation runs (bare mode always); the Sv48 walk that consults them is maize-194.
+- **Forms:** `$26` regVal-imm (`MOVTCR Rsrc, crn`, source in a register, trailing immediate CR
+  index), `$66` immVal-imm (`MOVTCR imm, crn`, immediate source). `$E6` reserved.
+- **Flags:** C/N/V/Z/P unaffected.
+- **Traps:** privileged-operation fault (cause 4) in user mode.
+
+### MOVFCR (move from control register, privileged)
+- **Operation:** read the control register named by the leading immediate CR index `crn` into
+  the destination register. A read from an undefined CR index (> 2) yields 0, mirroring the
+  unpopulated-port read-0 convention.
+- **Forms:** `$A6` immVal-reg (`MOVFCR crn, Rdst`, leading immediate CR index, trailing
+  destination register). The opcode is fixed: unlike IN, the `$26` row bit is a slot selector,
+  not an addressing-mode tag.
+- **Flags:** C/N/V/Z/P unaffected.
+- **Traps:** privileged-operation fault (cause 4) in user mode.
+
+### TLBINV (invalidate all TLB entries, privileged)
+- **Operation:** invalidate every software-TLB entry. Under the MMU foundation (card
+  maize-180) there is no software TLB yet, so this is a privileged **no-op**; maize-194 gives
+  it a body (clear every entry) alongside the Sv48 walk.
+- **Forms:** `$28` (zero-operand).
+- **Flags:** C/N/V/Z/P unaffected.
+- **Traps:** privileged-operation fault (cause 4) in user mode.
+
+### TLBINVA (invalidate one TLB entry, privileged)
+- **Operation:** invalidate the single software-TLB entry whose tag is the VA in the register
+  operand, shifted right by the page size. A privileged **no-op** under card maize-180 (no TLB
+  yet); maize-194 gives it a body.
+- **Forms:** `$68` regVal (one register operand naming the VA). `$A8` / `$E8` reserved.
+- **Flags:** C/N/V/Z/P unaffected.
+- **Traps:** privileged-operation fault (cause 4) in user mode.
 
 ### HALT
 - **Operation:** halt the clock, stopping execution pending an interrupt. With no interrupt
@@ -610,7 +666,7 @@ control-register and segment writes.
   C). Pinned at opcode `$00` so a run of zeroed memory halts. Privileged.
 - **Forms:** `$00` (zero-operand).
 - **Flags:** C/N/V/Z/P unaffected (the running bit in RF.H1 clears).
-- **Traps:** privileged-operation fault (cause 4) in user mode once enforced.
+- **Traps:** privileged-operation fault (cause 4) in user mode.
 
 ### BRK (breakpoint)
 - **Operation:** a defined breakpoint trap. Trap-class: captures the following-instruction

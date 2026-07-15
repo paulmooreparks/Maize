@@ -260,6 +260,22 @@ namespace {
         add_zero_operand("SETSYSG", instr_ns::setsysg_opcode);
         add_zero_operand("CLRSYSG", instr_ns::clrsysg_opcode);
 
+        /* MMU foundation (card maize-180): control-register access + TLB control.
+           MOVTCR ($26 regVal / $66 immVal): op1 is the value source (reg or immediate
+           per the opcode's own source-mode bit, the `src` kind), op2 is the immediate
+           CR index (port-style trailing immediate). Only the $26/$66 rows carry the
+           mnemonic; $A6 is MOVFCR and $E6 is reserved, so the pair is registered on
+           just those two bytes rather than the full four-row fan-out. */
+        set_entry(instr_ns::movtcr_regVal_imm, "MOVTCR", {operand_kind::src, operand_kind::port});
+        set_entry(instr_ns::movtcr_immVal_imm, "MOVTCR", {operand_kind::src, operand_kind::port});
+        /* MOVFCR ($A6): fixed opcode (the row bit is a slot selector, not a source-mode
+           flag), so op1 is the immediate CR index and op2 the destination register. */
+        set_entry(instr_ns::movfcr_immVal_reg, "MOVFCR", {operand_kind::port, operand_kind::reg});
+        /* TLBINV ($28, zero-op) / TLBINVA ($68, one register operand). No-ops under
+           maize-180; assemble and decode so the surfaces stay in sync. */
+        add_zero_operand("TLBINV", instr_ns::tlbinv_opcode);
+        add_reg_only("TLBINVA", instr_ns::tlbinva_opcode);
+
         add_zero_operand("NOP", instr_ns::nop_opcode);
         add_zero_operand("BRK", instr_ns::brk_opcode);
         add_zero_operand("HALT", instr_ns::halt_opcode);

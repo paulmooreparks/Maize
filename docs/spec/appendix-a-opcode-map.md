@@ -54,9 +54,9 @@ slot; consult Chapter 7 or Chapter 8 for each instruction's full entry.
 | `$23` | FMADD | FP 3-op | `$23` `$63` `$A3` `$E3` |
 | `$24` | INT / SETSYSG / CLRSYSG | interrupt / zero-op | INT `$24` regVal, `$64` immVal (privileged; dispatch deferred); SETSYSG `$A4`, CLRSYSG `$E4` (v1.x syscall-provider select, card maize-24) |
 | `$25` | FMSUB | FP 3-op | `$25` `$65` `$A5` `$E5` |
-| `$26` | reserved | - | control-register access (reserved) |
+| `$26` | MOVTCR / MOVFCR | control-register | MOVTCR `$26` regVal-imm, `$66` immVal-imm; MOVFCR `$A6` immVal-reg (`$E6` reserved) (privileged; control-register access, card maize-180) |
 | `$27` | RET / IRET / NOP | zero-op | RET `$27`, IRET `$67`, NOP `$A7` (`$E7` reserved) |
-| `$28` | reserved | - | paging / MMU control (reserved) |
+| `$28` | TLBINV / TLBINVA | paging / MMU | TLBINV `$28` zero-op, TLBINVA `$68` regVal (`$A8`/`$E8` reserved) (privileged; no-op until translation lands in maize-194, card maize-180) |
 | `$29` | SETINT / CLRINT / SETCRY / CLRCRY | zero-op | `$29` / `$69` / `$A9` / `$E9` |
 | `$2A` | FCMP | FP compare | `$2A` `$6A` `$AA` `$EA` |
 | `$2B` | SETcc column 0 | set | SETZ `$2B`, SETB `$6B`, SETGE `$AB`, SETAE `$EB` |

@@ -1,0 +1,69 @@
+; **********************************************************************************
+; Regression test for card maize-180: IRET is privileged, closing the forged-RF
+; privilege-escalation back door.
+;
+; An unguarded IRET pops the full RF word (privilege bit included) then RP off the
+; user-writable stack with no check, so a user process could forge an RF word with the
+; privilege bit SET plus a target supervisor PC and IRET straight into supervisor mode.
+; This fixture does exactly that: it drops to user mode via the (supervisor) IRET
+; trampoline, then, from user mode, pushes a forged RF (privilege + running set) and a
+; supervisor target PC and executes IRET.
+;
+; With IRET made privileged the user-mode IRET raises the cause-4 fault BEFORE popping
+; anything: the VM exits nonzero with a "privileged" diagnostic and never reaches the
+; forged target (escalation_target, which would print FAIL). A regression that let the
+; user-mode IRET through would jump to escalation_target in supervisor and print the
+; FAIL marker, which the trap-style runner catches on stdout.
+;
+; RF bit layout (src/cpu.cpp): bit_privilege = bit 32, bit_running = bit 35.
+;   user RF   = $0000000800000000 (running set, privilege clear)
+;   forged RF = $0000000900000000 (running set, privilege SET) -- the escalation attempt
+; **********************************************************************************
+
+$0000`0000:
+    CLR R0
+    CP user_mode R0.H0
+    PUSH R0                ; [SP] = user_mode (restored PC)
+
+    CLR R1
+    CP $08 R1.B4           ; running set, privilege clear
+    PUSH R1                ; [SP] = user RF
+
+    IRET                   ; enter user mode (supervisor executes this IRET: allowed)
+
+user_mode:
+    ; ---- now unprivileged: forge a privileged frame and try to IRET into it ----
+    CLR R0
+    CP escalation_target R0.H0
+    PUSH R0                ; [SP] = escalation_target (forged supervisor PC)
+
+    CLR R1
+    CP $09 R1.B4           ; $0000000900000000: running set, privilege SET (forged)
+    PUSH R1                ; [SP] = forged RF
+
+    IRET                   ; user-mode IRET -> cause-4 fault; never reaches the target
+
+    ; ---- unreachable ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $18 R2
+    SYS $01
+    HALT
+
+escalation_target:
+    ; ---- reached ONLY if the forged IRET wrongly escalated to supervisor ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $18 R2              ; 24 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+fail_string:
+    STRING "mmu-priv-iret-esc: FAIL\n\0"

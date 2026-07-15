@@ -1020,11 +1020,12 @@ a v1.0 instruction, register, or semantic; every reserved encoding already decod
 - **Guarantee.** Every reserved extension is disabled at reset (paging off, no segment limit
   armed, machine privileged in the flat model), and extensions come only from reserved space,
   so a v1.0 binary uses no reserved encoding and nothing can collide with it.
-- **Free base slots.** After the maize-122 floating-point claim of twelve base slots, four
-  fully-free base slots remain: `$26`, `$28`, `$37`, `$38`. Each is earmarked to a v1.x
-  claimant class (see the opcode tables below): `$26` privileged control-register access, `$28`
-  paging / MMU control, `$37` SMP and memory-ordering primitives, `$38` versioning and
-  capability query.
+- **Free base slots.** After the maize-122 floating-point claim of twelve base slots, two
+  fully-free base slots remain: `$37` (SMP and memory-ordering primitives) and `$38`
+  (versioning and capability query). The `$26` (control-register access, MOVTCR / MOVFCR)
+  and `$28` (paging / MMU control, TLBINV / TLBINVA) slots are now consumed by the paging
+  MMU foundation (card maize-180); the Sv48 translation those registers drive remains
+  reserved for maize-194.
 - **Escape prefix.** The full-byte-dispatch band `$3F` / `$7F` / `$BF` (`$FF` is BRK) is the
   reserved carrier for a future escape prefix that opens a second 256-entry opcode plane;
   v1.0 reserves the page but names no prefix byte and defines no second-plane content.
@@ -1039,9 +1040,11 @@ a v1.0 instruction, register, or semantic; every reserved encoding already decod
   as the thread pointer by C-ABI convention (callee-saved, never an argument, the highest
   general register) and reserves a future system-register path behind the control-register
   mechanism.
-- **Control-register mechanism.** The privileged move-to / move-from control-register mechanism
-  (`$26`) and its register-numbering space are reserved as the shared door for segment,
-  paging, and thread-pointer state that cannot fit the operand field.
+- **Control-register mechanism.** The privileged move-to / move-from control-register
+  instructions MOVTCR / MOVFCR (`$26`) reach a small flat-indexed control-register file (the
+  shared door for paging, and future segment and thread-pointer state that cannot fit the
+  operand field). Card maize-180 lands the mechanism and defines CR0 (SATP), CR1 (FAULT_VA)
+  and CR2 (FAULT_ERR); the register-numbering space beyond those stays reserved.
 
 
 ## Devices and port I/O
@@ -1341,14 +1344,20 @@ bit 7 is interpreted as follows:
     %1010`0100  $A4   SETSYSG                   Set the syscall-guest flag: route SYS through the cause-7 trap to the guest-installed handler (card maize-24)
     %1110`0100  $E4   CLRSYSG                   Clear the syscall-guest flag: SYS calls the native provider directly (boot default; card maize-24)
 
-    %0010`0110  $26                             reserved (v1.x privileged control-register access; see docs/spec/reservations.md)
+    %0010`0110  $26   MOVTCR    regVal-imm      Write a register value into control register CR[crn], where crn is a trailing immediate index (card maize-180, privileged)
+    %0110`0110  $66   MOVTCR    immVal-imm      Write an immediate value into control register CR[crn] (card maize-180, privileged)
+    %1010`0110  $A6   MOVFCR    immVal-reg      Read control register CR[crn] into a register, where crn is a leading immediate index (card maize-180, privileged)
+    %1110`0110  $E6                             reserved (future register-indexed MOVFCR)
 
     %0010`0111  $27   RET                       Pop the return address from the stack and continue execution at that address. Used to return from CALL.
     %0110`0111  $67   IRET                      Pop FL and PC from the stack and continue execution at the address in PC. Used to return from interrupt (privileged).
     %1010`0111  $A7   NOP                       No operation. Used as an instruction placeholder.
     %1110`0111  $E7                             reserved
 
-    %0010`1000  $28                             reserved (v1.x paging / MMU control; see docs/spec/reservations.md)
+    %0010`1000  $28   TLBINV                    Invalidate every software-TLB entry (privileged no-op until translation lands in maize-194; card maize-180)
+    %0110`1000  $68   TLBINVA   regVal          Invalidate the software-TLB entry for the VA in a register (privileged no-op until maize-194; card maize-180)
+    %1010`1000  $A8                             reserved (future ASID-scoped TLB invalidate)
+    %1110`1000  $E8                             reserved (future ASID-scoped TLB invalidate)
 
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
     %0110`1001  $69   CLRINT                    Clear the Interrupt flag, thereby disabling hardware interrupts (privileged)
@@ -2021,9 +2030,9 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %0010`0011  $23   FMADD     regVal  reg reg FP fused multiply-add (single-rounded): operand-3 = operand-1 * operand-2 + operand-3
     %0010`0100  $24   INT       regVal          Push FL and PC to stack and generate a software interrupt at index stored in register (privileged)
     %0010`0101  $25   FMSUB     regVal  reg reg FP fused multiply-subtract (single-rounded): operand-3 = operand-1 * operand-2 - operand-3
-    %0010`0110  $26                             reserved (v1.x privileged control-register access)
+    %0010`0110  $26   MOVTCR    regVal-imm      Write a register value into control register CR[crn] (trailing immediate index; card maize-180, privileged)
     %0010`0111  $27   RET                       Pop the return address from the stack and continue execution at that address. Used to return from CALL.
-    %0010`1000  $28                             reserved (v1.x paging / MMU control)
+    %0010`1000  $28   TLBINV                    Invalidate every software-TLB entry (privileged no-op until maize-194; card maize-180)
     %0010`1001  $29   SETINT                    Set the Interrupt flag, thereby enabling hardware interrupts (privileged)
     %0010`1010  $2A   FCMP      regVal  reg     FP quiet compare: set integer flags C/Z/P comparing destination against source (unordered -> C=Z=P=1)
     %0010`1011  $2B   SETZ      regVal          Set destination register to 1 if Zero flag is set, else 0 (reads flags; flag-neutral)
@@ -2085,9 +2094,9 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %0110`0011  $63   FMADD     immVal  reg reg FP fused multiply-add: operand-3 = immediate * operand-2 + operand-3
     %0110`0100  $64   INT       immVal          Push FL and PC to stack and generate a software interrupt using immediate index (privileged)
     %0110`0101  $65   FMSUB     immVal  reg reg FP fused multiply-subtract: operand-3 = immediate * operand-2 - operand-3
-    %0110`0110  $66
+    %0110`0110  $66   MOVTCR    immVal-imm      Write an immediate value into control register CR[crn] (card maize-180, privileged)
     %0110`0111  $67   IRET                      Pop FL and PC from the stack and continue execution at the address in PC. Used to return from interrupt (privileged).
-    %0110`1000  $68
+    %0110`1000  $68   TLBINVA   regVal          Invalidate the software-TLB entry for the VA in a register (privileged no-op until maize-194; card maize-180)
     %0110`1001  $69   CLRINT                    Clear the Interrupt flag, thereby disabling hardware interrupts (privileged)
     %0110`1010  $6A   FCMP      immVal  reg     FP quiet compare against immediate value
     %0110`1011  $6B   SETB      regVal          Set destination register to 1 if Carry flag is set (unsigned <), else 0 (reads flags; flag-neutral)
@@ -2149,7 +2158,7 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %1010`0011  $A3   FMADD     regAddr reg reg FP fused multiply-add: operand-3 = (value at address in operand 1) * operand-2 + operand-3
     %1010`0100  $A4   SETSYSG                   Set the syscall-guest flag: route SYS through the cause-7 trap to the guest-installed handler (card maize-24)
     %1010`0101  $A5   FMSUB     regAddr reg reg FP fused multiply-subtract: operand-3 = (value at address in operand 1) * operand-2 - operand-3
-    %1010`0110  $A6
+    %1010`0110  $A6   MOVFCR    immVal-reg      Read control register CR[crn] into a register (leading immediate index; card maize-180, privileged)
     %1010`0111  $A7   NOP                       No operation. Used as an instruction placeholder.
     %1010`1000  $A8
     %1010`1001  $A9   SETCRY                    Set the Carry flag

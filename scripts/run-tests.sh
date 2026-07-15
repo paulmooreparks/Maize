@@ -272,6 +272,7 @@ run_test "reject_fp_subreg"     "test_fp_reject_subreg.mazm"     "B* or Q* subre
 run_test "reject_fp_mixwidth"   "test_fp_reject_mixwidth.mazm"   "same floating-point width" 0 1
 run_test "nested_include"       "test_nested_include.mazm"       "nested include: PASS"   1
 run_test "address_fwdlabel"     "test_address_fwdlabel.mazm"     "address fwd-ref: PASS"  0
+run_test "mmu_cr_roundtrip"     "test_mmu_cr_roundtrip.mazm"     "cr-roundtrip: PASS"     0
 
 # maize-72: per-reference undefined-label diagnostics. Several distinct undefined
 # labels referenced from distinct lines must each report at their OWN file:line, and a
@@ -396,6 +397,110 @@ run_priv_fault_trap_test() {
 }
 
 run_priv_fault_trap_test
+
+# --- maize-180: the four new privileged instructions + the previously-ungated ops -------
+# Each fixture drops to user mode via the IRET trampoline and executes one privileged
+# instruction (MOVTCR / TLBINV, or the previously-ungated HALT / SETINT / SETSYSG / a
+# forged-RF IRET escalation attempt). With the head-of-dispatch privilege guard the VM
+# takes the cause-4 fault: exits nonzero, surfaces a "privileg" diagnostic on stderr, and
+# never reaches the fall-through / escalation-target "FAIL" marker. The IRET-escalation
+# case additionally proves the forged supervisor target is never reached. Wrapped in
+# `timeout` so a regression that (e.g.) leaves interrupts enabled and parks in HALT is
+# reported as a failure rather than hanging the suite.
+run_priv_user_fault_test() {
+    name="$1"
+    src="$2"
+    TOTAL=$((TOTAL + 1))
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+    out_file=$(mktemp)
+    err_file=$(mktemp)
+    if timeout 10 "$MAIZE_EXE" "$bin_path" >"$out_file" 2>"$err_file"; then
+        me=0
+    else
+        me=$?
+    fi
+    out=$(cat "$out_file")
+    err=$(cat "$err_file")
+    rm -f "$out_file" "$err_file"
+    if [ "$me" -ne 0 ] \
+        && printf '%s' "$err" | grep -qiF "privileg" \
+        && ! printf '%s' "$out" | grep -qF "FAIL"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: nonzero exit, 'privileg' on stderr, no FAIL marker on stdout"
+        echo "        actual:   exit ${me}; stdout=\"${out}\"; stderr=\"${err}\""
+    fi
+}
+
+run_priv_user_fault_test "mmu_priv_movtcr"        "test_mmu_priv_movtcr.mazm"
+run_priv_user_fault_test "mmu_priv_tlbinv"        "test_mmu_priv_tlbinv.mazm"
+run_priv_user_fault_test "mmu_priv_iret_escalate" "test_mmu_priv_iret_escalation.mazm"
+run_priv_user_fault_test "mmu_priv_halt"          "test_mmu_priv_halt.mazm"
+run_priv_user_fault_test "mmu_priv_setint"        "test_mmu_priv_setint.mazm"
+run_priv_user_fault_test "mmu_priv_setsysg"       "test_mmu_priv_setsysg.mazm"
+
+# --- maize-180: mzdis decodes the four new instructions (six encodings) ----------------
+# A code-only fixture exercising $26/$66/$A6 (MOVTCR/MOVFCR) and $28/$68 (TLBINV/TLBINVA):
+# assemble, disassemble, assert every new mnemonic decoded (no unknown/malformed lines),
+# then reassemble mzdis's own output and diff the .mzb byte-for-byte (the four-surface
+# sync check, same shape as run_mzdis_roundtrip_test).
+run_mmu_mzdis_test() {
+    name="mmu_mzdis_roundtrip"
+    TOTAL=$((TOTAL + 1))
+    asm_path="${TEST_RUN_DIR}/test_mmu_mzdis.mazm"
+    cp "${ASM_DIR}/test_mmu_mzdis.mazm" "$asm_path"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+    dis_path="${TEST_RUN_DIR}/test_mmu_mzdis.dis.mazm"
+    if ! "$MZDIS_EXE" -o "$dis_path" "$bin_path"; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mzdis exited nonzero)"
+        return
+    fi
+    if grep -qiE 'unknown opcode|malformed|TRUNCATED' "$dis_path"; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (decode diagnostic in a code-only fixture)"
+        return
+    fi
+    if ! grep -qE '^\s+MOVTCR R5 \$00\b' "$dis_path" \
+        || ! grep -qE '^\s+MOVTCR \$ABCD \$01\b' "$dis_path" \
+        || ! grep -qE '^\s+MOVFCR \$02 R6\b' "$dis_path" \
+        || ! grep -qE '^\s+TLBINV\b' "$dis_path" \
+        || ! grep -qE '^\s+TLBINVA R7\b' "$dis_path"; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: all six new encodings decode to their mnemonics"
+        echo "        actual:   one or more missing; see ${dis_path}"
+        return
+    fi
+    reasm_bin="${dis_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$dis_path" >/dev/null 2>&1 || [ ! -f "$reasm_bin" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mzdis output failed to reassemble)"
+        return
+    fi
+    if cmp -s "$bin_path" "$reasm_bin"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (reassembled .mzb not byte-identical)"
+    fi
+}
+
+run_mmu_mzdis_test
 
 # --- maize-21: a period-1 timer must not lose an IRQ raised during the masked handler --
 # A period-1 periodic timer raises on every tick, including inside the masked handler

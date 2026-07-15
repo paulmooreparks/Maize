@@ -1,0 +1,42 @@
+; **********************************************************************************
+; Regression test for card maize-180: MOVTCR is privileged (cause-4 in user mode).
+;
+; Uses the IRET trampoline (the real supervisor->user transition, see
+; test_priv_fault.mazm) to drop to user mode, then executes MOVTCR. With the RF
+; privilege bit clear the instruction raises the cause-4 "privileged operation in user
+; mode" fault; with no handler installed the VM exits nonzero with a "privileged"
+; diagnostic and never reaches the fall-through "mmu-priv-movtcr: FAIL" marker.
+;
+; RF bit layout (src/cpu.cpp): bit_privilege = bit 32, bit_running = bit 35. The
+; user-mode RF is $0000000800000000 (running set, privilege clear).
+; **********************************************************************************
+
+$0000`0000:
+    CLR R0
+    CP user_mode R0.H0
+    PUSH R0                ; [SP] = user_mode (restored PC)
+
+    CLR R1
+    CP $08 R1.B4           ; $0000000800000000: running set, privilege clear
+    PUSH R1                ; [SP] = user RF
+
+    IRET                   ; enter user mode
+
+user_mode:
+    ; ---- now unprivileged: this MOVTCR must raise the cause-4 fault ----
+    CLR R2
+    MOVTCR R2 $00          ; privileged in user mode -> cause-4 fault
+
+    ; ---- unreachable unless the privilege gate wrongly let MOVTCR through ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $16 R2              ; 22 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+fail_string:
+    STRING "mmu-priv-movtcr: FAIL\n\0"

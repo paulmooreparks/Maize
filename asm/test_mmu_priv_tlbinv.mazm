@@ -1,0 +1,40 @@
+; **********************************************************************************
+; Regression test for card maize-180: TLBINV is privileged (cause-4 in user mode).
+;
+; TLBINV is a no-op under this card (no software TLB exists yet, maize-194 gives it a
+; body) but it is still privilege-gated. Dropping to user mode via the IRET trampoline
+; and executing TLBINV must raise the cause-4 "privileged operation in user mode" fault:
+; the VM exits nonzero with a "privileged" diagnostic and never reaches the fall-through
+; "mmu-priv-tlbinv: FAIL" marker.
+;
+; RF bit layout (src/cpu.cpp): bit_privilege = bit 32, bit_running = bit 35.
+; **********************************************************************************
+
+$0000`0000:
+    CLR R0
+    CP user_mode R0.H0
+    PUSH R0                ; [SP] = user_mode (restored PC)
+
+    CLR R1
+    CP $08 R1.B4           ; running set, privilege clear
+    PUSH R1                ; [SP] = user RF
+
+    IRET                   ; enter user mode
+
+user_mode:
+    ; ---- now unprivileged: this TLBINV must raise the cause-4 fault ----
+    TLBINV                 ; privileged in user mode -> cause-4 fault
+
+    ; ---- unreachable unless the privilege gate wrongly let TLBINV through ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $16 R2              ; 22 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+fail_string:
+    STRING "mmu-priv-tlbinv: FAIL\n\0"

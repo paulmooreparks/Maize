@@ -102,13 +102,16 @@ resumes lands on the instruction after the breakpoint. `$FF` is also the value t
 fills erased or uninitialized memory, so a run of `$FF` bytes reached as code raises a
 breakpoint rather than wandering, mirroring `HALT` (`$00`) at the other end.
 
-**Cause 4, Privileged operation in user mode (fault, reserved).** The cause number is
-frozen; the enforcement mechanism is reserved. It fires when a privileged instruction
-executes with the RF privilege bit clear. The RF privilege bit exists and gates
-privileged mode, but no instruction enforces it in the flat v1.0 model. The candidate
-privileged set is IN / OUT / OUTR, SETINT / CLRINT, IRET, HALT, INT, and future
-segment-register writes; the exact set is settled together with the port-I/O and segment
-work. Reserving the number leaves stable encoding space.
+**Cause 4, Privileged operation in user mode (fault).** It fires when a privileged
+instruction executes with the RF privilege bit clear. Enforcement is **live**: card
+maize-21 gated IN / OUT / OUTR, and card maize-180 extended the head-of-dispatch privilege
+gate to the control-register and TLB instructions (MOVTCR / MOVFCR, TLBINV / TLBINVA) and to
+the previously-ungated HALT, SETINT / CLRINT and SETSYSG / CLRSYSG, and made IRET privileged
+(closing the forged-RF escalation: user code cannot forge a privileged RF word and IRET into
+supervisor mode). A trap or interrupt entry raises privilege to supervisor for the handler,
+so the handler's IRET runs privileged and drops back to user by restoring a saved RF whose
+privilege bit is clear. INT is privileged but has no active dispatch in v1.0, so its fault
+applies once its dispatch lands; future segment-register writes join the set as they land.
 
 **Cause 5, Segment / bounds violation (fault, reserved).** The cause number is frozen;
 the mechanism ships with the segment / base-bounds registers as a future extension. In
@@ -301,9 +304,12 @@ The reference VM (`src/cpu.cpp`, `src/maize_cpu.h`) grounds this chapter:
   lookup, four-word capture, handler entry) is realized for external interrupts, which
   vector through the table at 32..255; the synchronous faults keep the throw-and-exit
   no-handler behavior until an OS handler-install path exists.
-- **Privileged operation (cause 4)**: the RF privilege bit is set on power-up, and IN /
-  OUT / OUTR enforce it: executed with the bit clear they raise cause 4. User mode is
-  reached only by an IRET that restores an RF word with the privilege bit clear.
+- **Privileged operation (cause 4)**: the RF privilege bit is set on power-up. IN / OUT /
+  OUTR enforce it (card maize-21), and card maize-180 extends the gate to MOVTCR / MOVFCR,
+  TLBINV / TLBINVA, HALT, SETINT / CLRINT, SETSYSG / CLRSYSG, and IRET: executed with the bit
+  clear they raise cause 4. A trap or interrupt entry raises privilege to supervisor for the
+  handler; user mode is reached only by an IRET (now privileged, so executable only from
+  supervisor) that restores an RF word with the privilege bit clear.
 - **Segment / bounds (cause 5) and stack fault (cause 6)**: reserved numbers; the flat
   sparse memory model has no out-of-bounds access and no stack bound, so neither fires.
 - **SYS / syscall entry (cause 7)**: reserved number; `SYS` ($34) dispatches directly to

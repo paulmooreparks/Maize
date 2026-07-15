@@ -289,6 +289,7 @@ namespace {
     void regimm_regaddr_compiler(token_tree &tree, std::string &opcode_str);
     void reg_compiler(token_tree &tree, std::string &opcode_str);
     void regimm_imm_compiler(token_tree &tree, std::string &opcode_str);
+    void movfcr_compiler(token_tree &tree, std::string &opcode_str);
     void regimm_compiler(token_tree &tree, std::string &opcode_str);
     void jcc_compiler(token_tree &tree, std::string &opcode_str);
     void regimm_regreg_compiler(token_tree &tree, std::string &opcode_str);
@@ -415,6 +416,15 @@ namespace {
         { "CLRCRY", {cpu::instr::clrcry_opcode , opcode_0param_tokenizer, no_operand_compiler}},
         { "SETSYSG",{cpu::instr::setsysg_opcode, opcode_0param_tokenizer, no_operand_compiler}},
         { "CLRSYSG",{cpu::instr::clrsysg_opcode, opcode_0param_tokenizer, no_operand_compiler}},
+        /* MMU foundation (card maize-180): control-register access + TLB control. MOVTCR
+           takes OUT's regimm-then-immediate shape (Rsrc/imm, crn); MOVFCR is a fixed $A6
+           opcode with a leading immediate CR index and trailing destination register, so
+           it uses a dedicated compiler that never rewrites the opcode's source-mode bits.
+           TLBINV is zero-operand; TLBINVA takes one register operand. */
+        { "MOVTCR", {cpu::instr::movtcr_opcode  , opcode_2param_tokenizer, regimm_imm_compiler}},
+        { "MOVFCR", {cpu::instr::movfcr_immVal_reg, opcode_2param_tokenizer, movfcr_compiler}},
+        { "TLBINV", {cpu::instr::tlbinv_opcode  , opcode_0param_tokenizer, no_operand_compiler}},
+        { "TLBINVA",{cpu::instr::tlbinva_opcode , opcode_1param_tokenizer, reg_compiler}},
         { "SYS",    {cpu::instr::sys_opcode    , opcode_1param_tokenizer, regimm_compiler}},
         { "NOP",    {cpu::instr::nop_opcode    , opcode_0param_tokenizer, no_operand_compiler}},
         { "XCHG",   {cpu::instr::xchg_opcode   , opcode_2param_tokenizer, regimm_reg_compiler}},
@@ -2524,6 +2534,47 @@ namespace {
             else {
                 current_address += cpu::mm.write_byte(current_address, operand2_literal.b0);
             }
+        }
+    }
+
+    /* MOVFCR crn, Rdst (card maize-180): read control register CR[crn] into Rdst. Unlike
+       OUT / IN, the $26 row bit is a slot selector, not an addressing-mode tag, so the
+       opcode ($A6) is fixed and this compiler never ORs a source-mode flag. The CR index
+       is a leading immediate (operand1, its width recorded in operand1_byte's imm-size
+       field), the destination is a trailing register (operand2). The emitted layout
+       (opcode, op1 imm descriptor, op2 reg descriptor, trailing crn immediate) is exactly
+       what the $A6 dispatch label decodes. */
+    void movfcr_compiler(token_tree &tree, std::string &opcode_str) {
+        u_byte opcode {opcodes[opcode_str].opcode};
+        auto it {tree.value.begin()};
+        current_ref_loc = { it->loc_file, it->loc_line };
+        auto operand1 {it->key};
+        ++it;
+        auto operand2 {it->key};
+        cpu::reg_value operand1_literal {0};
+
+        if (!is_literal(operand1)) {
+            fatal(current_ref_loc.file, current_ref_loc.line,
+                "MOVFCR takes an immediate control-register index as its first operand (e.g. MOVFCR $0, R0)");
+        }
+        u_byte operand1_byte {compile_literal(operand1, operand1_literal)};
+        u_byte operand2_byte {compile_register_checked(operand2, it->loc_file, it->loc_line)};
+
+        current_address += cpu::mm.write_byte(current_address, opcode);
+        current_address += cpu::mm.write_byte(current_address, operand1_byte);
+        current_address += cpu::mm.write_byte(current_address, operand2_byte);
+
+        if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
+            current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
+        }
+        else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
+            current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
+        }
+        else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
+            current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
+        }
+        else {
+            current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
         }
     }
 

@@ -97,6 +97,7 @@ $Tests = @(
     [pscustomobject]@{ Name = 'reject_fp_mixwidth';  File = 'test_fp_reject_mixwidth.mazm'; Expected = 'same floating-point width';   Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'nested_include';      File = 'test_nested_include.mazm';    Expected = 'nested include: PASS';        Golden = $true }
     [pscustomobject]@{ Name = 'address_fwdlabel';    File = 'test_address_fwdlabel.mazm';  Expected = 'address fwd-ref: PASS';       Golden = $false }
+    [pscustomobject]@{ Name = 'mmu_cr_roundtrip';    File = 'test_mmu_cr_roundtrip.mazm';  Expected = 'cr-roundtrip: PASS';          Golden = $false }
     # maize-71: flat-mode EXTERN'd-but-undefined reference has no linker to resolve it.
     [pscustomobject]@{ Name = 'flat_unresolved_extern'; File = 'test_reject_unresolved_extern.mazm'; Expected = "unresolved external 'undefsym'"; Golden = $false; ExpectAsmError = $true }
 )
@@ -489,6 +490,14 @@ function Invoke-KeyboardTest {
 $results += Invoke-UndefMultirefTest
 $results += Invoke-TrapTest 'brk_trap'        'test_brk.mazm'        'breakpoint'
 $results += Invoke-TrapTest 'priv_fault_trap' 'test_priv_fault.mazm' 'privileg'
+# maize-180: the four new privileged instructions + the previously-ungated ops each raise
+# cause-4 in user mode (MOVTCR/TLBINV, the forged-RF IRET escalation, HALT/SETINT/SETSYSG).
+$results += Invoke-TrapTest 'mmu_priv_movtcr'        'test_mmu_priv_movtcr.mazm'          'privileg'
+$results += Invoke-TrapTest 'mmu_priv_tlbinv'        'test_mmu_priv_tlbinv.mazm'          'privileg'
+$results += Invoke-TrapTest 'mmu_priv_iret_escalate' 'test_mmu_priv_iret_escalation.mazm' 'privileg'
+$results += Invoke-TrapTest 'mmu_priv_halt'          'test_mmu_priv_halt.mazm'            'privileg'
+$results += Invoke-TrapTest 'mmu_priv_setint'        'test_mmu_priv_setint.mazm'          'privileg'
+$results += Invoke-TrapTest 'mmu_priv_setsysg'       'test_mmu_priv_setsysg.mazm'         'privileg'
 $results += Invoke-TimerPeriod1Test
 $results += Invoke-SysreadTest
 $results += Invoke-KeyboardTest
@@ -761,6 +770,50 @@ function Invoke-MzdisRoundtripTest {
 # round-trip; DATA $XX reassembles to the same byte), advancing exactly one byte
 # each, decoding resumes correctly afterward, and mzdis's own output reassembles
 # back to the original .mzb byte-for-byte.
+# maize-180: mzdis decodes the four new instructions (six encodings $26/$66/$A6 and
+# $28/$68). Assemble a code-only fixture, disassemble it, assert every new mnemonic
+# decoded (no unknown/malformed lines), then reassemble mzdis's own output and diff the
+# .mzb byte-for-byte (the four-surface sync check, same shape as Invoke-MzdisRoundtripTest).
+function Invoke-MmuMzdisTest {
+    $name = 'mmu_mzdis_roundtrip'
+    $srcPath = Join-Path $AsmDir 'test_mmu_mzdis.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_mmu_mzdis.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to produce a .mzb' }
+    }
+
+    $disPath = Join-Path $TestRunDir 'test_mmu_mzdis.dis.mazm'
+    & $MzdisExe -o $disPath $binPath
+    $disExit = $LASTEXITCODE
+    if ($disExit -ne 0 -or -not (Test-Path $disPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'mzdis exits 0 with clean decode'; Actual = "mzdis exit $disExit" }
+    }
+    $disText = Get-Content -Raw -Path $disPath
+    if ($disText -match '(?i)unknown opcode|malformed|TRUNCATED') {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'no unknown/malformed/truncated lines'; Actual = 'decode diagnostic found in a code-only fixture' }
+    }
+    if (($disText -notmatch 'MOVTCR R5 \$00') -or ($disText -notmatch 'MOVTCR \$ABCD \$01') -or `
+        ($disText -notmatch 'MOVFCR \$02 R6') -or ($disText -notmatch '(?m)^\s+TLBINV\b') -or `
+        ($disText -notmatch 'TLBINVA R7')) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'all six new encodings decode to their mnemonics'; Actual = 'one or more missing' }
+    }
+
+    $reasmBin = [System.IO.Path]::ChangeExtension($disPath, 'mzb')
+    & $MazmExe $disPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $reasmBin)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = "mzdis's own output reassembles cleanly"; Actual = 'mazm failed to reassemble mzdis output' }
+    }
+
+    $origBytes = [System.IO.File]::ReadAllBytes($binPath)
+    $reasmBytes = [System.IO.File]::ReadAllBytes($reasmBin)
+    $identical = ($origBytes.Length -eq $reasmBytes.Length) -and (-not (Compare-Object $origBytes $reasmBytes))
+    return [pscustomobject]@{ Name = $name; Pass = $identical; Expected = 'reassembled .mzb byte-identical to original'; Actual = if ($identical) { 'byte-identical' } else { 'content differs' } }
+}
+
 function Invoke-MzdisReservedTest {
     $name = 'mzdis_reserved_resync'
     $srcPath = Join-Path $AsmDir 'test_mzdis_reserved.mazm'
@@ -937,6 +990,7 @@ function Invoke-MzdisMzxTest {
 }
 
 $results += Invoke-MzdisRoundtripTest
+$results += Invoke-MmuMzdisTest
 $results += Invoke-MzdisRtSymbolicTest
 $results += Invoke-MzdisReservedTest
 $results += Invoke-MzdisTruncatedTest

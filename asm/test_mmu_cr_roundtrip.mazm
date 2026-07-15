@@ -1,0 +1,83 @@
+; **********************************************************************************
+; Regression test for card maize-180 (MMU foundation): control-register round trip.
+;
+; From supervisor mode (the boot default), MOVTCR writes a distinct nonzero pattern to
+; CR0 (SATP, with MODE=1 / Sv48 in bits [3:0] and a nonzero PPN, reserved bits [11:4]
+; clear), CR1 (FAULT_VA) and CR2 (FAULT_ERR); MOVFCR reads each back and confirms it
+; matches exactly. A nonzero CR0.MODE is accepted and stored with NO observable
+; translation side effect (this card ships no translation; bare mode is always in
+; force). Finally an undefined CR index (> 2) is exercised: the write is discarded and
+; the read yields 0, per the unpopulated-port convention.
+;
+; RF privilege bit is set at boot, so every MOVTCR/MOVFCR here executes privileged and
+; the round trip completes; a failure prints "cr-roundtrip: FAIL".
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- CR0 SATP: MODE=1, PPN nonzero, reserved bits [11:4] = 0 ----
+    CLR R0
+    CP $01 R0.B0            ; bits [7:0]  = $01 -> MODE (bits [3:0]) = 1, bits [7:4] = 0
+    CP $10 R0.B1            ; bits [15:8] = $10 -> bits [11:8] = 0, bit 12 = 1 (PPN)
+    CP $AB R0.B4            ; bits [39:32] = $AB (PPN)
+    MOVTCR R0 $00           ; CR0 = $000000AB`00001001
+    MOVFCR $00 R3
+    CMP R0 R3
+    JNZ fail                ; CR0 did not read back exactly
+
+    ; ---- CR1 FAULT_VA: a full 64-bit distinct pattern ----
+    CLR R1
+    CP $EF R1.B0
+    CP $BE R1.B1
+    CP $AD R1.B2
+    CP $DE R1.B3
+    CP $11 R1.B4            ; R1 = $00000011`DEADBEEF
+    MOVTCR R1 $01
+    MOVFCR $01 R4
+    CMP R1 R4
+    JNZ fail
+
+    ; ---- CR2 FAULT_ERR: another distinct pattern ----
+    CLR R2
+    CP $55 R2.B0
+    CP $66 R2.B1
+    CP $77 R2.B2            ; R2 = $00000000`00776655
+    MOVTCR R2 $02
+    MOVFCR $02 R5
+    CMP R2 R5
+    JNZ fail
+
+    ; ---- undefined CR index (> 2): write discarded, read yields 0 ----
+    CLR R6
+    NOT R6                  ; R6 = $FFFFFFFF`FFFFFFFF (prove the read actually clears it)
+    MOVTCR R6 $03           ; discarded (no such CR)
+    MOVFCR $03 R6           ; must read back 0
+    CLR R7                  ; R7 = 0
+    CMP R7 R6               ; full-width compare: R6 must equal 0
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1
+    CP $13 R2               ; 19 bytes
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $13 R2               ; 19 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "cr-roundtrip: PASS\n\0"
+
+fail_string:
+    STRING "cr-roundtrip: FAIL\n\0"
