@@ -63,7 +63,7 @@ single-step trap, matching the x86 lineage a reader will expect.
 | 5 | Segment / bounds violation | Fault | An access falls outside a segment window, once segments exist | Faulting address |
 | 6 | Stack fault | Fault | A stack access violates the stack limit, once a stack bound exists | Faulting address |
 | 7 | SYS / syscall entry | Trap | The `SYS` instruction executes (a deliberate synchronous software trap into the kernel syscall dispatcher) | 0 (syscall number and arguments travel in registers per the syscall ABI) |
-| 8 | Page fault | Fault | An Sv48 address translation (CR0 SATP.MODE = 1) finds no valid mapping (a PTE with V=0, or a non-leaf PTE at walk level 0) or a mapping that violates the requested access (X for a fetch, R for a load, W for a store, or the U bit for a user-mode access) | Faulting VA in CR1 FAULT_VA; a packed error code in CR2 FAULT_ERR |
+| 8 | Page fault | Fault | An Sv48 address translation (CR0 SATP.MODE = 1) finds no valid mapping (a PTE with V=0, a non-leaf PTE at walk level 0, a reserved W=1/R=0 leaf, or a misaligned superpage) or a mapping that violates the requested access (X for a fetch, R for a load, W for a store, or the U bit for a user-mode access) | Faulting VA in CR1 FAULT_VA; a packed error code in CR2 FAULT_ERR |
 | 9..31 | (reserved) | n/a | Future synchronous traps | n/a |
 | 32.. | External / device interrupts | Interrupt | Device / timer sources; the timer is the first source | Source-defined |
 
@@ -143,18 +143,24 @@ through the trap table; routing it through the trap table is a future path.
 
 **Cause 8, Page fault (fault, live under Sv48).** Raised by the Sv48 address-translation
 layer (card maize-194) when CR0 SATP.MODE = 1 (Sv48) and a guest memory access cannot be
-translated. Two failure classes: no valid mapping (a PTE with V=0, or a non-leaf PTE
-reached at walk level 0) and a permission violation (a leaf that lacks the bit the access
-requires: X for a fetch, R for a load, W for a store; or a U-clear leaf accessed from user
-mode, since supervisor bypasses the U check). The A and D bits are software-managed and
-never cause a fault. Unlike the reserved causes above, page fault is delivered through the
-real trap table so a kernel handler can run: `raise_page_fault` latches the faulting VA
-into CR1 FAULT_VA and a packed error code into CR2 FAULT_ERR, then vectors through
-entry[8]. It is FAULT-class (captures the faulting instruction's own PC, so a handler that
-repairs the mapping can IRET and re-execute it), not trap-class like SYS. With no handler
-installed (entry[8] = 0) it is a deterministic halt with the cause surfaced. A page fault
-raised from inside the trap-frame push itself (an unmapped or read-only kernel stack) is a
-double fault: it halts deterministically rather than recursing.
+translated. Two failure classes: no valid mapping and a permission violation. No valid
+mapping covers a PTE with V=0, a non-leaf PTE reached at walk level 0, and two structurally
+invalid PTE encodings that are rejected rather than honored: a leaf with W=1 and R=0 (the
+RISC-V-reserved write-without-read encoding) and a misaligned superpage (a leaf above walk
+level 0 whose PPN has non-zero bits below its level's page boundary). A permission violation
+is a leaf that lacks the bit the access requires: X for a fetch, R for a load, W for a
+store; or a U-clear leaf accessed from user mode, since supervisor bypasses the U check. The
+A and D bits are software-managed and never cause a fault. Unlike the reserved causes above,
+page fault is delivered through the real trap table so a kernel handler can run:
+`raise_page_fault` latches the faulting VA into CR1 FAULT_VA and a packed error code into
+CR2 FAULT_ERR, then vectors through entry[8]. It is FAULT-class (captures the faulting
+instruction's own PC, so a handler that repairs the mapping can IRET and re-execute it), not
+trap-class like SYS. A stack-pushing instruction (PUSH, CALL) makes its faultable stack and
+target accesses atomic with respect to the stack pointer: a page fault leaves RS unmutated,
+so an IRET-and-re-execute decrements RS exactly once (the demand-paging stack-grow
+contract). With no handler installed (entry[8] = 0) it is a deterministic halt with the
+cause surfaced. A page fault raised from inside the trap-frame push itself (an unmapped or
+read-only kernel stack) is a double fault: it halts deterministically rather than recursing.
 
 CR2 FAULT_ERR bit layout: bit 0 PRESENT (0 = no valid mapping, 1 = a mapping was found but
 violates the requested permission); bits 2:1 ACCESS_KIND (0 = fetch, 1 = load, 2 = store);

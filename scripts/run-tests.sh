@@ -285,6 +285,7 @@ run_test "mmu_tlb_invalidate"   "test_mmu_tlb_invalidate.mazm"        "mmu-tlb: 
 run_test "mmu_translate_alu_ra" "test_mmu_translate_alu_regaddr.mazm" "mmu-alu-ra: PASS"      0
 run_test "mmu_translate_ind_cf" "test_mmu_translate_indirect_cf.mazm" "mmu-ind-cf: PASS"      0
 run_test "mmu_translate_out"    "test_mmu_translate_out.mazm"         "mmu-out: PASS"         0
+run_test "mmu_pushfault_restart" "test_mmu_pushfault_restart.mazm"    "mmu-pushfault: PASS"   0
 
 # maize-72: per-reference undefined-label diagnostics. Several distinct undefined
 # labels referenced from distinct lines must each report at their OWN file:line, and a

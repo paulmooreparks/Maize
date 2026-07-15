@@ -533,17 +533,18 @@ namespace maize {
             reg fcsr {0x0000000000000000}; // FP control/status: FRM(bits7-5)+FFLAGS(bits4-0); reset RNE, flags clear (maize-122)
         }
 
-        /* Sv48 address translation + software-TLB control (card maize-194). Declared
-           here, ahead of the anonymous-namespace choke-point helpers (copy_regaddr_reg
-           etc.) that call translate() by name, so every translated memory-access site
-           resolves it via enclosing-namespace lookup. The definitions live below
-           deliver_vectored (raise_page_fault vectors a cause-8 fault through it). In Bare
-           mode (CR0 SATP.MODE != 1) translate() is a single mode check that returns the
-           VA unchanged, so identity accesses pay no walk / no TLB probe. access_kind
-           classifies the access for the CR2 FAULT_ERR error code and the leaf permission
-           check (X for fetch, R for load, W for store). */
+        /* Sv48 address translation + software-TLB control (card maize-194). translate()
+           itself is defined inline in the anonymous namespace, just above the choke-point
+           helpers, so its Bare-mode identity fast path inlines into every translated
+           memory-access site (maize-194 review #2605, nit/perf 5). Its out-of-line slow
+           path (translate_slow: TLB probe + Sv48 walk) and the two TLB-flush helpers are
+           forward-declared here so the inline fast path and the choke points resolve them
+           via enclosing-namespace lookup; their definitions live below deliver_vectored
+           (raise_page_fault vectors a cause-8 fault through it). access_kind classifies the
+           access for the CR2 FAULT_ERR error code and the leaf permission check (X for
+           fetch, R for load, W for store). */
         enum class access_kind : u_byte { fetch = 0, load = 1, store = 2 };
-        u_word translate(u_word va, access_kind kind);
+        u_word translate_slow(u_word va, access_kind kind);
         void tlb_flush_all();
         void tlb_flush_va(u_word va);
 
@@ -785,6 +786,67 @@ namespace maize {
                 commit_reg_w0(dst, (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask));
             }
 
+            /* ---- Control-register file + software TLB + page-fault-delivery state
+               (cards maize-180 / maize-194). Relocated ahead of the choke-point memory
+               helpers below so translate()'s Bare-mode identity fast path can be DEFINED
+               inline before its first call site (maize-194 review #2605, nit/perf 5). The
+               ~150M-access/frame memory loop then inlines the single SATP.MODE check plus
+               `return va`, emitting a call to the out-of-line translate_slow() only under
+               Sv48 (MODE == 1), preserving the bare-mode zero-cost guarantee structurally
+               rather than relying on the optimizer to inline an externally-linked
+               definition that appears later in the file. */
+
+            /* Control-register file (card maize-180, the D2 access mechanism). A small,
+               privileged, flat-indexed register bank reached ONLY through MOVTCR / MOVFCR,
+               distinct from device ports (port_write / port_read) and the syscall surface.
+               CR0 SATP: MODE[3:0] + PPN[63:12]; CR1 FAULT_VA; CR2 FAULT_ERR. Reset 0. An
+               undefined index (> 2) mirrors the unpopulated-port convention: writes
+               discarded, reads yield 0, no trap. Reserved SATP bits [11:4] are forced to 0
+               on write (cr_write). */
+            static constexpr size_t control_reg_count = 3;
+            reg control_regs[control_reg_count] {};
+
+            /* Software TLB (card maize-194): 64-entry direct-mapped, indexed by the low 6
+               bits of the VPN (VA >> 12), the same direct-mapped-by-low-bits shape as
+               memory_module's L1 block cache; a miss overwrites its one candidate slot (no
+               LRU). Only a successful level-0 4 KiB leaf is cached; superpage leaves are
+               used but never installed (decision). */
+            struct tlb_entry {
+                bool valid = false;
+                u_word tag = 0;   // VPN = VA[47:12] (VA[63:48] discarded, decision 8619)
+                u_word ppn = 0;   // physical page base, low 12 bits already 0
+                bool r = false, w = false, x = false, u = false;
+            };
+            static constexpr size_t tlb_size = 64;
+            tlb_entry software_tlb[tlb_size] {};
+            /* TLB tag = VA[47:12] only. VA[63:48] is ignored (decision 8619), so the tag
+               must mask them off; otherwise two VAs differing only in the ignored high half
+               would occupy distinct TLB entries instead of sharing one (maize-194 review
+               #2605, nit 4). 36 bits spans VA[47:12]. The direct-mapped index uses the low
+               6 bits of the VPN, which lie in VA[17:12] and are unaffected by this mask. */
+            static constexpr u_word vpn_tag_mask = (u_word {1} << 36) - 1;
+
+            /* Page fault is FAULT-class: the saved PC is the faulting instruction's own
+               entry PC, captured at the top of MAIZE_NEXT() before the opcode fetch, not
+               the advanced PC. delivering_trap guards the double-fault case: a fault raised
+               from inside deliver_vectored's own trap-frame push halts deterministically
+               instead of recursing. */
+            u_word current_instr_pc = 0;
+            bool delivering_trap = false;
+
+            /* Bare-mode identity fast path for guest-address translation (card maize-194).
+               Inline on the fetch/memory hot path: a single SATP.MODE check returns the VA
+               unchanged in Bare mode (MODE != 1, including undefined MODE 2-15), paying no
+               TLB probe and no walk. Sv48 mode (MODE == 1) delegates to the out-of-line
+               translate_slow() (TLB probe, then walk on a miss; forward-declared above the
+               choke points as `translate_slow`). */
+            inline u_word translate(u_word va, access_kind kind) {
+                if ((control_regs[0].w0 & 0xF) != 1) {
+                    return va;   // Bare / undefined MODE: passthrough, zero added cost
+                }
+                return translate_slow(va, kind);
+            }
+
             void copy_memval_reg(u_word address, size_t size, reg_value &op2_reg, subreg_enum dst_subreg, access_kind kind) {
                 /* Read the size-byte immediate, then sign-extend it to the destination
                    subregister width (card maize-29). A narrow immediate copied into a wider
@@ -1013,45 +1075,10 @@ namespace maize {
             reg operand1;
             reg operand2;
 
-            /* Control-register file (card maize-180, the D2 access mechanism). A small,
-               privileged, flat-indexed register bank reached ONLY through MOVTCR / MOVFCR,
-               distinct from device ports (port_write / port_read) and the syscall surface.
-               Three registers are defined at freeze:
-                 CR0 SATP     translation control: MODE[3:0] + PPN[63:12], stored but INERT
-                              under this card (Bare behavior always; maize-194 attaches the
-                              walk). Reserved bits [11:4] are forced to 0 on write.
-                 CR1 FAULT_VA faulting VA latch (maize-194 writes it on page-fault; 0 here).
-                 CR2 FAULT_ERR page-fault error code latch (maize-194 writes it; 0 here).
-               Reset 0. An undefined index (> 2) mirrors the unpopulated-port convention:
-               a write is discarded and a read yields 0, with no trap. Under maize-180 the
-               values are inert (no translation runs and no fault path writes CR1/CR2). */
-            static constexpr size_t control_reg_count = 3;
-            reg control_regs[control_reg_count] {};
-
-            /* Software TLB + page-fault-delivery state (card maize-194), placed alongside
-               control_regs. translate() / raise_page_fault() below (namespace cpu) read
-               these anonymous-namespace globals via enclosing-scope visibility. The TLB is
-               64-entry direct-mapped, indexed by the low 6 bits of the VPN (VA >> 12), the
-               same direct-mapped-by-low-bits shape as memory_module's L1 block cache; a
-               miss simply overwrites its one candidate slot (no LRU). Only a successful
-               level-0 4 KiB leaf is cached; superpage leaves are used but never installed
-               (decision). */
-            struct tlb_entry {
-                bool valid = false;
-                u_word tag = 0;   // VPN = VA >> 12 (VA[63:48] already discarded)
-                u_word ppn = 0;   // physical page base, low 12 bits already 0
-                bool r = false, w = false, x = false, u = false;
-            };
-            static constexpr size_t tlb_size = 64;
-            tlb_entry software_tlb[tlb_size] {};
-
-            /* Page fault is FAULT-class: the saved PC is the faulting instruction's own
-               entry PC, captured at the top of MAIZE_NEXT() before the opcode fetch, not
-               the advanced PC. delivering_trap guards the double-fault case: a fault raised
-               from inside deliver_vectored's own trap-frame push halts deterministically
-               instead of recursing. */
-            u_word current_instr_pc = 0;
-            bool delivering_trap = false;
+            /* Control-register file, software TLB, and page-fault-delivery state (cards
+               maize-180 / maize-194) are declared ABOVE the choke-point memory helpers so
+               translate()'s inline Bare-mode fast path is visible before its first call
+               site (see that block, maize-194 review #2605, nit/perf 5). */
 
             bool is_power_on = false;
 
@@ -1340,17 +1367,31 @@ namespace maize {
                 }
                 bool r = pte & 0x2, w = pte & 0x4, x = pte & 0x8, u = pte & 0x10;
                 if (r || w || x) {
-                    /* Leaf. */
+                    /* Leaf. W-without-R is a reserved PTE encoding in RISC-V; reject it as
+                       an invalid mapping (no valid mapping found) before any permission or
+                       address use, rather than honoring it as a write-only page (maize-194
+                       review #2605, nit 3). */
+                    if (w && !r) {
+                        raise_page_fault(va, kind, false);   // reserved W=1/R=0: invalid PTE
+                    }
+                    u_word offset_mask = (u_word {1} << (12 + level * 9)) - 1;
+                    /* Misaligned superpage: a leaf above level 0 must have zero PPN bits
+                       below its level's page boundary. A non-zero low PPN is a fault, not an
+                       aliased mapping (maize-194 review #2605, minor 2). offset_mask & ~0xFFF
+                       selects the PPN bits [12 .. 12 + level*9) that must be clear; at level 0
+                       that mask is 0, so 4 KiB leaves are never rejected here. */
+                    if ((pte & (offset_mask & ~static_cast<u_word>(0xFFF))) != 0) {
+                        raise_page_fault(va, kind, false);   // misaligned superpage: invalid PTE
+                    }
                     if (!leaf_permits(kind, r, w, x, u)) {
                         raise_page_fault(va, kind, true);   // mapping present, perm violation
                     }
-                    u_word offset_mask = (u_word {1} << (12 + level * 9)) - 1;
                     u_word pa = (pte & ~static_cast<u_word>(0xFFF)) | (va & offset_mask);
                     if (level == 0) {
                         /* Only a 4 KiB leaf is cached; superpages never (decision). */
                         size_t idx = (va >> 12) & (tlb_size - 1);
                         software_tlb[idx].valid = true;
-                        software_tlb[idx].tag = va >> 12;
+                        software_tlb[idx].tag = (va >> 12) & vpn_tag_mask;
                         software_tlb[idx].ppn = pte & ~static_cast<u_word>(0xFFF);
                         software_tlb[idx].r = r;
                         software_tlb[idx].w = w;
@@ -1369,17 +1410,13 @@ namespace maize {
             raise_page_fault(va, kind, false);   // unreachable: level 0 always returns/faults
         }
 
-        /* Translate a guest virtual address to a physical address for an access of the
-           given kind (card maize-194). Bare mode (CR0 SATP.MODE != 1, including undefined
-           MODE 2-15) is the identity fast path: a single mode check, no TLB probe, no walk,
-           VA == PA. Sv48 mode (MODE == 1) checks the software TLB, then walks on a miss. */
-        u_word translate(u_word va, access_kind kind) {
-            if ((control_regs[0].w0 & 0xF) != 1) {
-                return va;   // Bare / undefined MODE: passthrough, zero added cost
-            }
+        /* Out-of-line slow path for translate() (card maize-194): reached only under Sv48
+           (MODE == 1; the inline translate() wrapper handles the Bare-mode identity fast
+           path). Checks the software TLB, then walks on a miss. */
+        u_word translate_slow(u_word va, access_kind kind) {
             size_t idx = (va >> 12) & (tlb_size - 1);
             tlb_entry const& e = software_tlb[idx];
-            if (e.valid && e.tag == (va >> 12)) {
+            if (e.valid && e.tag == ((va >> 12) & vpn_tag_mask)) {
                 /* Hit: re-check permission against the cached bits, since privilege/kind
                    can differ access-to-access on the same cached page. */
                 if (!leaf_permits(kind, e.r, e.w, e.x, e.u)) {
@@ -1402,7 +1439,7 @@ namespace maize {
            TLBINVA Rn (card maize-194). */
         void tlb_flush_va(u_word va) {
             size_t idx = (va >> 12) & (tlb_size - 1);
-            if (software_tlb[idx].valid && software_tlb[idx].tag == (va >> 12)) {
+            if (software_tlb[idx].valid && software_tlb[idx].tag == ((va >> 12) & vpn_tag_mask)) {
                 software_tlb[idx].valid = false;
             }
         }
@@ -4334,39 +4371,63 @@ namespace maize {
                     LBL_push_regVal: {
                         regs::rp.w0 += 1;
                         u_byte src_size = op1_subreg_size();
-                        regs::rs.w0 -= src_size;
-                        copy_regval_regaddr(op1_reg(), op1_subreg_flag(), regs::rs, subreg_enum::w0);
+                        /* Fault-atomic push (maize-194 review #2605, major 1): stage the
+                           decremented stack pointer in a temp and let copy_regval_regaddr
+                           translate+write it. A page fault on the translated stack write
+                           (the stack-auto-grow demand-paging trigger) leaves regs::rs
+                           unmutated, so an IRET-and-re-execute of this PUSH decrements rs
+                           exactly once. rs is committed ONLY after the write succeeds. */
+                        reg new_rs;
+                        new_rs.w0 = regs::rs.w0 - src_size;
+                        copy_regval_regaddr(op1_reg(), op1_subreg_flag(), new_rs, subreg_enum::w0);
+                        regs::rs.w0 = new_rs.w0;
                         MAIZE_NEXT();
                     }
 
                     LBL_push_immVal: {
                         regs::rp.w0 += 1;
                         u_byte src_size = op1_imm_size();
-                        regs::rs.w0 -= src_size;
-                        copy_memval_regaddr(regs::rp.w0, src_size, regs::rs, subreg_enum::w0);
+                        /* Fault-atomic push (maize-194 review #2605, major 1): see
+                           LBL_push_regVal. copy_memval_regaddr reads the immediate (fetch)
+                           then translates the stack slot (store); a fault in either leaves
+                           regs::rs and regs::rp unmutated for a clean re-execute. */
+                        reg new_rs;
+                        new_rs.w0 = regs::rs.w0 - src_size;
+                        copy_memval_regaddr(regs::rp.w0, src_size, new_rs, subreg_enum::w0);
+                        regs::rs.w0 = new_rs.w0;
                         regs::rp.w0 += src_size;
                         MAIZE_NEXT();
                     }
 
                     LBL_call_regVal: {
-                        /* Push the full 64-bit return address, then jump (maize-41). */
+                        /* Push the full 64-bit return address, then jump (maize-41).
+                           Fault-atomic (maize-194 review #2605, major 1): stage the
+                           decremented stack pointer in a temp so a page fault on the
+                           translated return-address write leaves regs::rs unmutated; commit
+                           rs only after the write succeeds. */
                         regs::rp.w0 += 1;                                          // past the register param -> return address
-                        regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
-                        copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
+                        reg new_rs;
+                        new_rs.w0 = regs::rs.w0 - subreg_size_map[static_cast<size_t>(subreg_enum::w0)];  // 8-byte return slot
+                        copy_regval_regaddr(regs::rp, subreg_enum::w0, new_rs, subreg_enum::w0);
+                        regs::rs.w0 = new_rs.w0;
                         copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
                         MAIZE_NEXT();
                     }
 
                     LBL_call_immVal: {
                         /* Read the target immediate at its encoded width (zero-extended), push the
-                           full 64-bit return address, then jump (maize-41). */
+                           full 64-bit return address, then jump (maize-41). Fault-atomic
+                           (maize-194 review #2605, major 1): the target fetch precedes any rs
+                           mutation, and rs is committed only after the return-address write. */
                         regs::rp.w0 += 1;                                          // past the param byte
                         u_byte src_size = op1_imm_size();
                         reg target;
                         mm.read(translate(regs::rp.w0, access_kind::fetch), target, src_size, 0);
                         regs::rp.w0 += src_size;                                   // PC now at the return address
-                        regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
-                        copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
+                        reg new_rs;
+                        new_rs.w0 = regs::rs.w0 - subreg_size_map[static_cast<size_t>(subreg_enum::w0)];  // 8-byte return slot
+                        copy_regval_regaddr(regs::rp, subreg_enum::w0, new_rs, subreg_enum::w0);
+                        regs::rs.w0 = new_rs.w0;
                         regs::rp.w0 = target.w0;
                         MAIZE_NEXT();
                     }
@@ -4375,26 +4436,42 @@ namespace maize {
                        return-address-push sequence above with the target-resolution logic
                        already in jmp_regAddr/jmp_immAddr (below). */
                     LBL_call_regAddr: {
+                        /* Fault-atomic (maize-194 review #2605, major 1): resolve the
+                           indirect target into a temp FIRST (a fault on the target
+                           dereference leaves rs unmutated), then stage the decremented stack
+                           pointer, push the return address, and commit rs only on success.
+                           Both faultable operations precede any rs commit, so an
+                           IRET-and-re-execute decrements rs exactly once. */
                         regs::rp.w0 += 1;                                          // past the register param -> return address
-                        regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
-                        copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
-                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        reg target;
+                        target.w0 = 0;
+                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), target, subreg_enum::w0);  // deref target (load)
+                        reg new_rs;
+                        new_rs.w0 = regs::rs.w0 - subreg_size_map[static_cast<size_t>(subreg_enum::w0)];  // 8-byte return slot
+                        copy_regval_regaddr(regs::rp, subreg_enum::w0, new_rs, subreg_enum::w0);
+                        regs::rs.w0 = new_rs.w0;
+                        regs::rp.w0 = target.w0;
                         MAIZE_NEXT();
                     }
 
                     LBL_call_immAddr: {
                         /* Read the address-literal at its encoded width, advance PC past it
-                           (that's the return address), push the return address, then
-                           double-dereference to the actual jump target. */
+                           (that's the return address), then double-dereference to the actual
+                           jump target. Fault-atomic (maize-194 review #2605, major 1): both
+                           the literal fetch and the target dereference precede any rs
+                           mutation, and rs is committed only after the return-address write,
+                           so a fault anywhere re-executes cleanly with rs decremented once. */
                         regs::rp.w0 += 1;                                          // past the param byte
                         u_byte src_size = op1_imm_size();
                         reg addr_literal;
                         mm.read(translate(regs::rp.w0, access_kind::fetch), addr_literal, src_size, 0);
                         regs::rp.w0 += src_size;                                   // PC now at the return address
-                        regs::rs.w0 -= subreg_size_map[static_cast<size_t>(subreg_enum::w0)];           // 8-byte return slot
-                        copy_regval_regaddr(regs::rp, subreg_enum::w0, regs::rs, subreg_enum::w0);
                         reg target;
                         mm.read(translate(addr_literal.w0, access_kind::load), target, subreg_size_map[static_cast<size_t>(subreg_enum::w0)], 0);
+                        reg new_rs;
+                        new_rs.w0 = regs::rs.w0 - subreg_size_map[static_cast<size_t>(subreg_enum::w0)];  // 8-byte return slot
+                        copy_regval_regaddr(regs::rp, subreg_enum::w0, new_rs, subreg_enum::w0);
+                        regs::rs.w0 = new_rs.w0;
                         regs::rp.w0 = target.w0;
                         MAIZE_NEXT();
                     }
@@ -4419,10 +4496,24 @@ namespace maize {
                            saved RF whose privilege bit is clear. */
                         if (!privilege_flag) { raise_privileged_op(); }
                         auto src_size = subreg_size_map[static_cast<size_t>(subreg_enum::w0)];
-                        copy_memval_reg(regs::rs.w0, src_size, regs::rf, subreg_enum::w0, access_kind::load);
-                        regs::rs.w0 += src_size;
-                        copy_memval_reg(regs::rs.w0, src_size, regs::rp, subreg_enum::w0, access_kind::load);
-                        regs::rs.w0 += src_size;
+                        /* Restart-safe two-word pop (maize-194 review #2605, major 1): read
+                           BOTH saved words into temps at the IRET's own supervisor privilege
+                           BEFORE restoring RF/RP/RS. This (a) keeps both stack reads
+                           supervisor accesses even when the saved RF drops to user (restoring
+                           a user RF must not retroactively re-classify the RP read as a user
+                           access), and (b) leaves rf/rp/rs unmutated if either read page-faults
+                           (the two slots can straddle a page boundary), so an IRET-and-
+                           re-execute pops exactly once. Single-pop POP/RET are inherently
+                           restart-safe (read then increment) and are left unchanged. */
+                        reg saved_rf;
+                        reg saved_rp;
+                        saved_rf.w0 = 0;
+                        saved_rp.w0 = 0;
+                        copy_memval_reg(regs::rs.w0, src_size, saved_rf, subreg_enum::w0, access_kind::load);
+                        copy_memval_reg(regs::rs.w0 + src_size, src_size, saved_rp, subreg_enum::w0, access_kind::load);
+                        regs::rf.w0 = saved_rf.w0;
+                        regs::rp.w0 = saved_rp.w0;
+                        regs::rs.w0 += src_size + src_size;
                         MAIZE_NEXT();
                     }
 

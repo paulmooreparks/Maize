@@ -1,0 +1,184 @@
+; **********************************************************************************
+; Card maize-194 (Sv48 translation), review #2605 major 1: PUSH/CALL fault-atomicity.
+;
+; Proves the FAULT-class re-execute contract for a stack-pushing instruction: a page
+; fault mid-CALL, whose handler maps the missing page and IRETs, must re-execute the
+; instruction so RS is decremented EXACTLY ONCE and the return address is pushed exactly
+; once. Before the fix, CALL @Rn decremented RS and stored the return address BEFORE the
+; faultable target dereference, so an IRET-and-re-execute decremented RS a second time
+; (and pushed a second return address), corrupting the stack.
+;
+; Why the CALL-indirect (target-dereference) form and not a bare stack-grow PUSH:
+; deliver_vectored pushes the 4-word trap frame onto the SAME RS (no kernel-stack
+; switch). A fault on a downward stack write therefore lands the frame on the same
+; unmapped page and double-faults before any handler can run. The CALL-indirect target
+; dereference faults on an unrelated (unmapped) page while RS still points into mapped
+; stack, so the trap frame is delivered cleanly, the handler maps the target page and
+; IRETs, and the re-executed CALL exercises the return-address push exactly once. This is
+; the reordering under test: the target dereference now precedes any RS commit.
+;
+;   0x10000 root: Root[0] = 0x11001 -> L2
+;   0x11000 L2:   L2[0] = 0x1F identity 1 GiB superpage (RWXU); L2[2] = 0 (unmapped)
+;   0x12000 L1:   L1[0] = 0x13001 -> L0            (pre-built; only the L2[2] link is absent)
+;   0x13000 L0:   L0[0] = 0x2001F -> PA 0x20000 (V R W X U, the CALL target page)
+;   PA 0x20000 seeded with the address of call_landed (the CALL's dereferenced target).
+;   Stack RS = 0x00030000 (identity-mapped RW); the CALL decrements it to 0x0002FFF8.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- install the cause-8 handler at entry[8] = 0x1040 ----
+    CLR R8
+    CP pf_handler R8.H0
+    CLR R9
+    CP $1040 R9.H0
+    ST R8 @R9
+
+    ; ---- Root[0] @ 0x10000 = 0x11001 (-> L2) ----
+    CP $11001 R8
+    CLR R9
+    CP $10000 R9.H0
+    ST R8 @R9
+
+    ; ---- L2[0] @ 0x11000 = 0x1F (identity 1 GiB superpage, RWXU) ----
+    CP $1F R8
+    CLR R9
+    CP $11000 R9.H0
+    ST R8 @R9
+
+    ; ---- L1[0] @ 0x12000 = 0x13001 (-> L0); pre-built, dangling until the handler
+    ;      installs the L2[2] link that reaches it ----
+    CP $13001 R8
+    CLR R9
+    CP $12000 R9.H0
+    ST R8 @R9
+
+    ; ---- L0[0] @ 0x13000 = 0x2001F (-> PA 0x20000, V R W X U) ----
+    CP $2001F R8
+    CLR R9
+    CP $13000 R9.H0
+    ST R8 @R9
+
+    ; ---- seed PA 0x20000 = address of call_landed (the dereferenced CALL target) ----
+    CLR R8
+    CP call_landed R8.H0
+    CLR R9
+    CP $20000 R9.H0
+    ST R8 @R9
+
+    ; ---- stack pointer into the identity region (mapped RW) ----
+    CLR RS
+    CP $00030000 RS.H0
+
+    ; ---- enable Sv48 ----
+    CP $10001 R0
+    MOVTCR R0 $00
+
+    ; ---- CALL @R3 with R3 = the unmapped VA 0x80000000: the target dereference (a load
+    ;      of the stored jump target) page-faults; the handler maps the page and IRETs;
+    ;      the CALL re-executes and lands at call_landed ----
+    CLR R3
+    CP $80000000 R3.H0
+    CALL @R3
+return_point:
+    ; reached only if call_landed fell through (it does not); treat as failure
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $14 R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+; The CALL's dereferenced target. Reached after the fault is serviced and the CALL
+; re-executes. Verifies RS was decremented exactly once and the return address was
+; pushed exactly once.
+call_landed:
+    ; RS must equal 0x0002FFF8 (0x00030000 - 8): decremented ONCE, not twice.
+    CLR R2
+    CP $0002FFF8 R2.H0
+    CMP R2 RS
+    JNZ cl_fail
+
+    ; [RS] must hold the return address (address of return_point), pushed exactly once.
+    CLR R4
+    LD @RS R4
+    CLR R5
+    CP return_point R5.H0
+    CMP R5 R4
+    JNZ cl_fail
+
+    ; PASS: drop to Bare mode and print.
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $14 R2                 ; 20 bytes
+    SYS $01
+    HALT
+
+cl_fail:
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $14 R2                 ; 20 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+; Cause-8 handler: confirm the expected fault, map the missing page, IRET to re-execute.
+pf_handler:
+    ; CR2 (FAULT_ERR) must equal 0x02: PRESENT=0, ACCESS_KIND=load(1), USER=0.
+    MOVFCR $02 R5
+    CMP $02 R5
+    JNZ hfail
+
+    ; CR1 (FAULT_VA) must equal 0x80000000 (the CALL target VA).
+    MOVFCR $01 R1
+    CLR R2
+    CP $80000000 R2.H0
+    CMP R2 R1
+    JNZ hfail
+
+    ; Map the page: L2[2] @ 0x11000 + 2*8 = 0x11010 = 0x12001 (-> L1). The page tables
+    ; are in the identity-mapped region, so this write reaches PA 0x11010. R3 (the CALL's
+    ; address register) is left untouched so the re-executed CALL still names 0x80000000.
+    CP $12001 R8
+    CLR R9
+    CP $11010 R9.H0
+    ST R8 @R9
+
+    ; Return-and-re-execute: discard the aux + cause frame words, then IRET pops RF + PC.
+    ; PC was saved as the faulting instruction's own entry PC (FAULT-class), so IRET
+    ; re-executes CALL @R3.
+    ADD $10 RS
+    IRET
+
+hfail:
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $14 R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "mmu-pushfault: PASS\n\0"
+
+fail_string:
+    STRING "mmu-pushfault: FAIL\n\0"

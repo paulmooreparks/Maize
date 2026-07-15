@@ -108,6 +108,7 @@ $Tests = @(
     [pscustomobject]@{ Name = 'mmu_translate_alu_ra';File = 'test_mmu_translate_alu_regaddr.mazm'; Expected = 'mmu-alu-ra: PASS';     Golden = $false }
     [pscustomobject]@{ Name = 'mmu_translate_ind_cf';File = 'test_mmu_translate_indirect_cf.mazm'; Expected = 'mmu-ind-cf: PASS';     Golden = $false }
     [pscustomobject]@{ Name = 'mmu_translate_out';   File = 'test_mmu_translate_out.mazm';         Expected = 'mmu-out: PASS';        Golden = $false }
+    [pscustomobject]@{ Name = 'mmu_pushfault_restart';File = 'test_mmu_pushfault_restart.mazm';     Expected = 'mmu-pushfault: PASS';  Golden = $false }
     # maize-71: flat-mode EXTERN'd-but-undefined reference has no linker to resolve it.
     [pscustomobject]@{ Name = 'flat_unresolved_extern'; File = 'test_reject_unresolved_extern.mazm'; Expected = "unresolved external 'undefsym'"; Golden = $false; ExpectAsmError = $true }
 )
