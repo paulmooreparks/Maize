@@ -8,13 +8,15 @@
  *
  * The build compiles both TUs with -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 (the
  * cc-maize.sh -D passthrough), so DOOMGENERIC_RESX/RESY == 320/200 == the default Maize
- * framebuffer, DG_ScreenBuffer is native 320x200, and DG_DrawFrame is a straight memcpy.
+ * framebuffer and DG_ScreenBuffer is native 320x200. maize-201: DG_Init registers
+ * DG_ScreenBuffer itself as the present buffer (DG_MaizeFB aliases it), so DG_DrawFrame
+ * is just a present with no memcpy.
  *
  * This TU DEFINES DG_ScreenBuffer (the extern doomgeneric.c would otherwise provide), so
  * no doomgeneric object is needed. Phases:
  *   Present : fill DG_ScreenBuffer with a deterministic pattern, DG_Init + DG_DrawFrame,
- *             assert the geometry guard passed, fb_present_valid()==1, and every presented
- *             pixel in DG_MaizeFB equals the source over the full fb region.
+ *             assert the geometry guard passed and identity aliasing hold, fb_present_valid()==1,
+ *             and every presented pixel in DG_MaizeFB equals the source over the full fb region.
  *   Keymap  : drain DG_GetKey across an injected Set-1 make/break scancode sequence and
  *             assert each (pressed,key) against doomkeys.h SYMBOLS / ASCII.
  *   Clock   : DG_GetTicksMs advances >= 10 across DG_SleepMs(10); back-to-back reads are
@@ -67,7 +69,15 @@ static unsigned char file_rule(unsigned i)
     return (unsigned char)((i * 31u + 7u) & 0xFFu);
 }
 
-/* Present: fill the source, present it, and read the framebuffer back pixel-for-pixel. */
+/* Present: fill the source, present it, and read the framebuffer back pixel-for-pixel.
+ *
+ * maize-201: DG_Init now aliases DG_MaizeFB to DG_ScreenBuffer (the present buffer IS
+ * the render buffer, no separate copy target), so the pixel-compare loop below
+ * (DG_MaizeFB[i] != DG_ScreenBuffer[i]) compares a buffer to itself and is tautologically
+ * true, no longer catching a broken present path on its own. It stays as a harmless
+ * liveness/geometry check (it still requires DG_MaizeFB to be non-NULL and iterable over
+ * the full fb region), backed by the explicit identity assertion below, which is what
+ * actually proves the aliasing contract this card ships. */
 static void check_present(void)
 {
     unsigned n = (unsigned)DOOMGENERIC_RESX * (unsigned)DOOMGENERIC_RESY;   /* 64000 */
@@ -88,6 +98,11 @@ static void check_present(void)
     if (DG_MaizeInitError != 0) {
         return;
     }
+    /* maize-201: DG_MaizeFB is registered as an alias of DG_ScreenBuffer, not a
+     * separate malloc'd buffer; assert the identity directly so the aliasing
+     * contract itself is checked, not just inferred from the (now tautological)
+     * pixel-compare loop below. */
+    expect((void *)DG_MaizeFB == (void *)DG_ScreenBuffer);
 
     DG_DrawFrame();
     expect(fb_present_valid() == 1);

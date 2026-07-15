@@ -18,9 +18,11 @@
  * -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 (via the cc-maize.sh -D
  * passthrough, DEC-6). That overrides doomgeneric.h's #ifndef-guarded 640x400
  * defaults, so DG_ScreenBuffer is a native 320x200 XRGB8888 buffer (fb_scaling=1,
- * no scale) exactly matching the default 320x200 Maize framebuffer, and
- * DG_DrawFrame is a straight 256000-byte memcpy with no channel swap (DEC-7:
- * doomgeneric's default rgba8888 packs 0x00RRGGBB == Maize format id 1 XRGB8888).
+ * no scale) exactly matching the default 320x200 Maize framebuffer, and its
+ * 0x00RRGGBB packing is byte-identical to Maize format id 1 XRGB8888 with no
+ * channel swap (DEC-7). maize-201: DG_MaizeFB is registered as an alias of
+ * DG_ScreenBuffer itself (not a separate copy target), so DOOM renders straight
+ * into the presented buffer and DG_DrawFrame has no memcpy, just a present.
  *
  * The submodule is NEVER edited; all Maize glue lives here, outside it.
  */
@@ -31,15 +33,16 @@
 
 #include "mzdev.h"    /* fb_* / kbd_* device stubs (linked via cc-maize.sh --dev) */
 #include "syscall.h"  /* sys_clock_ms (SYS $F0) */
-#include "stdlib.h"   /* malloc */
-#include "string.h"   /* memcpy */
+#include "string.h"   /* memset (DG_GetKey's per-pass make tracking) */
 
 /*
  * Non-static globals the headless self-check (doom_selfcheck.c) reads back:
- *   DG_MaizeFB          - the present buffer whose base is registered with fb_set_base;
- *                         the self-check compares its pixels against DG_ScreenBuffer.
- *   DG_MaizeInitError   - DG_Init geometry-guard result: 0 = fb geometry matches
- *                         doomgeneric's (320x200x XRGB8888), non-zero = mismatch.
+ *   DG_MaizeFB          - the present buffer whose base is registered with fb_set_base.
+ *                         maize-201: DG_MaizeFB now ALIASES DG_ScreenBuffer (same address,
+ *                         set once in DG_Init); DOOM renders straight into the presented
+ *                         buffer and there is no longer a copy step.
+ *   DG_MaizeInitError   - DG_Init guard result: 0 = ok, 1 = fb geometry mismatch,
+ *                         2 = DG_ScreenBuffer is NULL (caller's allocation didn't happen).
  *   DG_MaizeWindowTitle - the last DG_SetWindowTitle pointer (Maize has no WM).
  */
 uint32_t   *DG_MaizeFB = 0;
@@ -95,14 +98,23 @@ static const unsigned char scancode_to_doom[128] = {
 };
 
 /*
- * DG_Init: register a 320x200 XRGB8888 present buffer in guest RAM.
+ * DG_Init: register DG_ScreenBuffer itself as the present buffer in guest RAM
+ * (maize-201). DOOM's renderer already writes into DG_ScreenBuffer every frame, so
+ * aliasing DG_MaizeFB to that same address (instead of a separately malloc'd copy
+ * target) makes DG_DrawFrame's present a straight fb_present() with no memcpy.
  *
  * Geometry guard (loud fail on mismatch): require the fb to be exactly
  * DOOMGENERIC_RESX x DOOMGENERIC_RESY (== 320x200 under the -D override) and format
- * id 1 (XRGB8888). A mismatch would make the straight no-convert memcpy present
+ * id 1 (XRGB8888). A mismatch would make the straight no-convert present show
  * garbage, so on mismatch we set DG_MaizeInitError and do NOT set a base or present
- * (the self-check asserts DG_MaizeInitError == 0). doomgeneric_Create mallocs
- * DG_ScreenBuffer before calling DG_Init, so DG_ScreenBuffer is already non-NULL.
+ * (the self-check asserts DG_MaizeInitError == 0).
+ *
+ * doomgeneric_Create mallocs DG_ScreenBuffer before calling DG_Init and never frees
+ * or reallocates it for the life of the process (confirmed: the only allocation site
+ * in the submodule), so registering its address here once is safe for the whole
+ * guest run. DG_Init no longer allocates anything itself; a NULL DG_ScreenBuffer
+ * means the caller's allocation didn't happen, so we fail loud instead of presenting
+ * from an unset base.
  */
 void DG_Init(void)
 {
@@ -114,27 +126,24 @@ void DG_Init(void)
         DG_MaizeInitError = 1;
         return;
     }
-    DG_MaizeInitError = 0;
-
-    DG_MaizeFB = (uint32_t *)malloc((size_t)w * (size_t)h * sizeof(uint32_t));
-    if (DG_MaizeFB == 0) {
+    if (DG_ScreenBuffer == 0) {
         DG_MaizeInitError = 2;
         return;
     }
+    DG_MaizeInitError = 0;
+
+    DG_MaizeFB = (uint32_t *)DG_ScreenBuffer;
     fb_set_base(DG_MaizeFB);
 }
 
 /*
- * DG_DrawFrame: copy doomgeneric's rendered frame into the present buffer, then present.
- * Under the -D geometry override this is a straight 320*200*4 = 256000-byte memcpy
- * (fb_scaling=1, no scale) whose 0x00RRGGBB packing is byte-identical to the Maize
- * framebuffer format (no channel swap, DEC-7). The length is keyed to the runtime fb
- * geometry (== DOOMGENERIC_RESX*RESY post-guard), not a hardcoded literal.
+ * DG_DrawFrame: present the buffer DOOM already rendered into (maize-201). Since
+ * DG_Init aliased DG_MaizeFB to DG_ScreenBuffer, there is no longer a separate copy
+ * target: doomgeneric's renderer writes straight into the presented buffer every
+ * frame, so drawing a frame is just the present call.
  */
 void DG_DrawFrame(void)
 {
-    memcpy(DG_MaizeFB, DG_ScreenBuffer,
-           (size_t)fb_width() * (size_t)fb_height() * sizeof(uint32_t));
     fb_present();
 }
 
