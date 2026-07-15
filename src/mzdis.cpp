@@ -195,10 +195,14 @@ namespace {
         set_entry(instr_ns::ld_regAddr_reg, "LD", {operand_kind::src, operand_kind::reg});
         set_entry(instr_ns::ld_immAddr_reg, "LD", {operand_kind::src, operand_kind::reg});
 
-        /* CPZ: only regVal/immVal rows (the address forms, $93/$D3, were LDZ,
-           removed as redundant, card maize-29; now reserved). */
+        /* CPZ: the regVal/immVal rows are the zero-extending copy. The address forms
+           ($93/$D3) are LDZ, the zero-extending load (reintroduced by card maize-204),
+           sharing CPZ's base slot the way LD shares CP's. Both LDZ rows render op2 as
+           a plain destination register. */
         set_entry(instr_ns::cpz_regVal_reg, "CPZ", {operand_kind::src, operand_kind::reg});
         set_entry(instr_ns::cpz_immVal_reg, "CPZ", {operand_kind::src, operand_kind::reg});
+        set_entry(instr_ns::ldz_regAddr_reg, "LDZ", {operand_kind::src, operand_kind::reg});
+        set_entry(instr_ns::ldz_immAddr_reg, "LDZ", {operand_kind::src, operand_kind::reg});
 
         for (u_byte flag : {u_byte(0x00), u_byte(0x40), u_byte(0x80), u_byte(0xC0)}) {
             /* OUT: op2 is always an immediate port number (PortImm), independent

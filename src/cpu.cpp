@@ -930,6 +930,39 @@ namespace maize {
 
             }
 
+            void copy_regaddr_reg_zext(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
+                /* LDZ regAddr form (card maize-204): same address computation and read-width
+                   selection as LD's copy_regaddr_reg (read exactly dst_subreg's width from the
+                   address held in src), but zero-extend the result into dst's FULL register
+                   instead of landing only in the dst_subreg field. Equivalent to
+                   LD dst.<width> followed by CPZ dst.<width> dst, in one instruction. */
+                auto src_offset = subreg_offset_map[static_cast<size_t>(src_subreg)];
+                auto src_mask = subreg_mask_map[static_cast<size_t>(src_subreg)];
+
+                u_word src_address = (static_cast<u_word>(src_mask) & src.w0) >> src_offset;
+                reg src_data;
+                src_data.w0 = 0;
+                mm.read(translate(src_address, access_kind::load), src_data, subreg_size_map[static_cast<size_t>(dst_subreg)], 0);
+
+                /* src_data.w0 is already zero above the bytes just read, so it is the
+                   zero-extended full-width value; write it to the whole register. */
+                commit_reg_w0(dst, src_data.w0);
+            }
+
+            void copy_memaddr_reg_zext(u_word address, size_t size, reg_value &dst, subreg_enum dst_subreg) {
+                /* LDZ immAddr form (card maize-204): same address-immediate decode as
+                   copy_memaddr_reg, zero-extended write (see copy_regaddr_reg_zext). `size` is
+                   the encoded ADDRESS immediate's width (op1_imm_size), not the load width. */
+                reg src_address;
+                mm.read(translate(address, access_kind::fetch), src_address, size, 0);
+
+                reg src_data;
+                src_data.w0 = 0;
+                mm.read(translate(src_address.w0, access_kind::load), src_data, subreg_size_map[static_cast<size_t>(dst_subreg)], 0);
+
+                commit_reg_w0(dst, src_data.w0);
+            }
+
             /* Set PC (RP) from an immediate jump/branch target in the code stream at PC, encoded
                at op1_imm_size() width (maize-41). Read exactly that many bytes zero-extended into
                a fresh register, then replace PC. Honors the size flag so a target can reach the
@@ -3478,6 +3511,8 @@ namespace maize {
                 dtbl[instr::ld_immAddr_reg] = &&LBL_ld_immAddr_reg;
                 dtbl[instr::cpz_regVal_reg] = &&LBL_cpz_regVal_reg;
                 dtbl[instr::cpz_immVal_reg] = &&LBL_cpz_immVal_reg;
+                dtbl[instr::ldz_regAddr_reg] = &&LBL_ldz_regAddr_reg;
+                dtbl[instr::ldz_immAddr_reg] = &&LBL_ldz_immAddr_reg;
                 dtbl[instr::st_regVal_regAddr] = &&LBL_st_regVal_regAddr;
                 dtbl[instr::st_immVal_regAddr] = &&LBL_st_immVal_regAddr;
                 dtbl[instr::add_regVal_reg] = &&LBL_add_regVal_reg;
@@ -3787,10 +3822,26 @@ namespace maize {
                         MAIZE_NEXT();
                     }
 
-                    /* LDZ (the zero-extending load, opcodes $93 / $D3) was removed as redundant
-                       (card maize-29): LD reads exactly the destination width, so a load never
-                       narrows and has nothing to zero-extend. CPZ remains as the zero-extending
-                       copy; those address-form encodings are now reserved. */
+                    /* LDZ (the zero-extending load, opcodes $93 / $D3, reintroduced by card
+                       maize-204): reads N bytes (N = destination subregister width) like LD, then
+                       zero-extends the result into the FULL destination register. Equivalent to
+                       LD dst.<width> followed by CPZ dst.<width> dst, in one instruction. These
+                       two address-form encodings were reserved for exactly this since maize-29
+                       removed the original LDZ. */
+
+                    LBL_ldz_regAddr_reg: {
+                        regs::rp.w0 += 2;
+                        copy_regaddr_reg_zext(op1_reg(), op1_subreg_flag(), op2_reg(), op2_subreg_flag());
+                        MAIZE_NEXT();
+                    }
+
+                    LBL_ldz_immAddr_reg: {
+                        regs::rp.w0 += 2;
+                        u_hword imm_size = op1_imm_size();
+                        copy_memaddr_reg_zext(regs::rp.w0, imm_size, op2_reg(), op2_subreg_flag());
+                        regs::rp.w0 += imm_size;
+                        MAIZE_NEXT();
+                    }
 
                     LBL_st_regVal_regAddr: {
                         regs::rp.w0 += 2;

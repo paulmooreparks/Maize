@@ -629,10 +629,11 @@ whether memory is touched. The ALU instructions are separate and, Maize being CI
 memory-address operand directly (for example `ADD @R1 R0`); only CP/LD/ST/CPZ are held to
 the strict split.
 
-There is no LDZ. A load reads exactly as many bytes as the destination subregister holds (see
-Copy width below), so a load never produces a value narrower than its destination and has
-nothing to zero-extend. To pull an unsigned narrow value from memory into a wider register,
-clear it first: `CLR R0` then `LD @addr R0.B0`.
+LDZ is the zero-extending load. A plain LD reads exactly as many bytes as the destination
+subregister holds (see Copy width below) and preserves the surrounding bytes; LDZ reads the
+same narrow width but zero-extends the result into the full destination register, clearing
+the upper bytes. To pull an unsigned narrow value from memory into a wider register in one
+instruction, use `LDZ @addr R0.B0` (equivalent to `CLR R0` then `LD @addr R0.B0`).
 
 **Copy width.** CP copies a value that may be narrower than the destination register: it
 sign-extends the source to the destination's full width, and CPZ zero-extends it. `CP $01 R0`
@@ -645,8 +646,9 @@ destination subregister explicitly: `CP $01 R0.B0` writes just the low byte.
 A load takes its width from the destination subregister: `LD @addr R0.B0` reads one byte,
 `LD @addr R0.H0` reads four, and `LD @addr R0` reads all eight. The bytes land in the named field
 and the rest of the register is preserved. Because the count is fixed by the destination, a load
-reads no more than it needs (it never over-reads past the source address) and never has a
-narrower value to extend, which is why there is no zero-extending load.
+reads no more than it needs (it never over-reads past the source address). LD itself never
+zero-extends (the surrounding bytes are preserved); the zero-extending load is a separate
+instruction, LDZ.
 
 Example: Load the 64-bit value at address $0000`1000 into register R1.
 
@@ -659,6 +661,11 @@ Example: Store the value $FF into the byte pointed at by the R0.H0 register:
 Example: Load the quarter-word located at the address stored in R3.H0 into sub-register RT.Q3:
 
     LD @R3.H0 RT.Q3
+
+Example: Load the byte at address $0000`2000, zero-extended into register R1. A byte with
+the high bit set (0x80) becomes 0x0000`0000`0000`0080 (small and unsigned), not sign-extended:
+
+    LDZ @$0000`2000 R1.B0
 
 
 ## Registers
@@ -1257,8 +1264,8 @@ bit 7 is interpreted as follows:
     %0001`0011  $13   CPZ       regVal  reg     Copy source register value into destination register with zero extension
     %0101`0011  $53   CPZ       immVal  reg     Copy immediate value into destination register with zero extension
 
-    %1001`0011  $93                             reserved
-    %1101`0011  $D3                             reserved
+    %1001`0011  $93   LDZ       regAddr reg     Load N bytes (N = destination subregister width) from the address in a register, zero-extended into the full destination register
+    %1101`0011  $D3   LDZ       immAddr reg     Load N bytes (N = destination subregister width) from an immediate address, zero-extended into the full destination register
 
     %0001`0100  $14   OUT       regVal  imm     Output value in source register to destination port (privileged)
     %0101`0100  $54   OUT       immVal  imm     Output immediate value to destination port (privileged)
@@ -2148,7 +2155,7 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %1001`0000  $90   TEST      regAddr reg     Set flags by ANDing value at address in source register with destination register
     %1001`0001  $91   CMPXCHG   regAddr reg     Compare value in operand 2 with value in operand 3. If equal, set zero flag and load value at address in operand 1 register into operand 2. Otherwise, clear zero flag and load value in operand 2 into operand 3.
     %1001`0010  $92   LEA       regAddr reg reg Add value at address in operand 1 register to value in operand 2 register and store result in operand 3 register
-    %1001`0011  $93                             reserved
+    %1001`0011  $93   LDZ       regAddr reg     Load N bytes (N = destination subregister width) from the address in a register, zero-extended into the full destination register
     %1001`0100  $94   OUT       regAddr imm     Output value at address in source register to destination port
     %1001`0101  $95                             reserved
     %1001`0110  $96   JMP       regAddr         Jump to address pointed to by source register and continue execution
@@ -2212,7 +2219,7 @@ the syscall binding in [toolchain/rt/SYSCALL-ABI.md](toolchain/rt/SYSCALL-ABI.md
     %1101`0000  $D0   TEST      immAddr reg     Set flags by ANDing value at immediate address with destination register
     %1101`0001  $D1   CMPXCHG   immAddr reg     Compare value in operand 2 with value in operand 3. If equal, set zero flag and load value at address in operand 1 immediate value into operand 2. Otherwise, clear zero flag and load value in operand 2 into operand 3.
     %1101`0010  $D2   LEA       immAddr reg reg Add value at immediate address in operand 1 to value in operand 2 register and store result in operand 3 register
-    %1101`0011  $D3                             reserved
+    %1101`0011  $D3   LDZ       immAddr reg     Load N bytes (N = destination subregister width) from an immediate address, zero-extended into the full destination register
     %1101`0100  $D4   OUT       immAddr imm     Output value at immediate address to destination port
     %1101`0101  $D5                             reserved
     %1101`0110  $D6   JMP       immAddr         Jump to address pointed to by immediate value and continue execution

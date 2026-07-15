@@ -458,9 +458,10 @@ emitfcmp(Ins *i, int kc, int c, E *e)
 	}
 }
 
-/* LD @addr dst.<width>; then CP (sign) / CPZ (zero) extend for a sub-word load.
- * There is no LDZ (decision 6779): the load reads exactly the sub-register width
- * and the extension widens to the class width. */
+/* Sub-word loads: the zero-extend forms (Oloadub/uh/uw) are a single LDZ (card
+ * maize-204, folding the former LD + CPZ pair; decision 6779 "there is no LDZ" is
+ * superseded by the operator ruling on card maize-204). The sign-extend forms
+ * (Oloadsb/sh/sw) stay LD + CP; the full-width form (Oload) is a plain LD. */
 static void
 emitload(Ins *i, E *e)
 {
@@ -476,12 +477,24 @@ emitload(Ins *i, E *e)
 	case Oload:   rsz = clssz(i->cls); signext = -1; break;
 	default: die("maize emit: unsupported load");
 	}
+	if (signext == 0) {
+		/* Zero-extending sub-word load (maize-204): LDZ folds the LD + CPZ pair
+		 * into one instruction. LDZ reads rsz bytes and zero-extends into the
+		 * FULL destination register regardless of the class width named here;
+		 * see the VM-side note (src/cpu.cpp, copy_regaddr_reg_zext) for why that
+		 * is safe for the w-class (32-bit) case too. */
+		fprintf(e->f, "\tLDZ\t@%s ", memaddrreg(i->arg[0], e));
+		regw(i->to, rsz, e);
+		fputc('\n', e->f);
+		return;
+	}
+
 	fprintf(e->f, "\tLD\t@%s ", memaddrreg(i->arg[0], e));
 	regw(i->to, rsz, e);
 	fputc('\n', e->f);
-	if (signext >= 0) {
+	if (signext == 1) {
 		dsz = clssz(i->cls);
-		fprintf(e->f, "\t%s\t", signext ? "CP" : "CPZ");
+		fprintf(e->f, "\tCP\t");
 		regw(i->to, rsz, e);
 		fputc(' ', e->f);
 		regw(i->to, dsz, e);

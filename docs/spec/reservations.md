@@ -104,7 +104,7 @@ already-defined row-packed families provide headroom for extensions that fit an 
 instruction's shape, at no cost to the free-slot count. These stay `reserved` and are listed
 so the inventory is complete: the spare condition encodings `$D9` (Jcc) and `$ED` (SETcc),
 reserved for a future integer-overflow JO / JNO and SETO / SETNO; the reserved zero-operand
-row `$E7`; the reserved CPZ address-form rows `$93` and `$D3`; the FGETCSR / FSETCSR upper
+row `$E7`; the FGETCSR / FSETCSR upper
 rows `$95` and `$D5`; and the reserved FP rows `$E2`, `$F9`, `$BA`, `$FA`, `$B3`, `$F3`.
 
 The two spare rows of the `$24` INT slot, `$A4` and `$E4`, were allocated as the v1.x
@@ -114,6 +114,13 @@ or traps through cause 7 to a guest-installed handler (set). This is a v1.x-comp
 extension (default-clear preserves every v1.0 binary); it spends no fully-free base slot
 (the `$26` / `$28` control-register and MMU slots later landed via card maize-180, and
 `$37` / `$38` stay reserved for their v1.x claimants).
+
+The reserved CPZ address-form rows `$93` and `$D3` were spent as LDZ, the zero-extending
+load (card maize-204): LDZ reads N bytes (N = the destination subregister width) and
+zero-extends into the full register, sharing CPZ's base slot `$13` the way LD shares CP's
+`$01`. Unlike SETSYSG it is default-available (no opt-in bit) and is v1.x-compatible
+because no v1.0 binary can contain `$93` / `$D3`: both decoded as reserved /
+illegal-instruction from the removal of the original LDZ (card maize-29) until this spend.
 
 ## 2. Memory-ordering and atomics contract
 

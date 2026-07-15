@@ -248,7 +248,7 @@ run_test "test_adc"          "test_adc.mazm"          "adc: PASS"               
 run_test "test_copywidth"    "test_copywidth.mazm"    "copywidth: PASS"               0
 run_test "oob_subreg_guard"  "test_oob_subreg.mazm"   "oob subreg: PASS"              0
 run_test "reject_ld_value"   "test_reject_ldval.mazm" "reads from a memory address"   0 1
-run_test "reject_ldz"        "test_reject_ldz.mazm"   "unknown keyword or opcode 'LDZ'" 0 1
+run_test "test_ldz"          "test_ldz.mazm"          "ldz: PASS"                     0
 run_test "test_call_ind"     "test_call_ind.mazm"     "call ind: PASS"                0
 run_test "test_setint"       "test_setint.mazm"       "setint: PASS"                  0
 run_test "test_outr_in"      "test_outr_in.mazm"      "outr/in: PASS"                 0
@@ -1036,12 +1036,12 @@ run_mzdis_reserved_test() {
 
     if [ "$dis_exit" -ne 0 ] \
         || ! grep -qE 'DATA \$37.*unknown opcode' "$dis_path" \
-        || ! grep -qE 'DATA \$93.*unknown opcode' "$dis_path" \
+        || ! grep -qE 'DATA \$38.*unknown opcode' "$dis_path" \
         || ! grep -qE '^\s+NOP\b' "$dis_path" \
         || grep -qi 'TRUNCATED' "$dis_path"; then
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
-        echo "        expected: DATA \$37/\$93 unknown-opcode lines, NOP decodes correctly after, exit 0"
+        echo "        expected: DATA \$37/\$38 unknown-opcode lines, NOP decodes correctly after, exit 0"
         echo "        actual:   exit ${dis_exit}; see ${dis_path}"
         return
     fi

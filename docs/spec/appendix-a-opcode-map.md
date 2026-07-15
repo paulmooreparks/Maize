@@ -35,7 +35,7 @@ slot; consult Chapter 7 or Chapter 8 for each instruction's full entry.
 | `$10` | TEST | ALU | `$10` `$50` `$90` `$D0` |
 | `$11` | CMPXCHG | 3-op | `$11` `$51` `$91` `$D1` |
 | `$12` | LEA | 3-op | `$12` `$52` `$92` `$D2` |
-| `$13` | CPZ | copy | `$13` regVal, `$53` immVal (`$93`/`$D3` reserved) |
+| `$13` | CPZ / LDZ | copy / load | `$13` CPZ regVal, `$53` CPZ immVal; `$93` LDZ regAddr, `$D3` LDZ immAddr (zero-extending load, maize-204) |
 | `$14` | OUT | port | `$14` `$54` `$94` `$D4` (privileged) |
 | `$15` | FGETCSR / FSETCSR | FP reg | FGETCSR `$15`, FSETCSR `$55` (`$95`/`$D5` reserved) |
 | `$16` | JMP | jump | `$16` `$56` `$96` `$D6` |

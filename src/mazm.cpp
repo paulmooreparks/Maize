@@ -359,6 +359,7 @@ namespace {
         { "MULW",   {cpu::instr::mulw_opcode,    opcode_3param_tokenizer, regimm_regreg_compiler}},
         { "UMULW",  {cpu::instr::umulw_opcode,   opcode_3param_tokenizer, regimm_regreg_compiler}},
         { "CPZ",    {cpu::instr::cpz_opcode,     opcode_2param_tokenizer, regimm_reg_compiler}},
+        { "LDZ",    {cpu::instr::cpz_opcode,     opcode_2param_tokenizer, regimm_reg_compiler}},
         { "INC",    {cpu::instr::inc_opcode    , opcode_1param_tokenizer, reg_compiler}},
         { "DEC",    {cpu::instr::dec_opcode    , opcode_1param_tokenizer, reg_compiler}},
         { "NOT",    {cpu::instr::not_opcode    , opcode_1param_tokenizer, reg_compiler}},
@@ -2196,14 +2197,14 @@ namespace {
 
         /* Memory-boundary discipline (card maize-43): the data-movement mnemonics each name
            exactly one thing. CP/CPZ take a value source (register or immediate) and never
-           touch memory; LD reads from a memory address (source prefixed with '@'). The
+           touch memory; LD/LDZ read from a memory address (source prefixed with '@'). The
            ALU/CMP/TEST ops keep accepting either form (Maize is CISC), so they are not
-           constrained here. (LDZ was removed as redundant, card maize-29.) */
+           constrained here. (LDZ is the zero-extending load, reintroduced by card maize-204.) */
         if ((opcode_str == "CP" || opcode_str == "CPZ") && operand1_is_address) {
             fatal(current_ref_loc.file, current_ref_loc.line,
                 opcode_str + " takes a value source (register or immediate); use LD to read from a memory address");
         }
-        if (opcode_str == "LD" && !operand1_is_address) {
+        if ((opcode_str == "LD" || opcode_str == "LDZ") && !operand1_is_address) {
             fatal(current_ref_loc.file, current_ref_loc.line,
                 opcode_str + " reads from a memory address; prefix the source with '@', or use CP for a value");
         }

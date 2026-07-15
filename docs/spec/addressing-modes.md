@@ -95,9 +95,10 @@ A source narrower than its destination is extended to the destination's full wid
 - **CPZ zero-extends.** `CPZ $FF R0` leaves R0 = `$0000_0000_0000_00FF`.
 
 To write only part of a register and preserve the rest, name the destination subregister
-explicitly (`CP $01 R0.B0` writes just the low byte; Chapter 3 section 3.4). A load takes
-its width from the destination subregister and never has a narrower value to extend, which
-is why there is no zero-extending load (no LDZ; Chapter 7 section 7.1).
+explicitly (`CP $01 R0.B0` writes just the low byte; Chapter 3 section 3.4). A load (LD) takes
+its width from the destination subregister and preserves the surrounding bits; the
+zero-extending load (LDZ) reads the same narrow width but replaces the full register with
+the zero-extended value (Chapter 7 section 7.1).
 
 ## 5.7 Worked encoding example
 

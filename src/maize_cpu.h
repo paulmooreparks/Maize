@@ -752,11 +752,17 @@ namespace maize {
 			const opcode lea_immAddr_regreg		{lea_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
 			/* CPZ is the zero-extending copy. Its base opcode ($13) keeps the two value forms;
-			   the address forms ($93 / $D3) were LDZ, removed as redundant (card maize-29) and
-			   returned to reserved. */
+			   the address forms ($93 / $D3) are LDZ, the zero-extending load (reintroduced by
+			   card maize-204 after maize-29 briefly removed the original LDZ as redundant). */
 			const opcode cpz_opcode				{0x13};
 			const opcode cpz_regVal_reg			{cpz_opcode | opcode_flag_srcReg};
 			const opcode cpz_immVal_reg			{cpz_opcode | opcode_flag_srcImm};
+
+			/* LDZ (reintroduced, card maize-204): the zero-extending load. Shares CPZ's base
+			   slot ($13) the way LD shares CP's ($01); only the two address forms are defined
+			   (a load always reads memory). $93/$D3 were reserved for this since maize-29. */
+			const opcode ldz_regAddr_reg		{cpz_opcode | opcode_flag_srcAddr};
+			const opcode ldz_immAddr_reg		{cpz_opcode | opcode_flag_srcImm | opcode_flag_srcAddr};
 
 			const opcode out_opcode				{0x14};
 			const opcode out_regVal_imm			{out_opcode | opcode_flag_srcReg};

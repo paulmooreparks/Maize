@@ -63,17 +63,31 @@ model.
 - **Operation:** copy the source value into the destination register, **zero-extended** to
   the destination width. Never touches memory.
 - **Forms:** `$13` CPZ regVal reg; `$53` CPZ immVal reg. (The address forms `$93` / `$D3`
-  are reserved; there is no zero-extending load.)
+  are LDZ, the zero-extending load; see the LDZ entry below.)
 - **Flags:** C/N/V/Z/P unaffected.
 - **Encoding:** as CP.
 - **Traps:** none.
+
+### LDZ (load, zero-extended)
+- **Operation:** read from a memory address into the destination register, exactly like LD
+  (the number of bytes read is fixed by the destination subregister width), then
+  **zero-extend** the result into the full destination register, clearing the bytes above
+  the loaded value rather than preserving them. Equivalent to `LD dst.<width>` followed by
+  `CPZ dst.<width> dst`, in one instruction (card maize-204).
+- **Forms:** `$93` LDZ regAddr reg (address in a register); `$D3` LDZ immAddr reg
+  (immediate address). Shares CPZ's base slot `$13` the way LD shares CP's `$01`; only the
+  two address forms are defined.
+- **Flags:** C/N/V/Z/P unaffected.
+- **Encoding:** as LD.
+- **Traps:** none. A read of never-written memory returns 0; misaligned reads are
+  defined-allow.
 
 ### LD (load)
 - **Operation:** read from a memory address into the destination register. The number of
   bytes read is fixed by the destination subregister width, landing in that field and
   preserving the rest of the register (Chapter 3 section 3.4). A load never over-reads past
-  its source address and never has a narrower value to extend, which is why there is no
-  zero-extending load (no LDZ).
+  its source address, and LD itself never zero-extends (the surrounding bits are
+  preserved); the zero-extending load is a separate instruction, LDZ (see above).
 - **Forms:** `$81` LD regAddr reg (address in a register); `$C1` LD immAddr reg (immediate
   address).
 - **Flags:** C/N/V/Z/P unaffected.

@@ -61,8 +61,8 @@ whole-program model these annotations are meaningless -- see
 | `ceq*`/`cne*`/`cs{lt,le,gt,ge}*`/`cu{lt,le,gt,ge}*` | `CMP <arg1> <arg0>` + `Jcc` (branch) or `SETcc <to>` (value) | operand order + cond table below |
 | conditional branch (`jnz`) | fused compare -> `CMP <arg1> <arg0>` + `<Jcc> Lm<s1>`; non-flag value -> `CMP $00 <reg>` + `JNZ`; then fall-through or `JMP Lm<s2>` | decisions 6777/6778/6782 |
 | `load` | `LD @a <dst>` | full-width load |
-| `loadsb`/`sh`/`sw` | `LD @a <dst.sub>` + `CP <dst.sub> <dst>` | sign-extend (no LDZ) |
-| `loadub`/`uh`/`uw` | `LD @a <dst.sub>` + `CPZ <dst.sub> <dst>` | zero-extend |
+| `loadsb`/`sh`/`sw` | `LD @a <dst.sub>` + `CP <dst.sub> <dst>` | sign-extend; LDZ (maize-204) covers zero-extend only, this stays two instructions |
+| `loadub`/`uh`/`uw` | `LDZ @a <dst.sub>` | zero-extend, one instruction (maize-204, folds the former LD+CPZ pair); proven by `ctest/ldzfold.c` |
 | `extsb`/`sh`/`sw` | `CP <arg0.sub> <dst>` | sign-extend cast, no load |
 | `extub`/`uh`/`uw` | `CPZ <arg0.sub> <dst>` | zero-extend cast, no load |
 | `storeb`/`h`/`w`/`l` | `ST <src at width> @a` | store at the op's width |
@@ -208,11 +208,12 @@ recorded on maize-63 (6775-6790).
   fall through to `s2` when it is the next block in layout, else `JMP Lm<s2>`
   (`JMP` is a full-64-bit target). Every non-entry block is labelled `Lm<id>` so
   a single-predecessor taken edge is always addressable.
-- **Sub-word extension via CP/CPZ (6779).** There is no `LDZ`. A load reads
-  exactly the destination sub-register width; sign extension is `CP dst.sub dst`
-  and zero extension is `CPZ dst.sub dst`. Explicit `Oext*` casts do the same
-  `CP`/`CPZ` without a preceding load. Chosen because it is the only primitive
-  the ISA offers, and the `0xC8 -> 200` (not `-56`) capstone check pins it.
+- **Sub-word extension (6779, revised by maize-204).** A narrowing *load* now
+  uses one instruction: zero-extend is `LDZ @a dst.sub` (card maize-204,
+  reintroducing the zero-extending load), sign-extend stays `LD @a dst.sub` +
+  `CP dst.sub dst`. Explicit `Oext*` casts (no load) still widen a register in
+  place with `CP dst.sub dst` / `CPZ dst.sub dst`. The `0xC8 -> 200` (not `-56`)
+  capstone check pins the zero-extension.
 - **Two-address dst-accumulate with RT scratch (6780).** See above; the
   non-commutative aliasing case routes through `RT` rather than reordering
   operands, keeping the ambiguity log deterministic.

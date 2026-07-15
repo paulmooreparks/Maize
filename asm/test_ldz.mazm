@@ -1,0 +1,101 @@
+; **********************************************************************************
+; Regression test for card maize-204: LDZ, the zero-extending load.
+;
+; Contract: LDZ @addr dst.<width> reads N bytes (N = destination subregister width)
+; from a memory address, exactly like LD, but zero-extends the result into the FULL
+; destination register (clearing the upper bytes) instead of preserving them. It is
+; exactly equivalent to LD dst.<width> followed by CPZ dst.<width> dst, in one
+; instruction. Both the regAddr ($93) and immAddr ($D3) forms are exercised, and a
+; direct differential check proves bit-for-bit equivalence to the old LD+CPZ pair.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- setup: store a known 8-byte pattern at ldbuf ----
+    CP $1122334455667788 R1
+    CP ldbuf R2.H0
+    ST R1 @R2                  ; ldbuf = 88 77 66 55 44 33 22 11 (little-endian)
+
+    ; ---- 1. LDZ regAddr, byte: reads 0x88, zero-extends, upper bytes cleared ----
+    CLR R0
+    NOT R0                     ; R0 = 0xFFFFFFFFFFFFFFFF (dirty upper bytes)
+    LDZ @R2 R0.B0              ; load one byte -> R0 = 0x0000000000000088 (NOT 0xFF..88)
+    CP $0000000000000088 R3
+    CMP R3 R0
+    JNZ fail
+
+    ; ---- 2. LDZ regAddr, quarter (16-bit): reads 0x7788, zero-extends ----
+    CLR R0
+    NOT R0
+    LDZ @R2 R0.Q0              ; load two bytes -> R0 = 0x0000000000007788
+    CP $0000000000007788 R3
+    CMP R3 R0
+    JNZ fail
+
+    ; ---- 3. LDZ regAddr, half (32-bit): reads 0x55667788, zero-extends ----
+    ; This is the w-class-safety case: LDZ clears bits above H0, unlike a bare LD.
+    CLR R0
+    NOT R0
+    LDZ @R2 R0.H0              ; load four bytes -> R0 = 0x0000000055667788
+    CP $0000000055667788 R3
+    CMP R3 R0
+    JNZ fail
+
+    ; ---- 4. LDZ immAddr, byte: same byte check with an immediate address ----
+    CLR R0
+    NOT R0
+    LDZ @ldbuf R0.B0           ; immAddr form -> R0 = 0x0000000000000088
+    CP $0000000000000088 R3
+    CMP R3 R0
+    JNZ fail
+
+    ; ---- 5. differential check: LDZ == LD + CPZ, bit for bit ----
+    CLR R5
+    NOT R5                     ; dirty R5
+    CLR R6
+    NOT R6                     ; dirty R6 identically
+    LDZ @R2 R5.B0              ; one-instruction zero-extending load
+    LD @R2 R6.B0               ; the old two-instruction sequence:
+    CPZ R6.B0 R6               ;   LD then CPZ zero-extend to full width
+    CMP R6 R5
+    JNZ fail
+
+    ; ---- 6. distinguish LDZ from plain LD (upper bytes must differ) ----
+    ; A bare LD preserves the dirty upper bytes; LDZ must clear them.
+    CLR R5
+    NOT R5
+    LD @R2 R5.B0               ; R5 = 0xFFFFFFFFFFFFFF88 (upper preserved)
+    CLR R6
+    NOT R6
+    LDZ @R2 R6.B0              ; R6 = 0x0000000000000088 (upper cleared)
+    CMP R6 R5
+    JZ fail                    ; they must differ
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $0A R2                  ; 10 bytes
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $0A R2                  ; 10 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+ldbuf:
+    STRING "ABCDEFGH"          ; 8-byte scratch buffer for the LDZ sized-load checks
+
+pass_string:
+    STRING "ldz: PASS\n"
+
+fail_string:
+    STRING "ldz: FAIL\n"
