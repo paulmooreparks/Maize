@@ -1,0 +1,104 @@
+; **********************************************************************************
+; Lazy-flags boundary test (card maize-197): SETCRY / CLRCRY after a PENDING ALU op.
+;
+; SETCRY/CLRCRY write ONLY the carry bit, leaving N/V/Z as they were. Under lazy
+; flags "as they were" may be an unresolved pending descriptor, so the handler must
+; materialize FIRST (making N/V/Z concrete) and only THEN do the narrow carry write;
+; otherwise a later materialize would recompute all four bits from the ALU op and
+; clobber the explicit carry. Each case runs an ALU op that leaves a known N/V/Z,
+; then SETCRY (or CLRCRY), then reads RF.B0 and checks each bit independently:
+; N/V/Z must reflect the ALU op, C must reflect the explicit set/clear.
+;
+; RF.B0 bit layout: C=$01  N=$02  V=$04  P=$08  Z=$10.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- SETCRY after SUB ($FE - $01 = $FD): N set, Z/V/C clear; SETCRY sets C ----
+    CP $FE R0.B0
+    CP $01 R1.B0
+    SUB R1.B0 R0.B0        ; N set, Z clear, V clear, C clear (pending)
+    SETCRY                 ; materialize N/V/Z first, then set C
+    CP RF.B0 R9.B0         ; snapshot the resolved flags
+
+    ; N must survive from SUB (set)
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $02 R8.B0
+    CP $02 R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; Z must survive from SUB (clear)
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $10 R8.B0
+    CLR R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; V must survive from SUB (clear)
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $04 R8.B0
+    CLR R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; C must reflect SETCRY (set)
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $01 R8.B0
+    CP $01 R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; ---- CLRCRY after SUB ($00 - $01 = $FF): N set, C set, Z clear; CLRCRY clears C ----
+    CP $00 R0.B0
+    CP $01 R1.B0
+    SUB R1.B0 R0.B0        ; N set, C set (borrow), Z clear, V clear (pending)
+    CLRCRY                 ; materialize first, then clear C
+    CP RF.B0 R9.B0
+
+    ; N must survive from SUB (set)
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $02 R8.B0
+    CP $02 R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; Z must survive from SUB (clear)
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $10 R8.B0
+    CLR R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; C must reflect CLRCRY (clear), overriding SUB's borrow
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $01 R8.B0
+    CLR R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; ---- all checks passed ----
+    CP pass_string R0
+    CALL test_report_pass     ; never returns
+
+; **********************************************************************************
+pass_string:
+    STRING "flags lazy setcry: PASS\n\0"
+
+fail_string:
+    STRING "flags lazy setcry: FAIL\n\0"
+
+INCLUDE "lib/test.mazm"

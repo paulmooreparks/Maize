@@ -1,0 +1,91 @@
+; **********************************************************************************
+; Lazy-flags boundary test (card maize-197): CMPXCHG after a PENDING ALU op.
+;
+; CMPXCHG writes ONLY the zero bit (success -> Z=1, failure -> Z=0), leaving N/V as
+; they were. Under lazy flags the handler must materialize FIRST so N/V are concrete
+; before the narrow Z write, and so a later materialize cannot recompute Z from the
+; ALU op and clobber CMPXCHG's result. This exercises both CMPXCHG paths:
+;   success: an ALU op leaves N set; CMPXCHG (op2 == op3) sets Z; N must survive.
+;   failure: an ALU op leaves Z SET; CMPXCHG (op2 != op3) clears Z; the read-back Z
+;            must reflect CMPXCHG (0), NOT the ALU op's Z (1).
+;
+; CMPXCHG op1 op2 op3: if op2 == op3 then Z=1, op2 = op1; else Z=0, op3 = op2.
+; RF.B0 bit layout: C=$01  N=$02  V=$04  P=$08  Z=$10.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- success path: SUB leaves N set; CMPXCHG(op2==op3) sets Z; N survives ----
+    CP $FE R0.B0
+    CP $01 R1.B0
+    SUB R1.B0 R0.B0        ; $FE - $01 = $FD -> N set, Z clear (pending)
+    CLR R5
+    CLR R6
+    CLR R7
+    CP $AA R5.B0           ; op1 (new value on success)
+    CP $05 R6.B0           ; op2
+    CP $05 R7.B0           ; op3 == op2 -> success
+    CMPXCHG R5 R6 R7       ; materialize N/V first, then Z=1
+    CP RF.B0 R9.B0
+
+    ; N must survive from SUB (set)
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $02 R8.B0
+    CP $02 R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; Z must reflect CMPXCHG success (set)
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $10 R8.B0
+    CP $10 R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; ---- failure path: SUB leaves Z SET; CMPXCHG(op2!=op3) clears Z ----
+    CP $05 R0.B0
+    CP $05 R1.B0
+    SUB R1.B0 R0.B0        ; $05 - $05 = $00 -> Z set, N clear (pending)
+    CLR R5
+    CLR R6
+    CLR R7
+    CP $AA R5.B0
+    CP $05 R6.B0           ; op2
+    CP $06 R7.B0           ; op3 != op2 -> failure
+    CMPXCHG R5 R6 R7       ; Z=0
+
+    CP RF.B0 R9.B0
+
+    ; Z must reflect CMPXCHG failure (clear), NOT the ALU op's Z=1
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $10 R8.B0
+    CLR R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; N must survive from SUB (clear)
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $02 R8.B0
+    CLR R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; ---- all checks passed ----
+    CP pass_string R0
+    CALL test_report_pass     ; never returns
+
+; **********************************************************************************
+pass_string:
+    STRING "flags lazy cmpxchg: PASS\n\0"
+
+fail_string:
+    STRING "flags lazy cmpxchg: FAIL\n\0"
+
+INCLUDE "lib/test.mazm"

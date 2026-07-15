@@ -56,6 +56,13 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_flags_mul8';   File = 'test_flags_mul8.mazm';   Expected = 'flags mul8: PASS';              Golden = $false }
     [pscustomobject]@{ Name = 'test_mul_zero';     File = 'test_mul_zero.mazm';     Expected = 'mul zero: PASS';                Golden = $true }
     [pscustomobject]@{ Name = 'test_flags_move';   File = 'test_flags_move.mazm';   Expected = 'flags move: PASS';              Golden = $false }
+    # maize-197 lazy / on-demand flag computation boundary tests (materialize hook +
+    # narrow/neutral producers run after an unresolved pending ALU op).
+    [pscustomobject]@{ Name = 'test_flags_lazy_setcc';   File = 'test_flags_lazy_setcc.mazm';   Expected = 'flags lazy setcc: PASS';   Golden = $true }
+    [pscustomobject]@{ Name = 'test_flags_lazy_setcry';  File = 'test_flags_lazy_setcry.mazm';  Expected = 'flags lazy setcry: PASS';  Golden = $true }
+    [pscustomobject]@{ Name = 'test_flags_lazy_cmpxchg'; File = 'test_flags_lazy_cmpxchg.mazm'; Expected = 'flags lazy cmpxchg: PASS'; Golden = $true }
+    [pscustomobject]@{ Name = 'test_flags_lazy_lea';     File = 'test_flags_lazy_lea.mazm';     Expected = 'flags lazy lea: PASS';     Golden = $true }
+    [pscustomobject]@{ Name = 'test_flags_lazy_fcmp';    File = 'test_flags_lazy_fcmp.mazm';    Expected = 'flags lazy fcmp: PASS';    Golden = $true }
     [pscustomobject]@{ Name = 'test_addr64';       File = 'test_addr64.mazm';       Expected = 'addr64: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_cmptest';       File = 'test_cmptest.mazm';       Expected = 'cmptest: PASS';                 Golden = $false }
     [pscustomobject]@{ Name = 'test_ldimm';         File = 'test_ldimm.mazm';         Expected = 'ld imm: PASS';                  Golden = $false }

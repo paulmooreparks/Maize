@@ -230,6 +230,14 @@ run_test "test_flags_sar"    "test_flags_sar.mazm"    "flags sar: PASS"         
 run_test "test_flags_mul8"   "test_flags_mul8.mazm"   "flags mul8: PASS"              0
 run_test "test_mul_zero"     "test_mul_zero.mazm"     "mul zero: PASS"                1
 run_test "test_flags_move"   "test_flags_move.mazm"   "flags move: PASS"              0
+# maize-197 lazy / on-demand flag computation: boundary tests for the materialize
+# hook (SETcc/Jcc across an intervening non-flag op) and the narrow / neutral flag
+# producers (SETCRY/CLRCRY, CMPXCHG, LEA, FCMP) run after an unresolved pending op.
+run_test "test_flags_lazy_setcc"   "test_flags_lazy_setcc.mazm"   "flags lazy setcc: PASS"   1
+run_test "test_flags_lazy_setcry"  "test_flags_lazy_setcry.mazm"  "flags lazy setcry: PASS"  1
+run_test "test_flags_lazy_cmpxchg" "test_flags_lazy_cmpxchg.mazm" "flags lazy cmpxchg: PASS" 1
+run_test "test_flags_lazy_lea"     "test_flags_lazy_lea.mazm"     "flags lazy lea: PASS"     1
+run_test "test_flags_lazy_fcmp"    "test_flags_lazy_fcmp.mazm"    "flags lazy fcmp: PASS"    1
 run_test "test_addr64"       "test_addr64.mazm"       "addr64: PASS"                  0
 run_test "test_cmptest"      "test_cmptest.mazm"      "cmptest: PASS"                 0
 run_test "test_ldimm"        "test_ldimm.mazm"        "ld imm: PASS"                  0

@@ -1,0 +1,91 @@
+; **********************************************************************************
+; Lazy-flags boundary test (card maize-197): FCMP after a PENDING integer ALU op.
+;
+; FCMP fully determines C/Z/P and unconditionally clears N/V, entirely bypassing
+; run_alu. Under lazy flags the handler must DISCARD any pending integer-ALU
+; descriptor as part of its write; otherwise a later consumer materializes the stale
+; integer descriptor and clobbers FCMP's freshly written flags. Each case runs an
+; integer ALU op that leaves a known N (or Z), then an FCMP, then reads RF.B0 and
+; checks the bits reflect FCMP, NOT the discarded integer op.
+;
+; FCMP src dst compares dst against src: dst < src -> C=1; dst == src -> Z=1; N/V
+; always cleared. Binary32: $3FC00000 = 1.5, $40100000 = 2.25.
+; RF.B0 bit layout: C=$01  N=$02  V=$04  P=$08  Z=$10.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- integer SUB leaves N set; FCMP (dst < src) must clear N and set C ----
+    CP $FE R0.B0
+    CP $01 R1.B0
+    SUB R1.B0 R0.B0        ; $FE - $01 = $FD -> N set (pending, integer)
+    CP $40100000 R2.H0     ; src = 2.25
+    CP $3FC00000 R3.H0     ; dst = 1.5
+    FCMP R2.H0 R3.H0       ; dst(1.5) < src(2.25) -> C=1, Z=0, N=0, V=0
+    CP RF.B0 R9.B0         ; FCMP wrote RF and discarded the integer pending
+
+    ; N must be FCMP's (clear), proving the integer SUB's pending N was discarded
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $02 R8.B0
+    CLR R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; C must be FCMP's (set: dst < src)
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $01 R8.B0
+    CP $01 R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; V must be FCMP's (clear)
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $04 R8.B0
+    CLR R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; ---- integer SUB leaves Z set; FCMP (dst == src) sets Z, clears N ----
+    CP $05 R0.B0
+    CP $05 R1.B0
+    SUB R1.B0 R0.B0        ; $05 - $05 = $00 -> Z set (pending, integer)
+    CP $3FC00000 R2.H0     ; src = 1.5
+    CP $3FC00000 R3.H0     ; dst = 1.5
+    FCMP R2.H0 R3.H0       ; equal -> Z=1, C=0, N=0
+    CP RF.B0 R9.B0
+
+    ; Z must be FCMP's (set)
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $10 R8.B0
+    CP $10 R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; C must be FCMP's (clear on equal), overriding any stale integer state
+    CLR R8
+    CP R9.B0 R8.B0
+    AND $01 R8.B0
+    CLR R0
+    CP R8 R1
+    CP fail_string R2
+    CALL test_assert_eq
+
+    ; ---- all checks passed ----
+    CP pass_string R0
+    CALL test_report_pass     ; never returns
+
+; **********************************************************************************
+pass_string:
+    STRING "flags lazy fcmp: PASS\n\0"
+
+fail_string:
+    STRING "flags lazy fcmp: FAIL\n\0"
+
+INCLUDE "lib/test.mazm"

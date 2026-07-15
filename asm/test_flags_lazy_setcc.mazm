@@ -1,0 +1,66 @@
+; **********************************************************************************
+; Lazy-flags boundary test (card maize-197): SETcc / Jcc after an INTERVENING
+; non-flag instruction.
+;
+; Under lazy / on-demand flag computation, an ALU op records a pending descriptor
+; and Z/N/C/V are only materialized when a consumer reads them. The pre-existing
+; test_setcc.mazm deliberately places the SETcc IMMEDIATELY after the CMP, so it
+; cannot catch a materialize-hook bug that only manifests across an intervening
+; flag-neutral instruction (CP / CLR / LD). Each case here inserts exactly such an
+; instruction between the CMP and the SETcc / Jcc; the flag consumer must still see
+; the CMP's result, proving eval_condition materializes the pending descriptor.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- SETZ true, across an intervening CP (flag-neutral, not RF) ----
+    CP $05 R0.B0
+    CMP $05 R0.B0          ; 5 - 5 = 0 -> Z set (pending)
+    CP $77 R4.B0           ; intervening flag-neutral instruction
+    SETZ R3.B0             ; must materialize the pending CMP -> 1
+    CMP $01 R3.B0
+    JNZ lazy_fail
+
+    ; ---- SETZ false, across an intervening CLR ----
+    CP $05 R0.B0
+    CMP $03 R0.B0          ; 5 - 3 = 2 -> Z clear (pending)
+    CLR R4                 ; intervening flag-neutral instruction
+    SETZ R3.B0             ; must materialize -> 0
+    CMP $00 R3.B0
+    JNZ lazy_fail
+
+    ; ---- SETLT true, across an intervening LD (the strlen-shape case) ----
+    CP addr_byte R4.H0     ; stage the address (flag-neutral)
+    CP $03 R0.B0
+    CMP $05 R0.B0          ; 3 - 5 = -2 -> N != V -> LT true (pending)
+    LD @R4.H0 R5.B0        ; intervening flag-neutral load
+    SETLT R3.B0            ; must materialize -> 1
+    CMP $01 R3.B0
+    JNZ lazy_fail
+
+    ; ---- Jcc after an intervening non-flag instruction ----
+    CP $04 R0.B0
+    CMP $04 R0.B0          ; Z set (pending)
+    CP $99 R6.B0           ; intervening flag-neutral instruction
+    JZ lazy_jcc_ok         ; must materialize across the CP
+    JMP lazy_fail
+lazy_jcc_ok:
+
+    ; ---- all checks passed ----
+    CP pass_string R0
+    CALL test_report_pass     ; never returns
+
+lazy_fail:
+    CP fail_string R0
+    CALL test_report_fail     ; never returns
+
+; **********************************************************************************
+pass_string:
+    STRING "flags lazy setcc: PASS\n\0"
+
+fail_string:
+    STRING "flags lazy setcc: FAIL\n\0"
+
+addr_byte:
+    DATA $42
+
+INCLUDE "lib/test.mazm"
