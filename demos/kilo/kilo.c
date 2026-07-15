@@ -67,6 +67,7 @@
 
 #define HL_HIGHLIGHT_STRINGS (1<<0)
 #define HL_HIGHLIGHT_NUMBERS (1<<1)
+#define HL_HIGHLIGHT_PREFIX_NUMBERS (1<<2)
 
 struct editorSyntax {
     char **filematch;
@@ -230,7 +231,7 @@ struct editorSyntax HLDB[] = {
         MAZM_HL_extensions,
         MAZM_HL_keywords,
         ";","","",
-        HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS
+        HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_PREFIX_NUMBERS
     }
 };
 
@@ -509,17 +510,22 @@ void editorUpdateSyntax(erow *row) {
             continue;
         }
 
-        /* Handle numbers: bare digits (C-style) plus Maize's base-prefixed
-         * literals ($ hex, # decimal, % binary), which start with the prefix
-         * character rather than a digit and continue through an optional
-         * sign, base digits, and the ',' '_' '`' separators (ASSEMBLER.md
-         * "Numeric literals"). This does not validate the digit set against
-         * the selected base; that is the assembler's job, not the
-         * highlighter's. */
+        /* Handle numbers: bare digits (C-style) plus, for syntaxes that opt
+         * in via HL_HIGHLIGHT_PREFIX_NUMBERS (currently .mazm only), Maize's
+         * base-prefixed literals ($ hex, # decimal, % binary), which start
+         * with the prefix character rather than a digit and continue
+         * through an optional sign, base digits, and the ',' '_' '`'
+         * separators (ASSEMBLER.md "Numeric literals"). This does not
+         * validate the digit set against the selected base; that is the
+         * assembler's job, not the highlighter's. Gating these two clauses
+         * on the flag keeps C-file highlighting (#include/#define/% and
+         * expressions like i+1) exactly as it was before this flag existed. */
         if ((isdigit(*p) && (prev_sep || row->hl[i-1] == HL_NUMBER)) ||
             (*p == '.' && i >0 && row->hl[i-1] == HL_NUMBER) ||
-            (prev_sep && strchr("$#%",*p) != NULL) ||
-            (i > 0 && row->hl[i-1] == HL_NUMBER &&
+            (E.syntax->flags & HL_HIGHLIGHT_PREFIX_NUMBERS &&
+             prev_sep && strchr("$#%",*p) != NULL) ||
+            (E.syntax->flags & HL_HIGHLIGHT_PREFIX_NUMBERS &&
+             i > 0 && row->hl[i-1] == HL_NUMBER &&
              (isalnum(*p) || strchr(",_`+-",*p) != NULL))) {
             row->hl[i] = HL_NUMBER;
             p++; i++;
