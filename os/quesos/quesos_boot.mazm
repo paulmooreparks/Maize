@@ -1,0 +1,114 @@
+; ==================================================================================
+; quesos_boot.mazm -- quesOS kernel core, the metal half (card maize-24, Piece 3).
+;
+; The parts of quesOS that must be assembly because they touch CPU state the C ABI
+; cannot express: the boot entry + private-stack switch, the cause-7 (SYS) trap
+; handler entry/exit, the SETSYSG/CLRSYSG provider toggle (D9 Shape B), and the
+; control transfer into a child. The portable half (worklist, execve, reap) is
+; quesos.c; the two share the globals and the extern boundary declared below.
+;
+; Provider-flag invariant (D9 Shape B): quesOS's own code runs with the syscall-
+; guest flag CLEAR, so quesOS's own SYS stubs reach native sys::call directly and
+; never recurse into this handler. The flag is SET only while a child runs. See the
+; block comment in quesos.c.
+;
+; Trap frame (src/cpu.cpp deliver_vectored): on cause-7 handler entry RS points at
+; the aux word, and the frame reads from RS upward:
+;     [RS + 0]   aux        = the syscall number (the SYS operand, per SYSCALL-ABI.md)
+;     [RS + 8]   cause      = 7
+;     [RS + 16]  saved RF   (pre-trap flags, incl. the syscall-guest bit = SET)
+;     [RS + 24]  saved PC   (the child instruction after its SYS: the IRET target)
+; IRET pops saved RF then saved PC (two words), so it expects RS at [saved RF]; the
+; handler advances RS past aux+cause (+16) before an IRET-returning path.
+; ==================================================================================
+
+SECTION CODE
+
+GLOBAL _start
+GLOBAL quesos_enter_child
+GLOBAL quesos_poweroff
+
+EXTERN quesos_main             ; quesos.c: init entry, runs the worklist (noreturn)
+EXTERN quesos_reap             ; quesos.c: records a child's status, runs the next
+EXTERN quesos_stack            ; quesos.c: 64 KiB private-stack byte array (base)
+
+; ----------------------------------------------------------------------------------
+; _start: the directly-loaded image entry (mzld's default entry symbol). The VM has
+; already built quesOS's OWN process-start block at the top of RAM and set RS to it
+; (argv[1..] is the exec worklist, decision D7). Marshal argc/argv the way crt0 does
+; BEFORE switching stacks, install the cause-7 handler, switch RS to quesOS's private
+; stack, then call quesos_main. The flag stays CLEAR here (quesOS runs native).
+; ----------------------------------------------------------------------------------
+_start:
+    LD  @RS R0                 ; R0 = argc            = [RS]
+    LEA $08 RS R1              ; R1 = argv (&argv[0]) = RS + 8
+
+    ; Install this handler at trap-vector-table entry 7 (0x1000 + 7*8 = 0x1038).
+    CP  quesos_syscall_handler R3   ; R3 = &handler (full 64-bit ABS64)
+    CP  $1038 RT                    ; RT = vector-7 slot address
+    ST  R3 @RT                      ; entry[7] = &handler
+
+    ; Switch to quesOS's private stack: full-descending, top = base + size. The size
+    ; matches QUESOS_STACK_SIZE (0x10000) in quesos.c; keep the two in lockstep.
+    CP  quesos_stack R3
+    ADD $00010000 R3
+    CP  R3 SP
+
+    CALL quesos_main                ; quesos_main(R0=argc, R1=argv); never returns
+    HALT                            ; safety net (unreachable)
+
+; ----------------------------------------------------------------------------------
+; quesos_syscall_handler: cause-7 entry. Runs with the flag SET, on the child's
+; stack, RS at the aux word. Reads the syscall number, then either passes the call
+; through to the native provider (file/IO subset) and IRETs back to the child, or,
+; for exit / exit_group (SYS $3C, unified per D5), tears the child down and hands
+; control to quesOS's reaper.
+; ----------------------------------------------------------------------------------
+quesos_syscall_handler:
+    LD  @RS R3                 ; R3 = syscall number (aux word)
+    ADD $10 RS                 ; discard aux+cause: RS -> [saved RF][saved PC]
+    CMP $3C R3.B0              ; exit / exit_group (D5)?
+    JZ  quesos_handle_exit
+
+    ; Passthrough: re-issue the SAME syscall natively. R0/R1/R2 still hold the
+    ; child's args (untouched since the trap); the result lands in RV. CLRSYSG routes
+    ; this SYS to native sys::call (no recursion); IRET then restores the child's RF
+    ; (flag SET) and PC.
+    CLRSYSG
+    SYS R3
+    SETSYSG
+    IRET
+
+quesos_handle_exit:
+    ; The child terminated. R0 holds its exit code (the _exit ABI). Leave the flag
+    ; CLEAR (quesOS runs native from here), reset RS to quesOS's private stack top,
+    ; and reap in guest C. quesos_reap never returns (it runs the next child or
+    ; powers the VM off).
+    CLRSYSG
+    CP  quesos_stack R3
+    ADD $00010000 R3
+    CP  R3 SP
+    CALL quesos_reap           ; quesos_reap(R0 = exit code); never returns
+    HALT                       ; safety net (unreachable)
+
+; ----------------------------------------------------------------------------------
+; quesos_enter_child(R0 = entry PC, R1 = child RS): the control transfer into a
+; freshly-loaded child (quesos.c fills its memory + argc/argv stack first). Arm the
+; provider flag so the child's SYS traps here, point RS at the child's start block,
+; and jump (not CALL: quesOS does not expect a RET; the child's exit_group traps
+; back instead).
+; ----------------------------------------------------------------------------------
+quesos_enter_child:
+    SETSYSG
+    CP  R1 SP                  ; RS = child's argc/argv/envp start block
+    JMP R0                     ; enter the child (noreturn)
+
+; ----------------------------------------------------------------------------------
+; quesos_poweroff(): the worklist is drained. Drop the provider flag and issue a
+; genuine native SYS $3C so the VM actually halts (rather than trapping back here).
+; ----------------------------------------------------------------------------------
+quesos_poweroff:
+    CLRSYSG
+    CLR R0                     ; exit status 0
+    SYS $3C                    ; native sys_exit: halt the VM
+    HALT                       ; safety net (unreachable)

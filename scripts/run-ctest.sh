@@ -1380,6 +1380,78 @@ run_launcher_defaults() {
 
 run_launcher_defaults
 
+# maize-24 keystone (Piece 3): quesOS single-tasking exec/reap. Builds the two
+# borrowed static guest printers (os/quesos/demo_child*.c) through the ordinary
+# cc-maize.sh pipeline (stock .mzx at base 0x2000), links quesOS itself at its
+# non-default base via os/quesos/build-quesos.sh, then runs quesOS as a directly-
+# loaded image with the two children on its argv worklist (decision D7). The
+# children live under a :ro mount at /progs, resolved by quesOS's execve through
+# the passthrough file syscalls. The gate is the exact interleaved transcript:
+# quesOS's init line, then for each child its own SYS $01 output followed by
+# quesOS's reap line carrying the distinct recorded exit status, in order. That one
+# transcript evidences AC1 (handler installed at cause 7 before any exec), AC2
+# (execve loads a .mzx + builds the argv stack + transfers control; the child prints
+# and exits), AC3 (the child's SYS $3C trapped into quesOS's dispatcher, not native
+# power_off: the VM did NOT halt, it recorded the status and kept running), and AC4
+# (the second child ran via the same path; both outputs + both statuses are
+# observable in order).
+run_quesos_selfcheck() {
+    name="quesos"
+    TOTAL=$((TOTAL + 1))
+
+    c1="${REPO_ROOT}/os/quesos/demo_child1.c"
+    c2="${REPO_ROOT}/os/quesos/demo_child2.c"
+    builder="${REPO_ROOT}/os/quesos/build-quesos.sh"
+    if [ ! -f "$c1" ] || [ ! -f "$c2" ] || [ ! -f "$builder" ]; then
+        echo "[FAIL] ${name}: missing quesOS sources under os/quesos/" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    progs="${WORK_DIR}/quesos-progs"
+    rm -rf "$progs"; mkdir -p "$progs"
+    log="${WORK_DIR}/quesos.build.log"
+
+    if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/child1.mzx" "$c1" >"$log" 2>&1 \
+    || ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/child2.mzx" "$c2" >>"$log" 2>&1; then
+        echo "[FAIL] ${name}: child compile failed"; cat "$log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    quesos="${WORK_DIR}/quesos.mzx"
+    if ! sh "$builder" --preset "$PRESET" -o "$quesos" >>"$log" 2>&1 || [ ! -f "$quesos" ]; then
+        echo "[FAIL] ${name}: quesOS link failed"; cat "$log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    nat=$(host_to_native "$progs")
+    # MSYS2_ARG_CONV_EXCL keeps the /progs guest paths from being rewritten to Windows
+    # paths on the MinGW leg (same reason doom-render excludes /ro); harmless elsewhere.
+    set +e
+    actual=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
+        "$quesos" /progs/child1.mzx /progs/child2.mzx 2>/dev/null | grep -v '^$')
+    set -e
+
+    expected=$(printf '%s\n' \
+        '[quesos] init: cause-7 handler resident; running 2 program(s)' \
+        'child one: hello from a quesos guest' \
+        '[quesos] reaped /progs/child1.mzx status=7' \
+        'child two: second guest reporting in' \
+        '[quesos] reaped /progs/child2.mzx status=3')
+
+    if [ "$actual" = "$expected" ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected transcript:"
+        printf '%s\n' "$expected" | sed 's/^/          | /'
+        echo "        actual transcript:"
+        printf '%s\n' "$actual" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_quesos_selfcheck
+
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then
     echo "C toolchain: ${TOTAL} passed, 0 failed."
