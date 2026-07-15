@@ -822,8 +822,13 @@ comparisons JLT ("less than") and JGT ("greater than"). Each signed/unsigned com
 a complement: JGE/JLE (signed >=, <=) and JAE/JBE (unsigned >=, <=). See the conditional-branch
 opcode table below (JZ/JNZ/JLT/JGT/JGE/JLE/JB/JA/JBE/JAE) for the exact branch conditions.
 
-`RF.H1` holds the privilege, interrupt-enabled, interrupt-set, and running flags, which may only
-be set in privileged mode and are unaffected by the arithmetic/logic instructions.
+`RF.H1` holds the privilege, interrupt-enabled, interrupt-set, and running flags (plus the
+syscall-guest selector), which may only be set in privileged mode and are unaffected by the
+arithmetic/logic instructions. This is enforced on the direct-write path too: because RF is an
+operand-addressable destination, a user-mode write that names RF (via CP, LD, POP, CPZ, CLR, or
+an ALU write-back) has these privileged RF.H1 bits masked, they retain their current values
+while only the RF.H0 condition flags take the written value (the x86 POPF-in-user model). A
+supervisor-mode write to RF is unmasked.
 
 #### Per-instruction flag effects
 
@@ -974,7 +979,7 @@ Trap taxonomy and reserved cause / vector numbers:
     1      (reserved)                             n/a    Reserved for a future debug / single-step trap
     2      Divide error                           Fault  Divide-by-zero, or signed INT_MIN / -1 quotient overflow
     3      Breakpoint (BRK)                       Trap   BRK ($FF); captures the following-instruction PC
-    4      Privileged operation in user mode      Fault  Reserved number; enforcement deferred (privilege bit)
+    4      Privileged operation in user mode      Fault  Live (maize-180): privileged instructions gated in user mode; user-mode RF writes mask the privileged RF.H1 bits
     5      Segment / bounds violation             Fault  Reserved number; mechanism ships with segments
     6      Stack fault                            Fault  Reserved number; mechanism ships with segments
     7      SYS / syscall entry                    Trap   Reserved number; SYS dispatches directly today, trap-vector delivery + ABI owned by maize-82 / maize-21

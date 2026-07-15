@@ -40,6 +40,15 @@ These instructions move data without arithmetic. **None of them affects any flag
 branch may be separated by data moves. CP / CPZ / LD / ST are the enforced memory boundary
 (Chapter 5 section 5.5).
 
+**RF as a destination in user mode.** RF is operand-addressable, so any of these (CP / CPZ /
+LD / CLR / POP) may name RF as its destination. When such a write executes in user mode
+(privilege bit clear), the privileged RF.H1 bits (privilege, interrupt-enabled,
+interrupt-set, running, syscall-guest) are **masked**: they keep their current values while
+only the non-privileged RF.H0 condition flags take the written value. A user instruction thus
+cannot set the privilege bit by writing RF directly; the mask raises no fault (a benign flag
+write still lands). Supervisor writes are unmasked. See section 7.9 for the full privilege
+model.
+
 ### CP (copy)
 - **Operation:** copy the source value into the destination register, **sign-extended** to
   the destination subregister width (Chapter 5 section 5.6). Never touches memory.
@@ -532,6 +541,16 @@ saved RF whose privilege bit is clear. The enforced privileged set is IN / OUT /
 MOVTCR / MOVFCR, TLBINV / TLBINVA, SETINT / CLRINT, SETSYSG / CLRSYSG, IRET, and HALT. INT is
 privileged but has no active dispatch in v1.0, so its fault applies once its dispatch lands;
 future segment-write and other control instructions join the set as they land.
+
+The privilege boundary also covers the direct-write vector. RF is an operand-addressable
+destination register, so the gate above is not enough on its own: a user-mode guest write
+that names RF as its destination (CP / LD / POP / CPZ / CLR, or an ALU write-back) has its
+privileged RF.H1 bits (privilege, interrupt-enabled, interrupt-set, running, syscall-guest)
+**masked**, they keep their current values while only the non-privileged condition flags
+(RF.H0: C / N / V / Z / P) take the written value. This is the x86 POPF-in-user model: a user
+instruction cannot set the privilege bit by writing RF directly, and the masking raises no
+fault, so a benign user-mode flag write still succeeds. Supervisor-mode RF writes are
+unmasked (this is what lets a handler's IRET restore the full saved RF).
 
 ### SYS (system call)
 - **Operation:** enter the kernel syscall dispatcher with the syscall index in the operand.

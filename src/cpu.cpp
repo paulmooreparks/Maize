@@ -31,6 +31,16 @@ namespace maize {
             const u_word bit_running =            0b0000000000000000000000000000100000000000000000000000000000000000;
             const u_word bit_syscall_guest =      0b0000000000000000000000000001000000000000000000000000000000000000;
 
+            /* card maize-180 (§9 RF-write closure): the privileged RF.H1 flag bits
+               (bits 32..36). README "Flags": RF.H1 holds the privilege, interrupt-
+               enabled, interrupt-set, and running flags, which may only be set in
+               privileged mode; the syscall-guest selector (set only by the privileged
+               SETSYSG/CLRSYSG) belongs to the same protected set. A user-mode guest
+               write to RF retains these bits' current values (see commit_reg_w0). */
+            const u_word rf_privileged_mask =
+                bit_privilege | bit_interrupt_enabled | bit_interrupt_set
+                | bit_running | bit_syscall_guest;
+
             constexpr u_word subreg_sign_bit[] = {
                 0x0000000000000080,
                 0x0000000000008000,
@@ -666,10 +676,31 @@ namespace maize {
                 return (src.w0 & static_cast<u_word>(mask)) >> off;
             }
 
+            /* card maize-180 (§9 RF-write closure). Single choke point for every guest
+               register-destination write: if the destination register is RF and the CPU
+               is in user mode (privilege_flag clear), the privileged RF.H1 bits
+               (rf_privileged_mask) RETAIN their current values and only the non-privileged
+               (condition-flag) bits take the written value. This is the x86 POPF-in-user
+               model: it closes the escalation vector where a user instruction naming RF as
+               its destination (CP/LD/POP/CPZ/CLR/ALU write-back) would otherwise set the
+               privilege bit raw and step straight into supervisor. Supervisor writes and
+               every non-RF destination pass through unchanged (a pointer compare plus a
+               flag read on the register-write hot path). Applied at write time, so IRET
+               (privileged, only ever executed from supervisor) restores the full RF word
+               normally, and the deliver_vectored trap frame (which never routes an RF write
+               through these helpers) is unaffected. Every reg-write helper below commits
+               its final value through here, so no RF-destination path bypasses the mask. */
+            void commit_reg_w0(reg_value &dst, u_word new_w0) {
+                if (&dst == static_cast<reg_value*>(&regs::rf) && !privilege_flag) {
+                    new_w0 = (new_w0 & ~rf_privileged_mask) | (regs::rf.w0 & rf_privileged_mask);
+                }
+                dst.w0 = new_w0;
+            }
+
             void write_subreg_bits(reg_value &dst, subreg_enum dst_subreg, u_word bits) {
                 auto off = subreg_offset_map[static_cast<size_t>(dst_subreg)];
                 auto mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
-                dst.w0 = (~static_cast<u_word>(mask) & dst.w0) | ((bits << off) & static_cast<u_word>(mask));
+                commit_reg_w0(dst, (~static_cast<u_word>(mask) & dst.w0) | ((bits << off) & static_cast<u_word>(mask)));
             }
 
             void clr_reg(reg_value &dst, subreg_enum dst_subreg) {
@@ -677,7 +708,7 @@ namespace maize {
                 auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
                 u_word src_value = 0;
-                dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask);
+                commit_reg_w0(dst, (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask));
             }
 
             /* SETcc write (card maize-55): identical masked write to clr_reg, but
@@ -689,7 +720,7 @@ namespace maize {
                 auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
                 u_word src_value = condition ? 1 : 0;
-                dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask);
+                commit_reg_w0(dst, (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask));
             }
 
             bool cmp_regval_reg(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
@@ -725,7 +756,7 @@ namespace maize {
                     src_value |= subreg_neg_bits[static_cast<int>(src_subreg)];
                 }
 
-                dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask);
+                commit_reg_w0(dst, (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask));
             }
 
             void copy_regval_reg_zext(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
@@ -737,7 +768,7 @@ namespace maize {
 
                 u_word src_value = (src.w0 & static_cast<u_word>(src_mask)) >> src_offset;
 
-                dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask);
+                commit_reg_w0(dst, (~static_cast<u_word>(dst_mask) & dst.w0) | (src_value << dst_offset) & static_cast<u_word>(dst_mask));
             }
 
             void copy_memval_reg(u_word address, size_t size, reg_value &op2_reg, subreg_enum dst_subreg) {
@@ -763,8 +794,8 @@ namespace maize {
                 }
                 auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
                 auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
-                op2_reg.w0 = (~static_cast<u_word>(dst_mask) & op2_reg.w0)
-                    | ((raw << dst_offset) & static_cast<u_word>(dst_mask));
+                commit_reg_w0(op2_reg, (~static_cast<u_word>(dst_mask) & op2_reg.w0)
+                    | ((raw << dst_offset) & static_cast<u_word>(dst_mask)));
             }
 
             void copy_memval_reg_zext(u_word address, size_t size, reg_value &op2_reg, subreg_enum dst_subreg) {
@@ -776,8 +807,8 @@ namespace maize {
                 mm.read_into(address, reinterpret_cast<u_byte*>(&raw), size);
                 auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
                 auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
-                op2_reg.w0 = (~static_cast<u_word>(dst_mask) & op2_reg.w0)
-                    | ((raw << dst_offset) & static_cast<u_word>(dst_mask));
+                commit_reg_w0(op2_reg, (~static_cast<u_word>(dst_mask) & op2_reg.w0)
+                    | ((raw << dst_offset) & static_cast<u_word>(dst_mask)));
             }
 
             void copy_regaddr_reg(reg_value const &src, subreg_enum src_subreg, reg_value &dst, subreg_enum dst_subreg) {
@@ -797,7 +828,7 @@ namespace maize {
                 src_data.w0 = 0;
                 mm.read(src_address, src_data, subreg_size_map[static_cast<size_t>(dst_subreg)], 0);
 
-                dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_data.w0 << dst_offset) & static_cast<u_word>(dst_mask);
+                commit_reg_w0(dst, (~static_cast<u_word>(dst_mask) & dst.w0) | (src_data.w0 << dst_offset) & static_cast<u_word>(dst_mask));
             }
 
             void copy_memaddr_reg(u_word address, size_t size, reg_value &dst, subreg_enum dst_subreg) {
@@ -819,7 +850,7 @@ namespace maize {
                 auto dst_offset = subreg_offset_map[static_cast<size_t>(dst_subreg)];
                 auto dst_mask = subreg_mask_map[static_cast<size_t>(dst_subreg)];
 
-                dst.w0 = (~static_cast<u_word>(dst_mask) & dst.w0) | (src_data.w0 << dst_offset) & static_cast<u_word>(dst_mask);
+                commit_reg_w0(dst, (~static_cast<u_word>(dst_mask) & dst.w0) | (src_data.w0 << dst_offset) & static_cast<u_word>(dst_mask));
 
             }
 

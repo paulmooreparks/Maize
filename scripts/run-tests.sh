@@ -447,6 +447,7 @@ run_priv_user_fault_test "mmu_priv_iret_escalate" "test_mmu_priv_iret_escalation
 run_priv_user_fault_test "mmu_priv_halt"          "test_mmu_priv_halt.mazm"
 run_priv_user_fault_test "mmu_priv_setint"        "test_mmu_priv_setint.mazm"
 run_priv_user_fault_test "mmu_priv_setsysg"       "test_mmu_priv_setsysg.mazm"
+run_priv_user_fault_test "mmu_priv_rf_write"      "test_mmu_priv_rf_write.mazm"
 
 # --- maize-180: mzdis decodes the four new instructions (six encodings) ----------------
 # A code-only fixture exercising $26/$66/$A6 (MOVTCR/MOVFCR) and $28/$68 (TLBINV/TLBINVA):

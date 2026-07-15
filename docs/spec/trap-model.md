@@ -108,10 +108,17 @@ maize-21 gated IN / OUT / OUTR, and card maize-180 extended the head-of-dispatch
 gate to the control-register and TLB instructions (MOVTCR / MOVFCR, TLBINV / TLBINVA) and to
 the previously-ungated HALT, SETINT / CLRINT and SETSYSG / CLRSYSG, and made IRET privileged
 (closing the forged-RF escalation: user code cannot forge a privileged RF word and IRET into
-supervisor mode). A trap or interrupt entry raises privilege to supervisor for the handler,
-so the handler's IRET runs privileged and drops back to user by restoring a saved RF whose
-privilege bit is clear. INT is privileged but has no active dispatch in v1.0, so its fault
-applies once its dispatch lands; future segment-register writes join the set as they land.
+supervisor mode). The privilege boundary also covers the direct-write vector: RF is an
+operand-addressable destination register, so a user-mode guest write that names RF as its
+destination (CP / LD / POP / CPZ / CLR, or an ALU write-back) has its privileged RF.H1 bits
+masked, they retain their current values while only the non-privileged condition flags take
+the written value (the x86 POPF-in-user model). A user instruction therefore cannot set the
+privilege bit by writing RF directly, and this write-masking raises no fault (a benign
+user-mode flag write still succeeds). A trap or interrupt entry raises privilege to
+supervisor for the handler, so the handler's IRET runs privileged and drops back to user by
+restoring a saved RF whose privilege bit is clear (a supervisor RF write is unmasked). INT is
+privileged but has no active dispatch in v1.0, so its fault applies once its dispatch lands;
+future segment-register writes join the set as they land.
 
 **Cause 5, Segment / bounds violation (fault, reserved).** The cause number is frozen;
 the mechanism ships with the segment / base-bounds registers as a future extension. In

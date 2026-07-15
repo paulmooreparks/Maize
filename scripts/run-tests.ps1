@@ -498,6 +498,7 @@ $results += Invoke-TrapTest 'mmu_priv_iret_escalate' 'test_mmu_priv_iret_escalat
 $results += Invoke-TrapTest 'mmu_priv_halt'          'test_mmu_priv_halt.mazm'            'privileg'
 $results += Invoke-TrapTest 'mmu_priv_setint'        'test_mmu_priv_setint.mazm'          'privileg'
 $results += Invoke-TrapTest 'mmu_priv_setsysg'       'test_mmu_priv_setsysg.mazm'         'privileg'
+$results += Invoke-TrapTest 'mmu_priv_rf_write'      'test_mmu_priv_rf_write.mazm'        'privileg'
 $results += Invoke-TimerPeriod1Test
 $results += Invoke-SysreadTest
 $results += Invoke-KeyboardTest

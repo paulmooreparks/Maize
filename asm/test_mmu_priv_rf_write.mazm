@@ -1,0 +1,79 @@
+; **********************************************************************************
+; Regression test for card maize-180 (§9 RF-write closure): a user-mode guest write
+; to RF must NOT be able to set the privileged RF.H1 bits.
+;
+; RF is a directly-addressable destination register (slot $C). An unguarded VM would
+; let a user instruction that names RF as its destination (CP an immediate into RF,
+; POP-to-RF, LD-to-RF) write the privilege bit (RF bit 32) raw and unmasked, so user
+; code could escalate to supervisor in one instruction, bypassing the IRET/CR/TLB/HALT
+; gating this card added. The fix masks the privileged RF.H1 bits on user-mode writes
+; (the x86 POPF-in-user model): the privileged bits retain their current values; only
+; the non-privileged condition-flag bits take the written value.
+;
+; This fixture drops to user mode via the (supervisor) IRET trampoline, then, from user
+; mode, attempts to set the privilege bit through EVERY RF-destination write path:
+;   1. CP a full 64-bit immediate (privilege+running set) into RF.
+;   2. CP an immediate into the RF.B4 sub-register (privilege bit lives in byte 4).
+;   3. POP a forged RF word (privilege set) off the stack into RF.
+;   4. LD a forged RF word from memory into RF.
+; With masking in place none of these change the privilege bit, so the probe MOVTCR
+; (privileged) that follows still faults cause-4 in user mode: the VM exits nonzero with
+; a "privileged" diagnostic and never reaches the "mmu-priv-rf-write: FAIL" marker. A
+; regression that let any RF-write escalate would leave privilege SET, so the probe
+; MOVTCR would succeed, fall through, and print the FAIL marker the runner catches.
+;
+; RF bit layout (src/cpu.cpp): bit_privilege = bit 32, bit_running = bit 35.
+;   user RF   = $0000000800000000 (running set, privilege clear)
+;   forged RF = $0000000900000000 (running set, privilege SET) -- the escalation attempt
+; **********************************************************************************
+
+$0000`0000:
+    CLR R0
+    CP user_mode R0.H0
+    PUSH R0                ; [SP] = user_mode (restored PC)
+
+    CLR R1
+    CP $08 R1.B4           ; $0000000800000000: running set, privilege clear
+    PUSH R1                ; [SP] = user RF
+
+    IRET                   ; enter user mode (supervisor executes this IRET: allowed)
+
+user_mode:
+    ; ---- now unprivileged: try to set the privilege bit by writing RF directly ----
+
+    ; Vector 1: CP a full 64-bit immediate with privilege+running set into RF.
+    CP $0000`0009`0000`0000 RF     ; masked -> privilege bit stays clear
+
+    ; Vector 2: CP an immediate into the RF.B4 sub-register (privilege = bit 0 of byte 4).
+    CP $09 RF.B4                   ; masked -> privilege bit stays clear
+
+    ; Vector 3: POP a forged privileged RF word off the stack into RF.
+    CLR R2
+    CP $09 R2.B4
+    PUSH R2                        ; [SP] = forged RF (privilege+running)
+    POP RF                         ; masked -> privilege bit stays clear
+
+    ; Vector 4: LD a forged privileged RF word from memory into RF.
+    LD @forged_rf RF               ; masked -> privilege bit stays clear
+
+    ; ---- probe: if ANY vector escalated, privilege is set and MOVTCR succeeds ----
+    CLR R3
+    MOVTCR R3 $00                  ; privileged; in user mode -> cause-4 fault
+
+    ; ---- reached ONLY if an RF-write wrongly escalated to supervisor ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $18 R2              ; 24 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+forged_rf:
+    ; $0000000900000000 little-endian: byte 4 = $09 (privilege bit 32 + running bit 35)
+    DATA $00 $00 $00 $00 $09 $00 $00 $00
+
+fail_string:
+    STRING "mmu-priv-rf-write: FAIL\n\0"
