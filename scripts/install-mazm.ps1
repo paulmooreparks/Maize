@@ -37,6 +37,26 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Resolve-Path (Join-Path $ScriptDir '..')
 $BuildDir  = Join-Path $RepoRoot "build/$Preset"
 
+# --- llvm-mingw compiler toolchain -------------------------------------------------
+# windows-llvm-mingw-release hardcodes CMAKE_C/CXX_COMPILER to
+# ${sourceDir}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang(++).exe. On a fresh
+# checkout .toolchains/ is empty (gitignored), so auto-fetch the pinned toolchain via
+# bootstrap-toolchain.ps1 (SHA256-verified, the counterpart of bootstrap-sdl2.ps1) the
+# same way the SDL2 block below does. Runs regardless of -Headless: a compiler is
+# needed for every build, unlike the display backend.
+$ToolchainDir = Join-Path $RepoRoot '.toolchains/llvm-mingw'
+$ClangC       = Join-Path $ToolchainDir 'bin/x86_64-w64-mingw32-clang.exe'
+$ClangCxx     = Join-Path $ToolchainDir 'bin/x86_64-w64-mingw32-clang++.exe'
+
+if (-not (Test-Path $ClangC) -or -not (Test-Path $ClangCxx)) {
+    Write-Host "Vendored llvm-mingw compiler not found at $ToolchainDir; fetching it via bootstrap-toolchain.ps1 ..."
+    & (Join-Path $ScriptDir 'bootstrap-toolchain.ps1')
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ClangC) -or -not (Test-Path $ClangCxx)) {
+        Write-Error "llvm-mingw provisioning failed (bootstrap-toolchain.ps1 exit $LASTEXITCODE). The '$Preset' preset requires the vendored compiler at $ToolchainDir; run 'scripts/bootstrap-toolchain.ps1' to diagnose."
+        exit 2
+    }
+}
+
 # --- SDL2 window backend (MAIZE_DISPLAY) ------------------------------------------
 # maize's --display window backend needs the vendored mingw SDL2 (dev config + DLL)
 # under .toolchains/SDL2. This install is display-supporting BY DEFAULT: when the SDL2
