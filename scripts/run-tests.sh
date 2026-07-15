@@ -274,6 +274,18 @@ run_test "nested_include"       "test_nested_include.mazm"       "nested include
 run_test "address_fwdlabel"     "test_address_fwdlabel.mazm"     "address fwd-ref: PASS"  0
 run_test "mmu_cr_roundtrip"     "test_mmu_cr_roundtrip.mazm"     "cr-roundtrip: PASS"     0
 
+# maize-194: Sv48 translation, software TLB, and cause-8 page fault. Each fixture builds a
+# small page table in guest RAM, MOVTCRs MODE=1 into CR0, and self-checks (PASS/FAIL
+# marker) the translation, permission, TLB-invalidation, and page-fault paths.
+run_test "mmu_translate_rw"     "test_mmu_translate_rw.mazm"          "mmu-xlate-rw: PASS"    0
+run_test "mmu_pagefault_np"     "test_mmu_pagefault_notpresent.mazm"  "mmu-fault-np: PASS"    0
+run_test "mmu_pagefault_ro"     "test_mmu_pagefault_ro.mazm"          "mmu-fault-ro: PASS"    0
+run_test "mmu_pagefault_user"   "test_mmu_pagefault_user.mazm"        "mmu-fault-user: PASS"  0
+run_test "mmu_tlb_invalidate"   "test_mmu_tlb_invalidate.mazm"        "mmu-tlb: PASS"         0
+run_test "mmu_translate_alu_ra" "test_mmu_translate_alu_regaddr.mazm" "mmu-alu-ra: PASS"      0
+run_test "mmu_translate_ind_cf" "test_mmu_translate_indirect_cf.mazm" "mmu-ind-cf: PASS"      0
+run_test "mmu_translate_out"    "test_mmu_translate_out.mazm"         "mmu-out: PASS"         0
+
 # maize-72: per-reference undefined-label diagnostics. Several distinct undefined
 # labels referenced from distinct lines must each report at their OWN file:line, and a
 # label referenced from TWO different lines (undefined_beta, lines 14 and 19) must

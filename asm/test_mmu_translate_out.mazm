@@ -1,0 +1,141 @@
+; **********************************************************************************
+; Card maize-194 (Sv48 translation), AC 8653: OUT with a register-addressed memory
+; value-source goes through translation (choke point #1, copy_regaddr_reg).
+;
+; Enables Sv48, then executes OUT @R3 $0F: the value source is the datum AT the address in
+; R3 (a VA mapped R to a distinct PA holding a known value), written to the loopback test
+; device at port 0x0F (src/maize.cpp). Reading it back with IN $0F confirms the device
+; received the value at the PA, proving the value-source read went through translate()
+; rather than reading VA 0x40000000 as a raw physical address. A second phase points R3 at
+; an unmapped VA and confirms the cause-8 handler runs with CR2 ACCESS_KIND = load (1) and
+; CR1 = the faulting VA.
+;
+;   VA 0x40000000 -> PA 0x14000 (V R W U), seeded with 0xABCD.
+;   VA 0x80000000 unmapped.
+; **********************************************************************************
+
+$0000`0000:
+    CLR R8
+    CP handler R8.H0
+    CLR R9
+    CP $1040 R9.H0
+    ST R8 @R9
+
+    ; seed PA 0x14000 = 0xABCD
+    CP $ABCD R8
+    CLR R9
+    CP $14000 R9.H0
+    ST R8 @R9
+
+    CP $11001 R8
+    CLR R9
+    CP $10000 R9.H0
+    ST R8 @R9
+    CP $1F R8
+    CLR R9
+    CP $11000 R9.H0
+    ST R8 @R9
+    CP $12001 R8
+    CLR R9
+    CP $11008 R9.H0
+    ST R8 @R9
+    CP $13001 R8
+    CLR R9
+    CP $12000 R9.H0
+    ST R8 @R9
+    CP $14017 R8
+    CLR R9
+    CP $13000 R9.H0
+    ST R8 @R9
+
+    CLR RS
+    CP $00080000 RS.H0
+
+    CP $10001 R0
+    MOVTCR R0 $00
+
+    ; ---- phase 1: OUT @R3 $0F, value-source is mem[VA] ----
+    ; NOTE: out_regAddr_imm ($94) is a real, dispatched VM opcode but is unreachable from
+    ; mazm's assembler syntax (a pre-existing mazm gap documented in
+    ; test_mzdis_roundtrip.mazm:91-98: mazm's OUT compiler never checks operand1 for a
+    ; leading '@'). It is hand-assembled here as raw bytes so the test executes the real
+    ; instruction; mzdis decodes these four bytes back to "OUT @R3 $0F". Encoding:
+    ;   $94 out_regAddr_imm | $3E op1 = R3.w0 (address register) | $00 op2 size flag | $0F port
+    CLR R3
+    CP $40000000 R3.H0
+    DATA $94 $3E $00 $0F      ; OUT @R3 $0F: devices[0x0F] = mem[VA] = 0xABCD
+    CLR R5
+    IN $0F R5                 ; read the device back
+    CLR R6
+    CP $ABCD R6
+    CMP R6 R5
+    JNZ fail                  ; a raw read of the VA would send 0, not 0xABCD
+
+    ; ---- phase 2: OUT @R3 $0F with R3 = unmapped VA -> cause-8 load fault ----
+    CLR R3
+    CP $80000000 R3.H0
+    DATA $94 $3E $00 $0F      ; OUT @R3 $0F: translate(load) on the value-source -> page fault
+
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $0E R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+handler:
+    CP $00 R0
+    MOVTCR R0 $00
+
+    MOVFCR $01 R1
+    CLR R2
+    CP $80000000 R2.H0
+    CMP R2 R1
+    JNZ hfail
+
+    MOVFCR $02 R3
+    CMP $02 R3               ; PRESENT=0, ACCESS_KIND=load(1), USER=0
+    JNZ hfail
+
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $0E R2                 ; 14 bytes
+    SYS $01
+    HALT
+
+hfail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $0E R2
+    SYS $01
+    HALT
+
+fail:
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $0E R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "mmu-out: PASS\n\0"
+
+fail_string:
+    STRING "mmu-out: FAIL\n\0"

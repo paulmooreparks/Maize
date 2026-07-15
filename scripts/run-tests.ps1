@@ -98,6 +98,16 @@ $Tests = @(
     [pscustomobject]@{ Name = 'nested_include';      File = 'test_nested_include.mazm';    Expected = 'nested include: PASS';        Golden = $true }
     [pscustomobject]@{ Name = 'address_fwdlabel';    File = 'test_address_fwdlabel.mazm';  Expected = 'address fwd-ref: PASS';       Golden = $false }
     [pscustomobject]@{ Name = 'mmu_cr_roundtrip';    File = 'test_mmu_cr_roundtrip.mazm';  Expected = 'cr-roundtrip: PASS';          Golden = $false }
+    # maize-194: Sv48 translation, software TLB, cause-8 page fault. Each fixture builds a
+    # page table in guest RAM, MOVTCRs MODE=1 into CR0, and self-checks a PASS/FAIL marker.
+    [pscustomobject]@{ Name = 'mmu_translate_rw';    File = 'test_mmu_translate_rw.mazm';          Expected = 'mmu-xlate-rw: PASS';   Golden = $false }
+    [pscustomobject]@{ Name = 'mmu_pagefault_np';    File = 'test_mmu_pagefault_notpresent.mazm';  Expected = 'mmu-fault-np: PASS';   Golden = $false }
+    [pscustomobject]@{ Name = 'mmu_pagefault_ro';    File = 'test_mmu_pagefault_ro.mazm';          Expected = 'mmu-fault-ro: PASS';   Golden = $false }
+    [pscustomobject]@{ Name = 'mmu_pagefault_user';  File = 'test_mmu_pagefault_user.mazm';        Expected = 'mmu-fault-user: PASS'; Golden = $false }
+    [pscustomobject]@{ Name = 'mmu_tlb_invalidate';  File = 'test_mmu_tlb_invalidate.mazm';        Expected = 'mmu-tlb: PASS';        Golden = $false }
+    [pscustomobject]@{ Name = 'mmu_translate_alu_ra';File = 'test_mmu_translate_alu_regaddr.mazm'; Expected = 'mmu-alu-ra: PASS';     Golden = $false }
+    [pscustomobject]@{ Name = 'mmu_translate_ind_cf';File = 'test_mmu_translate_indirect_cf.mazm'; Expected = 'mmu-ind-cf: PASS';     Golden = $false }
+    [pscustomobject]@{ Name = 'mmu_translate_out';   File = 'test_mmu_translate_out.mazm';         Expected = 'mmu-out: PASS';        Golden = $false }
     # maize-71: flat-mode EXTERN'd-but-undefined reference has no linker to resolve it.
     [pscustomobject]@{ Name = 'flat_unresolved_extern'; File = 'test_reject_unresolved_extern.mazm'; Expected = "unresolved external 'undefsym'"; Golden = $false; ExpectAsmError = $true }
 )

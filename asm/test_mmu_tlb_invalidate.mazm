@@ -1,0 +1,150 @@
+; **********************************************************************************
+; Card maize-194 (Sv48 translation), AC 8636: software-TLB invalidation is real.
+;
+; Maps VA 0x40000000 to PA_A (0x14000, pre-seeded 0xAAAA) via a level-0 4 KiB leaf (the
+; only leaf level cached in the TLB). The test then, WITHOUT changing CR0:
+;   1. reads the VA once (populating the TLB with VA -> PA_A);
+;   2. overwrites the L0 leaf PTE in guest RAM to point at PA_B (0x15000, seeded 0xBBBB),
+;      a deliberate stale-TLB setup, by storing through the PTE's identity VA;
+;   3. reads the VA again and confirms the OLD PA_A data (0xAAAA) is still observed,
+;      proving the TLB (not a fresh walk) served the access and the setup is meaningful;
+;   4. executes TLBINVA on the VA's register and reads a third time, confirming the NEW
+;      PA_B data (0xBBBB) is now observed (TLBINVA forced a re-walk);
+;   5. re-points the PTE back to PA_A, reads (stale TLB still serves PA_B), then executes
+;      TLBINV (invalidate-all) and confirms the re-walk observes PA_A again.
+;
+; The page tables live in the 1 GiB identity superpage region, so the PTE at PA 0x13000
+; is reachable for modification through its identity VA 0x13000 while Sv48 is active; the
+; identity superpage is a level-2 leaf and is never itself TLB-cached, so those PTE writes
+; do not pollute or alias the VA-0x40000000 entry under test.
+; **********************************************************************************
+
+$0000`0000:
+    ; seed PA_A (0x14000) = 0xAAAA and PA_B (0x15000) = 0xBBBB
+    CLR R8
+    CP $AAAA R8.H0
+    CLR R9
+    CP $14000 R9.H0
+    ST R8.H0 @R9
+    CLR R8
+    CP $BBBB R8.H0
+    CLR R9
+    CP $15000 R9.H0
+    ST R8.H0 @R9
+
+    ; page tables
+    CP $11001 R8
+    CLR R9
+    CP $10000 R9.H0
+    ST R8 @R9
+    CP $1F R8
+    CLR R9
+    CP $11000 R9.H0
+    ST R8 @R9
+    CP $12001 R8
+    CLR R9
+    CP $11008 R9.H0
+    ST R8 @R9
+    CP $13001 R8
+    CLR R9
+    CP $12000 R9.H0
+    ST R8 @R9
+    ; L0[0] = 0x14017 -> PA_A, V R W U
+    CP $14017 R8
+    CLR R9
+    CP $13000 R9.H0
+    ST R8 @R9
+
+    CLR RS
+    CP $00080000 RS.H0
+
+    CP $10001 R0
+    MOVTCR R0 $00
+
+    CLR R3
+    CP $40000000 R3.H0        ; the VA under test (kept in R3 for TLBINVA)
+
+    ; (1) first read: VA -> PA_A, caches the TLB entry
+    CLR R4
+    LD @R3 R4.H0
+    CLR R5
+    CP $AAAA R5.H0
+    CMP R5.H0 R4.H0
+    JNZ fail
+
+    ; (2) repoint the L0 leaf PTE (PA 0x13000, via identity VA) to PA_B: 0x15017
+    CP $15017 R8
+    CLR R9
+    CP $13000 R9.H0          ; identity VA of the PTE
+    ST R8 @R9
+
+    ; (3) second read: stale TLB must STILL serve PA_A (0xAAAA)
+    CLR R4
+    LD @R3 R4.H0
+    CLR R5
+    CP $AAAA R5.H0
+    CMP R5.H0 R4.H0
+    JNZ fail                 ; if this saw PA_B, the TLB was not consulted (setup meaningless)
+
+    ; (4) TLBINVA the VA, then read: re-walk must now see PA_B (0xBBBB)
+    TLBINVA R3
+    CLR R4
+    LD @R3 R4.H0
+    CLR R5
+    CP $BBBB R5.H0
+    CMP R5.H0 R4.H0
+    JNZ fail
+
+    ; (5a) repoint the PTE back to PA_A (0x14017); TLB now caches VA -> PA_B
+    CP $14017 R8
+    CLR R9
+    CP $13000 R9.H0
+    ST R8 @R9
+
+    ; (5b) read: stale TLB still serves PA_B (0xBBBB)
+    CLR R4
+    LD @R3 R4.H0
+    CLR R5
+    CP $BBBB R5.H0
+    CMP R5.H0 R4.H0
+    JNZ fail
+
+    ; (5c) TLBINV (invalidate all), then read: re-walk must see PA_A (0xAAAA)
+    TLBINV
+    CLR R4
+    LD @R3 R4.H0
+    CLR R5
+    CP $AAAA R5.H0
+    CMP R5.H0 R4.H0
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $0E R2                 ; 14 bytes
+    SYS $01
+    HALT
+
+fail:
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $0E R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "mmu-tlb: PASS\n\0"
+
+fail_string:
+    STRING "mmu-tlb: FAIL\n\0"

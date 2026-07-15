@@ -1,0 +1,147 @@
+; **********************************************************************************
+; Card maize-194 (Sv48 translation), AC 8632: supervisor-only page, user access faults.
+;
+; Maps VA 0x40000000 with U=0 (supervisor-only), R=1, W=1 via a full four-level walk.
+; From supervisor mode the LOAD succeeds (supervisor bypasses the U check); after
+; dropping to user mode through the IRET trampoline (the pattern in test_priv_fault), the
+; same LOAD to the same VA raises cause 8 with CR2 bit3 (USER) = 1. The mapping is present
+; but the U check fails, so PRESENT = 1 and ACCESS_KIND = load (1): CR2 = 0x0B.
+;
+;   0x13000 L0  L0[0] = 0x14007 leaf -> 0x14000, V R W (U clear: supervisor-only)
+;   0x14000 data page, pre-seeded with 0x1234 (physically, before Sv48) for the
+;           supervisor-success read.
+; The 1 GiB identity superpage (L2[0] = 0x1F) is U=1, so user-mode code fetches / stack
+; still work; only VA 0x40000000 is supervisor-only.
+; **********************************************************************************
+
+$0000`0000:
+    CLR R8
+    CP handler R8.H0
+    CLR R9
+    CP $1040 R9.H0
+    ST R8 @R9
+
+    CP $11001 R8
+    CLR R9
+    CP $10000 R9.H0
+    ST R8 @R9
+
+    CP $1F R8
+    CLR R9
+    CP $11000 R9.H0
+    ST R8 @R9
+
+    CP $12001 R8
+    CLR R9
+    CP $11008 R9.H0
+    ST R8 @R9
+
+    CP $13001 R8
+    CLR R9
+    CP $12000 R9.H0
+    ST R8 @R9
+
+    ; L0[0] = 0x14007 -> 0x14000, V R W (U=0, supervisor-only)
+    CP $14007 R8
+    CLR R9
+    CP $13000 R9.H0
+    ST R8 @R9
+
+    ; pre-seed PA 0x14000 = 0x1234 (physical write, still in Bare mode)
+    CLR R8
+    CP $1234 R8.H0
+    CLR R9
+    CP $14000 R9.H0
+    ST R8.H0 @R9
+
+    CLR RS
+    CP $00080000 RS.H0
+
+    CP $10001 R0
+    MOVTCR R0 $00
+
+    ; ---- supervisor read of VA 0x40000000: must SUCCEED and see 0x1234 ----
+    CLR R3
+    CP $40000000 R3.H0
+    CLR R4
+    LD @R3 R4.H0
+    CLR R5
+    CP $1234 R5.H0
+    CMP R5.H0 R4.H0
+    JNZ sfail                ; supervisor access failed or read wrong value
+
+    ; ---- drop to user mode via the IRET trampoline, then re-access the VA ----
+    CLR R0
+    CP user_code R0.H0
+    PUSH R0                  ; [SP] = user PC
+    CLR R1
+    CP $08 R1.B4             ; user RF: bit_running (35) set, bit_privilege (32) clear
+    PUSH R1                  ; [SP] = user RF
+    IRET                     ; enter user mode at user_code
+
+user_code:
+    ; unprivileged LOAD of the supervisor-only VA -> cause-8 fault, USER=1
+    CLR R3
+    CP $40000000 R3.H0
+    CLR R4
+    LD @R3 R4.H0
+    ; unreachable if the U check faulted as required
+    HALT
+
+; **********************************************************************************
+handler:
+    CP $00 R0
+    MOVTCR R0 $00
+
+    ; CR1 must equal 0x40000000
+    MOVFCR $01 R1
+    CLR R2
+    CP $40000000 R2.H0
+    CMP R2 R1
+    JNZ hfail
+
+    ; CR2 must equal 0x0B: PRESENT=1, ACCESS_KIND=load(1), USER=1
+    MOVFCR $02 R3
+    CMP $0B R3
+    JNZ hfail
+
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $15 R2                 ; 21 bytes
+    SYS $01
+    HALT
+
+hfail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $15 R2
+    SYS $01
+    HALT
+
+sfail:
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP sfail_string R1.H0
+    CP $15 R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "mmu-fault-user: PASS\n\0"
+
+fail_string:
+    STRING "mmu-fault-user: FAIL\n\0"
+
+sfail_string:
+    STRING "mmu-fault-user: SFLW\n\0"

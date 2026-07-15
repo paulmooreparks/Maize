@@ -1,0 +1,169 @@
+; **********************************************************************************
+; Card maize-194 (Sv48 translation), AC 8652: indirect control flow under Sv48.
+;
+; Three phases, all under Sv48:
+;   1. JMP @R3 with R3 = a VA mapped R+X to a distinct PA holding a valid target address;
+;      the jump lands at that target, proving the target dereference went through
+;      translate() (the stored pointer is read from the PA, not from the VA physically).
+;   2. JMP @R3 with R3 = an unmapped VA: the target dereference (a LOAD of the stored
+;      target address, per the section-4 access-kind map) raises cause 8 with CR2
+;      ACCESS_KIND = load (1) and CR1 = the faulting VA (0x80000000).
+;   3. CALL @imm (call_immAddr) whose address-literal points at an unmapped VA
+;      (0x81000000): the address-literal fetch succeeds but the double-dereference (the
+;      LOAD of the actual target FROM the literal) page-faults, again ACCESS_KIND = load
+;      and CR1 = 0x81000000 (the reviewer's originally flagged CALL immAddr gap).
+;
+; A memory marker `phase` sequences the two fault phases through the one cause-8 handler.
+;
+;   VA 0x40000000 -> PA 0x14000 (V R X U = 0x1B), seeded with the address of `landed`.
+;   VA 0x80000000 / 0x81000000 unmapped (both L2[2] = 0).
+; **********************************************************************************
+
+$0000`0000:
+    CLR R8
+    CP handler R8.H0
+    CLR R9
+    CP $1040 R9.H0
+    ST R8 @R9
+
+    ; seed PA 0x14000 = address of `landed` (the indirect JMP target)
+    CLR R8
+    CP landed R8.H0
+    CLR R9
+    CP $14000 R9.H0
+    ST R8 @R9
+
+    ; phase marker = 2 (first fault phase expected)
+    CLR R8
+    CP $02 R8
+    CLR R9
+    CP phase R9.H0
+    ST R8 @R9
+
+    CP $11001 R8
+    CLR R9
+    CP $10000 R9.H0
+    ST R8 @R9
+    CP $1F R8
+    CLR R9
+    CP $11000 R9.H0
+    ST R8 @R9
+    CP $12001 R8
+    CLR R9
+    CP $11008 R9.H0
+    ST R8 @R9
+    CP $13001 R8
+    CLR R9
+    CP $12000 R9.H0
+    ST R8 @R9
+    ; L0[0] = 0x1401B -> 0x14000, V R X U (R+X for the pointer read + AC wording)
+    CP $1401B R8
+    CLR R9
+    CP $13000 R9.H0
+    ST R8 @R9
+
+    CLR RS
+    CP $00080000 RS.H0
+
+    CP $10001 R0
+    MOVTCR R0 $00
+
+    ; ---- phase 1: JMP @R3, R3 = mapped VA -> reads target (translated), jumps ----
+    CLR R3
+    CP $40000000 R3.H0
+    JMP @R3
+
+    ; unreachable unless the translated target read failed
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $11 R2
+    SYS $01
+    HALT
+
+landed:
+    ; ---- phase 2: JMP @R3, R3 = unmapped VA -> target-deref load fault ----
+    CLR R3
+    CP $80000000 R3.H0
+    JMP @R3
+    HALT
+
+phase3_code:
+    ; ---- phase 3: CALL @imm whose literal points at an unmapped VA ----
+    CALL @$81000000          ; fetch literal ok; load of target FROM it -> page fault
+    HALT
+
+; **********************************************************************************
+handler:
+    ; CR2 must equal 0x02 in both fault phases: PRESENT=0, ACCESS_KIND=load(1), USER=0
+    MOVFCR $02 R5
+    CMP $02 R5
+    JNZ hfail
+
+    ; read the phase marker (identity-mapped)
+    CLR R6
+    CP phase R6.H0
+    CLR R7
+    LD @R6 R7
+
+    CMP $02 R7
+    JNZ chk3
+
+    ; --- phase 2: JMP @Rn unmapped, CR1 must be 0x80000000 ---
+    MOVFCR $01 R1
+    CLR R2
+    CP $80000000 R2.H0
+    CMP R2 R1
+    JNZ hfail
+    ; advance to phase 3 and run it (still under Sv48; code is identity-mapped X)
+    CLR R8
+    CP $03 R8
+    CLR R9
+    CP phase R9.H0
+    ST R8 @R9
+    JMP phase3_code
+
+chk3:
+    ; --- phase 3: CALL @imm double-deref, CR1 must be 0x81000000 ---
+    MOVFCR $01 R1
+    CLR R2
+    CP $81000000 R2.H0
+    CMP R2 R1
+    JNZ hfail
+
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $11 R2                 ; 17 bytes
+    SYS $01
+    HALT
+
+hfail:
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $11 R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+phase:
+    DATA $00 $00 $00 $00 $00 $00 $00 $00
+
+pass_string:
+    STRING "mmu-ind-cf: PASS\n\0"
+
+fail_string:
+    STRING "mmu-ind-cf: FAIL\n\0"

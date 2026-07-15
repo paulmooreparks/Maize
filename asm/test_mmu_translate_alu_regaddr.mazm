@@ -1,0 +1,137 @@
+; **********************************************************************************
+; Card maize-194 (Sv48 translation), AC 8651: ALU with a register-addressed memory
+; operand goes through translation (choke point #1, copy_regaddr_reg).
+;
+; Enables Sv48, then executes AND @R3 R4 (a non-LD/ST ALU instruction whose source is the
+; value at the address in R3). R3 holds a VA mapped R to a distinct PA seeded with a mask;
+; the AND result must reflect the value AT that PA (proving copy_regaddr_reg's internal
+; read went through translate(), not a raw physical read of the VA). A second phase points
+; R3 at an unmapped VA and confirms the cause-8 handler runs with CR2 ACCESS_KIND = load
+; (1) and CR1 = the faulting VA.
+;
+;   VA 0x40000000 -> PA 0x14000 (V R W U), seeded with mask 0x0F0F.
+;   VA 0x80000000 unmapped (L2[2] = 0).
+; **********************************************************************************
+
+$0000`0000:
+    CLR R8
+    CP handler R8.H0
+    CLR R9
+    CP $1040 R9.H0
+    ST R8 @R9
+
+    ; seed PA 0x14000 = 0x0F0F (the AND mask), 8 bytes
+    CP $0F0F R8
+    CLR R9
+    CP $14000 R9.H0
+    ST R8 @R9
+
+    CP $11001 R8
+    CLR R9
+    CP $10000 R9.H0
+    ST R8 @R9
+    CP $1F R8
+    CLR R9
+    CP $11000 R9.H0
+    ST R8 @R9
+    CP $12001 R8
+    CLR R9
+    CP $11008 R9.H0
+    ST R8 @R9
+    CP $13001 R8
+    CLR R9
+    CP $12000 R9.H0
+    ST R8 @R9
+    CP $14017 R8
+    CLR R9
+    CP $13000 R9.H0
+    ST R8 @R9
+
+    CLR RS
+    CP $00080000 RS.H0
+
+    CP $10001 R0
+    MOVTCR R0 $00
+
+    ; ---- phase 1: AND @R3 R4, R3 = mapped VA, R4 = 0xFFFF ----
+    CLR R3
+    CP $40000000 R3.H0
+    CLR R4
+    CP $FFFF R4
+    AND @R3 R4                ; R4 = R4 & mem[VA] = 0xFFFF & 0x0F0F = 0x0F0F
+    CLR R5
+    CP $0F0F R5
+    CMP R5 R4
+    JNZ fail                  ; a raw read of VA 0x40000000 would yield 0, not 0x0F0F
+
+    ; ---- phase 2: AND @R3 R4 with R3 = unmapped VA -> cause-8 load fault ----
+    CLR R3
+    CP $80000000 R3.H0
+    AND @R3 R4                ; translate(load) on the source address -> page fault
+
+    ; unreachable
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $11 R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+handler:
+    CP $00 R0
+    MOVTCR R0 $00
+
+    ; CR1 must equal 0x80000000
+    MOVFCR $01 R1
+    CLR R2
+    CP $80000000 R2.H0
+    CMP R2 R1
+    JNZ hfail
+
+    ; CR2 must equal 0x02: PRESENT=0, ACCESS_KIND=load(1), USER=0
+    MOVFCR $02 R3
+    CMP $02 R3
+    JNZ hfail
+
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $11 R2                 ; 17 bytes
+    SYS $01
+    HALT
+
+hfail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $11 R2
+    SYS $01
+    HALT
+
+fail:
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $11 R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "mmu-alu-ra: PASS\n\0"
+
+fail_string:
+    STRING "mmu-alu-ra: FAIL\n\0"

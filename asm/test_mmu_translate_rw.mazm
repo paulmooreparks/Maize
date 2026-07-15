@@ -1,0 +1,112 @@
+; **********************************************************************************
+; Card maize-194 (Sv48 translation), AC 8626: read/write through a translated VA.
+;
+; Builds a small Sv48 page table in guest RAM (Bare mode), MOVTCRs the root PPN with
+; MODE=1 into CR0, then writes and reads through a translated VA that is mapped R+W to a
+; DISTINCT physical address, and finally MOVTCRs CR0 back to MODE=0 (Bare) and reads the
+; underlying physical address directly to confirm the value round-tripped through that PA
+; (proving the access went through translation, not an identity read of the VA).
+;
+; Physical layout (all page tables + the identity superpage live below 1 GiB):
+;   0x10000  root  (L3) table    Root[0] = 0x11001 -> L2
+;   0x11000  L2 table            L2[0]   = 0x1F     leaf, identity 1 GiB superpage, RWXU
+;                                L2[1]   = 0x12001 -> L1   (covers VA[1GiB,2GiB))
+;   0x12000  L1 table            L1[0]   = 0x13001 -> L0
+;   0x13000  L0 table            L0[0]   = 0x14017 leaf -> 0x14000, R W U (4 KiB)
+;   0x14000  distinct data page (target PA for VA 0x40000000)
+; The L2[0] 1 GiB identity superpage maps code / stack / trap-table / page-tables VA==PA
+; so execution continues under Sv48; the test VA 0x40000000 (VPN[2]=1) walks the full
+; four levels to a distinct PA, exercising a level-0 4 KiB leaf (TLB-cacheable).
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- Root[0] @ 0x10000 = 0x11001 (-> L2) ----
+    CP $11001 R8
+    CLR R9
+    CP $10000 R9.H0
+    ST R8 @R9
+
+    ; ---- L2[0] @ 0x11000 = 0x1F (identity 1 GiB superpage, V R W X U) ----
+    CP $1F R8
+    CLR R9
+    CP $11000 R9.H0
+    ST R8 @R9
+
+    ; ---- L2[1] @ 0x11008 = 0x12001 (-> L1) ----
+    CP $12001 R8
+    CLR R9
+    CP $11008 R9.H0
+    ST R8 @R9
+
+    ; ---- L1[0] @ 0x12000 = 0x13001 (-> L0) ----
+    CP $13001 R8
+    CLR R9
+    CP $12000 R9.H0
+    ST R8 @R9
+
+    ; ---- L0[0] @ 0x13000 = 0x14017 (leaf -> 0x14000, V R W U) ----
+    CP $14017 R8
+    CLR R9
+    CP $13000 R9.H0
+    ST R8 @R9
+
+    ; ---- stack pointer into the identity region ----
+    CLR RS
+    CP $00080000 RS.H0
+
+    ; ---- enable Sv48: CR0 = root 0x10000 | MODE 1 = 0x10001 ----
+    CP $10001 R0
+    MOVTCR R0 $00
+
+    ; ---- write a known value through translated VA 0x40000000 ----
+    CLR R3
+    CP $40000000 R3.H0          ; VA
+    CLR R2
+    CP $CAFEF00D R2.H0          ; value
+    ST R2.H0 @R3                ; VA 0x40000000 -> PA 0x14000
+
+    ; ---- read it back through the same VA ----
+    CLR R4
+    LD @R3 R4.H0
+    CMP R2.H0 R4.H0
+    JNZ fail
+
+    ; ---- back to Bare mode, then read PA 0x14000 physically ----
+    CP $00 R0
+    MOVTCR R0 $00              ; CR0 = 0 -> Bare (also flushes the software TLB)
+
+    CLR R5
+    CP $14000 R5.H0
+    CLR R6
+    LD @R5 R6.H0              ; physical read of the distinct PA
+    CMP R2.H0 R6.H0          ; PA holds the written value: VA != PA, translation happened
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $13 R2                 ; 19 bytes
+    SYS $01
+    HALT
+
+fail:
+    CP $00 R0
+    MOVTCR R0 $00            ; ensure Bare before printing
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $13 R2                 ; 19 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "mmu-xlate-rw: PASS\n\0"
+
+fail_string:
+    STRING "mmu-xlate-rw: FAIL\n\0"

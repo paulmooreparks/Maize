@@ -1,0 +1,103 @@
+; **********************************************************************************
+; Card maize-194 (Sv48 translation), AC 8629: cause-8 page fault on an unmapped VA.
+;
+; Installs a cause-8 handler at entry[8] ($1040), enables Sv48 with a page table that
+; maps the low 1 GiB identity (so code / stack run) but deliberately leaves VA
+; 0x80000000 (VPN[2]=2 -> L2[2]) unmapped, then LOADs through that VA. The handler runs
+; (proven via a PASS write + HALT) and confirms CR1 (FAULT_VA) = 0x80000000 and CR2
+; (FAULT_ERR) bit0 (PRESENT) = 0 with bits[2:1] (ACCESS_KIND) = load (1), i.e. CR2 = 0x02.
+;
+;   0x10000 root: Root[0] = 0x11001 -> L2
+;   0x11000 L2:   L2[0] = 0x1F (identity 1 GiB superpage, RWXU); L2[2] left 0 (not present)
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- install the cause-8 handler at entry[8] = 0x1040 ----
+    CLR R8
+    CP handler R8.H0
+    CLR R9
+    CP $1040 R9.H0
+    ST R8 @R9
+
+    ; ---- Root[0] @ 0x10000 = 0x11001 (-> L2) ----
+    CP $11001 R8
+    CLR R9
+    CP $10000 R9.H0
+    ST R8 @R9
+
+    ; ---- L2[0] @ 0x11000 = 0x1F (identity 1 GiB superpage) ----
+    CP $1F R8
+    CLR R9
+    CP $11000 R9.H0
+    ST R8 @R9
+
+    ; ---- stack pointer into the identity region ----
+    CLR RS
+    CP $00080000 RS.H0
+
+    ; ---- enable Sv48 ----
+    CP $10001 R0
+    MOVTCR R0 $00
+
+    ; ---- load through the unmapped VA 0x80000000 -> cause-8 fault ----
+    CLR R3
+    CP $80000000 R3.H0
+    CLR R4
+    LD @R3 R4.H0             ; translate(load) walks, L2[2] V=0 -> page fault
+
+    ; ---- unreachable unless the fault was not raised ----
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $13 R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+; Cause-8 handler: verify FAULT_VA and FAULT_ERR, print PASS.
+handler:
+    ; disable translation so the print runs in Bare mode
+    CP $00 R0
+    MOVTCR R0 $00
+
+    ; CR1 (FAULT_VA) must equal 0x80000000
+    MOVFCR $01 R1
+    CLR R2
+    CP $80000000 R2.H0
+    CMP R2 R1
+    JNZ hfail
+
+    ; CR2 (FAULT_ERR) must equal 0x02: PRESENT=0, ACCESS_KIND=load(1), USER=0
+    MOVFCR $02 R3
+    CMP $02 R3
+    JNZ hfail
+
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $13 R2                 ; 19 bytes
+    SYS $01
+    HALT
+
+hfail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $13 R2                 ; 19 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+pass_string:
+    STRING "mmu-fault-np: PASS\n\0"
+
+fail_string:
+    STRING "mmu-fault-np: FAIL\n\0"
