@@ -1389,8 +1389,8 @@ static void editorFilePickerDraw(const char *dir, PickerEntry *entries, int n,
         char line[320];
         int llen;
         if (has_dotdot && row == 0) {
-            llen = snprintf(line, sizeof(line), "%s..%s/\x1b[0K\r\n",
-                             is_sel ? "\x1b[7m" : "", is_sel ? "" : "");
+            llen = snprintf(line, sizeof(line), "%s../%s\x1b[0K\r\n",
+                             is_sel ? "\x1b[7m" : "", is_sel ? "\x1b[0m" : "");
         } else {
             PickerEntry *e = &entries[row - has_dotdot];
             if (e->is_dir) {
