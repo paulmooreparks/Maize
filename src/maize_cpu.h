@@ -386,7 +386,7 @@ namespace maize {
 
 		/* An instruction-boundary input source. At most one is active per run (the single
 		   stdin consumer): the run loop calls on_input_tick() once per executed instruction,
-		   mirroring the timer's on_instruction_tick, so a host input device pulls its bytes
+		   mirroring the timer's per-instruction countdown tick, so a host input device pulls its bytes
 		   and raises its IRQ on the CPU thread and never races the CPU thread's unsynchronized
 		   RF accesses. */
 		class input_device {
@@ -397,7 +397,7 @@ namespace maize {
 
 		/* Timer device (card maize-21): the first interrupt source and the end-to-end
 		   proof of the interrupt mechanism. Time base is instruction-tick counting: the
-		   active timer's on_instruction_tick() runs once per executed instruction and
+		   active timer is advanced one countdown tick once per executed instruction and
 		   fires its IRQ when the countdown reaches zero (deterministic and reproducible;
 		   the host-time backend is deferred to the device-plugin work). The three
 		   registers are reached as separate ports in a reserved low-port block; the
@@ -417,8 +417,6 @@ namespace maize {
 			device status_reg;
 			u_word counter {0};
 			u_byte irq_vector {32};
-
-			void on_instruction_tick();
 		};
 
 		struct memory_module : public reg {

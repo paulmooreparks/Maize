@@ -1460,15 +1460,6 @@ namespace maize {
                 }
             }
 
-            enum class run_states {
-                decode,
-                execute,
-                syscall,
-                arithmetic_logic_unit
-            };
-
-            run_states run_state = run_states::decode;
-
             std::mutex int_mutex;
             std::condition_variable int_event;
 
@@ -1863,7 +1854,7 @@ namespace maize {
            re-delivered on IRET. Returns true when an interrupt was delivered (the run
            loop then continues to the handler's first instruction). */
         bool try_deliver_interrupt() {
-            if (!interrupt_enabled_flag || !irq_pending) {
+            if (!interrupt_enabled_flag || !irq_pending.load(std::memory_order_relaxed)) {
                 return false;
             }
             u_byte vector;
@@ -1945,31 +1936,38 @@ namespace maize {
            handler's acknowledge), the countdown is paused so handler instructions do not
            over-count. On reaching zero it sets the tick-pending status bit and raises its
            IRQ; a periodic timer re-arms after the acknowledge clears the pending bit,
-           while a one-shot timer clears its own enable bit. */
-        void timer_device::on_instruction_tick() {
-            bool enable = (control_reg.w0 & 0x1) != 0;
+           while a one-shot timer clears its own enable bit.
+
+           maize-200: hoisted from an out-of-line timer_device member into this
+           static-inline namespace helper so the common case (no active timer, or an armed
+           timer that has not yet expired) folds directly into the MAIZE_NEXT preamble
+           instead of paying a per-instruction out-of-line call. The state machine is
+           preserved bit-for-bit; only the call overhead is removed. raise_irq (which
+           takes int_mutex) still fires only on the rare tick-complete path, as before. */
+        static inline void tick_active_timer(timer_device &t) {
+            bool enable = (t.control_reg.w0 & 0x1) != 0;
             if (!enable) {
                 return;
             }
-            if ((status_reg.w0 & 0x1) != 0) {
+            if ((t.status_reg.w0 & 0x1) != 0) {
                 /* Tick pending, waiting for the handler's ack: paused. */
                 return;
             }
-            if (counter == 0) {
+            if (t.counter == 0) {
                 /* Freshly programmed or re-armed after an ack: (re)load the period. A
                    zero period is inert (an unprogrammed / disabled countdown). */
-                counter = period_reg.w0;
-                if (counter == 0) {
+                t.counter = t.period_reg.w0;
+                if (t.counter == 0) {
                     return;
                 }
             }
-            --counter;
-            if (counter == 0) {
-                status_reg.w0 |= 0x1;   // set tick-pending
-                raise_irq(irq_vector);
-                bool periodic = (control_reg.w0 & 0x2) != 0;
+            --t.counter;
+            if (t.counter == 0) {
+                t.status_reg.w0 |= 0x1;   // set tick-pending
+                raise_irq(t.irq_vector);
+                bool periodic = (t.control_reg.w0 & 0x2) != 0;
                 if (!periodic) {
-                    control_reg.w0 &= ~static_cast<u_word>(0x1);   // one-shot: disable
+                    t.control_reg.w0 &= ~static_cast<u_word>(0x1);   // one-shot: disable
                 }
                 /* Periodic: counter stays 0 and reloads on the tick after the ack clears
                    the pending bit. */
@@ -3963,13 +3961,14 @@ namespace maize {
                opcode through one shared switch branch. */
 #define MAIZE_NEXT() do { \
                 if (!running_flag) { goto tick_exit; } \
-                try_deliver_interrupt(); \
-                if (active_timer_ptr != nullptr) { active_timer_ptr->on_instruction_tick(); } \
+                if (interrupt_enabled_flag && irq_pending.load(std::memory_order_relaxed)) { \
+                    try_deliver_interrupt(); \
+                } \
+                if (active_timer_ptr != nullptr) { tick_active_timer(*active_timer_ptr); } \
                 if (active_input_ptr != nullptr) { active_input_ptr->on_input_tick(); } \
                 current_instr_pc = regs::rp.w0; \
                 mm.read(translate(regs::rp.w0, access_kind::fetch), regs::ri, subreg_enum::w0); \
                 ++regs::rp.w0; \
-                run_state = run_states::execute; \
                 if (perf_count_enabled) { ++perf_insn_count; } \
                 goto *dtbl[regs::ri.b0]; \
             } while (0)
