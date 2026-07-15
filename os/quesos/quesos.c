@@ -194,12 +194,30 @@ static int quesos_load_image(const char *path) {
     shoff     = rd_u64(b, 16);
 
     for (i = 0; i < seg_count; ++i) {
-        u64 so        = shoff + (u64)i * MZX_SEGMENT_SIZE;
-        u64 vaddr     = rd_u64(b, so + 8);
-        u64 file_off  = rd_u64(b, so + 16);
-        u64 mem_size  = rd_u64(b, so + 24);
-        u64 file_size = rd_u64(b, so + 32);
-        u64 j;
+        u64 so = shoff + (u64)i * MZX_SEGMENT_SIZE;
+        u64 vaddr, file_off, mem_size, file_size, j;
+
+        /* Bounds-guard the segment table and each segment's contents against the
+         * slurped file size, mirroring src/maize.cpp load_mzx. Even though this
+         * increment trusts its own children, a truncated / malformed .mzx must not
+         * read past the buffer or copy garbage; return -1 so the reap loop skips it. */
+        if (so + MZX_SEGMENT_SIZE > (u64)size) {
+            qos_puts("[quesos] malformed .mzx (segment table out of bounds): ");
+            qos_puts(path);
+            qos_puts("\n");
+            return -1;
+        }
+        vaddr     = rd_u64(b, so + 8);
+        file_off  = rd_u64(b, so + 16);
+        mem_size  = rd_u64(b, so + 24);
+        file_size = rd_u64(b, so + 32);
+
+        if (file_off + file_size > (u64)size) {
+            qos_puts("[quesos] malformed .mzx (segment contents out of bounds): ");
+            qos_puts(path);
+            qos_puts("\n");
+            return -1;
+        }
 
         for (j = 0; j < file_size; ++j) { *(u8 *)(vaddr + j) = b[file_off + j]; }
         for (j = file_size; j < mem_size; ++j) { *(u8 *)(vaddr + j) = 0; }

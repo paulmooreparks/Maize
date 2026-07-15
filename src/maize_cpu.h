@@ -903,8 +903,9 @@ namespace maize {
 			   maize-180). Default-clear preserves every v1.0 binary (hello.mzb pinned). */
 			const opcode setsysg_opcode {static_cast<opcode>(cond_row_2 | 0x24)}; // $A4
 			const opcode clrsysg_opcode {static_cast<opcode>(cond_row_3 | 0x24)}; // $E4
-			/* DUP ($E4) and SWAP ($E5) are killed (card maize-64): header-only ghosts with
-			   no dispatch, mazm entry, or README row; removed before the freeze. */
+			/* $E5 (former SWAP, freed in card maize-64) remains a reserved ghost row: no
+			   dispatch, mazm entry, or README row. Its pair $E4 (former DUP) has since been
+			   reclaimed as clrsysg_opcode above (card maize-24). */
 
 			const opcode brk_opcode {0xFF}; // $FF sentinel: a run of $FF-filled / erased memory traps, mirroring HALT at $00. Occupies only base $3F's mode-11 form; $3F/$7F/$BF stay free for future full-byte-dispatched ops (a mask-to-base ALU op cannot sit at base $3F, since its immAddr form would be $FF).
 
