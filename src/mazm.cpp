@@ -1885,16 +1885,16 @@ namespace {
             auto type_byte = compile_literal(literal, value);
 
             if ((type_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                current_address += cpu::mm.write_qword(current_address, value.q0);
+                current_address += cpu::mm.write_qword(current_address, value.q0());
             }
             else if ((type_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                current_address += cpu::mm.write_hword(current_address, value.h0);
+                current_address += cpu::mm.write_hword(current_address, value.h0());
             }
             else if ((type_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
                 current_address += cpu::mm.write_word(current_address, value.w0);
             }
             else {
-                current_address += cpu::mm.write_byte(current_address, value.b0);
+                current_address += cpu::mm.write_byte(current_address, value.b0());
             }
         }
 
@@ -2152,7 +2152,7 @@ namespace {
             return cpu::mm.write_hword(address, 0);
         }
 
-        if (value.h0 == std::numeric_limits<u_hword>::max()) {
+        if (value.h0() == std::numeric_limits<u_hword>::max()) {
             fixups[current_address] = label;
             /* maize-72: capture THIS reference's location, not the label's
                first-reference location, so N references to the same
@@ -2160,7 +2160,7 @@ namespace {
             fixup_locs[current_address] = current_ref_loc;
         }
 
-        return cpu::mm.write_hword(address, value.h0);
+        return cpu::mm.write_hword(address, value.h0());
     }
 
     void no_operand_compiler(token_tree &tree, std::string &opcode_str) {
@@ -2169,8 +2169,8 @@ namespace {
     }
 
     u_byte add_label(std::string &label, cpu::reg_value &value) {
-        value.h0 = std::numeric_limits<u_hword>::max();
-        labels[label] = value.h0;
+        value.set_h0(std::numeric_limits<u_hword>::max());
+        labels[label] = value.h0();
 
         /* Remember where a label was first referenced so an undefined-label
            error (maize-13) can cite the reference site. */
@@ -2255,21 +2255,21 @@ namespace {
             obj_emit_label_ref(operand1, obj_label_width);
         }
         else if (operand_is_immediate) {
-            if (operand_is_label && operand1_literal.h0 == std::numeric_limits<u_hword>::max()) {
+            if (operand_is_label && operand1_literal.h0() == std::numeric_limits<u_hword>::max()) {
                 current_address += write_label(current_address, operand1, operand1_literal);
             }
             else {
                 if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                    current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
+                    current_address += cpu::mm.write_qword(current_address, operand1_literal.q0());
                 }
                 else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                    current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
+                    current_address += cpu::mm.write_hword(current_address, operand1_literal.h0());
                 }
                 else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
                     current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
                 }
                 else {
-                    current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
+                    current_address += cpu::mm.write_byte(current_address, operand1_literal.b0());
                 }
             }
         }
@@ -2344,16 +2344,16 @@ namespace {
             }
             else {
                 if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                    current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
+                    current_address += cpu::mm.write_qword(current_address, operand1_literal.q0());
                 }
                 else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                    current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
+                    current_address += cpu::mm.write_hword(current_address, operand1_literal.h0());
                 }
                 else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
                     current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
                 }
                 else {
-                    current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
+                    current_address += cpu::mm.write_byte(current_address, operand1_literal.b0());
                 }
             }
         }
@@ -2407,16 +2407,16 @@ namespace {
             current_address += write_label(current_address, operand1, operand1_literal);
         }
         else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-            current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
+            current_address += cpu::mm.write_qword(current_address, operand1_literal.q0());
         }
         else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-            current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
+            current_address += cpu::mm.write_hword(current_address, operand1_literal.h0());
         }
         else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
             current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
         }
         else {
-            current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
+            current_address += cpu::mm.write_byte(current_address, operand1_literal.b0());
         }
     }
 
@@ -2500,16 +2500,16 @@ namespace {
         }
         else if (operand_is_immediate) {
             if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
+                current_address += cpu::mm.write_qword(current_address, operand1_literal.q0());
             }
             else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
+                current_address += cpu::mm.write_hword(current_address, operand1_literal.h0());
             }
             else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
                 current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
             }
             else {
-                current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
+                current_address += cpu::mm.write_byte(current_address, operand1_literal.b0());
             }
         }
         else if (operand1_is_label) {
@@ -2524,16 +2524,16 @@ namespace {
         }
         else {
             if ((operand2_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                current_address += cpu::mm.write_qword(current_address, operand2_literal.q0);
+                current_address += cpu::mm.write_qword(current_address, operand2_literal.q0());
             }
             else if ((operand2_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                current_address += cpu::mm.write_hword(current_address, operand2_literal.h0);
+                current_address += cpu::mm.write_hword(current_address, operand2_literal.h0());
             }
             else if ((operand2_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
                 current_address += cpu::mm.write_word(current_address, operand2_literal.w0);
             }
             else {
-                current_address += cpu::mm.write_byte(current_address, operand2_literal.b0);
+                current_address += cpu::mm.write_byte(current_address, operand2_literal.b0());
             }
         }
     }
@@ -2566,16 +2566,16 @@ namespace {
         current_address += cpu::mm.write_byte(current_address, operand2_byte);
 
         if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-            current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
+            current_address += cpu::mm.write_qword(current_address, operand1_literal.q0());
         }
         else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-            current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
+            current_address += cpu::mm.write_hword(current_address, operand1_literal.h0());
         }
         else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
             current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
         }
         else {
-            current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
+            current_address += cpu::mm.write_byte(current_address, operand1_literal.b0());
         }
     }
 
@@ -2643,16 +2643,16 @@ namespace {
         }
         else if (operand_is_immediate) {
             if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
+                current_address += cpu::mm.write_qword(current_address, operand1_literal.q0());
             }
             else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
+                current_address += cpu::mm.write_hword(current_address, operand1_literal.h0());
             }
             else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
                 current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
             }
             else {
-                current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
+                current_address += cpu::mm.write_byte(current_address, operand1_literal.b0());
             }
         }
         else if (operand_is_label) {
@@ -2724,21 +2724,21 @@ namespace {
             obj_emit_label_ref(operand1, 8);
         }
         else if (operand_is_immediate) {
-            if (operand_is_label && operand1_literal.h0 == std::numeric_limits<u_hword>::max()) {
+            if (operand_is_label && operand1_literal.h0() == std::numeric_limits<u_hword>::max()) {
                 current_address += write_label(current_address, operand1, operand1_literal);
             }
             else {
                 if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_16b) {
-                    current_address += cpu::mm.write_qword(current_address, operand1_literal.q0);
+                    current_address += cpu::mm.write_qword(current_address, operand1_literal.q0());
                 }
                 else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_32b) {
-                    current_address += cpu::mm.write_hword(current_address, operand1_literal.h0);
+                    current_address += cpu::mm.write_hword(current_address, operand1_literal.h0());
                 }
                 else if ((operand1_byte & cpu::opflag_imm_size) == cpu::opflag_imm_size_64b) {
                     current_address += cpu::mm.write_word(current_address, operand1_literal.w0);
                 }
                 else {
-                    current_address += cpu::mm.write_byte(current_address, operand1_literal.b0);
+                    current_address += cpu::mm.write_byte(current_address, operand1_literal.b0());
                 }
             }
         }

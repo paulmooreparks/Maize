@@ -446,7 +446,7 @@ namespace maize {
                     /* fd is a 32-bit C `int` carried in R0.H0 (the Maize C ABI
                        materializes it there, e.g. `CP $01 R0.H0`), so read the
                        low-32 subregister; address/count stay full-64 (maize-56). */
-                    u_word fd {regs::r0.h0};
+                    u_word fd {regs::r0.h0()};
                     u_word address {regs::r1.w0};
                     u_word count {regs::r2.w0};
 
@@ -503,7 +503,7 @@ namespace maize {
                     /* fd is a 32-bit C `int` in R0.H0 (see sys_read); read the
                        low-32 subregister so a stale upper half from a reused
                        register cannot masquerade as an out-of-range fd. */
-                    u_word fd {regs::r0.h0};
+                    u_word fd {regs::r0.h0()};
                     u_word address {regs::r1.w0};
                     u_word count {regs::r2.w0};
 
@@ -548,7 +548,7 @@ namespace maize {
                 /* maize-114 sys_close: fd R0.H0. Frees the guest fd and closes the
                    backend handle. -EBADF on an unknown/closed fd. */
                 case 0x0003U: {
-                    u_word fd {regs::r0.h0};
+                    u_word fd {regs::r0.h0()};
                     int64_t rc = hostfs_close(hostfs, static_cast<int>(fd));
                     return static_cast<u_word>(rc);
                 }
@@ -557,7 +557,7 @@ namespace maize {
                    144-byte section-2 struct stat image; copy it out to guest memory
                    only on success. -EBADF on an unknown fd. */
                 case 0x0005U: {
-                    u_word fd {regs::r0.h0};
+                    u_word fd {regs::r0.h0()};
                     u_word statbuf {regs::r1.w0};
 
                     uint8_t img[HOSTFS_STAT_SIZE];
@@ -575,7 +575,7 @@ namespace maize {
                    the new offset, -EINVAL on a bad whence / negative result, -EBADF on
                    an unknown fd. */
                 case 0x0008U: {
-                    u_word fd {regs::r0.h0};
+                    u_word fd {regs::r0.h0()};
                     int64_t offset {static_cast<int64_t>(regs::r1.w0)};
                     int whence {static_cast<int>(regs::r2.w0)};
                     int64_t rc = hostfs_lseek(hostfs, static_cast<int>(fd), offset, whence);
@@ -587,7 +587,7 @@ namespace maize {
                    only the bytes written. Returns bytes / 0 at EOF / -EINVAL (buffer
                    too small for one record) / -EBADF (unknown fd). */
                 case 0x00D9U: {
-                    u_word fd {regs::r0.h0};
+                    u_word fd {regs::r0.h0()};
                     u_word dirp {regs::r1.w0};
                     u_word count {regs::r2.w0};
 
@@ -661,7 +661,7 @@ namespace maize {
                    0/1/2 (host stdio or the window console) are not regular files, so
                    truncating them is EINVAL, matching Linux ftruncate on a pipe/tty. */
                 case 0x004DU: {
-                    u_word fd {regs::r0.h0};
+                    u_word fd {regs::r0.h0()};
                     int64_t length {static_cast<int64_t>(regs::r1.w0)};
 
                     if (fd >= 3 && hostfs != nullptr) {
@@ -735,7 +735,7 @@ namespace maize {
                    on success, -EBADF if no console is bound (host stdio has no termios) or
                    the fd is not a tty. */
                 case 0x00F1U: {
-                    u_word fd {regs::r0.h0};
+                    u_word fd {regs::r0.h0()};
                     u_word address {regs::r1.w0};
                     if (console_dev == nullptr || fd > 2) {
                         return static_cast<u_word>(-static_cast<long>(9));  /* -EBADF */
@@ -753,7 +753,7 @@ namespace maize {
                    line discipline), termios* R2. Adopt the guest's termios wire image.
                    Returns 0 on success, -EBADF if no console is bound / not a tty. */
                 case 0x00F2U: {
-                    u_word fd {regs::r0.h0};
+                    u_word fd {regs::r0.h0()};
                     u_word address {regs::r2.w0};
                     if (console_dev == nullptr || fd > 2) {
                         return static_cast<u_word>(-static_cast<long>(9));  /* -EBADF */

@@ -89,7 +89,7 @@ namespace win {
 
         {
             std::unique_lock<std::mutex> lk(io_mutex);
-            address_reg.h0 = 0xFFFE;
+            address_reg.set_h0(0xFFFE);
         }
 
         io_set.release();
@@ -112,7 +112,7 @@ namespace win {
 
         {
             std::unique_lock<std::mutex> lk(io_mutex);
-            address_reg.h0 = 0xFFFF;
+            address_reg.set_h0(0xFFFF);
         }
 
         io_set.release();
@@ -147,7 +147,7 @@ namespace win {
             switch (address_reg.w0) {
                 case 0x7F:
                 {
-                    auto op = cmd.b1;
+                    auto op = cmd.b1();
 
                     switch (op) {
                         case 0x0A:

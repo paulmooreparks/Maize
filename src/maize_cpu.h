@@ -147,39 +147,15 @@ namespace maize {
 			w0 = 0b1111111111111111111111111111111111111111111111111111111111111111,
 		};
 
-		/* Compile-time-positioned sub-register view over a single backing word
-		   (maize-30). Reproduces the old union's bit-position-to-subregister
-		   mapping (README: $FEDCBA9876543210 => b7=$FE .. b0=$10) via explicit
-		   shift/mask arithmetic, so it is host-endianness-independent and free of
-		   inactive-union-member type punning. T is the primitive value type
-		   (u_hword/u_qword/u_byte); Shift is the low-bit position of the field. */
-		template <typename T, unsigned Shift>
-		class subword_ref {
-		public:
-			explicit subword_ref(u_word& backing) : storage_ {backing} {}
-
-			operator T() const { return static_cast<T>(storage_ >> Shift); }
-
-			subword_ref& operator=(T value) {
-				// ~u_word{0} >> (64 - bits) is safe for bits==64 (shift-by-0);
-				// (1 << bits) - 1 would be UB for the 64-bit case (shift-by-64).
-				constexpr u_word mask = (~u_word {0} >> (64 - sizeof(T) * 8)) << Shift;
-				storage_ = (storage_ & ~mask) | ((static_cast<u_word>(value) << Shift) & mask);
-				return *this;
-			}
-
-			subword_ref& operator=(const subword_ref& other) { return *this = static_cast<T>(other); }
-
-			subword_ref& operator++() { return *this = static_cast<T>(static_cast<T>(*this) + 1); }
-			T operator++(int) { T old = *this; ++*this; return old; }
-			subword_ref& operator--() { return *this = static_cast<T>(static_cast<T>(*this) - 1); }
-			T operator--(int) { T old = *this; --*this; return old; }
-			subword_ref& operator+=(T v) { return *this = static_cast<T>(static_cast<T>(*this) + v); }
-			subword_ref& operator-=(T v) { return *this = static_cast<T>(static_cast<T>(*this) - v); }
-
-		private:
-			u_word& storage_;
-		};
+		/* The compile-time-positioned subword_ref proxy class (maize-30) is gone
+		   (maize-210). reg_value no longer holds 14 self-referential subword_ref
+		   members over a separate backing word; the register IS its single u_word
+		   w0, and every sub-register view is now a bit-exact accessor method
+		   (sub_get/sub_set over w0) on reg_value below. This collapses sizeof from
+		   ~128 bytes (8 bytes of state + 15 reference-init proxies) to 8 bytes and
+		   drops the 15 pointer-init stores every reg_value temporary paid. The
+		   shift/mask arithmetic is reproduced verbatim in sub_get/sub_set, so the
+		   read/write masking stays byte-identical to the old proxy operators. */
 
 		/* Runtime-indexed byte view over the backing word, returned by value from
 		   reg_value::operator[] (maize-30). No call site takes its address or binds
@@ -206,31 +182,32 @@ namespace maize {
 
 		struct reg_value {
 			reg_value() {}
-			reg_value(u_word init) : storage_ {init} {}
+			reg_value(u_word init) : w0 {init} {}
 
-			/* Explicit copy operations that name ONLY storage_ (maize-30). Because
-			   w0/h0/h1/q0..q3/b0..b7 are not named here, each falls back to its own
-			   default member initializer ({storage_}), which per [class.base.init]
-			   binds to THIS object's storage_, not the source's, closing the
-			   reference-aliasing footgun a compiler-generated copy would open. */
-			reg_value(const reg_value& other) : storage_ {other.storage_} {}
+			/* The register IS w0 now (maize-210): a single plain u_word data member,
+			   no separate backing word and no self-referential proxy members. Copy
+			   is therefore a trivial 8-byte copy of w0; the explicit forms are kept
+			   only to document that intent (a compiler-generated copy is identical
+			   and no longer opens the reference-aliasing footgun the old proxy
+			   members did). */
+			reg_value(const reg_value& other) : w0 {other.w0} {}
 			reg_value& operator=(const reg_value& other) {
-				storage_ = other.storage_;
+				w0 = other.w0;
 				return *this;
 			}
 
 			operator u_word() { return w0; }
 
 			explicit operator u_hword() {
-				return h0;
+				return h0();
 			}
 
 			explicit operator u_qword() {
-				return q0;
+				return q0();
 			}
 
 			explicit operator u_byte() {
-				return b0;
+				return b0();
 			}
 
 			u_word operator=(u_word value) {
@@ -238,49 +215,79 @@ namespace maize {
 			}
 
 			byte_ref operator[](size_t index) {
-				return byte_ref {storage_, index};
+				return byte_ref {w0, index};
 			}
 
 			u_byte operator[](size_t index) const {
-				return static_cast<u_byte>(storage_ >> (index * 8));
+				return static_cast<u_byte>(w0 >> (index * 8));
 			}
 
 			u_byte byte_index(size_t index) const {
 				// TODO: range error handling
-				return static_cast<u_byte>(storage_ >> (index * 8));
+				return static_cast<u_byte>(w0 >> (index * 8));
 			}
 
 			u_qword qword_index(size_t index) const {
 				// TODO: range error handling
-				return static_cast<u_qword>(storage_ >> (index * 16));
+				return static_cast<u_qword>(w0 >> (index * 16));
 			}
 
 			u_hword hword_index(size_t index) const {
 				// TODO: range error handling
-				return static_cast<u_hword>(storage_ >> (index * 32));
+				return static_cast<u_hword>(w0 >> (index * 32));
 			}
 
-			/* storage_ MUST be the first data member: declaration order governs
-			   initialization order, so the single real object must exist before any
-			   reference/proxy member's default member initializer binds to it. */
-			u_word storage_ {0};
+			/* w0 is THE backing word and the sole data member (replaces the old
+			   storage_ + 15 proxies). sizeof(reg_value) == 8. */
+			u_word w0 {0};
 
-			u_word& w0 {storage_};
-			subword_ref<u_hword,  0> h0 {storage_};
-			subword_ref<u_hword, 32> h1 {storage_};
-			subword_ref<u_qword,  0> q0 {storage_};
-			subword_ref<u_qword, 16> q1 {storage_};
-			subword_ref<u_qword, 32> q2 {storage_};
-			subword_ref<u_qword, 48> q3 {storage_};
-			subword_ref<u_byte,   0> b0 {storage_};
-			subword_ref<u_byte,   8> b1 {storage_};
-			subword_ref<u_byte,  16> b2 {storage_};
-			subword_ref<u_byte,  24> b3 {storage_};
-			subword_ref<u_byte,  32> b4 {storage_};
-			subword_ref<u_byte,  40> b5 {storage_};
-			subword_ref<u_byte,  48> b6 {storage_};
-			subword_ref<u_byte,  56> b7 {storage_};
+			/* Bit-exact reproduction of the old subword_ref<T,Shift> operators over
+			   w0. sub_get is subword_ref::operator T(); sub_set is its operator=(T),
+			   mask expression verbatim (the ~u_word{0} >> (64 - bits) form is safe at
+			   bits==64, unlike (1 << bits) - 1). Do not "simplify" the mask. */
+			template <typename T, unsigned Shift> T sub_get() const {
+				return static_cast<T>(w0 >> Shift);
+			}
+			template <typename T, unsigned Shift> void sub_set(T value) {
+				constexpr u_word mask = (~u_word {0} >> (64 - sizeof(T) * 8)) << Shift;
+				w0 = (w0 & ~mask) | ((static_cast<u_word>(value) << Shift) & mask);
+			}
+
+			/* Named sub-register accessors. Getters keep the bare subword name
+			   (reg.b3 -> reg.b3()); setters take a set_ prefix (reg.b3 = x ->
+			   reg.set_b3(x)). Shift constants match the old member declarations. */
+			u_hword h0() const { return sub_get<u_hword,  0>(); }
+			u_hword h1() const { return sub_get<u_hword, 32>(); }
+			u_qword q0() const { return sub_get<u_qword,  0>(); }
+			u_qword q1() const { return sub_get<u_qword, 16>(); }
+			u_qword q2() const { return sub_get<u_qword, 32>(); }
+			u_qword q3() const { return sub_get<u_qword, 48>(); }
+			u_byte  b0() const { return sub_get<u_byte,   0>(); }
+			u_byte  b1() const { return sub_get<u_byte,   8>(); }
+			u_byte  b2() const { return sub_get<u_byte,  16>(); }
+			u_byte  b3() const { return sub_get<u_byte,  24>(); }
+			u_byte  b4() const { return sub_get<u_byte,  32>(); }
+			u_byte  b5() const { return sub_get<u_byte,  40>(); }
+			u_byte  b6() const { return sub_get<u_byte,  48>(); }
+			u_byte  b7() const { return sub_get<u_byte,  56>(); }
+
+			void set_h0(u_hword v) { sub_set<u_hword,  0>(v); }
+			void set_h1(u_hword v) { sub_set<u_hword, 32>(v); }
+			void set_q0(u_qword v) { sub_set<u_qword,  0>(v); }
+			void set_q1(u_qword v) { sub_set<u_qword, 16>(v); }
+			void set_q2(u_qword v) { sub_set<u_qword, 32>(v); }
+			void set_q3(u_qword v) { sub_set<u_qword, 48>(v); }
+			void set_b0(u_byte v) { sub_set<u_byte,   0>(v); }
+			void set_b1(u_byte v) { sub_set<u_byte,   8>(v); }
+			void set_b2(u_byte v) { sub_set<u_byte,  16>(v); }
+			void set_b3(u_byte v) { sub_set<u_byte,  24>(v); }
+			void set_b4(u_byte v) { sub_set<u_byte,  32>(v); }
+			void set_b5(u_byte v) { sub_set<u_byte,  40>(v); }
+			void set_b6(u_byte v) { sub_set<u_byte,  48>(v); }
+			void set_b7(u_byte v) { sub_set<u_byte,  56>(v); }
 		};
+
+		static_assert(sizeof(reg_value) == 8, "maize-210: reg_value must collapse to a bare u_word");
 
 		class bus : public reg_value {
 		public:
