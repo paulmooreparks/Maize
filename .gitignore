@@ -57,6 +57,9 @@ CMakeUserPresets.json
 # maize-12: linker/assembler object + executable artifacts (build products)
 *.mzo
 *.mzx
+# The kilo demo ships its built image: a runnable editor from a fresh clone
+# with no C-toolchain setup.
+!demos/kilo/kilo.mzx
 
 # maize-63: C-toolchain (ctest) pipeline build outputs. The fixtures ctest/*.c
 # and ctest/*.expected stay tracked; every intermediate the run-ctest.sh pipeline
