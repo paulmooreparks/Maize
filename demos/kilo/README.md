@@ -37,8 +37,9 @@ open a file from a mounted sandbox directory. The console is an 80x50 cell grid
     maize --display --mount "<your-dir>=/work:rw" demos/kilo/kilo.mzx /work/somefile.c
 
 Controls are kilo's own: arrow keys / Home / End / PageUp / PageDown / Delete to
-move, printable keys to insert, Backspace to delete, Ctrl-S to save, Ctrl-F to
-find, Ctrl-Q to quit (three times if there are unsaved changes).
+move, printable keys to insert, Backspace to delete, Ctrl-O to open a file,
+Ctrl-S to save, Ctrl-F to find, Ctrl-Q to quit (three times if there are
+unsaved changes).
 
 ## Headless smoke run
 
@@ -47,6 +48,18 @@ scancodes from stdin and dumps the final text grid on exit. This opens a file,
 inserts "hi" at the top, saves (Ctrl-S), and quits (Ctrl-Q):
 
     printf '\043\027\035\037\020' \
+        | maize --console-dump --mount "<dir>=/work:rw" demos/kilo/kilo.mzx /work/file.c
+
+Ctrl-O opens a different file mid-session without restarting the VM. Because
+Ctrl is a sticky modifier on this console (the break code, not key-up timing,
+clears it), a Ctrl-O test that goes on to type a path must send the Ctrl break
+code before the path's letters, or every letter folds through the same
+ctrl-mask as Ctrl-O did. This sequence opens with `/work/file.c` on the
+command line, presses Ctrl-O on the clean (unmodified) buffer so the prompt
+appears immediately, retypes the same in-mount path, accepts with Enter, and
+quits:
+
+    printf '\035\030\235\065\021\030\023\045\065\041\027\046\022\064\056\034\035\020' \
         | maize --console-dump --mount "<dir>=/work:rw" demos/kilo/kilo.mzx /work/file.c
 
 ## The terminal contract kilo established

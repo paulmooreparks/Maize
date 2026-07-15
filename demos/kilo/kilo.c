@@ -121,6 +121,7 @@ enum KEY_ACTION{
         TAB = 9,            /* Tab */
         CTRL_L = 12,        /* Ctrl+l */
         ENTER = 13,         /* Enter */
+        CTRL_O = 15,        /* Ctrl-o */
         CTRL_Q = 17,        /* Ctrl-q */
         CTRL_S = 19,        /* Ctrl-s */
         CTRL_U = 21,        /* Ctrl-u */
@@ -140,6 +141,14 @@ enum KEY_ACTION{
 };
 
 void editorSetStatusMessage(const char *fmt, ...);
+int editorPrompt(int fd, const char *prompt, char *buf, size_t bufsize);
+
+/* Must precede editorSave (below), which uses it: editorSave is defined
+ * earlier in the file than the KILO_QUERY_LEN block it would otherwise sit
+ * next to, so the define has to move up here to be visible at its first
+ * use (maize-206; caught by cc-maize.sh failing with "undeclared
+ * identifier: KILO_PATH_LEN" when it sat next to KILO_QUERY_LEN instead). */
+#define KILO_PATH_LEN 256
 
 /* =========================== Syntax highlights DB =========================
  *
@@ -881,19 +890,39 @@ int editorOpen(char *filename) {
     return 0;
 }
 
-/* Save the current file on disk. Return 0 on success, 1 on error. */
-int editorSave(void) {
+/* Save the current file on disk. Return 0 on success, 1 on error. `fd` is
+ * the console input fd, needed to drive the Save-As prompt (maize-206) when
+ * the buffer has no filename yet. */
+int editorSave(int fd) {
+    if (E.filename == NULL) {
+        char path[KILO_PATH_LEN+1] = {0};
+        if (!editorPrompt(fd, "Save as: %s", path, sizeof(path))) {
+            editorSetStatusMessage("Save aborted");
+            return 1;
+        }
+        E.filename = strdup(path);
+        if (E.filename == NULL) {
+            editorSetStatusMessage("Can't save! Out of memory");
+            return 1;
+        }
+        E.syntax = NULL;
+        editorSelectSyntaxHighlight(E.filename);
+    }
+
     int len;
     char *buf = editorRowsToString(&len);
-    int fd = open(E.filename,O_RDWR|O_CREAT,0644);
-    if (fd == -1) goto writeerr;
+    /* Named wfd (not fd) because the `fd` parameter above already holds the
+     * console input fd; reusing the name would redeclare it in the same
+     * scope. */
+    int wfd = open(E.filename,O_RDWR|O_CREAT,0644);
+    if (wfd == -1) goto writeerr;
 
     /* Use truncate + a single write(2) call in order to make saving
      * a bit safer, under the limits of what we can do in a small editor. */
-    if (ftruncate(fd,len) == -1) goto writeerr;
-    if (write(fd,buf,len) != len) goto writeerr;
+    if (ftruncate(wfd,len) == -1) goto writeerr;
+    if (write(wfd,buf,len) != len) goto writeerr;
 
-    close(fd);
+    close(wfd);
     free(buf);
     E.dirty = 0;
     editorSetStatusMessage("%d bytes written on disk", len);
@@ -901,7 +930,7 @@ int editorSave(void) {
 
 writeerr:
     free(buf);
-    if (fd != -1) close(fd);
+    if (wfd != -1) close(wfd);
     editorSetStatusMessage("Can't save! I/O error: %s",strerror(errno));
     return 1;
 }
@@ -1161,6 +1190,97 @@ void editorFind(int fd) {
     }
 }
 
+/* Generic single-line status-bar prompt (maize-206). `prompt` must contain
+ * exactly one %s, filled on every keystroke via editorSetStatusMessage with
+ * the buffer collected so far. Printable chars append; Backspace/Ctrl-H/
+ * DEL_KEY remove the last char; ESC cancels (returns 0, status cleared,
+ * *buf contents unspecified, caller must not read it); Enter accepts a
+ * non-empty buffer (nul-terminates it, returns 1) or is treated as cancel
+ * when the buffer is still empty (no accept-empty case for callers to
+ * special-case). `bufsize` is the buffer's total capacity including the nul
+ * terminator.
+ *
+ * Unlike editorFind's own prompt loop, this helper does not touch cursor or
+ * viewport state and has no live-search callback: it is pure status-bar
+ * chrome. editorFind's inline loop is NOT refactored to call this (see the
+ * "editorPrompt scope" decision on the card); this is a new, narrower
+ * helper for Ctrl-O and Save As. */
+int editorPrompt(int fd, const char *prompt, char *buf, size_t bufsize) {
+    size_t len = 0;
+    buf[0] = '\0';
+    while (1) {
+        editorSetStatusMessage(prompt, buf);
+        editorRefreshScreen();
+        int c = editorReadKey(fd);
+        if (c == DEL_KEY || c == CTRL_H || c == BACKSPACE) {
+            if (len != 0) buf[--len] = '\0';
+        } else if (c == ESC) {
+            editorSetStatusMessage("");
+            return 0;
+        } else if (c == ENTER) {
+            editorSetStatusMessage("");
+            if (len == 0) return 0;
+            return 1;
+        } else if (isprint(c) && len < bufsize - 1) {
+            buf[len++] = c;
+            buf[len] = '\0';
+        }
+    }
+}
+
+/* Ctrl-O flow (maize-206): prompt for a path, then replace the current
+ * buffer with it. Caller (editorProcessKeypress) has already cleared the
+ * unsaved-changes guard before calling this. */
+void editorOpenPrompt(int fd) {
+    char path[KILO_PATH_LEN+1] = {0};
+    if (!editorPrompt(fd, "Open file: %s", path, sizeof(path))) {
+        editorSetStatusMessage("");
+        return;
+    }
+
+    /* Probe BEFORE tearing down the current buffer. ENOENT is NOT a
+     * failure here: it is editorOpen's own existing "new file" semantics,
+     * the same thing that already happens if argv[1] doesn't exist at
+     * startup, since main() never checks editorOpen's return value. Any
+     * OTHER errno (ENAMETOOLONG, ENOMEM from a full hostfs fd table, etc.)
+     * is exactly what editorOpen itself treats as fatal (perror + exit(1)),
+     * we are not willing to lose the in-memory buffer, let alone crash the
+     * whole VM, over a bad Ctrl-O path, so we catch it here first and
+     * leave the buffer alone. */
+    FILE *probe = fopen(path, "r");
+    if (probe) {
+        fclose(probe);
+    } else if (errno != ENOENT) {
+        editorSetStatusMessage("Can't open %.40s: %s", path, strerror(errno));
+        return;
+    }
+
+    /* Buffer-reset hygiene: free every row's heap state, reset cursor/
+     * offsets/numrows, and re-derive E.syntax for the NEW filename before
+     * editorOpen loads rows, editorUpdateSyntax (called per row during
+     * the load, via editorInsertRow -> editorUpdateRow) reads E.syntax as
+     * it goes, so selecting it after the load would leave already-inserted
+     * rows highlighted under the OLD scheme. */
+    for (int j = 0; j < E.numrows; j++) editorFreeRow(&E.row[j]);
+    free(E.row);
+    E.row = NULL;
+    E.numrows = 0;
+    E.cx = E.cy = 0;
+    E.rowoff = E.coloff = 0;
+
+    /* editorSelectSyntaxHighlight only ever SETS E.syntax on a filematch
+     * hit; it silently leaves a stale value on a miss. This gap was
+     * invisible before this card because main() only calls it once,
+     * starting from a NULL E.syntax. Null it out explicitly so a .c-to-.txt
+     * Ctrl-O correctly clears highlighting instead of keeping the old
+     * file's colors. */
+    E.syntax = NULL;
+    editorSelectSyntaxHighlight(path);
+
+    editorOpen(path); /* sets E.filename + E.dirty=0, loads rows if the file exists */
+    editorSetStatusMessage("\"%s\" %d lines", E.filename, E.numrows);
+}
+
 /* ========================= Editor events handling  ======================== */
 
 /* Handle cursor position change because arrow keys were pressed. */
@@ -1244,6 +1364,8 @@ void editorProcessKeypress(int fd) {
     /* When the file is modified, requires Ctrl-q to be pressed N times
      * before actually quitting. */
     static int quit_times = KILO_QUIT_TIMES;
+    /* Same idiom, for Ctrl-o with unsaved changes (maize-206). */
+    static int open_times = KILO_QUIT_TIMES;
 
     int c = editorReadKey(fd);
     switch(c) {
@@ -1265,10 +1387,19 @@ void editorProcessKeypress(int fd) {
         exit(0);
         break;
     case CTRL_S:        /* Ctrl-s */
-        editorSave();
+        editorSave(fd);
         break;
     case CTRL_F:
         editorFind(fd);
+        break;
+    case CTRL_O:        /* Ctrl-o (maize-206) */
+        if (E.dirty && open_times) {
+            editorSetStatusMessage("WARNING!!! File has unsaved changes. "
+                "Press Ctrl-O %d more times to open a new file.", open_times);
+            open_times--;
+            return;
+        }
+        editorOpenPrompt(fd);
         break;
     case BACKSPACE:     /* Backspace */
     case CTRL_H:        /* Ctrl-h */
@@ -1328,6 +1459,7 @@ void editorProcessKeypress(int fd) {
     }
 
     quit_times = KILO_QUIT_TIMES; /* Reset it to the original value. */
+    open_times = KILO_QUIT_TIMES;
 }
 
 int editorFileWasModified(void) {
@@ -1365,14 +1497,16 @@ void initEditor(void) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr,"Usage: kilo <filename>\n");
+    if (argc > 2) {
+        fprintf(stderr,"Usage: kilo [filename]\n");
         exit(1);
     }
 
     initEditor();
-    editorSelectSyntaxHighlight(argv[1]);
-    editorOpen(argv[1]);
+    if (argc == 2) {
+        editorSelectSyntaxHighlight(argv[1]);
+        editorOpen(argv[1]);
+    }
     enableRawMode(STDIN_FILENO);
     editorSetStatusMessage(
         "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
