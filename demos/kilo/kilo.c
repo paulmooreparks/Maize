@@ -183,6 +183,38 @@ char *C_HL_keywords[] = {
         "void|","short|","auto|","const|","bool|",NULL
 };
 
+/* Maize assembly (.mazm) */
+char *MAZM_HL_extensions[] = {".mazm",NULL};
+char *MAZM_HL_keywords[] = {
+	/* Opcodes ("Opcodes Sorted Numerically", README.md) */
+	"ADC","ADD","AND","BRK","CALL","CLR","CLRCRY","CLRINT","CLRSYSG","CMP",
+	"CMPIND","CMPXCHG","CP","CPZ","DEC","DIV","FABS","FADD","FCMP","FCVTFF",
+	"FCVTFS","FCVTFU","FCVTSF","FCVTUF","FDIV","FGETCSR","FMADD","FMAX","FMIN",
+	"FMSUB","FMUL","FNEG","FSETCSR","FSQRT","FSUB","HALT","IN","INC","INT",
+	"IRET","JA","JAE","JB","JBE","JGE","JGT","JLE","JLT","JMP","JNZ","JP","JZ",
+	"LD","LEA","MOD","MOVFCR","MOVTCR","MUL","MULW","NAND","NEG","NOP","NOR",
+	"NOT","OR","OUT","OUTR","POP","PUSH","RET","SAR","SBB","SETA","SETAE",
+	"SETB","SETBE","SETCRY","SETGE","SETGT","SETINT","SETLE","SETLT","SETNZ",
+	"SETP","SETSYSG","SETZ","SHL","SHR","ST","SUB","SYS","TEST","TLBINV",
+	"TLBINVA","TSTIND","UDIV","UMOD","UMULW","XCHG","XOR",
+
+	/* Directives (ASSEMBLER.md "Directives") */
+	"ADDRESS","ALIGN","DATA","DREF","EXTERN","GLOBAL","INCLUDE","LABEL",
+	"PUBLIC","SECTION","STRING","ZERO",
+
+	/* Registers, their special-purpose aliases, and sub-register suffix
+	 * tokens (README.md "Registers", "Special-purpose Registers",
+	 * "Sub-registers"): trailing '|' puts these in the second keyword
+	 * color, mirroring how C_HL_keywords uses '|' for types. kilo's
+	 * is_separator() already includes '.', so "R0.B0" tokenizes as two
+	 * separate keyword-scan hits, "R0" and "B0": both belong in this
+	 * SAME keywords2 bucket, not a third category (ratified, comment 2614). */
+	"R0|","R1|","R2|","R3|","R4|","R5|","R6|","R7|","R8|","R9|","RT|","RV|",
+	"RF|","RB|","RP|","RS|","BP|","SP|","PC|","FL|",
+	"B0|","B1|","B2|","B3|","B4|","B5|","B6|","B7|",
+	"Q0|","Q1|","Q2|","Q3|","H0|","H1|","W0|",NULL
+};
+
 /* Here we define an array of syntax highlights by extensions, keywords,
  * comments delimiters and flags. */
 struct editorSyntax HLDB[] = {
@@ -191,6 +223,13 @@ struct editorSyntax HLDB[] = {
         C_HL_extensions,
         C_HL_keywords,
         "//","/*","*/",
+        HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS
+    },
+    {
+        /* Maize assembly */
+        MAZM_HL_extensions,
+        MAZM_HL_keywords,
+        ";","","",
         HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS
     }
 };
@@ -409,8 +448,9 @@ void editorUpdateSyntax(erow *row) {
         in_comment = 1;
 
     while(*p) {
-        /* Handle // comments. */
-        if (prev_sep && *p == scs[0] && *(p+1) == scs[1]) {
+        /* Handle // comments (and single-char comment starts like Maize's
+         * ';': scs[1] == '\0' means "match scs[0] alone"). */
+        if (prev_sep && *p == scs[0] && (scs[1] == '\0' || *(p+1) == scs[1])) {
             /* From here to end is a comment */
             memset(row->hl+i,HL_COMMENT,row->size-i);
             return;
@@ -469,9 +509,18 @@ void editorUpdateSyntax(erow *row) {
             continue;
         }
 
-        /* Handle numbers */
+        /* Handle numbers: bare digits (C-style) plus Maize's base-prefixed
+         * literals ($ hex, # decimal, % binary), which start with the prefix
+         * character rather than a digit and continue through an optional
+         * sign, base digits, and the ',' '_' '`' separators (ASSEMBLER.md
+         * "Numeric literals"). This does not validate the digit set against
+         * the selected base; that is the assembler's job, not the
+         * highlighter's. */
         if ((isdigit(*p) && (prev_sep || row->hl[i-1] == HL_NUMBER)) ||
-            (*p == '.' && i >0 && row->hl[i-1] == HL_NUMBER)) {
+            (*p == '.' && i >0 && row->hl[i-1] == HL_NUMBER) ||
+            (prev_sep && strchr("$#%",*p) != NULL) ||
+            (i > 0 && row->hl[i-1] == HL_NUMBER &&
+             (isalnum(*p) || strchr(",_`+-",*p) != NULL))) {
             row->hl[i] = HL_NUMBER;
             p++; i++;
             prev_sep = 0;
