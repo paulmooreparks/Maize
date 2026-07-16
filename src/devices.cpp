@@ -1175,7 +1175,12 @@ namespace maize {
 					   deadline by refresh_ms so an early wake on input neither drifts nor double-
 					   fires it. If we fell a full period or more behind (e.g. a debugger pause),
 					   resync to now so we do not fire a catch-up burst. This tick also paces the
-					   graphics-mode present at refresh_hz (see present_due below). */
+					   graphics-mode present at refresh_hz (see present_due below).
+					   AC4 tradeoff (nil practical impact today): with vsync on the present blocks
+					   until vblank, so a guest that has opted into the vsync IRQ while rendering
+					   every period spends each loop iteration inside that wait, and
+					   on_display_refresh ends up coupled to the monitor rate rather than
+					   refresh_hz. The guest vsync IRQ is off by default, so nothing observes this. */
 					bool vsync_ticked = false;
 					if ((std::int32_t)(SDL_GetTicks() - next_vsync) >= 0) {
 						fb.on_display_refresh();

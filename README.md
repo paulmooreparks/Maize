@@ -345,6 +345,11 @@ names **without** the leading dashes:
   `display=false` to force it headless. The console `maize` ignores this key.)
 - `pause-on-halt` = boolean (graphical `maizeg` only: hold the window open on the
   final frame, and any `--show-perf` report, until a key or window-close)
+- `vsync` = boolean (graphical `maizeg` only, default `true`: sync each frame present
+  to the monitor's vblank so the picture cannot free-run against the display. With
+  vsync on the visible present rate is monitor-locked and `refresh-hz` no longer sets
+  the present cadence; `refresh-hz` then drives only the guest vsync-IRQ cadence and
+  the input-poll timeout. Set `vsync=false` to present unsynced, paced by `refresh-hz`.)
 - `no-root` = boolean
 
 Booleans accept `true`/`false`, `1`/`0`, or `yes`/`no`. Parsing is fail-soft: an
