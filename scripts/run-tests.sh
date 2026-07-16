@@ -112,7 +112,11 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
 fi
 
 # --- Locate the built executables --------------------------------------------------
-MAIZE_EXE="${BUILD_DIR}/maize"
+# maize-225: the harness runs the SDL-free `maizec` (console) build, not `maize` (SDL).
+# maizec cannot open a GUI window, so the suite never pops or hangs behind a WSLg window,
+# and needs no display libs. All tests are headless (stdout / --console-dump / the
+# memory-backed framebuffer device), so maizec runs them all.
+MAIZE_EXE="${BUILD_DIR}/maizec"
 MAZM_EXE="${BUILD_DIR}/mazm"
 MZLD_EXE="${BUILD_DIR}/mzld"
 MZDIS_EXE="${BUILD_DIR}/mzdis"
