@@ -29,10 +29,14 @@ GLOBAL _start
 GLOBAL quesos_switch_to
 GLOBAL quesos_poweroff
 GLOBAL quesos_arm_timer
+GLOBAL quesos_idle
+GLOBAL quesos_con_status
+GLOBAL quesos_con_data
 
 EXTERN quesos_main             ; quesos.c: init entry, runs the worklist (noreturn)
 EXTERN quesos_syscall          ; quesos.c: cause-7 dispatcher (reads g_current->saved_rs)
 EXTERN quesos_timer_tick       ; quesos.c: timer preemption (marks runnable + schedule)
+EXTERN quesos_console_irq      ; quesos.c: console IRQ (deliver a byte + schedule)
 EXTERN quesos_stack            ; quesos.c: 64 KiB private kernel-stack byte array (base)
 EXTERN g_current               ; quesos.c: struct pcb * of the running process
 
@@ -55,6 +59,12 @@ _start:
     ; ARMED later (quesos_arm_timer, after quesos_main finishes setup), not here.
     CP  quesos_timer_handler R3
     CP  $1100 RT
+    ST  R3 @RT
+
+    ; Install the console-input IRQ handler at entry 33 (0x1000 + 33*8 = 0x1108). The
+    ; console device raises vector 33 when a stdin byte is available (maize --input=...).
+    CP  quesos_console_handler R3
+    CP  $1108 RT
     ST  R3 @RT
 
     ; Switch to quesOS's kernel stack: full-descending, top = base + size (0x10000).
@@ -187,7 +197,10 @@ quesos_timer_handler:
 
     CP  g_current R0
     LD  @R0 R0                  ; R0 = g_current (pcb*)
+    CMP $00 R0                  ; 0 while idle-spinning (no process to save)
+    JZ  timer_no_save
     ST  RS @R0                  ; pcb->saved_rs = RS
+timer_no_save:
 
     CLRSYSG
     CLR R2
@@ -198,3 +211,67 @@ quesos_timer_handler:
     CP  R1 SP
     CALL quesos_timer_tick     ; mark current runnable + schedule (noreturn)
     HALT                       ; safety net (unreachable)
+
+; ----------------------------------------------------------------------------------
+; quesos_console_handler: console-input IRQ (vector 33) entry. Same save/dispatch shape
+; as the timer handler; delivery of the latched byte to a parked reader happens in
+; quesos_console_irq. External IRQs are acknowledged by delivery (no status-port ack).
+; The g_current NULL guard covers the idle-spin case (no process was running).
+; ----------------------------------------------------------------------------------
+quesos_console_handler:
+    PUSH RB
+    PUSH RV
+    PUSH RT
+    PUSH R9
+    PUSH R8
+    PUSH R7
+    PUSH R6
+    PUSH R5
+    PUSH R4
+    PUSH R3
+    PUSH R2
+    PUSH R1
+    PUSH R0
+
+    CP  g_current R0
+    LD  @R0 R0
+    CMP $00 R0                 ; 0 while idle-spinning
+    JZ  console_no_save
+    ST  RS @R0                 ; pcb->saved_rs = RS
+console_no_save:
+
+    CLRSYSG
+    CP  quesos_stack R1        ; switch to the kernel stack
+    ADD $00010000 R1
+    CP  R1 SP
+    CALL quesos_console_irq    ; deliver a byte to a parked reader + schedule (noreturn)
+    HALT                       ; safety net (unreachable)
+
+; ----------------------------------------------------------------------------------
+; quesos_con_status() / quesos_con_data(): privileged IN over the console ports ($01
+; status, $00 data). Callable from C; the byte is returned in RV. Status bit0 is
+; input-available; reading data clears it. Reading the data port when nothing is
+; available would fall through to a blocking native read, so quesOS only reads data
+; after status reports a byte (see console_read / quesos_console_irq).
+; ----------------------------------------------------------------------------------
+quesos_con_status:
+    CLR RV
+    IN  $01 RV.B0              ; RV = console status port
+    RET
+
+quesos_con_data:
+    CLR RV
+    IN  $00 RV.B0              ; RV = console data byte (clears input-available)
+    RET
+
+; ----------------------------------------------------------------------------------
+; quesos_idle(): entered by the scheduler when no process is runnable but one is parked
+; on console input. Spin with interrupts enabled so the CPU keeps ticking: the console
+; device's per-tick input pump only runs while instructions execute, so a HALT here
+; would never see the next stdin byte. The timer / console IRQ fires during the spin,
+; wakes a process, and reschedules away (noreturn from this loop's point of view).
+; ----------------------------------------------------------------------------------
+quesos_idle:
+    SETINT                     ; enable interrupts (the trap entry masked them)
+quesos_idle_spin:
+    JMP quesos_idle_spin       ; tick so on_input_tick runs; an IRQ reschedules away

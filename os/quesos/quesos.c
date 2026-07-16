@@ -46,6 +46,9 @@ struct pcb;
 void quesos_switch_to(struct pcb *p);        /* MOVTCR satp; restore regs; IRET (noreturn) */
 void quesos_poweroff(void);                  /* CLRSYSG; SYS $3C (native VM halt)          */
 void quesos_arm_timer(void);                 /* program the instruction-tick timer (OUT)   */
+void quesos_idle(void);                      /* SETINT; spin so on_input_tick keeps running */
+u64  quesos_con_status(void);                /* IN $01: console status (bit0 input-avail)  */
+u64  quesos_con_data(void);                  /* IN $00: console data byte (clears avail)   */
 
 /* quesOS's private kernel stack (quesos_boot.mazm switches RS here at _start and on
  * every trap entry, so the C dispatcher never runs on a user stack). 64 KiB. */
@@ -109,10 +112,11 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 enum proc_state { P_FREE = 0, P_RUNNABLE, P_BLOCKED, P_ZOMBIE };
 
 /* Why a process is BLOCKED (block_kind), so the right waker completes its syscall. */
-#define BLK_NONE   0
-#define BLK_WAIT   1             /* parked in wait4 (woken by an exiting child)         */
-#define BLK_PIPE_R 2             /* parked reading an empty pipe (woken by a writer)    */
-#define BLK_PIPE_W 3             /* parked writing a full pipe (woken by a reader)      */
+#define BLK_NONE    0
+#define BLK_WAIT    1            /* parked in wait4 (woken by an exiting child)         */
+#define BLK_PIPE_R  2            /* parked reading an empty pipe (woken by a writer)    */
+#define BLK_PIPE_W  3            /* parked writing a full pipe (woken by a reader)      */
+#define BLK_CONSOLE 4            /* parked reading fd 0 (woken by the console IRQ, v33)  */
 
 /* saved_rs (offset 0) and root_pa (offset 8) are read by the quesos_switch_to metal at
  * those exact byte offsets; keep them first and in this order. */
@@ -633,7 +637,18 @@ static void schedule(void) {
             quesos_switch_to(g_current);   /* noreturn */
         }
     }
-    quesos_poweroff();   /* nothing runnable: worklist drained */
+    /* Nothing runnable. If a process is parked on console input, spin (interrupts on) so
+     * the console device keeps ticking, latching bytes, and raising IRQ 33, which wakes
+     * the reader; the idle spin is kernel overhead, not a process slice, so it does not
+     * violate "blocked processes consume no slices". Otherwise the worklist is drained
+     * (or the survivors are deadlocked with no possible waker): power off cleanly. */
+    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+        if (g_proc[i].state == P_BLOCKED && g_proc[i].block_kind == BLK_CONSOLE) {
+            g_current = 0;
+            quesos_idle();   /* noreturn: SETINT; spin */
+        }
+    }
+    quesos_poweroff();
 }
 
 /* Does `parent_pid` have any child (matching wpid) still alive or unreaped? */
@@ -725,11 +740,32 @@ static long do_write(u64 fd_num, u64 uva, long count) {
     return -9;
 }
 
+/* Console (fd 0) read via the device IRQ/status path, NEVER the native blocking read:
+ * a native read(0) would park the whole CPU thread and freeze every process (doc 17).
+ * Poll the console status port; if a byte is latched, take it; otherwise park the
+ * PROCESS on the console IRQ, which delivers the byte and wakes it. */
+static long console_read(struct pcb *self, u64 uva, long count) {
+    if (count <= 0) { return 0; }
+    if (quesos_con_status() & 1ul) {
+        as_write8(self, uva, (u8)quesos_con_data());
+        return 1;
+    }
+    self->block_kind = BLK_CONSOLE;
+    self->block_buf = uva;
+    self->block_count = count;
+    self->state = P_BLOCKED;
+    schedule();   /* noreturn: the console IRQ (vector 33) completes this read */
+    return 0;
+}
+
 static long do_read(u64 fd_num, u64 uva, long count) {
     struct pcb *self = g_current;
     struct ofd *o = fd_ofd(self, fd_num);
     if (o == 0) { return -9; }   /* -EBADF */
-    if (o->kind == OFD_NATIVE) { return native_read(o->native_fd, uva, count); }
+    if (o->kind == OFD_NATIVE) {
+        if (o->native_fd == 0) { return console_read(self, uva, count); }
+        return native_read(o->native_fd, uva, count);
+    }
     if (o->kind == OFD_PIPE_R) {
         int pi = o->pipe_idx;
         if (g_pipe[pi].count > 0) {
@@ -993,7 +1029,28 @@ static long do_execve(u64 path_uva, u64 argv_uva, u64 envp_uva) {
  * (it was running, not blocked) and round-robin to the next runnable process. This is
  * what bounds a compute-bound process so it cannot starve the others. */
 void quesos_timer_tick(void) {
-    g_current->state = P_RUNNABLE;
+    if (g_current != 0) { g_current->state = P_RUNNABLE; }   /* 0 while idle-spinning */
+    schedule();   /* noreturn */
+}
+
+/* Console input IRQ (vector 33): the console device latched a byte and raised its IRQ.
+ * Deliver it to a parked console reader (if any) and wake that reader; if none is
+ * parked, leave the byte latched for a future read. Then reschedule (the metal handler
+ * saved the interrupted process, or none if idle). */
+void quesos_console_irq(void) {
+    struct pcb *r = 0;
+    int i;
+    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+        if (g_proc[i].state == P_BLOCKED && g_proc[i].block_kind == BLK_CONSOLE) {
+            r = &g_proc[i];
+            break;
+        }
+    }
+    if (r != 0 && (quesos_con_status() & 1ul)) {
+        as_write8(r, r->block_buf, (u8)quesos_con_data());
+        wake_with(r, 1);
+    }
+    if (g_current != 0) { g_current->state = P_RUNNABLE; }
     schedule();   /* noreturn */
 }
 

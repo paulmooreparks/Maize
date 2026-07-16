@@ -231,6 +231,9 @@ whose empty-read / full-write parks the PROCESS (never the VM) and whose last-wr
 close is EOF; `wait4` blocks until a matching child is a zombie and reports its status
 (`WEXITSTATUS` in bits 8..15), reaping in any order; `dup2`/`dup` alias fd-table slots.
 The file/IO calls a process makes (`read`/`write`/`open`/`close`) are dispatched by the
-same quesOS handler: fd 0/1/2 and hostfs fds bounce through quesOS to the native
-provider, pipe-end fds go to the ring buffer. Job control, signals (`kill`), and the
-`INT $80` naming are Phase 2, out of scope here.
+same quesOS handler: fd 1/2 and hostfs fds bounce through quesOS to the native provider,
+pipe-end fds go to the ring buffer. A read of fd 0 rides the console device's
+IRQ/status path (vector 33, ports `$00`/`$01`), NOT a native blocking read: when no byte
+is available the reading PROCESS parks and the console IRQ delivers each byte and wakes
+it, so a waiting reader never parks the whole CPU thread (design doc 17). Job control,
+signals (`kill`), and the `INT $80` naming are Phase 2, out of scope here.
