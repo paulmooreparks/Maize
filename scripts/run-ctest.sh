@@ -916,6 +916,12 @@ run_ctest "strtol"
 # clock is non-decreasing at fine grain, advances under a bounded busy-spin, and
 # reports a plausible (nonzero, < 60 s) delta. Prints a single "clock: PASS" line.
 run_ctest "clock"
+
+# maize-213 palette-blit syscall (SYS $F3): a self-checking fixture proving the
+# blit is bit-identical (dst[i] == lut[src[i]], RV == npixels) AND deny-by-default
+# secure (oversized npixels -> -EINVAL, a dst/src base+len wrap -> -EFAULT, each
+# with no guest write and no crash). Prints a single "palette-blit: PASS" line.
+run_ctest "palette_blit_selfcheck"
 # maize-98 varargs / stdarg ABI: a self-checking fixture exercising the register
 # save area, va_arg over mixed scalar classes, the register->overflow boundary,
 # and va_copy. Prints a single PASS line.

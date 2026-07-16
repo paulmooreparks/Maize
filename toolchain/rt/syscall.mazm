@@ -79,6 +79,12 @@ GLOBAL sys_rename
 ; open fd. RV = 0 or -errno. ftruncate() (unistd.c) wraps this through __syscall_ret.
 GLOBAL sys_ftruncate
 
+; maize-213 palette blit: a Maize-private high-block number ($F3) with no Linux
+; mirror, adjacent to $F0 clock / $F1/$F2 termios. Raw `SYS $F3; RET` over the four
+; C ABI arg registers (R0=dst, R1=src, R2=lut, R3=npixels); RV = npixels or -errno.
+; A graphics primitive, not a file op, so no errno wrapper: the caller ignores RV.
+GLOBAL sys_palette_blit
+
 sys_read:
     SYS $00                 ; fd/buf/count already in R0/R1/R2 per the C ABI
     RET
@@ -137,6 +143,10 @@ sys_rename:
 
 sys_ftruncate:
     SYS $4D                 ; R0=fd, R1=length; RV = 0 or -errno
+    RET
+
+sys_palette_blit:
+    SYS $F3                 ; R0=dst, R1=src, R2=lut, R3=npixels; RV = npixels or -errno
     RET
 
 _exit:

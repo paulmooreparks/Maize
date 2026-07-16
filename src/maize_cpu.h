@@ -443,6 +443,11 @@ namespace maize {
 			/* Bulk-copy count bytes of guest memory into a host buffer (block-at-a-time
 			   memcpy through the cache), no allocation. Used by the framebuffer present. */
 			void read_into(u_word address, u_byte* dst, size_t count);
+			/* Bulk-copy count bytes from a host buffer into guest memory (block-at-a-time
+			   memcpy through the cache), no allocation. The symmetric write twin of
+			   read_into; used by the maize-213 palette-blit syscall to land the converted
+			   XRGB8888 destination at host memcpy speed instead of per-pixel write_word. */
+			void write_from(u_word address, const u_byte* src, size_t count);
 			u_byte read_byte(u_word address);
 			u_word last_block() const;
 			

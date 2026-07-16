@@ -765,6 +765,86 @@ namespace maize {
                     console_dev->termios_set(img);
                     return 0;
                 }
+
+                /* sys_palette_blit (maize-213): a pure indexed 32-bit blit
+                   dst[i] = lut[src[i]] over sparse guest memory, at host memcpy
+                   speed. Hoists DOOM's per-frame cmap_to_fb 8bpp -> XRGB8888
+                   palette convert (~400-500K guest instructions/frame) out of the
+                   interpreter. Maize-private high-block number ($F3, no Linux
+                   mirror), adjacent to $F0 clock / $F1/$F2 termios; a NEW SYS
+                   number, NOT an ISA/encoding change.
+
+                   Args (Maize C ABI, R0..R3, full-64 subregisters):
+                     R0 = dst      (guest ptr, XRGB8888 destination)
+                     R1 = src      (guest ptr, 8bpp source indices)
+                     R2 = lut      (guest ptr, uint32[256] baked XRGB8888 LUT)
+                     R3 = npixels  (u64 pixel count)
+                   RV = npixels on success, or a [-4095,-1] -errno on a bounds
+                   violation (NO guest write on rejection). The gamma + RGB pack
+                   is baked guest-side in I_SetPalette, so the result is byte-
+                   identical to cmap_to_fb by construction.
+
+                   SECURITY (deny-by-default, load-bearing): the guest address
+                   space is sparse and lazily zero-filled, so there is no raw host
+                   OOB deref; the real risks a boundary-crossing syscall must deny
+                   are (a) a 64-bit base+len wrap letting a crafted ptr+count touch
+                   unrelated blocks and (b) an enormous npixels driving unbounded
+                   host CPU / block allocation. Both are rejected BEFORE any memory
+                   access, mirroring the framebuffer-present idiom (devices.cpp:
+                   base == 0 || base + size < base). */
+                case 0x00F3U: {
+                    constexpr u_word MAX_BLIT_PIXELS {1u << 24};  /* 16,777,216 (up to 4096x4096) */
+                    constexpr long abi_einval {22};
+                    constexpr long abi_efault {14};
+
+                    u_word dst_addr {regs::r0.w0};
+                    u_word src_addr {regs::r1.w0};
+                    u_word lut_addr {regs::r2.w0};
+                    u_word npixels  {regs::r3.w0};
+
+                    if (npixels == 0) {
+                        return 0;                                  /* benign no-op */
+                    }
+                    if (npixels > MAX_BLIT_PIXELS) {
+                        return static_cast<u_word>(-abi_einval);   /* oversized request */
+                    }
+                    /* base+len wrap checks. npixels <= 2^24 so npixels*4 < 2^26 and
+                       the multiply itself cannot overflow u64. */
+                    if (src_addr + npixels < src_addr) {
+                        return static_cast<u_word>(-abi_efault);   /* src range wraps */
+                    }
+                    if (lut_addr + 256u * 4u < lut_addr) {
+                        return static_cast<u_word>(-abi_efault);   /* lut range wraps */
+                    }
+                    if (dst_addr + npixels * 4u < dst_addr) {
+                        return static_cast<u_word>(-abi_efault);   /* dst range wraps */
+                    }
+
+                    /* Reusable scratch buffers grown on demand: the steady state
+                       has ZERO per-frame allocation (honors the maize-201 no-per-
+                       frame-alloc posture). Do NOT allocate a fresh vector per call. */
+                    static thread_local std::vector<u_byte>   src_scratch;
+                    static thread_local std::vector<uint32_t> out_scratch;
+                    if (src_scratch.size() < npixels) { src_scratch.resize(npixels); }
+                    if (out_scratch.size() < npixels) { out_scratch.resize(npixels); }
+
+                    /* Read the 256-entry LUT and the src indices at host speed.
+                       On a little-endian host the raw bytes preserve values, so no
+                       swap (the fb-present path inherits the same LE invariant). */
+                    uint32_t lut[256];
+                    cpu::mm.read_into(lut_addr, reinterpret_cast<u_byte*>(lut), 256u * 4u);
+                    cpu::mm.read_into(src_addr, src_scratch.data(), npixels);
+
+                    const u_byte* src8 {src_scratch.data()};
+                    uint32_t* out32 {out_scratch.data()};
+                    for (u_word i = 0; i < npixels; ++i) {
+                        out32[i] = lut[src8[i]];
+                    }
+
+                    cpu::mm.write_from(dst_addr, reinterpret_cast<const u_byte*>(out32),
+                        static_cast<size_t>(npixels) * 4u);
+                    return npixels;
+                }
             }
 
             return 0;

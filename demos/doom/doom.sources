@@ -99,6 +99,6 @@ demos/doom/doomgeneric/doomgeneric/w_wad.c
 demos/doom/doomgeneric/doomgeneric/z_zone.c
 demos/doom/doomgeneric/doomgeneric/w_file_stdc.c
 demos/doom/doomgeneric/doomgeneric/i_input.c
-demos/doom/doomgeneric/doomgeneric/i_video.c
+demos/doom/doom_i_video.c
 demos/doom/doomgeneric/doomgeneric/doomgeneric.c
 demos/doom/doomgeneric/doomgeneric/mus2mid.c

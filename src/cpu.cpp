@@ -468,6 +468,19 @@ namespace maize {
             }
         }
 
+        void memory_module::write_from(u_word address, const u_byte* src, size_t count) {
+            size_t done {0};
+            while (count) {
+                size_t rem {set_cache_address(address)};   // bytes to end of the current block
+                size_t idx {block_size - rem};
+                size_t n {rem < count ? rem : count};
+                std::memcpy(cache + idx, src + done, n);
+                done += n;
+                address += n;
+                count -= n;
+            }
+        }
+
         u_byte memory_module::read_byte(u_word address) {
             /* A single byte always fits within its block, so no straddle handling. */
             size_t idx {block_size - set_cache_address(address)};

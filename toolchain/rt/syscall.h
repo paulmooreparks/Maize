@@ -69,6 +69,17 @@ long sys_rename(const char *old, const char *new);
  * EINVAL on a negative length, EBADF on a bad fd). ftruncate() (unistd.c) wraps this. */
 long sys_ftruncate(int fd, long length);
 
+/* sys_palette_blit (SYS $F3, maize-213): a pure indexed 32-bit palette blit
+ * dst[i] = lut[src[i]] for i in [0, npixels), performed by the VM at host memcpy
+ * speed. dst is an XRGB8888 buffer, src an 8bpp index buffer, lut a baked
+ * uint32[256] XRGB8888 LUT. Maize-private high-block number with no Linux mirror
+ * (like sys_clock_ms). Returns npixels on success, or a [-4095, -1] -errno on a
+ * bounds violation (npixels > 2^24, or a dst/src/lut base+len that wraps the
+ * 64-bit space); on rejection it performs NO guest write. A graphics primitive,
+ * not a file op, so there is no POSIX/errno wrapper: the caller ignores the
+ * return (or may assert it equals npixels). */
+long sys_palette_blit(void *dst, const void *src, const unsigned int *lut, unsigned long npixels);
+
 /* --- errno + wrappers (errno.c) -------------------------------------------- */
 
 /* The musl error translator: a pure function of its input. A raw result in
