@@ -21,7 +21,7 @@ As of 13 July 2026, Maize can run a version of DOOM compiled to Maize bytecode f
 
 <img src="doom.png" alt="DOOM running on Maize">
 
-It's not screaming fast (it averages around 7fps on my workstation), but it's playable. Once
+It's not screaming fast (it averages around ~~7fps~~ **15fps** on my workstation), but it's playable. Once
 JIT is implemented, it should be considerably faster.
 
 If you want to try it yourself, you just need to build a `maize` VM with display enabled and
