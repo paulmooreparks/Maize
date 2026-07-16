@@ -1,55 +1,55 @@
 ; ==================================================================================
-; quesos_boot.mazm -- quesOS kernel core, the metal half (card maize-24, Piece 3).
+; quesos_boot.mazm -- quesOS kernel core, the metal half.
 ;
 ; The parts of quesOS that must be assembly because they touch CPU state the C ABI
-; cannot express: the boot entry + private-stack switch, the cause-7 (SYS) trap
-; handler entry/exit, the SETSYSG/CLRSYSG provider toggle (D9 Shape B), and the
-; control transfer into a child. The portable half (worklist, execve, reap) is
-; quesos.c; the two share the globals and the extern boundary declared below.
+; cannot express: the boot entry + kernel-stack switch, the cause-7 (SYS) trap
+; trampoline, the SETSYSG/CLRSYSG provider toggle, and the process context switch
+; (save/restore the full GP register set across a MOVTCR address-space swap + IRET).
+; The portable half (process table, page tables, fork, exec, dispatch) is quesos.c;
+; the two share the globals and the extern boundary declared below.
 ;
-; Provider-flag invariant (D9 Shape B): quesOS's own code runs with the syscall-
-; guest flag CLEAR, so quesOS's own SYS stubs reach native sys::call directly and
-; never recurse into this handler. The flag is SET only while a child runs. See the
-; block comment in quesos.c.
+; Provider-flag invariant: quesOS's own code runs with the syscall-guest flag CLEAR,
+; so quesOS's own SYS stubs reach native sys::call directly and never recurse into a
+; handler. A user process runs with the flag SET (its saved RF), so its SYS traps here
+; at cause 7; the trampoline CLRSYSGs while the C dispatcher runs and IRET restores the
+; process's flag-set RF on return.
 ;
-; Trap frame (src/cpu.cpp deliver_vectored): on cause-7 handler entry RS points at
-; the aux word, and the frame reads from RS upward:
-;     [RS + 0]   aux        = the syscall number (the SYS operand, per SYSCALL-ABI.md)
+; Trap frame (src/cpu.cpp deliver_vectored): on cause-7 entry RS points at the aux word,
+; and the frame reads from RS upward:
+;     [RS + 0]   aux        = the syscall number (the SYS operand)
 ;     [RS + 8]   cause      = 7
-;     [RS + 16]  saved RF   (pre-trap flags, incl. the syscall-guest bit = SET)
-;     [RS + 24]  saved PC   (the child instruction after its SYS: the IRET target)
-; IRET pops saved RF then saved PC (two words), so it expects RS at [saved RF]; the
-; handler advances RS past aux+cause (+16) before an IRET-returning path.
+;     [RS + 16]  saved RF   (pre-trap flags: privilege user, syscall-guest set)
+;     [RS + 24]  saved PC   (the instruction after the child's SYS: the IRET target)
+; IRET pops saved RF then saved PC (two words), expecting RS at [saved RF].
 ; ==================================================================================
 
 SECTION CODE
 
 GLOBAL _start
-GLOBAL quesos_enter_child
+GLOBAL quesos_switch_to
 GLOBAL quesos_poweroff
 
 EXTERN quesos_main             ; quesos.c: init entry, runs the worklist (noreturn)
-EXTERN quesos_reap             ; quesos.c: records a child's status, runs the next
-EXTERN quesos_stack            ; quesos.c: 64 KiB private-stack byte array (base)
+EXTERN quesos_syscall          ; quesos.c: cause-7 dispatcher (reads g_current->saved_rs)
+EXTERN quesos_stack            ; quesos.c: 64 KiB private kernel-stack byte array (base)
+EXTERN g_current               ; quesos.c: struct pcb * of the running process
 
 ; ----------------------------------------------------------------------------------
-; _start: the directly-loaded image entry (mzld's default entry symbol). The VM has
-; already built quesOS's OWN process-start block at the top of RAM and set RS to it
-; (argv[1..] is the exec worklist, decision D7). Marshal argc/argv the way crt0 does
-; BEFORE switching stacks, install the cause-7 handler, switch RS to quesOS's private
-; stack, then call quesos_main. The flag stays CLEAR here (quesOS runs native).
+; _start: the directly-loaded image entry. The VM has built quesOS's OWN process-start
+; block at the top of RAM and set RS to it (argv[1..] = the exec worklist). Marshal
+; argc/argv BEFORE switching stacks, install the cause-7 handler, switch RS to quesOS's
+; kernel stack, then call quesos_main. quesOS runs supervisor, flag CLEAR, bare mode.
 ; ----------------------------------------------------------------------------------
 _start:
     LD  @RS R0                 ; R0 = argc            = [RS]
     LEA $08 RS R1              ; R1 = argv (&argv[0]) = RS + 8
 
-    ; Install this handler at trap-vector-table entry 7 (0x1000 + 7*8 = 0x1038).
-    CP  quesos_syscall_handler R3   ; R3 = &handler (full 64-bit ABS64)
-    CP  $1038 RT                    ; RT = vector-7 slot address
-    ST  R3 @RT                      ; entry[7] = &handler
+    ; Install the cause-7 handler at trap-vector-table entry 7 (0x1000 + 7*8 = 0x1038).
+    CP  quesos_syscall_handler R3
+    CP  $1038 RT
+    ST  R3 @RT
 
-    ; Switch to quesOS's private stack: full-descending, top = base + size. The size
-    ; matches QUESOS_STACK_SIZE (0x10000) in quesos.c; keep the two in lockstep.
+    ; Switch to quesOS's kernel stack: full-descending, top = base + size (0x10000).
     CP  quesos_stack R3
     ADD $00010000 R3
     CP  R3 SP
@@ -58,54 +58,81 @@ _start:
     HALT                            ; safety net (unreachable)
 
 ; ----------------------------------------------------------------------------------
-; quesos_syscall_handler: cause-7 entry. Runs with the flag SET, on the child's
-; stack, RS at the aux word. Reads the syscall number, then either passes the call
-; through to the native provider (file/IO subset) and IRETs back to the child, or,
-; for exit / exit_group (SYS $3C, unified per D5), tears the child down and hands
-; control to quesOS's reaper.
+; quesos_syscall_handler: cause-7 entry. Runs supervisor, flag SET, on the faulting
+; process's user stack with RS at the aux word. Save the full user GP context onto that
+; stack (below the trap frame), record RS in the process's PCB, drop the provider flag,
+; switch to the kernel stack, and dispatch in C. On return, restore whatever process the
+; scheduler left current (quesos_switch_to reloads g_current), which delivers the RV
+; result and IRETs back to user.
+;
+; Context block (pushed R0 last so RS points at R0): from RS upward
+;     [RS + 0..96]  R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 RT RV RB   (13 words)
+;     [RS + 104]    aux    (syscall number)
+;     [RS + 112]    cause
+;     [RS + 120]    saved RF
+;     [RS + 128]    saved PC
 ; ----------------------------------------------------------------------------------
 quesos_syscall_handler:
-    LD  @RS R3                 ; R3 = syscall number (aux word)
-    ADD $10 RS                 ; discard aux+cause: RS -> [saved RF][saved PC]
-    CMP $3C R3.B0              ; exit / exit_group (D5)?
-    JZ  quesos_handle_exit
+    PUSH RB
+    PUSH RV
+    PUSH RT
+    PUSH R9
+    PUSH R8
+    PUSH R7
+    PUSH R6
+    PUSH R5
+    PUSH R4
+    PUSH R3
+    PUSH R2
+    PUSH R1
+    PUSH R0                     ; RS -> R0 slot = the saved-context block base
 
-    ; Passthrough: re-issue the SAME syscall natively. R0/R1/R2 still hold the
-    ; child's args (untouched since the trap); the result lands in RV. CLRSYSG routes
-    ; this SYS to native sys::call (no recursion); IRET then restores the child's RF
-    ; (flag SET) and PC.
-    CLRSYSG
-    SYS R3
-    SETSYSG
-    IRET
+    CP  g_current R0            ; R0 = &g_current  (user R0 already saved)
+    LD  @R0 R0                  ; R0 = g_current (pcb*)
+    ST  RS @R0                  ; pcb->saved_rs = RS   (saved_rs is pcb offset 0)
 
-quesos_handle_exit:
-    ; The child terminated. R0 holds its exit code (the _exit ABI). Leave the flag
-    ; CLEAR (quesOS runs native from here), reset RS to quesOS's private stack top,
-    ; and reap in guest C. quesos_reap never returns (it runs the next child or
-    ; powers the VM off).
-    CLRSYSG
-    CP  quesos_stack R3
-    ADD $00010000 R3
-    CP  R3 SP
-    CALL quesos_reap           ; quesos_reap(R0 = exit code); never returns
-    HALT                       ; safety net (unreachable)
+    CLRSYSG                     ; quesOS's own native syscalls route to sys::call
+    CP  quesos_stack R1        ; switch to the kernel stack for the C dispatcher
+    ADD $00010000 R1
+    CP  R1 SP
+    CALL quesos_syscall        ; quesos_syscall(): dispatch; writes the RV slot
 
-; ----------------------------------------------------------------------------------
-; quesos_enter_child(R0 = entry PC, R1 = child RS): the control transfer into a
-; freshly-loaded child (quesos.c fills its memory + argc/argv stack first). Arm the
-; provider flag so the child's SYS traps here, point RS at the child's start block,
-; and jump (not CALL: quesOS does not expect a RET; the child's exit_group traps
-; back instead).
-; ----------------------------------------------------------------------------------
-quesos_enter_child:
-    SETSYSG
-    CP  R1 SP                  ; RS = child's argc/argv/envp start block
-    JMP R0                     ; enter the child (noreturn)
+    CP  g_current R0           ; reload (the scheduler may have changed current)
+    LD  @R0 R0                 ; R0 = g_current (pcb*)
+    JMP quesos_switch_to       ; restore that process's context + IRET (noreturn)
 
 ; ----------------------------------------------------------------------------------
-; quesos_poweroff(): the worklist is drained. Drop the provider flag and issue a
-; genuine native SYS $3C so the VM actually halts (rather than trapping back here).
+; quesos_switch_to(R0 = pcb*): load the process's page-table root into CR0, restore its
+; saved GP context off its stack, and IRET into it. This is BOTH first entry (the PCB's
+; saved_rs points at a synthesized frame quesos.c built) and resume (the saved_rs points
+; at a real trap frame). Never returns.
+; ----------------------------------------------------------------------------------
+quesos_switch_to:
+    LEA $08 R0 RT              ; RT = &pcb->root_pa
+    LD  @RT R1                 ; R1 = root_pa (4 KiB aligned)
+    ADD $01 R1                 ; R1 = root_pa | MODE 1 (Sv48 satp)
+    MOVTCR R1 $00              ; CR0 = satp: switch/enable this address space
+    LD  @R0 R2                 ; R2 = pcb->saved_rs (offset 0)
+    CP  R2 SP                  ; RS = saved-context block base
+    POP R0
+    POP R1
+    POP R2
+    POP R3
+    POP R4
+    POP R5
+    POP R6
+    POP R7
+    POP R8
+    POP R9
+    POP RT
+    POP RV
+    POP RB                     ; RS -> aux slot (13 GP words popped)
+    ADD $10 RS                 ; discard aux + cause; RS -> [saved RF][saved PC]
+    IRET                       ; restore RF (drop to user) + PC; enter/resume the process
+
+; ----------------------------------------------------------------------------------
+; quesos_poweroff(): the worklist is drained. Drop the provider flag and issue a genuine
+; native SYS $3C so the VM halts (rather than trapping back here).
 ; ----------------------------------------------------------------------------------
 quesos_poweroff:
     CLRSYSG
