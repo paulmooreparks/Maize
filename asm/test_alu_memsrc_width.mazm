@@ -4,8 +4,8 @@
 ;
 ; The qbe-maize backend only ever emits FULL-WIDTH ALU-with-memory-source operands,
 ; so the whole C/asm corpus never exercises a sub-width one. This fixture drives the
-; sub-width regAddr ALU forms by hand and checks the computed VALUE, which locks the
-; read-width contract. It also covers a HIGH-OFFSET destination (R0.B3): the fixed
+; sub-width regAddr AND immAddr ALU forms by hand and checks the computed VALUE, which
+; locks the read-width contract. It also covers a HIGH-OFFSET destination (R0.B3): the fixed
 ; read must land the source at offset 0 (width0_subreg), where the ALU handler reads
 ; it -- reading it into the destination's own subregister offset instead would leave
 ; the handler consuming stale bytes. The over-read itself is not guest-observable
@@ -49,6 +49,39 @@ $0000`0000:
     JNZ fail
     CP $0000000000000077 R0     ; B0 = 0x77 != membuf[0]
     CMP @R2 R0.B0             ; nonzero -> Z clear
+    JZ fail
+
+    ; The next four repeat 1-4 through the immAddr form (`@<label>` -> opcode $C3/$CF,
+    ; the MAIZE_ALU_IA/IA_NW handlers), so the immediate-address read-width path is
+    ; covered too, not just the regAddr one.
+
+    ; ---- 5. immAddr byte-width ADD, offset-0 destination ----
+    CP $FFFFFFFFFFFFFF20 R0     ; B0 = 0x20
+    ADD @membuf R0.B0         ; read 1 byte at membuf (0x88): 0x20 + 0x88 = 0xA8
+    CP $FFFFFFFFFFFFFFA8 R3
+    CMP R3 R0
+    JNZ fail
+
+    ; ---- 6. immAddr byte-width ADD, HIGH-offset destination (B3) ----
+    CP $FFFFFFFF20FFFFFF R0     ; B3 = 0x20
+    ADD @membuf R0.B3        ; 0x20 + 0x88 = 0xA8 into byte 3, rest preserved
+    CP $FFFFFFFFA8FFFFFF R3
+    CMP R3 R0
+    JNZ fail
+
+    ; ---- 7. immAddr halfword-width ADD ----
+    CP $FFFFFFFF00000010 R0     ; H0 = 0x00000010
+    ADD @membuf R0.H0        ; 0x10 + 0x55667788 = 0x55667798, upper preserved
+    CP $FFFFFFFF55667798 R3
+    CMP R3 R0
+    JNZ fail
+
+    ; ---- 8. immAddr CMP (no-write form) ----
+    CP $0000000000000088 R0     ; B0 = 0x88 == membuf[0]
+    CMP @membuf R0.B0        ; equal -> Z set
+    JNZ fail
+    CP $0000000000000077 R0     ; B0 = 0x77 != membuf[0]
+    CMP @membuf R0.B0        ; nonzero -> Z clear
     JZ fail
 
     ; ---- all checks passed ----
