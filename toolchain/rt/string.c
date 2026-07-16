@@ -1,17 +1,30 @@
 /* toolchain/rt/string.c -- freestanding <string.h> core (maize-76, decision 7343).
  *
- * Byte-at-a-time implementations: correctness over speed for the M1 slice. memmove
- * is overlap-correct (copies backward when the destination overlaps ahead of the
- * source). Comparisons return the unsigned-char difference, per the C standard.
+ * memcpy/memset/memmove's forward path move a uint64_t word at a time with a
+ * byte tail for the remainder (maize-212): the Maize VM's LD/ST are unaligned-safe
+ * (memory_module::write_bytes / read()'s in-block fast path std::memcpys for
+ * widths 1/2/4/8 regardless of address), so no alignment prologue is needed, and
+ * a word LD/ST costs the interpreter about the same as a byte LD/ST, so moving 8
+ * bytes per instruction instead of 1 is a real win on every guest bulk copy.
+ * memmove's backward-overlap branch and memcmp stay byte-at-a-time (colder paths,
+ * maize-212 decision). Comparisons return the unsigned-char difference, per the
+ * C standard.
  */
 #include "string.h"
 #include "stdlib.h"   /* malloc (strdup); stdio.c pairs the two headers likewise */
+#include "stdint.h"   /* uint64_t for the word-at-a-time copy/set body */
 
 void *
 memcpy(void *dst, const void *src, size_t n)
 {
     unsigned char *d = (unsigned char *)dst;
     const unsigned char *s = (const unsigned char *)src;
+    while (n >= 8) {
+        *(uint64_t *)d = *(uint64_t *)s;
+        d += 8;
+        s += 8;
+        n -= 8;
+    }
     while (n--)
         *d++ = *s++;
     return dst;
@@ -25,10 +38,19 @@ memmove(void *dst, const void *src, size_t n)
     if (d == s || n == 0)
         return dst;
     if (d < s) {
+        while (n >= 8) {
+            *(uint64_t *)d = *(uint64_t *)s;
+            d += 8;
+            s += 8;
+            n -= 8;
+        }
         while (n--)
             *d++ = *s++;
     } else {
-        /* dst overlaps ahead of src: copy from the top down. */
+        /* dst overlaps ahead of src: copy from the top down. Byte loop retained
+           (cold path, maize-212 decision: a backward word copy would need the
+           tail handled at the low end instead of the high end, more failure-prone
+           for a rare path). */
         d += n;
         s += n;
         while (n--)
@@ -42,6 +64,12 @@ memset(void *dst, int c, size_t n)
 {
     unsigned char *d = (unsigned char *)dst;
     unsigned char v = (unsigned char)c;
+    uint64_t vv = (uint64_t)v * 0x0101010101010101UL;
+    while (n >= 8) {
+        *(uint64_t *)d = vv;
+        d += 8;
+        n -= 8;
+    }
     while (n--)
         *d++ = v;
     return dst;

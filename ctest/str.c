@@ -40,6 +40,106 @@ main(void)
     check(memcmp("abc", "abd", 3) < 0);
     check(memcmp("abd", "abc", 3) > 0);
 
+    /* --- maize-212: word-at-a-time memcpy/memset/memmove coverage -----------
+       The calls above are all under 8 bytes and only ever exercise the byte
+       tail. These drive n well past 8, off both aligned and unaligned bases,
+       and at the exact tail/body boundary, so the uint64_t word body added in
+       string.c is actually run and checked byte-for-byte, not just timed. */
+
+    /* memcpy: n=19 (two words + a 3-byte tail), aligned base; bytes past n
+       must stay untouched. */
+    {
+        unsigned char src[24], dst[24];
+        int i;
+        for (i = 0; i < 24; i++) { src[i] = (unsigned char)(0x40 + i); dst[i] = 0xEE; }
+        memcpy(dst, src, 19);
+        for (i = 0; i < 19; i++) check(dst[i] == src[i]);
+        for (i = 19; i < 24; i++) check(dst[i] == 0xEE);
+    }
+
+    /* memcpy: unaligned src/dst bases (offset 1 and 3), n=19, proving the word
+       body is correct off a non-8-aligned start, not just fast there. */
+    {
+        unsigned char src[32], dst[32];
+        int i;
+        for (i = 0; i < 32; i++) { src[i] = (unsigned char)(0x60 + i); dst[i] = 0xEE; }
+        memcpy(dst + 3, src + 1, 19);
+        for (i = 0; i < 19; i++) check(dst[3 + i] == src[1 + i]);
+        check(dst[2] == 0xEE && dst[22] == 0xEE);
+    }
+
+    /* memcpy: n in {0,1,7,8,9}, exactly at the word/tail boundary. */
+    {
+        unsigned char src[16], dst[16];
+        size_t ns[5];
+        int i, k;
+        ns[0] = 0; ns[1] = 1; ns[2] = 7; ns[3] = 8; ns[4] = 9;
+        for (k = 0; k < 5; k++) {
+            size_t n = ns[k];
+            for (i = 0; i < 16; i++) { src[i] = (unsigned char)(0x80 + i); dst[i] = 0xEE; }
+            memcpy(dst, src, n);
+            for (i = 0; i < (int)n; i++) check(dst[i] == src[i]);
+            for (i = (int)n; i < 16; i++) check(dst[i] == 0xEE);
+        }
+    }
+
+    /* memset: n=19 aligned, n=19 off an unaligned base (offset 3), and n in
+       {0,1,7,8,9} at the word/tail boundary. */
+    {
+        unsigned char d[32];
+        int i;
+
+        for (i = 0; i < 32; i++) d[i] = 0xEE;
+        memset(d, 0xAB, 19);
+        for (i = 0; i < 19; i++) check(d[i] == 0xAB);
+        for (i = 19; i < 32; i++) check(d[i] == 0xEE);
+
+        for (i = 0; i < 32; i++) d[i] = 0xEE;
+        memset(d + 3, 0xCD, 19);
+        for (i = 0; i < 3; i++) check(d[i] == 0xEE);
+        for (i = 3; i < 22; i++) check(d[i] == 0xCD);
+        for (i = 22; i < 32; i++) check(d[i] == 0xEE);
+
+        {
+            size_t ns[5];
+            int k;
+            ns[0] = 0; ns[1] = 1; ns[2] = 7; ns[3] = 8; ns[4] = 9;
+            for (k = 0; k < 5; k++) {
+                size_t n = ns[k];
+                for (i = 0; i < 16; i++) d[i] = 0xEE;
+                memset(d, 0x55, n);
+                for (i = 0; i < (int)n; i++) check(d[i] == 0x55);
+                for (i = (int)n; i < 16; i++) check(d[i] == 0xEE);
+            }
+        }
+    }
+
+    /* memmove forward (d<s), n=19 (>=16, crosses the word/tail boundary),
+       overlapping and off an unaligned base. */
+    {
+        unsigned char buf[48], expect[48];
+        int i;
+        for (i = 0; i < 48; i++) buf[i] = (unsigned char)(0x10 + i);
+        for (i = 0; i < 48; i++) expect[i] = buf[i];
+        memmove(buf + 1, buf + 5, 19);            /* d < s, overlapping */
+        for (i = 0; i < 19; i++) check(buf[1 + i] == expect[5 + i]);
+        check(buf[0] == expect[0]);               /* below dst: untouched */
+        check(buf[20] == expect[20]);              /* past the moved span */
+    }
+
+    /* memmove backward (d>s), n=19 (>=16), confirming the unchanged byte
+       loop still holds now that it is the only unoptimized branch left. */
+    {
+        unsigned char buf[48], expect[48];
+        int i;
+        for (i = 0; i < 48; i++) buf[i] = (unsigned char)(0x30 + i);
+        for (i = 0; i < 48; i++) expect[i] = buf[i];
+        memmove(buf + 5, buf + 1, 19);            /* d > s, overlapping */
+        for (i = 0; i < 19; i++) check(buf[5 + i] == expect[1 + i]);
+        check(buf[0] == expect[0]);               /* below src: untouched */
+        check(buf[24] == expect[24]);              /* past the moved span */
+    }
+
     /* strlen */
     check(strlen("") == 0);
     check(strlen("maize") == 5);
