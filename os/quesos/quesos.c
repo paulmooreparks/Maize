@@ -103,8 +103,15 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
  * ================================================================================== */
 #define QUESOS_MAX_PROC 24
 #define QUESOS_PATH_CAP 256
+#define QUESOS_MAX_FD   16       /* per-process file descriptors                        */
 
 enum proc_state { P_FREE = 0, P_RUNNABLE, P_BLOCKED, P_ZOMBIE };
+
+/* Why a process is BLOCKED (block_kind), so the right waker completes its syscall. */
+#define BLK_NONE   0
+#define BLK_WAIT   1             /* parked in wait4 (woken by an exiting child)         */
+#define BLK_PIPE_R 2             /* parked reading an empty pipe (woken by a writer)    */
+#define BLK_PIPE_W 3             /* parked writing a full pipe (woken by a reader)      */
 
 /* saved_rs (offset 0) and root_pa (offset 8) are read by the quesos_switch_to metal at
  * those exact byte offsets; keep them first and in this order. */
@@ -118,12 +125,19 @@ struct pcb {
     long exit_status;
     long wait_for;                /* waitpid target while BLOCKED (-1 = any child)     */
     u64  wait_status_uva;         /* user address to receive the wait status, or 0     */
+    int  block_kind;              /* why BLOCKED: see BLK_* (wait vs a pipe end)       */
+    int  block_pipe;             /* pipe index for a blocked pipe read/write          */
+    u64  block_buf;              /* user buffer VA for a blocked pipe read/write      */
+    long block_count;            /* requested byte count for a blocked pipe op        */
+    int  fd[QUESOS_MAX_FD];      /* per-process fd table: open-file-description index  */
     char path[QUESOS_PATH_CAP];   /* argv[0] for the reap transcript                   */
 };
 
 static struct pcb g_proc[QUESOS_MAX_PROC];
 struct pcb *g_current;            /* the running process (read by the metal trampoline) */
 static long g_next_pid = 1;
+
+static void schedule(void);       /* round-robin scheduler; noreturn (defined below)    */
 
 /* Boot worklist: quesOS's own argv[1..] is the exec worklist (maize-24 decision D7). */
 static char g_pathbuf[QUESOS_MAX_PROC][QUESOS_PATH_CAP];
@@ -286,59 +300,83 @@ static long quesos_slurp(const char *path) {
     return total;
 }
 
-/* Map the user stack region and build the process-start block + a synthesized trap
- * frame so quesos_switch_to enters at `entry` in user mode. Layout on the user stack,
- * low to high address:
+/* Marshalled argv/envp for the next process image. build_start_block reads these; they
+ * are filled by marshal_single (argv0 = path only) for a worklist/fork exec and by
+ * marshal_argv (the full argv/envp) for execve. */
+#define QUESOS_MAX_ARG   32
+#define QUESOS_ARGBUF    4096u
+static char g_arg_strbuf[QUESOS_ARGBUF];  /* packed NUL-terminated arg + env strings   */
+static u64  g_arg_off[QUESOS_MAX_ARG];    /* byte offset of each string in g_arg_strbuf */
+static int  g_arg_argc;                   /* number of argv strings (offsets [0,argc))  */
+static int  g_arg_envc;                   /* number of envp strings ([argc, argc+envc)) */
+static u64  g_arg_pack;                   /* total bytes packed into g_arg_strbuf       */
+
+/* Single-argument marshal: argv = { path }, empty envp. */
+static void marshal_single(const char *path) {
+    u64 len = qos_strlen(path) + 1;
+    u64 k;
+    if (len > QUESOS_ARGBUF) { len = QUESOS_ARGBUF; }
+    for (k = 0; k < len; ++k) { g_arg_strbuf[k] = path[k]; }
+    g_arg_off[0] = 0;
+    g_arg_pack = len;
+    g_arg_argc = 1;
+    g_arg_envc = 0;
+}
+
+/* Map the user stack region and lay out the SysV process-start block + a synthesized
+ * trap frame so quesos_switch_to enters at `entry` in user mode. Uses the marshalled
+ * g_arg_* set. Layout on the user stack, low to high address:
  *   [R0..RB]  13 saved GP regs (all 0)   <- pcb->saved_rs points here
  *   [aux][cause]                          (2 words, ignored on entry)
  *   [rf][pc]                              (rf = USER_RF, pc = entry)
- *   [argc][argv0][NULL][NULL]             (the SysV start block crt0 consumes)
- *   [argv0 string ...]
+ *   [argc][argv..][NULL][envp..][NULL]    (the SysV start block crt0 consumes)
+ *   [packed argv/envp strings ...]
  * After quesos_switch_to (POP x13; ADD $10; IRET) RS lands on [argc]. */
-static void build_first_entry(struct pcb *p, const char *path, u64 entry) {
+static void build_start_block(struct pcb *p, u64 entry) {
     u64 top = USER_STACK_TOP;
-    u64 plen = qos_strlen(path) + 1;
-    u64 string_base = top - plen;
-    u64 ptr_block = 8ul * (1u + 2u + 1u);      /* argc + argv0 + NULL + envp NULL */
-    u64 argc_va = (string_base - ptr_block) & ~7ul;
+    u64 str_base = top - g_arg_pack;                          /* packed strings area    */
+    int nptr = 1 + g_arg_argc + 1 + g_arg_envc + 1;          /* argc,argv,NULL,env,NULL */
+    u64 argc_va = (str_base - (u64)nptr * 8ul) & ~15ul;
     u64 pc_va    = argc_va - 8;
     u64 rf_va    = argc_va - 16;
     u64 cause_va = argc_va - 24;
     u64 aux_va   = argc_va - 32;
     u64 regs_base = aux_va - 13ul * 8ul;
-    u64 va;
+    u64 va, slot;
     u64 k;
+    int i;
 
-    /* Map the stack region [top - USER_STACK_PAGES*PAGE, top). */
     for (va = top - (u64)USER_STACK_PAGES * PAGE_SIZE; va < top; va += PAGE_SIZE) {
         ensure_user_page(p, va);
     }
 
-    for (k = 0; k < plen - 1; ++k) { as_write8(p, string_base + k, (u8)path[k]); }
-    as_write8(p, string_base + (plen - 1), 0);
+    /* Copy packed strings to the top of the user stack. */
+    for (k = 0; k < g_arg_pack; ++k) { as_write8(p, str_base + k, (u8)g_arg_strbuf[k]); }
 
-    as_write64(p, argc_va,      1);
-    as_write64(p, argc_va + 8,  string_base);
-    as_write64(p, argc_va + 16, 0);
-    as_write64(p, argc_va + 24, 0);
+    /* argc, then argv[] pointers, NULL, envp[] pointers, NULL. */
+    slot = argc_va;
+    as_write64(p, slot, (u64)g_arg_argc); slot += 8;
+    for (i = 0; i < g_arg_argc; ++i) { as_write64(p, slot, str_base + g_arg_off[i]); slot += 8; }
+    as_write64(p, slot, 0); slot += 8;
+    for (i = 0; i < g_arg_envc; ++i) { as_write64(p, slot, str_base + g_arg_off[g_arg_argc + i]); slot += 8; }
+    as_write64(p, slot, 0); slot += 8;
 
     as_write64(p, pc_va,    entry);
     as_write64(p, rf_va,    USER_RF);
     as_write64(p, cause_va, 0);
     as_write64(p, aux_va,   0);
-
     for (k = 0; k < 13; ++k) { as_write64(p, regs_base + k * 8, 0); }
 
     p->saved_rs = regs_base;
 }
 
 /* Parse the .mzx and place each segment into freshly-allocated user frames mapped at
- * the segment vaddr, zero-filling the BSS tail. Returns 0 on success. */
-static int load_image_into(struct pcb *p, const char *path) {
+ * the segment vaddr, zero-filling the BSS tail. Writes the entry point to *entry_out.
+ * Does NOT build the start block (the caller marshals argv/envp first). Returns 0. */
+static int load_segments(struct pcb *p, const char *path, u64 *entry_out) {
     long size = quesos_slurp(path);
     const u8 *b = g_filebuf;
     u16 seg_count;
-    u64 entry;
     u64 shoff;
     u16 i;
 
@@ -351,8 +389,8 @@ static int load_image_into(struct pcb *p, const char *path) {
     }
 
     seg_count = rd_u16(b, 6);
-    entry     = rd_u64(b, 8);
-    shoff     = rd_u64(b, 16);
+    *entry_out = rd_u64(b, 8);
+    shoff      = rd_u64(b, 16);
 
     for (i = 0; i < seg_count; ++i) {
         u64 so = shoff + (u64)i * MZX_SEGMENT_SIZE;
@@ -373,9 +411,175 @@ static int load_image_into(struct pcb *p, const char *path) {
         for (j = 0; j < file_size; ++j) { as_write8(p, vaddr + j, b[file_off + j]); }
         for (j = file_size; j < mem_size; ++j) { as_write8(p, vaddr + j, 0); }
     }
-
-    build_first_entry(p, path, entry);
     return 0;
+}
+
+/* ==================================================================================
+ * File descriptors, open-file descriptions, and pipes.
+ *
+ * Each process has a small fd table (pcb.fd) whose entries index a shared open-file-
+ * description table (g_ofd). An OFD is a native host fd (fd 0/1/2 stdio, or a hostfs
+ * open) or one end of a pipe; it is refcounted so fork (which copies the fd table) and
+ * dup2 (which aliases a slot) share the same description. A pipe is a kernel ring
+ * buffer; an empty-pipe read or full-pipe write PARKS the process (BLOCKED) and the
+ * peer op (write / read / last-close) completes it and wakes it. All cross-process
+ * buffer copies go through the target process's page table (as_write8 / user_pa), so
+ * they are correct regardless of which address space CR0 currently names.
+ * ================================================================================== */
+#define QUESOS_MAX_OFD  128
+#define QUESOS_MAX_PIPE 16
+#define PIPE_CAP        4096u
+
+#define OFD_FREE   0
+#define OFD_NATIVE 1
+#define OFD_PIPE_R 2
+#define OFD_PIPE_W 3
+#define OFD_RESVD  4    /* reserved by ofd_alloc; the caller fills in the real kind */
+
+struct ofd {
+    int  kind;
+    long native_fd;   /* OFD_NATIVE: the host fd handed to the native SYS provider */
+    int  pipe_idx;    /* OFD_PIPE_*: index into g_pipe                              */
+    int  refcount;
+};
+static struct ofd g_ofd[QUESOS_MAX_OFD];
+
+struct pipe_obj {
+    int used;
+    int readers;      /* open read ends                                            */
+    int writers;      /* open write ends                                           */
+    u32 r, w, count;  /* ring read/write cursors + fill level                      */
+    u8  buf[PIPE_CAP];
+};
+static struct pipe_obj g_pipe[QUESOS_MAX_PIPE];
+
+static int g_stdio_ofd[3];        /* shared native OFDs for fd 0/1/2                */
+
+static int ofd_alloc(void) {
+    int i;
+    for (i = 0; i < QUESOS_MAX_OFD; ++i) {
+        if (g_ofd[i].kind == OFD_FREE) {
+            /* Reserve the slot NOW so a second alloc before the caller fills in the
+             * real kind does not hand back the same slot. */
+            g_ofd[i].kind = OFD_RESVD;
+            g_ofd[i].refcount = 0;
+            g_ofd[i].pipe_idx = -1;
+            return i;
+        }
+    }
+    return -1;
+}
+static void ofd_ref(int idx) { if (idx >= 0) { g_ofd[idx].refcount++; } }
+
+static void pipe_wake_readers(int pi);
+static void pipe_wake_writers(int pi);
+
+/* Drop a reference to an OFD; on the last reference close it (a hostfs fd is closed
+ * natively; a pipe end decrements the pipe's reader/writer count and wakes any peer
+ * blocked on the now-changed condition, e.g. a reader waiting for EOF). */
+static void ofd_unref(int idx) {
+    struct ofd *o;
+    if (idx < 0) { return; }
+    o = &g_ofd[idx];
+    if (o->refcount > 0) { o->refcount--; }
+    if (o->refcount > 0) { return; }
+    if (o->kind == OFD_NATIVE) {
+        if (o->native_fd > 2) { sys_close(o->native_fd); }
+    } else if (o->kind == OFD_PIPE_R) {
+        g_pipe[o->pipe_idx].readers--;
+        if (g_pipe[o->pipe_idx].readers == 0) { pipe_wake_writers(o->pipe_idx); }
+    } else if (o->kind == OFD_PIPE_W) {
+        g_pipe[o->pipe_idx].writers--;
+        if (g_pipe[o->pipe_idx].writers == 0) { pipe_wake_readers(o->pipe_idx); }
+    }
+    o->kind = OFD_FREE;
+}
+
+/* Allocate the shared stdio OFDs once at boot. */
+static void ofd_init(void) {
+    int i;
+    for (i = 0; i < 3; ++i) {
+        int o = ofd_alloc();
+        g_ofd[o].kind = OFD_NATIVE;
+        g_ofd[o].native_fd = i;
+        g_stdio_ofd[i] = o;
+    }
+}
+
+static void fdtable_init(struct pcb *p) {
+    int i;
+    for (i = 0; i < QUESOS_MAX_FD; ++i) { p->fd[i] = -1; }
+    for (i = 0; i < 3; ++i) { p->fd[i] = g_stdio_ofd[i]; ofd_ref(g_stdio_ofd[i]); }
+}
+static void fdtable_copy(struct pcb *dst, struct pcb *src) {
+    int i;
+    for (i = 0; i < QUESOS_MAX_FD; ++i) { dst->fd[i] = src->fd[i]; ofd_ref(src->fd[i]); }
+}
+static void fdtable_close_all(struct pcb *p) {
+    int i;
+    for (i = 0; i < QUESOS_MAX_FD; ++i) {
+        if (p->fd[i] >= 0) { ofd_unref(p->fd[i]); p->fd[i] = -1; }
+    }
+}
+static int fd_alloc_slot(struct pcb *p) {
+    int i;
+    for (i = 0; i < QUESOS_MAX_FD; ++i) { if (p->fd[i] < 0) { return i; } }
+    return -1;
+}
+
+/* Copy up to `count` bytes out of pipe `pi`'s ring into process `dst`'s buffer. */
+static long pipe_fetch(int pi, struct pcb *dst, u64 uva, long count) {
+    struct pipe_obj *q = &g_pipe[pi];
+    long n = 0;
+    while (n < count && q->count > 0) {
+        as_write8(dst, uva + (u64)n, q->buf[q->r]);
+        q->r = (q->r + 1) % PIPE_CAP;
+        q->count--;
+        ++n;
+    }
+    return n;
+}
+/* Copy up to `count` bytes from process `src`'s buffer into pipe `pi`'s ring. */
+static long pipe_deposit(int pi, struct pcb *src, u64 uva, long count) {
+    struct pipe_obj *q = &g_pipe[pi];
+    long n = 0;
+    while (n < count && q->count < PIPE_CAP) {
+        q->buf[q->w] = *(u8 *)user_pa(src, uva + (u64)n);
+        q->w = (q->w + 1) % PIPE_CAP;
+        q->count++;
+        ++n;
+    }
+    return n;
+}
+
+static void wake_with(struct pcb *p, long rv) {
+    as_write64(p, p->saved_rs + 11ul * 8ul, (u64)rv);
+    p->block_kind = BLK_NONE;
+    p->state = P_RUNNABLE;
+}
+
+/* A writer added data (or the last writer closed): complete blocked readers on `pi`. */
+static void pipe_wake_readers(int pi) {
+    int i;
+    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+        struct pcb *r = &g_proc[i];
+        if (r->state == P_BLOCKED && r->block_kind == BLK_PIPE_R && r->block_pipe == pi) {
+            long n = pipe_fetch(pi, r, r->block_buf, r->block_count);
+            if (n > 0 || g_pipe[pi].writers == 0) { wake_with(r, n); }
+        }
+    }
+}
+/* A reader freed space (or the last reader closed): complete blocked writers on `pi`. */
+static void pipe_wake_writers(int pi) {
+    int i;
+    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+        struct pcb *w = &g_proc[i];
+        if (w->state == P_BLOCKED && w->block_kind == BLK_PIPE_W && w->block_pipe == pi) {
+            if (g_pipe[pi].readers == 0) { wake_with(w, -32); continue; }   /* -EPIPE */
+            long n = pipe_deposit(pi, w, w->block_buf, w->block_count);
+            if (n > 0) { pipe_wake_readers(pi); wake_with(w, n); }
+        }
+    }
 }
 
 /* Allocate a free process slot, or 0 if the table is full. */
@@ -391,17 +595,23 @@ static struct pcb *alloc_pcb(void) {
 static struct pcb *spawn(const char *path, long parent) {
     struct pcb *p = alloc_pcb();
     unsigned long j;
+    u64 entry;
     if (p == 0) { return 0; }
     p->state = P_RUNNABLE;
     p->pid = g_next_pid++;
     p->parent = parent;
     p->exit_status = 0;
+    p->block_kind = BLK_NONE;
     for (j = 0; j < QUESOS_PATH_CAP - 1 && path[j]; ++j) { p->path[j] = path[j]; }
     p->path[j] = 0;
-    if (build_address_space(p) != 0 || load_image_into(p, path) != 0) {
+    fdtable_init(p);
+    if (build_address_space(p) != 0 || load_segments(p, path, &entry) != 0) {
+        fdtable_close_all(p);
         p->state = P_FREE;
         return 0;
     }
+    marshal_single(path);
+    build_start_block(p, entry);
     return p;
 }
 
@@ -466,20 +676,149 @@ static long bounce_out(u64 uva, long count) {
     return n;
 }
 
-static long do_write(u64 fd, u64 uva, long count) {
+/* Native passthrough (fd 0/1/2 or a hostfs fd): bounce the user buffer through the
+ * identity-mapped kernel staging area, then issue the native SYS. */
+static long native_write(long nfd, u64 uva, long count) {
     long n = bounce_out(uva, count);
-    return sys_write((long)fd, g_iobuf, n);
+    return sys_write(nfd, g_iobuf, n);
 }
-
-static long do_read(u64 fd, u64 uva, long count) {
+static long native_read(long nfd, u64 uva, long count) {
     long n = count;
     long got;
     long i;
     if (n < 0) { n = 0; }
     if (n > (long)QUESOS_IOBUF_CAP) { n = (long)QUESOS_IOBUF_CAP; }
-    got = sys_read((long)fd, g_iobuf, n);
+    got = sys_read(nfd, g_iobuf, n);
     for (i = 0; i < got; ++i) { *(u8 *)(uva + (u64)i) = g_iobuf[i]; }
     return got;
+}
+
+/* Resolve a process fd to its open-file description, or 0 for a bad fd. */
+static struct ofd *fd_ofd(struct pcb *p, u64 fd_num) {
+    int slot;
+    if (fd_num >= QUESOS_MAX_FD) { return 0; }
+    slot = p->fd[fd_num];
+    if (slot < 0) { return 0; }
+    return &g_ofd[slot];
+}
+
+static long do_write(u64 fd_num, u64 uva, long count) {
+    struct pcb *self = g_current;
+    struct ofd *o = fd_ofd(self, fd_num);
+    if (o == 0) { return -9; }   /* -EBADF */
+    if (o->kind == OFD_NATIVE) { return native_write(o->native_fd, uva, count); }
+    if (o->kind == OFD_PIPE_W) {
+        int pi = o->pipe_idx;
+        if (g_pipe[pi].readers == 0) { return -32; }   /* -EPIPE */
+        if (g_pipe[pi].count < PIPE_CAP) {
+            long n = pipe_deposit(pi, self, uva, count);
+            pipe_wake_readers(pi);
+            return n;
+        }
+        self->block_kind = BLK_PIPE_W; self->block_pipe = pi;
+        self->block_buf = uva; self->block_count = count;
+        self->state = P_BLOCKED;
+        schedule();   /* noreturn: a reader completes this write */
+        return 0;
+    }
+    return -9;
+}
+
+static long do_read(u64 fd_num, u64 uva, long count) {
+    struct pcb *self = g_current;
+    struct ofd *o = fd_ofd(self, fd_num);
+    if (o == 0) { return -9; }   /* -EBADF */
+    if (o->kind == OFD_NATIVE) { return native_read(o->native_fd, uva, count); }
+    if (o->kind == OFD_PIPE_R) {
+        int pi = o->pipe_idx;
+        if (g_pipe[pi].count > 0) {
+            long n = pipe_fetch(pi, self, uva, count);
+            pipe_wake_writers(pi);
+            return n;
+        }
+        if (g_pipe[pi].writers == 0) { return 0; }   /* EOF: all writers closed */
+        self->block_kind = BLK_PIPE_R; self->block_pipe = pi;
+        self->block_buf = uva; self->block_count = count;
+        self->state = P_BLOCKED;
+        schedule();   /* noreturn: a writer completes this read */
+        return 0;
+    }
+    return -9;
+}
+
+/* open/close/dup/dup2/pipe: manage the fd table + open-file descriptions. */
+static long do_open(u64 path_uva, long flags, long mode) {
+    char kpath[QUESOS_PATH_CAP];
+    int i, slot, o;
+    long nfd;
+    for (i = 0; i < QUESOS_PATH_CAP - 1 && *(char *)(path_uva + (u64)i); ++i) {
+        kpath[i] = *(char *)(path_uva + (u64)i);
+    }
+    kpath[i] = 0;
+    nfd = sys_open(kpath, flags, mode);
+    if (nfd < 0) { return nfd; }
+    slot = fd_alloc_slot(g_current);
+    o = ofd_alloc();
+    if (slot < 0 || o < 0) { sys_close(nfd); return -24; }   /* -EMFILE */
+    g_ofd[o].kind = OFD_NATIVE; g_ofd[o].native_fd = nfd; g_ofd[o].refcount = 1;
+    g_current->fd[slot] = o;
+    return slot;
+}
+
+static long do_close(u64 fd_num) {
+    struct pcb *self = g_current;
+    if (fd_num >= QUESOS_MAX_FD || self->fd[fd_num] < 0) { return -9; }
+    ofd_unref(self->fd[fd_num]);
+    self->fd[fd_num] = -1;
+    return 0;
+}
+
+static long do_dup2(u64 oldfd, u64 newfd) {
+    struct pcb *self = g_current;
+    if (oldfd >= QUESOS_MAX_FD || newfd >= QUESOS_MAX_FD || self->fd[oldfd] < 0) { return -9; }
+    if (oldfd == newfd) { return (long)newfd; }
+    if (self->fd[newfd] >= 0) { ofd_unref(self->fd[newfd]); }
+    self->fd[newfd] = self->fd[oldfd];
+    ofd_ref(self->fd[newfd]);
+    return (long)newfd;
+}
+
+static long do_dup(u64 oldfd) {
+    struct pcb *self = g_current;
+    int slot;
+    if (oldfd >= QUESOS_MAX_FD || self->fd[oldfd] < 0) { return -9; }
+    slot = fd_alloc_slot(self);
+    if (slot < 0) { return -24; }
+    self->fd[slot] = self->fd[oldfd];
+    ofd_ref(self->fd[slot]);
+    return slot;
+}
+
+static long do_pipe(u64 fds_uva) {
+    struct pcb *self = g_current;
+    int pi, i, rslot, wslot, ro, wo;
+
+    pi = -1;
+    for (i = 0; i < QUESOS_MAX_PIPE; ++i) { if (!g_pipe[i].used) { pi = i; break; } }
+    if (pi < 0) { return -24; }
+    ro = ofd_alloc();
+    wo = ofd_alloc();
+    if (ro < 0 || wo < 0) { return -24; }
+    rslot = fd_alloc_slot(self);
+    if (rslot < 0) { return -24; }
+    self->fd[rslot] = ro;                 /* claim so the write slot differs */
+    wslot = fd_alloc_slot(self);
+    if (wslot < 0) { self->fd[rslot] = -1; return -24; }
+    self->fd[wslot] = wo;
+
+    g_pipe[pi].used = 1; g_pipe[pi].readers = 1; g_pipe[pi].writers = 1;
+    g_pipe[pi].r = 0; g_pipe[pi].w = 0; g_pipe[pi].count = 0;
+    g_ofd[ro].kind = OFD_PIPE_R; g_ofd[ro].pipe_idx = pi; g_ofd[ro].refcount = 1;
+    g_ofd[wo].kind = OFD_PIPE_W; g_ofd[wo].pipe_idx = pi; g_ofd[wo].refcount = 1;
+
+    as_write32(self, fds_uva,     (u32)rslot);
+    as_write32(self, fds_uva + 4, (u32)wslot);
+    return 0;
 }
 
 /* Encode a normal-exit wait status the way Linux does: exit code in bits 8..15
@@ -506,7 +845,9 @@ static long do_fork(void) {
     child->exit_status = 0;
     child->wait_for = 0;
     child->wait_status_uva = 0;
+    child->block_kind = BLK_NONE;
     for (k = 0; k < QUESOS_PATH_CAP; ++k) { child->path[k] = parent->path[k]; }
+    fdtable_copy(child, parent);   /* the child inherits the fd table (shared OFDs) */
 
     build_address_space(child);
     for (idx = 0; idx < 512; ++idx) {
@@ -571,6 +912,7 @@ static void do_exit(long status) {
 
     self->exit_status = status;
     self->state = P_ZOMBIE;
+    fdtable_close_all(self);   /* closing a pipe write end wakes blocked readers (EOF) */
 
     parent = find_by_pid(self->parent);
     if (parent != 0 && parent->state == P_BLOCKED
@@ -589,6 +931,62 @@ static void do_exit(long status) {
     schedule();   /* noreturn */
 }
 
+/* Marshal a user argv/envp pointer array (of user string pointers, NULL-terminated)
+ * into the shared g_arg_* packed buffer, appending to `*nstr` / `*pack`. Reads through
+ * the current address space (direct deref; CR0 = the calling process). Returns the
+ * number of strings copied. */
+static int marshal_vec(u64 vec_uva, int *nstr, u64 *pack, int max_more) {
+    int n = 0;
+    if (vec_uva == 0) { return 0; }
+    while (n < max_more) {
+        u64 sp = *(u64 *)(vec_uva + (u64)n * 8ul);
+        u64 j = 0;
+        if (sp == 0) { break; }
+        g_arg_off[*nstr] = *pack;
+        while (*(char *)(sp + j) != 0 && *pack < QUESOS_ARGBUF - 1) {
+            g_arg_strbuf[*pack] = *(char *)(sp + j);
+            (*pack)++; ++j;
+        }
+        g_arg_strbuf[(*pack)++] = 0;
+        (*nstr)++; ++n;
+    }
+    return n;
+}
+
+/* execve: replace the calling process's image with `path`, passing argv/envp. The fd
+ * table survives (per POSIX). The argv/envp and path are marshalled out of the OLD
+ * address space first (direct deref, CR0 = the caller), then a fresh address space is
+ * built and the new image loaded; the trampoline enters it on return. Does not return
+ * on success (the process now runs the new image); a load failure kills the process. */
+static long do_execve(u64 path_uva, u64 argv_uva, u64 envp_uva) {
+    struct pcb *self = g_current;
+    char kpath[QUESOS_PATH_CAP];
+    int i, nstr = 0;
+    u64 pack = 0, entry;
+
+    for (i = 0; i < QUESOS_PATH_CAP - 1 && *(char *)(path_uva + (u64)i); ++i) {
+        kpath[i] = *(char *)(path_uva + (u64)i);
+    }
+    kpath[i] = 0;
+
+    marshal_vec(argv_uva, &nstr, &pack, QUESOS_MAX_ARG);
+    g_arg_argc = nstr;
+    marshal_vec(envp_uva, &nstr, &pack, QUESOS_MAX_ARG - nstr);
+    g_arg_envc = nstr - g_arg_argc;
+    g_arg_pack = pack;
+
+    /* Build a fresh address space (the old one's frames leak; acceptable for the POC
+     * pool) and load the new image. build_start_block lays out the marshalled argv. */
+    build_address_space(self);
+    if (load_segments(self, kpath, &entry) != 0) {
+        do_exit(127);   /* image destroyed and unloadable: terminate (noreturn) */
+    }
+    build_start_block(self, entry);
+    for (i = 0; i < QUESOS_PATH_CAP - 1 && kpath[i]; ++i) { self->path[i] = kpath[i]; }
+    self->path[i] = 0;
+    return 0;
+}
+
 void quesos_syscall(void) {
     u64 *r = (u64 *)g_current->saved_rs;
     u64 num = r[13];
@@ -596,12 +994,20 @@ void quesos_syscall(void) {
     long result;
 
     switch (num) {
-        case SYS_write:  result = do_write(a0, a1, (long)a2); break;
-        case SYS_read:   result = do_read(a0, a1, (long)a2);  break;
-        case SYS_getpid: result = g_current->pid;             break;
-        case SYS_fork:   result = do_fork();                  break;
-        case SYS_wait4:  result = do_wait((long)a0, a1);      break;
-        case SYS_exit:   do_exit((long)a0); return;           /* noreturn */
+        case SYS_write:  result = do_write(a0, a1, (long)a2);      break;
+        case SYS_read:   result = do_read(a0, a1, (long)a2);       break;
+        case SYS_open:   result = do_open(a0, (long)a1, (long)a2); break;
+        case SYS_close:  result = do_close(a0);                    break;
+        case SYS_pipe:   result = do_pipe(a0);                     break;
+        case SYS_dup:    result = do_dup(a0);                      break;
+        case SYS_dup2:   result = do_dup2(a0, a1);                 break;
+        case SYS_getpid: result = g_current->pid;                 break;
+        case SYS_fork:   result = do_fork();                      break;
+        case SYS_wait4:  result = do_wait((long)a0, a1);          break;
+        case SYS_execve: result = do_execve(a0, a1, a2);
+                         if (result == 0) { return; }             /* new image entered */
+                         break;
+        case SYS_exit:   do_exit((long)a0); return;               /* noreturn */
         default:
             qos_puts("[quesos] unhandled syscall ");
             qos_put_u64(num);
@@ -637,6 +1043,8 @@ void quesos_main(long argc, char **argv) {
         qos_puts("[quesos] no programs on the exec worklist; powering off\n");
         quesos_poweroff();
     }
+
+    ofd_init();   /* allocate the shared stdio open-file descriptions (fd 0/1/2) */
 
     qos_puts("[quesos] init: cause-7 handler resident; running ");
     qos_put_u64((u64)g_worklist_count);
