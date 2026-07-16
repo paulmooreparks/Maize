@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
     Fetch and verify the pinned SDL2 mingw development libraries for building the
-    maize --display window backend on Windows.
+    maizeg --display window backend on Windows.
 
 .DESCRIPTION
     Downloads the pinned SDL2 mingw development archive, verifies it against a

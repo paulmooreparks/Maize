@@ -70,7 +70,7 @@ The visible window uses the SDL2 backend, compiled in only with `MAIZE_DISPLAY=O
     cmake --build build/linux-debug --target maize
 
     # 2. Run any ordinary stdio program in the window (no special build).
-    build/linux-debug/maize --display <your-stdio-program>.mzx
+    build/linux-debug/maizeg --display <your-stdio-program>.mzx
 
 Type and watch output render as glyphs; physical keys reach the program's stdin. Close the
 window to exit.

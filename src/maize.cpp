@@ -19,7 +19,7 @@
 #include <unistd.h>
 #endif
 
-/* maize-225: is the process stdin an interactive terminal? Used to decide whether maizec's
+/* maize-225: is the process stdin an interactive terminal? Used to decide whether the console build's
    `input=keyboard` neutralization should fire: only for an interactive tty (where the stdin
    scancode injector would block forever, the maize-217 hang), NOT for a pipe or file that is
    deliberately feeding scancodes (a keyboard test, or an intentional redirect). */
@@ -147,10 +147,10 @@ static void print_usage(std::ostream &out) {
 	out <<
 		"maize - run a Maize program\n"
 		"\n"
-		"There are two VM binaries: 'maizec' is the console build (its output goes to the\n"
-		"terminal; use it for programs that print, e.g. hello, quesOS), and 'maize' is the\n"
+		"There are two VM binaries: 'maize' is the console build (its output goes to the\n"
+		"terminal; use it for programs that print, e.g. hello, quesOS), and 'maizeg' is the\n"
 		"graphical build (an on-screen window; use it for the framebuffer, e.g. DOOM). Both\n"
-		"take the same options below. On 'maize', --pause-on-halt holds the window open on\n"
+		"take the same options below. On 'maizeg', --pause-on-halt holds the window open on\n"
 		"the final frame (and any --show-perf report) until you press a key or close it.\n"
 		"\n"
 		"Usage:\n"
@@ -184,8 +184,8 @@ static void print_usage(std::ostream &out) {
 		"                    line (blank and #-comment lines ignored). Keys are the long\n"
 		"                    flag names without dashes: display-scale, refresh-hz,\n"
 		"                    resolution, console-size, root, show-perf, pause-on-halt,\n"
-		"                    vsync, display, input, no-root. (maizec ignores the\n"
-		"                    graphical-only keys.) console-size is <cols>x<rows> (e.g. 80x25).\n"
+		"                    vsync, display, input, no-root. (the console 'maize' ignores\n"
+		"                    the graphical-only keys.) console-size is <cols>x<rows> (e.g. 80x25).\n"
 		"                    Booleans accept true/false, 1/0, or yes/no. Precedence is\n"
 		"                    built-in default < ~/.maize/config < CLI flag (a CLI flag\n"
 		"                    always wins). A bad key or value is warned and ignored.\n"
@@ -682,11 +682,11 @@ int main(int argc, char *argv[]) {
 	std::string root_override;       // --root <hostpath>: redirect the sandbox root
 #ifdef MAIZE_DISPLAY
 	/* maize-217 (Option A): the graphical `maize` binary opens a window by DEFAULT, so the
-	   binary name determines the mode (maize = the screen; maizec = the terminal). A config
+	   binary name determines the mode (maizeg = the screen; maize = the terminal). A config
 	   `display=false` still forces headless, and --console-dump overrides to headless below. */
 	bool display_requested = true;
 #else
-	bool display_requested = false;  // headless / maizec build: never a window
+	bool display_requested = false;  // headless / console build: never a window
 #endif
 	bool console_dump = false;       // --console-dump: bind the text console headlessly and
 	                                 // dump its grid at exit (headless CI self-check channel)
@@ -925,7 +925,7 @@ int main(int argc, char *argv[]) {
 		if (arg == "--pause-on-halt" || arg == "--no-pause-on-halt") {
 			/* Hold the graphical window open on the guest's final frame (and any --show-perf
 			   report) until a keypress or window-close, then exit with the guest code. Default
-			   off; graphical binary only (maizec has no window). A CLI flag overrides config. */
+			   off; graphical binary only (the console build has no window). A CLI flag overrides config. */
 			pause_on_halt = (arg == "--pause-on-halt");
 			++idx;
 			continue;
@@ -1273,12 +1273,12 @@ int main(int argc, char *argv[]) {
 	   fd. Default (empty): no injector runs and the SYS console path reads stdin on demand.
 	   A windowed run always sources keyboard events from the window, not stdin. */
 #ifdef MAIZE_CONSOLE_ONLY
-	/* maize-217/225: maizec is the console-only VM binary. `display` never applies (no window),
+	/* maize-217/225/230: the console build is the console-only VM binary. `display` never applies (no window),
 	   so drop it. `input=keyboard` binds a host-stdin scancode injector; on an INTERACTIVE
 	   terminal that injector blocks forever (the maize-217 hang), so neutralize it there -- but
 	   ONLY there. When stdin is a pipe or file (a test feeding scancodes, or a deliberate
 	   redirect) the injector is exactly what is wanted, so honor it (this is what lets the
-	   harness run the keyboard tests through maizec, maize-225). */
+	   harness run the keyboard tests through the console build, maize-225). */
 	display_requested = false;
 	if (input_source == "keyboard" && stdin_is_interactive()) { input_source.clear(); }
 #endif
@@ -1355,7 +1355,7 @@ int main(int argc, char *argv[]) {
 	   runs on a background thread while the SDL2 event loop presents frames and feeds the
 	   keyboard. */
 	/* maize-217: time the run so --show-perf prints an average-rate report on the headless
-	   path too (maizec, or a --display build with no backend). The graphical display::run
+	   path too (the console build, or a --display build with no backend). The graphical display::run
 	   prints its own richer report (with frames/FPS); used_display suppresses the duplicate. */
 	maize::perf::cpu_source cpu_perf; if (show_perf) { maize::perf::reset(); maize::perf::add(&cpu_perf); }
 	bool used_display = false;

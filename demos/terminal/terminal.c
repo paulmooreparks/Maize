@@ -12,7 +12,7 @@
  *
  * Build + run (visible window, SDL2 backend behind MAIZE_DISPLAY; see README.md):
  *   scripts/cc-maize.sh --dev -o demos/terminal/terminal.mzx demos/terminal/terminal.c
- *   maize --display --input=keyboard demos/terminal/terminal.mzx
+ *   maizeg --display --input=keyboard demos/terminal/terminal.mzx
  *
  * The headless CI gate is terminal_selfcheck.c, wired into scripts/run-ctest.sh. This
  * interactive loop is a manual demo, not a CI gate: it waits for input forever, so it is

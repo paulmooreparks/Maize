@@ -1,14 +1,14 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Build the Maize toolchain (maize, mazm, mzld, mzdis) and install stable copies into ~\bin (Windows).
+    Build the Maize toolchain (maize, maizeg, mazm, mzld, mzdis) and install stable copies into ~\bin (Windows).
 
 .DESCRIPTION
     Configures the CMake preset, builds the maize/mazm/mzld/mzdis targets as an
     optimized Release, and copies each built .exe to the install directory
-    (default: $HOME\bin). The maize VM is built with the SDL2 window backend
+    (default: $HOME\bin). The maizeg VM is built with the SDL2 window backend
     (MAIZE_DISPLAY=ON) so `--display --input=keyboard` opens a real window; the
-    vendored SDL2 runtime (SDL2.dll) is installed alongside maize.exe. Also
+    vendored SDL2 runtime (SDL2.dll) is installed alongside maizeg.exe. Also
     refreshes the mzcc.cmd Windows forwarder (the C-toolchain entry point that
     dispatches into the WSL driver) from a repo template. If the install directory
     is not on the user PATH it is appended, so editors and shells find the tools
@@ -72,7 +72,7 @@ $Sdl2CmakeDir = Join-Path $Sdl2Root 'lib/cmake/SDL2'
 $Sdl2Dll      = Join-Path $Sdl2Root 'bin/SDL2.dll'
 
 if ($Headless) {
-    Write-Warning "-Headless: building maize WITHOUT the --display window backend."
+    Write-Warning "-Headless: building maizeg WITHOUT the --display window backend."
     $displayOn   = $false
     $displayArgs = @('-DMAIZE_DISPLAY=OFF')
 }
@@ -112,8 +112,8 @@ if ($LASTEXITCODE -ne 0) {
     exit 2
 }
 
-Write-Host "Building maize, maizec, mazm, mzld, mzdis ($Preset)..."
-& $Cmake --build $BuildDir --target maize maizec mazm mzld mzdis
+Write-Host "Building maize, maizeg, mazm, mzld, mzdis ($Preset)..."
+& $Cmake --build $BuildDir --target maize maizeg mazm mzld mzdis
 if ($LASTEXITCODE -ne 0) {
     Write-Error "cmake build failed (exit $LASTEXITCODE)."
     exit 2
@@ -121,9 +121,9 @@ if ($LASTEXITCODE -ne 0) {
 
 # --- Install ----------------------------------------------------------------------
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
-# maize-217: maizec is the console-subsystem VM (terminal I/O); maize is the graphical one
-# (SDL window). Both are installed; console programs run under maizec, the screen under maize.
-foreach ($tool in 'maize', 'maizec', 'mazm', 'mzld', 'mzdis') {
+# maize-217/230: `maize` is the console-subsystem VM (terminal I/O); `maizeg` is the graphical
+# one (SDL window). Both are installed; console programs run under maize, the screen under maizeg.
+foreach ($tool in 'maize', 'maizeg', 'mazm', 'mzld', 'mzdis') {
     $builtExe = Join-Path $BuildDir "$tool.exe"
     if (-not (Test-Path $builtExe)) {
         Write-Error "build reported success but $builtExe does not exist."
@@ -133,7 +133,7 @@ foreach ($tool in 'maize', 'maizec', 'mazm', 'mzld', 'mzdis') {
     Write-Host "Installed $builtExe -> $(Join-Path $InstallDir "$tool.exe")"
 }
 
-# maize.exe now links SDL2 dynamically; install the runtime DLL alongside it so it
+# maizeg.exe (graphical) links SDL2 dynamically; install the runtime DLL alongside it so it
 # starts from anywhere on PATH ($InstallDir is on PATH, so a co-located DLL resolves).
 if ($displayOn) {
     if (Test-Path $Sdl2Dll) {
@@ -141,7 +141,7 @@ if ($displayOn) {
         Write-Host "Installed $Sdl2Dll -> $(Join-Path $InstallDir 'SDL2.dll')"
     }
     else {
-        Write-Warning "MAIZE_DISPLAY is ON but $Sdl2Dll is missing; maize.exe will fail to start until SDL2.dll is on PATH."
+        Write-Warning "MAIZE_DISPLAY is ON but $Sdl2Dll is missing; maizeg.exe will fail to start until SDL2.dll is on PATH."
     }
 }
 
@@ -259,5 +259,5 @@ else {
     }
 }
 
-Write-Host 'maize, maizec, mazm, mzld, mzdis installed and smoke-checked.'
+Write-Host 'maize, maizeg, mazm, mzld, mzdis installed and smoke-checked.'
 exit 0

@@ -100,8 +100,8 @@ CC_MAIZE="${SCRIPT_DIR}/cc-maize.sh"
 [ -f "$CC_MAIZE" ] || { echo "run-ctest.sh: driver ${CC_MAIZE} not found." >&2; exit 2; }
 MAZM=$(resolve_exe "${BUILD_DIR}/mazm") || {
     echo "run-ctest.sh: mazm not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
-MAIZE=$(resolve_exe "${BUILD_DIR}/maizec") || {   # maize-225: SDL-free console build (no WSLg window)
-    echo "run-ctest.sh: maizec not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+MAIZE=$(resolve_exe "${BUILD_DIR}/maize") || {   # maize-225/230: SDL-free console build (no WSLg window)
+    echo "run-ctest.sh: maize (console build) not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 MZLD=$(resolve_exe "${BUILD_DIR}/mzld") || {
     echo "run-ctest.sh: mzld not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 

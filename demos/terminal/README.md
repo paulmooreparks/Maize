@@ -72,7 +72,7 @@ external dependency). Build a display-enabled `maize`, build the terminal image,
     scripts/cc-maize.sh --dev -o demos/terminal/terminal.mzx demos/terminal/terminal.c
 
     # 3. Open the window; type and watch characters echo as glyph cells.
-    build/linux-debug/maize --display --input=keyboard demos/terminal/terminal.mzx
+    build/linux-debug/maizeg --display --input=keyboard demos/terminal/terminal.mzx
 
 On Windows, build the SDL2-enabled `maize.exe` per the Windows preset and run the same
 `--display --input=keyboard` command against `terminal.mzx`. Close the window to exit.

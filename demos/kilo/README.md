@@ -34,7 +34,7 @@ Build a `maize` with the SDL display backend (`cmake -DMAIZE_DISPLAY=ON ...`), t
 open a file from a mounted sandbox directory. The console is an 80x50 cell grid
 (640x400 at the 8x8 font):
 
-    maize --display --mount "<your-dir>=/work:rw" demos/kilo/kilo.mzx /work/somefile.c
+    maizeg --display --mount "<your-dir>=/work:rw" demos/kilo/kilo.mzx /work/somefile.c
 
 Controls are kilo's own: arrow keys / Home / End / PageUp / PageDown / Delete to
 move, printable keys to insert, Backspace to delete, Ctrl-O to open a file,

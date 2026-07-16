@@ -3,7 +3,7 @@
  *
  * The guest side of the window console's line discipline. A stdio program needs nothing
  * here: cooked line input and glyph output work with plain read()/write() when the
- * console is bound (maize --display / --console-dump). This header is for programs that
+ * console is bound (maizeg --display / --console-dump). This header is for programs that
  * drive the discipline directly, notably a raw-mode editor (kilo, maize-172): the struct
  * and flag values mirror Linux termios so a Linux-written editor ports with no field
  * surgery, and the WIRE LAYOUT (four 32-bit flag words then NCCS control bytes, 36 bytes

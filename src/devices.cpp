@@ -1319,7 +1319,7 @@ namespace maize {
 
 				/* maize-217: on-exit performance report. Replaces the old modal message box
 				   (SDL_ShowSimpleMessageBox), which was intrusive and blocked teardown. The
-				   report goes to stderr (visible on console runs / maizec / logs) AND is written
+				   report goes to stderr (visible on console runs / logs) AND is written
 				   into the text-console grid so a windowed run can read it when the window is
 				   held open with --pause-on-halt. */
 				if (show_perf) {

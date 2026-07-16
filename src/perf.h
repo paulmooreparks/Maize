@@ -1,7 +1,7 @@
 /* src/perf.h -- maize-222: per-device performance-counter registry.
  *
  * Replaces the earlier ad-hoc --show-perf reports (one in maize.cpp for headless /
- * maizec runs, one in the SDL display loop) with a single registry: each device that
+ * console runs, one in the SDL display loop) with a single registry: each device that
  * has performance counters registers a `source` when it becomes active, and at exit
  * `emit()` walks the registered sources and prints one section each. A run with no
  * display registers no display source, so it prints no FPS section.
@@ -39,7 +39,7 @@ namespace maize {
 		};
 
 		/* Display: frames presented + average FPS. Registered ONLY when a window is
-		   attached, so a headless / maizec run omits it (no FPS section). The frame count
+		   attached, so a headless / console run omits it (no FPS section). The frame count
 		   is read through a getter so this header need not know the framebuffer type. */
 		struct display_source : source {
 			std::function<std::uint64_t()> frames;   // returns the present count

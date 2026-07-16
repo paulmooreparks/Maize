@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Maize toolchain (maize, mazm, mzld, mzdis) and install stable copies into ~/bin (Linux/WSL/macOS).
+# Build the Maize toolchain (maize, maizeg, mazm, mzld, mzdis) and install stable copies into ~/bin (Linux/WSL/macOS).
 # Counterpart of install-mazm.ps1; wired to the default build task via
 # .vscode/tasks.json. Never prompts.
 
@@ -25,7 +25,7 @@ fi
 # vendored SDL2; on Linux/WSL, SDL2 comes from the system package manager.)
 if command -v sdl2-config >/dev/null 2>&1 || pkg-config --exists sdl2 2>/dev/null; then
     display_args=(-DMAIZE_DISPLAY=ON)
-    echo "SDL2 found; building maize with the --display window backend."
+    echo "SDL2 found; building maizeg with the --display window backend."
 else
     display_args=(-DMAIZE_DISPLAY=OFF)
     echo "note: SDL2 dev files not found; building headless (no --display window). Install libsdl2-dev to enable it." >&2
@@ -36,13 +36,13 @@ fi
 echo "Configuring preset '$PRESET'..."
 cmake --preset "$PRESET" "${display_args[@]}"
 
-echo "Building maize, maizec, mazm, mzld, mzdis ($PRESET)..."
-cmake --build "$BUILD_DIR" --target maize maizec mazm mzld mzdis
+echo "Building maize, maizeg, mazm, mzld, mzdis ($PRESET)..."
+cmake --build "$BUILD_DIR" --target maize maizeg mazm mzld mzdis
 
 mkdir -p "$INSTALL_DIR"
-# maize-217: maizec is the console-subsystem VM (terminal I/O); maize is the graphical one
-# (SDL window). Both are installed; console programs run under maizec, the screen under maize.
-for tool in maize maizec mazm mzld mzdis; do
+# maize-217/230: `maize` is the console-subsystem VM (terminal I/O); `maizeg` is the graphical
+# one (SDL window). Both are installed; console programs run under maize, the screen under maizeg.
+for tool in maize maizeg mazm mzld mzdis; do
     cp "$BUILD_DIR/$tool" "$INSTALL_DIR/$tool"
     echo "Installed $BUILD_DIR/$tool -> $INSTALL_DIR/$tool"
 done
@@ -87,4 +87,4 @@ if [ "$tc_rc" -ne 0 ]; then
     echo "warning: C cross-toolchain refresh failed (exit $tc_rc); native tools are installed. Retry with scripts/refresh-c-toolchain.sh." >&2
 fi
 
-echo "maize, maizec, mazm, mzld, mzdis installed and smoke-checked."
+echo "maize, maizeg, mazm, mzld, mzdis installed and smoke-checked."

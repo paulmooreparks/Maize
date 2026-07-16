@@ -64,9 +64,9 @@ and run it with the native Windows `maize.exe` from step 1.
 
 ### 3. Run it in a window
 
-Point the display-enabled `maize` at a directory holding your WAD and launch:
+Point the display-enabled `maizeg` at a directory holding your WAD and launch:
 
-    build/<preset>/maize --display --input=keyboard \
+    build/<preset>/maizeg --display --input=keyboard \
         --mount "<your-wad-dir>=/doom:ro" \
         demos/doom/doom.mzx -iwad /doom/doom1.wad
 
@@ -77,7 +77,7 @@ E1M1, `-nomonsters` quiets the level, and `--show-perf` overlays guest MIPS + FP
 (and prints the peaks on exit).
 
 Windows / Git Bash note: the shell rewrites a bare `/doom/...` argument into a
-Windows path before `maize.exe` sees it. `-iwad` is a GUEST path (resolved by
+Windows path before `maizeg.exe` sees it. `-iwad` is a GUEST path (resolved by
 maize's sandbox), so exempt it: prefix the command with
 `MSYS2_ARG_CONV_EXCL='/doom'`. The `--mount` host side is a real `C:\...` path and
 needs no exemption.
@@ -86,7 +86,7 @@ Simpler, persistent alternative: maize's default sandbox root is `~/.maize/root`
 (mounted as `/`, startup cwd `/home/user`). Drop your WAD once at
 `~/.maize/root/home/user/doom/doom1.wad`, then no `--mount` is needed:
 
-    build/<preset>/maize --display demos/doom/doom.mzx -iwad doom/doom1.wad
+    build/<preset>/maizeg --display demos/doom/doom.mzx -iwad doom/doom1.wad
 
 You can also make `--display` and `--input=keyboard` the defaults by putting
 `display=true` and `input=keyboard` in `~/.maize/config` (one `key=value` per

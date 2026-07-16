@@ -62,13 +62,13 @@ The guest sees that file as `/doom/doom1.wad`. Now run, from the repo root; no
 `--mount` is needed, because the WAD already lives inside the sandbox root:
 
 ``` powershell
-build\windows-llvm-mingw-release\maize.exe --display --display-scale 4 --refresh-hz 20 --input=keyboard demos/doom/doom.mzx -iwad /doom/doom1.wad
+build\windows-llvm-mingw-release\maizeg.exe --display --display-scale 4 --refresh-hz 20 --input=keyboard demos/doom/doom.mzx -iwad /doom/doom1.wad
 ```
 
 The same run on Linux:
 
 ``` bash
-build/linux-release/maize --display --display-scale 4 --refresh-hz 20 --input=keyboard demos/doom/doom.mzx -iwad /doom/doom1.wad
+build/linux-release/maizeg --display --display-scale 4 --refresh-hz 20 --input=keyboard demos/doom/doom.mzx -iwad /doom/doom1.wad
 ```
 
 Saves just work: DOOM writes them to a relative path (`./.savegame/...`), which
@@ -271,12 +271,12 @@ line is:
 maize [options] <image> [guest-args...]
 ```
 
-There are two VM binaries. **`maizec`** is the console build: its output goes to
-the terminal, so use it for programs that print (`maizec hello.mzb`, quesOS).
-**`maize`** is the graphical build: it opens an on-screen window, so use it for
+There are two VM binaries. **`maize`** is the console build: its output goes to
+the terminal, so use it for programs that print (`maize hello.mzb`, quesOS).
+**`maizeg`** is the graphical build: it opens an on-screen window, so use it for
 framebuffer programs (DOOM). Both accept the same options. On Windows the split is
 load-bearing: a graphical binary is linked as a GUI-subsystem app and cannot write
-to the terminal it was launched from, which is why console output lives in `maizec`.
+to the terminal it was launched from, which is why console output lives in `maize`.
 
 Options are consumed up to the first non-option token, which is `<image>`;
 everything after `<image>` is passed to the program as its `argv`, verbatim (a
@@ -341,9 +341,9 @@ names **without** the leading dashes:
 - `root` = host path for the sandbox root (as `--root`)
 - `input` = `sys`, `keyboard`, or `console`
 - `show-perf` = boolean
-- `display` = boolean (graphical `maize` only, which opens a window by default; set
-  `display=false` to force it headless. `maizec` ignores this key.)
-- `pause-on-halt` = boolean (graphical `maize` only: hold the window open on the
+- `display` = boolean (graphical `maizeg` only, which opens a window by default; set
+  `display=false` to force it headless. The console `maize` ignores this key.)
+- `pause-on-halt` = boolean (graphical `maizeg` only: hold the window open on the
   final frame, and any `--show-perf` report, until a key or window-close)
 - `no-root` = boolean
 
@@ -361,7 +361,7 @@ input=keyboard
 show-perf=true
 ```
 
-With that file in place, `maize --display doom.mzx` behaves as if you had also
+With that file in place, `maizeg --display doom.mzx` behaves as if you had also
 typed `--display-scale 4 --refresh-hz 20 --input=keyboard --show-perf`, and you
 can still override any of them on the command line (e.g. `--display-scale 6`).
 
