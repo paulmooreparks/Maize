@@ -940,6 +940,19 @@ namespace maize {
 				int fbw = static_cast<int>(fb.width());
 				int fbh = static_cast<int>(fb.height());
 
+				/* maize-218: clamp the initial window to the monitor work area so a large
+				   --display-scale never pushes the (centered) window's title bar off-screen. */
+				{
+					SDL_Rect usable;
+					if (SDL_GetDisplayUsableBounds(0, &usable) == 0) {
+						while (scale > 1 &&
+							(cw * static_cast<int>(scale) > usable.w ||
+							 ch * static_cast<int>(scale) > usable.h)) {
+							--scale;
+						}
+					}
+				}
+
 				SDL_Window* win = SDL_CreateWindow("Maize",
 					SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
 					cw * static_cast<int>(scale), ch * static_cast<int>(scale),
@@ -952,6 +965,29 @@ namespace maize {
 				SDL_Texture* fb_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
 					SDL_TEXTUREACCESS_STREAMING, fbw, fbh);
 				bool graphics_mode = false;   // false = console surface; true = framebuffer
+
+				/* maize-218: the framebuffer presents into the FIXED console canvas (cw x ch),
+				   aspect-preserving and integer-scaled when it divides evenly (DOOM 320x200 ->
+				   2x -> 640x400, filling the console footprint), centered with black letterbox
+				   bars otherwise. Computed once: the fb and console geometry are fixed for the
+				   run. The window is NEVER resized on graphics takeover, so there is no mid-run
+				   resize or reposition. */
+				SDL_Rect fb_dst;
+				{
+					int si = (cw / fbw < ch / fbh) ? cw / fbw : ch / fbh;   // max integer scale
+					if (si >= 1) {
+						fb_dst.w = fbw * si;
+						fb_dst.h = fbh * si;
+					} else {
+						/* framebuffer larger than the canvas: aspect-preserving downscale to fit */
+						double az = (double)cw / fbw < (double)ch / fbh
+							? (double)cw / fbw : (double)ch / fbh;
+						fb_dst.w = static_cast<int>(fbw * az);
+						fb_dst.h = static_cast<int>(fbh * az);
+					}
+					fb_dst.x = (cw - fb_dst.w) / 2;
+					fb_dst.y = (ch - fb_dst.h) / 2;
+				}
 
 				/* --show-perf overlay state: every ~500 ms, sample the FPS source -> FPS and the
 				   guest instruction counter -> MIPS (VM work rate), track the peak of each for
@@ -1015,13 +1051,12 @@ namespace maize {
 
 				bool running = true;
 				while (running && !guest_done.load(std::memory_order_acquire)) {
-					/* Switch to the framebuffer surface the first time a graphics program
-					   claims it (DOOM's DG_Init, essentially at startup), resizing the window
-					   to the framebuffer geometry so DOOM's window is unchanged from before. */
+					/* Switch to the framebuffer surface the first time a graphics program claims
+					   it (DOOM's DG_Init, essentially at startup). maize-218: the window and the
+					   render logical size stay at the console canvas; the framebuffer is fit into
+					   that canvas at present time (fb_dst), so there is no mid-run window resize. */
 					if (!graphics_mode && fb.graphics_claimed()) {
 						graphics_mode = true;
-						SDL_SetWindowSize(win, fbw * static_cast<int>(scale), fbh * static_cast<int>(scale));
-						SDL_RenderSetLogicalSize(ren, fbw, fbh);
 						/* The FPS source switches from the console counter to the framebuffer
 						   present counter here; rebaseline so the swap does not register a
 						   bogus one-sample spike from the counters' differing magnitudes. */
@@ -1184,8 +1219,11 @@ namespace maize {
 							if (!frame.empty()) {
 								SDL_UpdateTexture(fb_tex, nullptr, frame.data(),
 									fbw * static_cast<int>(sizeof(std::uint32_t)));
+								/* maize-218: black letterbox bars, then the framebuffer fit into the
+								   fixed console canvas (fb_dst) instead of stretched to fill. */
+								SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
 								SDL_RenderClear(ren);
-								SDL_RenderCopy(ren, fb_tex, nullptr, nullptr);
+								SDL_RenderCopy(ren, fb_tex, nullptr, &fb_dst);
 								presented = true;
 							}
 						} else {
@@ -1311,7 +1349,7 @@ namespace maize {
 						if (!frame.empty()) {
 							SDL_UpdateTexture(fb_tex, nullptr, frame.data(),
 								fbw * static_cast<int>(sizeof(std::uint32_t)));
-							SDL_RenderCopy(ren, fb_tex, nullptr, nullptr);
+							SDL_RenderCopy(ren, fb_tex, nullptr, &fb_dst);   // maize-218: fit into the fixed canvas, not stretch
 						}
 					} else {
 						SDL_UpdateTexture(con_tex, nullptr, con.pixels(),
