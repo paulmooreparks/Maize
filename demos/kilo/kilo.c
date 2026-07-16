@@ -256,6 +256,7 @@ static struct termios orig_termios; /* In order to restore at exit.*/
 void disableRawMode(int fd) {
     /* Don't even check the return value as it's too late. */
     if (E.rawmode) {
+        write(STDOUT_FILENO, "\x1b[?1049l", 8);   /* maize-234: leave the alternate screen buffer */
         tcsetattr(fd,TCSAFLUSH,&orig_termios);
         E.rawmode = 0;
     }
@@ -293,6 +294,10 @@ int enableRawMode(int fd) {
     /* put terminal in raw mode after flushing */
     if (tcsetattr(fd,TCSAFLUSH,&raw) < 0) goto fatal;
     E.rawmode = 1;
+    /* maize-234: switch to the terminal's alternate screen buffer (like vim/less/htop), so
+       on exit the shell's original screen is restored instead of leaving the editor frame
+       behind with the prompt landing mid-screen. Harmless no-op where unsupported. */
+    write(STDOUT_FILENO, "\x1b[?1049h", 8);
     return 0;
 
 fatal:
