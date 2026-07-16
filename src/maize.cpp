@@ -2,6 +2,7 @@
 #include <vector>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
@@ -692,6 +693,9 @@ int main(int argc, char *argv[]) {
 	bool show_perf = false;          // --show-perf: draw guest MIPS + FPS in the window corner
 	bool pause_on_halt = false;      // --pause-on-halt: hold the window open after the guest halts
 	bool vsync = true;               // --vsync/--no-vsync: sync graphics presents to the monitor vblank (maize-227)
+#ifdef MAIZE_DISPLAY
+	bool help_requested = false;     // maize-226: -h/--help on the graphical binary pages help in the window
+#endif
 	unsigned display_scale = 3;      // window = framebuffer size * scale (--display-scale)
 	unsigned refresh_hz = 60;        // "monitor" refresh + vsync-IRQ rate (--refresh-hz)
 	maize::u_hword fb_width = 320;   // framebuffer host config (OQ: default 320x200)
@@ -757,8 +761,18 @@ int main(int argc, char *argv[]) {
 		std::string arg {argv[idx]};
 
 		if (arg == "-h" || arg == "--help") {
+#ifdef MAIZE_DISPLAY
+			/* maize-226: the graphical binary has no host terminal to print to (GUI
+			   subsystem), so page the help INTO the window instead. Defer to after the
+			   arg loop so a --console-size on the command line still sizes the viewer.
+			   Keep parsing (don't return) so those flags are honored. */
+			help_requested = true;
+			++idx;
+			continue;
+#else
 			print_usage(std::cout);
 			return 0;
+#endif
 		}
 		if (arg == "--") {
 			++idx;                 /* next token is <image>, whatever it looks like */
@@ -1057,6 +1071,21 @@ int main(int argc, char *argv[]) {
 		/* First non-option token: this is <image>. Stop parsing options. */
 		break;
 	}
+
+#ifdef MAIZE_DISPLAY
+	/* maize-226: graphical -h/--help. Render the usage text paged in the window (the guest
+	   never loads on this path), sized by console_width/height (honoring any --console-size).
+	   Falls back to a plain stdout dump if no display backend is available at runtime. */
+	if (help_requested) {
+		std::ostringstream help_oss;
+		print_usage(help_oss);
+		devices::text_console help_con(console_width, console_height);
+		if (!devices::display::show_help_paged(help_con, help_oss.str(), display_scale, vsync)) {
+			print_usage(std::cout);
+		}
+		return 0;
+	}
+#endif
 
 	/* No image token (bare invocation, or `--`/options with nothing after them). */
 	if (idx >= argc) {

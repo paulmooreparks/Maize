@@ -351,6 +351,16 @@ namespace maize {
 			void run(framebuffer_device& fb, keyboard_device& kbd, text_console& con,
 				unsigned scale, bool show_perf, unsigned refresh_hz, bool pause_on_halt,
 				bool vsync);
+
+			/* maize-226: page a block of text (the --help/usage output) in the window like
+			   more(1). The guest never runs on the --help path, so this opens its own window,
+			   renders the text into `con` a page at a time (page size = console rows minus the
+			   prompt row), and reads keys directly from SDL: Space/Enter/PageDown advance, q or
+			   Esc quits, and the final page is held until a key or window-close (the auto
+			   pause-on-halt the card asks for). Returns true if it displayed; false if SDL video
+			   was unavailable, so the caller can fall back to a plain-text dump. */
+			bool show_help_paged(text_console& con, const std::string& text,
+				unsigned scale, bool vsync);
 		}
 #endif
 

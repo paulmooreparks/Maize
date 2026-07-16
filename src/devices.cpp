@@ -1368,6 +1368,148 @@ namespace maize {
 				SDL_Quit();
 			}
 
+
+			/* maize-226: paged help viewer. See the header comment on the declaration.
+			Self-contained mini-loop: no guest thread and no framebuffer surface, it feeds
+			`text` into the console a page at a time and blocks on SDL keys between pages. */
+			bool show_help_paged(text_console& con, const std::string& text,
+				unsigned scale, bool vsync) {
+				if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+					return false;   // no display backend; caller falls back to a plain-text dump
+				}
+				if (scale < 1) { scale = 1; }
+				int cw = static_cast<int>(con.width());
+				int ch = static_cast<int>(con.height());
+
+				/* Clamp the initial window to the monitor work area, as run() does. */
+				{
+					SDL_Rect usable;
+					if (SDL_GetDisplayUsableBounds(0, &usable) == 0) {
+						while (scale > 1 &&
+							(cw * static_cast<int>(scale) > usable.w ||
+							ch * static_cast<int>(scale) > usable.h)) {
+							--scale;
+						}
+					}
+				}
+
+				SDL_Window* win = SDL_CreateWindow("Maize - help",
+					SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+					cw * static_cast<int>(scale), ch * static_cast<int>(scale),
+					SDL_WINDOW_RESIZABLE);
+				SDL_Renderer* ren = win ? SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED) : nullptr;
+				if (!win || !ren) {
+					if (ren) { SDL_DestroyRenderer(ren); }
+					if (win) { SDL_DestroyWindow(win); }
+					SDL_Quit();
+					return false;
+				}
+				if (vsync) { SDL_RenderSetVSync(ren, 1); }
+				SDL_RenderSetLogicalSize(ren, cw, ch);
+				SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+				SDL_Texture* con_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
+					SDL_TEXTUREACCESS_STREAMING, cw, ch);
+
+				int rows = ch / FONT_H;
+				int cols = cw / FONT_W;
+				if (rows < 2) { rows = 2; }
+				if (cols < 1) { cols = 1; }
+				int page_rows = rows - 1;               // reserve the last row for the prompt
+
+				/* Break the text into display lines: split on newline, hard-wrap at `cols`,
+				drop CR. Pre-wrapping here (rather than leaning on the console's own wrap)
+				keeps the page-row accounting exact so a page never scrolls under the prompt. */
+				std::vector<std::string> lines;
+				{
+					std::string cur;
+					for (char c : text) {
+						if (c == '\n') { lines.push_back(cur); cur.clear(); }
+						else if (c == '\r') { /* skip CR */ }
+						else {
+							cur.push_back(c);
+							if (static_cast<int>(cur.size()) >= cols) { lines.push_back(cur); cur.clear(); }
+						}
+					}
+					if (!cur.empty()) { lines.push_back(cur); }
+				}
+				int total = static_cast<int>(lines.size());
+
+				auto clear_console = [&]() {
+					const unsigned char cls[] = { 0x1b, '[', '2', 'J', 0x1b, '[', 'H' };  // ESC[2J ESC[H
+					con.write_out(cls, sizeof(cls));
+				};
+				auto write_line = [&](const std::string& s) {
+					if (!s.empty()) {
+						con.write_out(reinterpret_cast<const unsigned char*>(s.data()),
+							static_cast<unsigned long>(s.size()));
+					}
+					const unsigned char crlf[] = { '\r', '\n' };
+					con.write_out(crlf, 2);
+				};
+				auto present = [&](const std::string& prompt) {
+					SDL_UpdateTexture(con_tex, nullptr, con.pixels(),
+						cw * static_cast<int>(sizeof(std::uint32_t)));
+					SDL_RenderClear(ren);
+					SDL_RenderCopy(ren, con_tex, nullptr, nullptr);
+					/* Reverse-video prompt bar on the last row, like more(1)/less. */
+					int py = (rows - 1) * FONT_H;
+					SDL_Rect bar { 0, py, static_cast<int>(prompt.size()) * FONT_W, FONT_H };
+					SDL_SetRenderDrawColor(ren, 0xC0, 0xC0, 0xC0, 0xFF);
+					SDL_RenderFillRect(ren, &bar);
+					SDL_SetRenderDrawColor(ren, 0, 0, 0, 0xFF);      // black glyphs on the light bar
+					draw_text(ren, 0, py, 1, prompt);
+					SDL_RenderPresent(ren);
+				};
+
+				int idx = 0;
+				bool quit = false;
+				while (!quit) {
+					clear_console();
+					int end = idx + page_rows;
+					if (end > total) { end = total; }
+					for (int i = idx; i < end; ++i) { write_line(lines[i]); }
+					bool last = (end >= total);
+					const std::string prompt = last
+						? std::string("-- End (any key) --")
+						: std::string("-- More (q=quit) --");
+					present(prompt);
+
+					bool advance = false;
+					while (!advance && !quit) {
+						SDL_Event e;
+						if (!SDL_WaitEvent(&e)) { continue; }
+						switch (e.type) {
+							case SDL_QUIT:
+								quit = true;
+								break;
+							case SDL_KEYDOWN: {
+								SDL_Keycode k = e.key.keysym.sym;
+								if (k == SDLK_q || k == SDLK_ESCAPE) { quit = true; }
+								else if (k == SDLK_SPACE || k == SDLK_RETURN || k == SDLK_KP_ENTER ||
+									k == SDLK_PAGEDOWN || k == SDLK_DOWN || k == SDLK_f) { advance = true; }
+								break;
+							}
+							case SDL_WINDOWEVENT:
+								if (e.window.event == SDL_WINDOWEVENT_EXPOSED ||
+									e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+									e.window.event == SDL_WINDOWEVENT_RESIZED) {
+									present(prompt);   // keep the page visible across expose/resize
+								}
+								else if (e.window.event == SDL_WINDOWEVENT_CLOSE) { quit = true; }
+								break;
+						}
+					}
+					if (quit || last) { break; }   // advancing off the last page closes the viewer
+					idx = end;
+				}
+
+				SDL_DestroyTexture(con_tex);
+				SDL_DestroyRenderer(ren);
+				SDL_DestroyWindow(win);
+				SDL_Quit();
+				return true;
+			}
+
 		} // namespace display
 	} // namespace devices
 } // namespace maize
