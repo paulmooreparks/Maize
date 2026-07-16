@@ -258,6 +258,10 @@ run_test "test_widecount"    "test_widecount.mazm"    "widecount: PASS"         
 run_test "test_crossblock"   "test_crossblock.mazm"   "crossblk: PASS"                0
 run_test "test_adc"          "test_adc.mazm"          "adc: PASS"                     0
 run_test "test_copywidth"    "test_copywidth.mazm"    "copywidth: PASS"               0
+# maize-196: ALU/CMP memory-source operands read at the destination-subregister width
+# (not a fixed 8 bytes). Hand-written sub-width regAddr ALU forms the backend never
+# emits, incl. a high-offset destination (R0.B3) that locks the offset-0 read landing.
+run_test "test_alu_memsrc_width" "test_alu_memsrc_width.mazm" "alu memsrc width: PASS"  0
 run_test "oob_subreg_guard"  "test_oob_subreg.mazm"   "oob subreg: PASS"              0
 run_test "reject_ld_value"   "test_reject_ldval.mazm" "reads from a memory address"   0 1
 run_test "test_ldz"          "test_ldz.mazm"          "ldz: PASS"                     0

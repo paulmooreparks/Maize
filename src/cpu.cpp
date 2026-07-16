@@ -125,6 +125,20 @@ namespace maize {
                     // [15] unused/undefined subreg encoding: value-initializes to 0 (old map's miss default)
             };
 
+            /* maize-196: the canonical OFFSET-0 subregister of a given byte width
+               (b0/q0/h0/w0). An ALU memory-source read must take exactly the operation
+               width but land the value at offset 0, where the ALU handler's
+               `alu.op1_reg.w0` low-order read (and the alu_* FN's op_size mask) expect it.
+               Passing the destination's own subreg would relocate the value to that
+               subreg's offset (e.g. R0.B3 -> byte 3), which the handler would then read as
+               stale; this maps width -> the offset-0 subreg of that width instead. */
+            constexpr subreg_enum width0_subreg(u_byte size) {
+                return size == 1 ? subreg_enum::b0
+                     : size == 2 ? subreg_enum::q0
+                     : size == 4 ? subreg_enum::h0
+                     :             subreg_enum::w0;
+            }
+
             /* Sized to 16 for the same 4-bit-field reachability reason as subreg_size_map above;
                index 15 value-initializes to 0. */
             constexpr std::array<maize::u_byte, 16> subreg_index_map {
@@ -4174,10 +4188,19 @@ namespace maize {
                         MAIZE_NEXT(); \
                     }
                     /* regAddr_reg: source is loaded indirectly through a register by
-                       copy_regaddr_reg into the alu.op1_reg scratch. */
+                       copy_regaddr_reg into the alu.op1_reg scratch. maize-196: the read
+                       width is width0_subreg(op2_subreg_size()) -- exactly the operation
+                       (destination) width, landed at offset 0 -- NOT a fixed 8-byte w0, so
+                       the physical memory read is exactly op2_subreg_size() bytes, the same
+                       destination-width rule LD uses (addressing-modes.md 5.6). The consumed
+                       value is unchanged (offset-0 landing keeps alu.op1_reg.w0's low bytes
+                       correct even for a high-offset dest like R0.B3, and the alu_* FN masks
+                       alu_src to op_size); this only stops the over-read of the bytes above
+                       the op width, a host OOB read near the top of guest RAM and a
+                       page-fault hazard once the MMU is active. */
 #define MAIZE_ALU_RA(FN, OPK) { \
                         regs::rp.w0 += 2; \
-                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0); \
+                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, width0_subreg(op2_subreg_size())); \
                         u_word alu_src = alu.op1_reg.w0; \
                         u_byte alu_size = op2_subreg_size(); \
                         u_word alu_dst = read_subreg_bits(op2_reg(), op2_subreg_flag()); \
@@ -4187,7 +4210,7 @@ namespace maize {
                     }
 #define MAIZE_ALU_RA_NW(FN, OPK) { \
                         regs::rp.w0 += 2; \
-                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, subreg_enum::w0); \
+                        copy_regaddr_reg(op1_reg(), op1_subreg_flag(), alu.op1_reg, width0_subreg(op2_subreg_size())); \
                         u_word alu_src = alu.op1_reg.w0; \
                         u_byte alu_size = op2_subreg_size(); \
                         u_word alu_dst = read_subreg_bits(op2_reg(), op2_subreg_flag()); \
@@ -4195,11 +4218,15 @@ namespace maize {
                         MAIZE_NEXT(); \
                     }
                     /* immAddr_reg: source is loaded indirectly through an immediate address
-                       by copy_memaddr_reg into the alu.op1_reg scratch. */
+                       by copy_memaddr_reg into the alu.op1_reg scratch. maize-196: dereference
+                       read width is width0_subreg(op2_subreg_size()) (see MAIZE_ALU_RA). Note
+                       alu_src_size here is the width of the address IMMEDIATE in the instruction
+                       stream (op1_imm_size), which is unrelated to the dereferenced read width
+                       and is left unchanged. */
 #define MAIZE_ALU_IA(FN, OPK) { \
                         regs::rp.w0 += 2; \
                         u_byte alu_src_size = op1_imm_size(); \
-                        copy_memaddr_reg(regs::rp.w0, alu_src_size, alu.op1_reg, subreg_enum::w0); \
+                        copy_memaddr_reg(regs::rp.w0, alu_src_size, alu.op1_reg, width0_subreg(op2_subreg_size())); \
                         u_word alu_src = alu.op1_reg.w0; \
                         u_byte alu_size = op2_subreg_size(); \
                         u_word alu_dst = read_subreg_bits(op2_reg(), op2_subreg_flag()); \
@@ -4211,7 +4238,7 @@ namespace maize {
 #define MAIZE_ALU_IA_NW(FN, OPK) { \
                         regs::rp.w0 += 2; \
                         u_byte alu_src_size = op1_imm_size(); \
-                        copy_memaddr_reg(regs::rp.w0, alu_src_size, alu.op1_reg, subreg_enum::w0); \
+                        copy_memaddr_reg(regs::rp.w0, alu_src_size, alu.op1_reg, width0_subreg(op2_subreg_size())); \
                         u_word alu_src = alu.op1_reg.w0; \
                         u_byte alu_size = op2_subreg_size(); \
                         u_word alu_dst = read_subreg_bits(op2_reg(), op2_subreg_flag()); \

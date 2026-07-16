@@ -84,6 +84,15 @@ assembler enforces the split:
 The ALU instructions are separate and, Maize being CISC, may take a memory-address operand
 directly (`ADD @R1 R0`); only CP / LD / ST / CPZ are held to the strict split.
 
+An ALU/CMP/TEST `@` memory-source operand reads exactly the **destination** register's
+declared subregister width, the same rule LD uses (section 5.6), and performs the operation
+at that width with no further extension: `ADD @R1 R0.B0` reads one byte at the address in R1
+and adds at byte width; `ADD @R1 R0` (no destination suffix) reads and adds at the full
+eight-byte width. The interpreter reads only those bytes from memory, never a fixed eight, so
+a sub-width `@` source never over-reads past the intended address. Note that a subregister
+suffix on the *address* operand (`@R1.H0`) selects which portion of R1 holds the pointer being
+dereferenced; it does not affect the read width, which is governed solely by the destination.
+
 ## 5.6 Extension rules: sign vs zero
 
 A source narrower than its destination is extended to the destination's full width:
