@@ -36,11 +36,13 @@ fi
 echo "Configuring preset '$PRESET'..."
 cmake --preset "$PRESET" "${display_args[@]}"
 
-echo "Building maize, mazm, mzld, mzdis ($PRESET)..."
-cmake --build "$BUILD_DIR" --target maize mazm mzld mzdis
+echo "Building maize, maizec, mazm, mzld, mzdis ($PRESET)..."
+cmake --build "$BUILD_DIR" --target maize maizec mazm mzld mzdis
 
 mkdir -p "$INSTALL_DIR"
-for tool in maize mazm mzld mzdis; do
+# maize-217: maizec is the console-subsystem VM (terminal I/O); maize is the graphical one
+# (SDL window). Both are installed; console programs run under maizec, the screen under maize.
+for tool in maize maizec mazm mzld mzdis; do
     cp "$BUILD_DIR/$tool" "$INSTALL_DIR/$tool"
     echo "Installed $BUILD_DIR/$tool -> $INSTALL_DIR/$tool"
 done
@@ -85,4 +87,4 @@ if [ "$tc_rc" -ne 0 ]; then
     echo "warning: C cross-toolchain refresh failed (exit $tc_rc); native tools are installed. Retry with scripts/refresh-c-toolchain.sh." >&2
 fi
 
-echo "maize, mazm, mzld, mzdis installed and smoke-checked."
+echo "maize, maizec, mazm, mzld, mzdis installed and smoke-checked."

@@ -15,18 +15,36 @@ set(MAIZE_HOSTFS_SOURCES
   "src/hostfs/hostfs_win32.c")
 
 # src/devices.cpp carries the host-backed standard device models (console, keyboard, the
-# memory-backed framebuffer). It is linked into `maize` only; mazm never attaches devices.
-add_executable(maize "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" ${MAIZE_HOSTFS_SOURCES})
+# memory-backed framebuffer). Linked into the VM binaries only; mazm never attaches devices.
+#
+# maize-217: two VM binaries from the same sources. `maize` is the graphical build (the SDL
+# window backend, MAIZE_DISPLAY below); on Windows, linking SDL2main makes it a GUI-subsystem
+# binary whose output is the window. `maizec` is the console build: no SDL, so it stays a
+# console-subsystem binary whose stdout/stderr reach the invoking terminal. Console programs
+# (hello, quesOS) run under maizec; the screen (framebuffer, DOOM) runs under maize.
+set(MAIZE_VM_SOURCES "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" ${MAIZE_HOSTFS_SOURCES})
+add_executable(maize  ${MAIZE_VM_SOURCES})
+add_executable(maizec ${MAIZE_VM_SOURCES})
+
+# maize-217: maizec is the console-only VM. This define makes maize.cpp ignore the
+# graphical-only launcher knobs (display, input=keyboard scancode injection) that live in
+# the shared ~/.maize/config for `maize`, so `maizec prog.mzb` in a terminal is always a
+# plain console program (host stdio) and never binds a windowed console or a tty injector.
+# It is distinct from MAIZE_DISPLAY: the headless CI `maize` (no MAIZE_DISPLAY) still honors
+# those knobs for the scancode-injection tests; only maizec opts out.
+target_compile_definitions(maizec PRIVATE MAIZE_CONSOLE_ONLY)
 add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp" ${MAIZE_HOSTFS_SOURCES})
 add_executable(mzld "src/mzld.cpp")
 add_executable(mzdis "src/mzdis.cpp")
 
 find_package(Threads REQUIRED)
-target_link_libraries(maize PRIVATE Threads::Threads)
+target_link_libraries(maize  PRIVATE Threads::Threads)
+target_link_libraries(maizec PRIVATE Threads::Threads)
 target_link_libraries(mazm PRIVATE Threads::Threads)
 
 if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET maize PROPERTY CXX_STANDARD 20)
+  set_property(TARGET maizec PROPERTY CXX_STANDARD 20)
   set_property(TARGET mazm PROPERTY CXX_STANDARD 20)
   set_property(TARGET mzld PROPERTY CXX_STANDARD 20)
   set_property(TARGET mzdis PROPERTY CXX_STANDARD 20)
@@ -44,7 +62,7 @@ if (MAIZE_SANITIZE)
     -fsanitize=address,undefined
     -fno-sanitize-recover=all
     -fno-omit-frame-pointer)
-  foreach(_t maize mazm mzld mzdis)
+  foreach(_t maize maizec mazm mzld mzdis)
     target_compile_options(${_t} PRIVATE ${_maize_san_flags})
     target_link_options(${_t}    PRIVATE -fsanitize=address,undefined)
   endforeach()
@@ -65,10 +83,12 @@ if (NOT MAIZE_SANITIZE)
   check_ipo_supported(RESULT _maize_ipo_ok OUTPUT _maize_ipo_msg)
   if (_maize_ipo_ok)
     set_property(TARGET maize PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    set_property(TARGET maizec PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
   endif()
 
   if (MAIZE_ARCH AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
-    target_compile_options(maize PRIVATE "$<$<CONFIG:Release>:-march=${MAIZE_ARCH}>")
+    target_compile_options(maize  PRIVATE "$<$<CONFIG:Release>:-march=${MAIZE_ARCH}>")
+    target_compile_options(maizec PRIVATE "$<$<CONFIG:Release>:-march=${MAIZE_ARCH}>")
   endif()
 endif()
 

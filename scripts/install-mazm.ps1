@@ -112,8 +112,8 @@ if ($LASTEXITCODE -ne 0) {
     exit 2
 }
 
-Write-Host "Building maize, mazm, mzld, mzdis ($Preset)..."
-& $Cmake --build $BuildDir --target maize mazm mzld mzdis
+Write-Host "Building maize, maizec, mazm, mzld, mzdis ($Preset)..."
+& $Cmake --build $BuildDir --target maize maizec mazm mzld mzdis
 if ($LASTEXITCODE -ne 0) {
     Write-Error "cmake build failed (exit $LASTEXITCODE)."
     exit 2
@@ -121,7 +121,9 @@ if ($LASTEXITCODE -ne 0) {
 
 # --- Install ----------------------------------------------------------------------
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
-foreach ($tool in 'maize', 'mazm', 'mzld', 'mzdis') {
+# maize-217: maizec is the console-subsystem VM (terminal I/O); maize is the graphical one
+# (SDL window). Both are installed; console programs run under maizec, the screen under maize.
+foreach ($tool in 'maize', 'maizec', 'mazm', 'mzld', 'mzdis') {
     $builtExe = Join-Path $BuildDir "$tool.exe"
     if (-not (Test-Path $builtExe)) {
         Write-Error "build reported success but $builtExe does not exist."
@@ -257,5 +259,5 @@ else {
     }
 }
 
-Write-Host 'maize, mazm, mzld, mzdis installed and smoke-checked.'
+Write-Host 'maize, maizec, mazm, mzld, mzdis installed and smoke-checked.'
 exit 0

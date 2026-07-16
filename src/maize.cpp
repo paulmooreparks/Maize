@@ -1108,6 +1108,15 @@ int main(int argc, char *argv[]) {
 	   run so the SYS console, the console port device, and the keyboard never race the same
 	   fd. Default (empty): no injector runs and the SYS console path reads stdin on demand.
 	   A windowed run always sources keyboard events from the window, not stdin. */
+#ifdef MAIZE_CONSOLE_ONLY
+	/* maize-217: maizec is the console-only VM binary. `display` and `input=keyboard` are
+	   graphical `maize` knobs that ride in the shared ~/.maize/config; honoring them here
+	   would (a) print a spurious "no display backend" note and (b) bind a host-stdin scancode
+	   injector that blocks forever on an interactive terminal. Neutralize both so maizec is
+	   always a plain console program: host stdio, and the SYS console reads stdin on demand. */
+	display_requested = false;
+	if (input_source == "keyboard") { input_source.clear(); }
+#endif
 	if (input_source == "keyboard") {
 		/* A windowed keyboard is driven entirely by the SDL thread: push_event latches the
 		   scancode and raises the keyboard IRQ, and port_read drains the queue on consume. It
