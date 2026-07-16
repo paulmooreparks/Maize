@@ -11,6 +11,24 @@
 #include "maize_obj.h"
 #include "hostfs/hostfs_core.h"
 #include "devices.h"
+#include "perf.h"
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
+/* maize-225: is the process stdin an interactive terminal? Used to decide whether maizec's
+   `input=keyboard` neutralization should fire: only for an interactive tty (where the stdin
+   scancode injector would block forever, the maize-217 hang), NOT for a pipe or file that is
+   deliberately feeding scancodes (a keyboard test, or an intentional redirect). */
+static bool stdin_is_interactive() {
+#ifdef _WIN32
+	return _isatty(0) != 0;
+#else
+	return isatty(0) != 0;
+#endif
+}
 
 #include "maize.h"
 using namespace maize;
@@ -1143,13 +1161,14 @@ int main(int argc, char *argv[]) {
 	   fd. Default (empty): no injector runs and the SYS console path reads stdin on demand.
 	   A windowed run always sources keyboard events from the window, not stdin. */
 #ifdef MAIZE_CONSOLE_ONLY
-	/* maize-217: maizec is the console-only VM binary. `display` and `input=keyboard` are
-	   graphical `maize` knobs that ride in the shared ~/.maize/config; honoring them here
-	   would (a) print a spurious "no display backend" note and (b) bind a host-stdin scancode
-	   injector that blocks forever on an interactive terminal. Neutralize both so maizec is
-	   always a plain console program: host stdio, and the SYS console reads stdin on demand. */
+	/* maize-217/225: maizec is the console-only VM binary. `display` never applies (no window),
+	   so drop it. `input=keyboard` binds a host-stdin scancode injector; on an INTERACTIVE
+	   terminal that injector blocks forever (the maize-217 hang), so neutralize it there -- but
+	   ONLY there. When stdin is a pipe or file (a test feeding scancodes, or a deliberate
+	   redirect) the injector is exactly what is wanted, so honor it (this is what lets the
+	   harness run the keyboard tests through maizec, maize-225). */
 	display_requested = false;
-	if (input_source == "keyboard") { input_source.clear(); }
+	if (input_source == "keyboard" && stdin_is_interactive()) { input_source.clear(); }
 #endif
 	if (input_source == "keyboard") {
 		/* A windowed keyboard is driven entirely by the SDL thread: push_event latches the
@@ -1211,7 +1230,7 @@ int main(int argc, char *argv[]) {
 	/* maize-217: time the run so --show-perf prints an average-rate report on the headless
 	   path too (maizec, or a --display build with no backend). The graphical display::run
 	   prints its own richer report (with frames/FPS); used_display suppresses the duplicate. */
-	auto perf_start = std::chrono::steady_clock::now();
+	maize::perf::cpu_source cpu_perf; if (show_perf) { maize::perf::reset(); maize::perf::add(&cpu_perf); }
 	bool used_display = false;
 
 	if (display_requested) {
@@ -1234,19 +1253,7 @@ int main(int argc, char *argv[]) {
 	   and average MIPS over the wall-clock run; frames/FPS are graphical-only, so they are
 	   omitted here. Goes to stderr so it never pollutes the guest's stdout (safe under pipes). */
 	if (show_perf && !used_display) {
-		long long elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
-			std::chrono::steady_clock::now() - perf_start).count();
-		std::uint64_t total_insn = cpu::instruction_count();
-		long long mips = elapsed_us > 0
-			? static_cast<long long>(total_insn / static_cast<std::uint64_t>(elapsed_us)) : 0;
-		std::cerr << "maize: performance report" << std::endl
-			<< "  instructions : " << total_insn << std::endl;
-		if (elapsed_us < 10000) {
-			std::cerr << "  elapsed      : " << elapsed_us << " us" << std::endl;
-		} else {
-			std::cerr << "  elapsed      : " << (elapsed_us / 1000) << " ms" << std::endl;
-		}
-		std::cerr << "  MIPS         : " << mips << std::endl;
+		maize::perf::emit(std::cerr);
 	}
 #ifdef __linux__
 	/* maize-140: the trailing-newline convenience (a Linux-only readability nicety on

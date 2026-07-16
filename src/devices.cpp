@@ -6,6 +6,7 @@
 #include "maize.h"
 #include "devices.h"
 #include "font8x16.h"
+#include "perf.h"
 #include <cstring>
 
 namespace maize {
@@ -766,6 +767,7 @@ namespace maize {
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <sstream>
 #include <thread>
 
 namespace maize {
@@ -865,47 +867,25 @@ namespace maize {
 				}
 			}
 
-			/* Minimal 3x5 bitmap font for the --show-perf overlay (avoids a font-library
-			   dependency): digits 0-9 plus the label letters M and F. Each row is three bits,
-			   high bit = leftmost column. */
-			static const unsigned char kFont3x5[10][5] = {
-				{0b111,0b101,0b101,0b101,0b111}, // 0
-				{0b010,0b110,0b010,0b010,0b111}, // 1
-				{0b111,0b001,0b111,0b100,0b111}, // 2
-				{0b111,0b001,0b111,0b001,0b111}, // 3
-				{0b101,0b101,0b111,0b001,0b001}, // 4
-				{0b111,0b100,0b111,0b001,0b111}, // 5
-				{0b111,0b100,0b111,0b101,0b111}, // 6
-				{0b111,0b001,0b010,0b100,0b100}, // 7
-				{0b111,0b101,0b111,0b101,0b111}, // 8
-				{0b111,0b101,0b111,0b001,0b111}, // 9
-			};
-			static const unsigned char kGlyphM[5] = {0b101,0b111,0b111,0b101,0b101};
-			static const unsigned char kGlyphF[5] = {0b111,0b100,0b111,0b100,0b100};
-
-			static const unsigned char* glyph_for(char c) {
-				if (c >= '0' && c <= '9') { return kFont3x5[c - '0']; }
-				if (c == 'M') { return kGlyphM; }
-				if (c == 'F') { return kGlyphF; }
-				return nullptr;   // space / unknown -> blank cell
-			}
-
-			/* Draw a text string with the 3x5 font, one font-pixel == px x px logical pixels,
-			   as filled rects in the renderer's logical coordinate space. */
+			/* maize-222: the --show-perf overlay renders with the console font (font8x16, Model 30)
+			   so the live M<mips> F<fps> readout matches the console face. Any printable ASCII
+			   glyph renders; the earlier digit-only 3x5 micro-font is gone. */
 			static void draw_text(SDL_Renderer* ren, int x, int y, int px, const std::string& s) {
 				for (char ch : s) {
-					const unsigned char* g = glyph_for(ch);
-					if (g) {
-						for (int row = 0; row < 5; ++row) {
-							for (int col = 0; col < 3; ++col) {
-								if (g[row] & (1 << (2 - col))) {
+					int c = static_cast<unsigned char>(ch);
+					if (c >= FONT_FIRST && c <= FONT_LAST) {
+						const unsigned char* g = font8x16[c - FONT_FIRST];
+						for (int row = 0; row < FONT_H; ++row) {
+							unsigned char bits = g[row];
+							for (int col = 0; col < FONT_W; ++col) {
+								if (bits & (1 << col)) {   // LSB-first: bit col == pixel column col
 									SDL_Rect r { x + col * px, y + row * px, px, px };
 									SDL_RenderFillRect(ren, &r);
 								}
 							}
 						}
 					}
-					x += 4 * px;   // 3 wide + 1 column gap
+					x += FONT_W * px;   // fixed-width glyphs carry their own side bearing
 				}
 			}
 
@@ -1000,10 +980,20 @@ namespace maize {
 				std::uint64_t perf_last_present = con.render_count();
 				std::uint64_t perf_last_insn = cpu::instruction_count();
 				std::uint32_t perf_last_ticks = SDL_GetTicks();
-				std::uint32_t start_ticks = perf_last_ticks;   // maize-217: baseline for the avg-rate exit report
 				std::string perf_str = "M0 F0";
-				int peak_fps = 0;
-				int peak_mips = 0;
+
+				/* maize-222: register the per-device perf sources for this windowed run. The CPU
+				   source is always active; the display source (frames/FPS) is registered because a
+				   window is attached here. The sampler below writes peaks into these; perf::emit()
+				   at halt prints one section per source. */
+				perf::cpu_source cpu_perf;
+				perf::display_source disp_perf;
+				disp_perf.frames = [&fb]() -> std::uint64_t { return fb.present_count(); };
+				if (show_perf) {
+					perf::reset();
+					perf::add(&cpu_perf);
+					perf::add(&disp_perf);
+				}
 
 				/* guest_done latches true when cpu::run() returns (the guest halted, e.g.
 				   DOOM calling exit()). The window loop exits on either the window closing
@@ -1147,8 +1137,8 @@ namespace maize {
 							int mips = static_cast<int>((ic - perf_last_insn)
 								/ (static_cast<std::uint64_t>(dt) * 1000ull));
 							perf_str = "M" + std::to_string(mips) + " F" + std::to_string(fps);
-							if (fps > peak_fps) { peak_fps = fps; }
-							if (mips > peak_mips) { peak_mips = mips; }
+							if (fps > disp_perf.peak_fps) { disp_perf.peak_fps = fps; }   // maize-222
+							if (mips > cpu_perf.peak_mips) { cpu_perf.peak_mips = mips; }
 							perf_last_present = p;
 							perf_last_insn = ic;
 							perf_last_ticks = now;
@@ -1256,8 +1246,8 @@ namespace maize {
 								   surface: a translucent box behind green "M<mips> F<fps>" text at
 								   a small font (px == 1 logical pixel per font pixel). */
 								int px = 1;
-								int boxw = static_cast<int>(perf_str.size()) * 4 * px + 2;
-								int boxh = 5 * px + 2;
+								int boxw = static_cast<int>(perf_str.size()) * FONT_W * px + 2;   // maize-222: font8x16
+								int boxh = FONT_H * px + 2;
 								SDL_Rect box { 1, 1, boxw, boxh };
 								SDL_SetRenderDrawColor(ren, 0, 0, 0, 180);
 								SDL_RenderFillRect(ren, &box);
@@ -1308,21 +1298,11 @@ namespace maize {
 				   into the text-console grid so a windowed run can read it when the window is
 				   held open with --pause-on-halt. */
 				if (show_perf) {
-					std::uint32_t elapsed_ms = SDL_GetTicks() - start_ticks;
-					std::uint64_t total_insn = cpu::instruction_count();
-					std::uint64_t frames = fb.present_count();
-					int avg_mips = elapsed_ms
-						? static_cast<int>(total_insn / (static_cast<std::uint64_t>(elapsed_ms) * 1000ull)) : 0;
-					int avg_fps = elapsed_ms
-						? static_cast<int>(frames * 1000ull / elapsed_ms) : 0;
-					std::string report =
-						std::string("\r\n[maize] performance report\r\n")
-						+ "  instructions : " + std::to_string(total_insn) + "\r\n"
-						+ "  elapsed      : " + std::to_string(elapsed_ms) + " ms\r\n"
-						+ "  MIPS         : " + std::to_string(avg_mips) + " avg / " + std::to_string(peak_mips) + " peak\r\n"
-						+ "  frames       : " + std::to_string(frames) + "\r\n"
-						+ "  FPS          : " + std::to_string(avg_fps) + " avg / " + std::to_string(peak_fps) + " peak\r\n";
-					std::cerr << "maize:" << report << std::flush;
+					std::ostringstream oss;
+					oss.put(13); oss.put(10);   // maize-222: leading blank line
+					perf::emit(oss);
+					std::string report = oss.str();
+					std::cerr << report << std::flush;
 					con.write_out(reinterpret_cast<const unsigned char*>(report.data()),
 						static_cast<unsigned long>(report.size()));
 					/* Show the console (carrying the report) for the pause; reset the logical

@@ -22,7 +22,7 @@ set(MAIZE_HOSTFS_SOURCES
 # binary whose output is the window. `maizec` is the console build: no SDL, so it stays a
 # console-subsystem binary whose stdout/stderr reach the invoking terminal. Console programs
 # (hello, quesOS) run under maizec; the screen (framebuffer, DOOM) runs under maize.
-set(MAIZE_VM_SOURCES "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" ${MAIZE_HOSTFS_SOURCES})
+set(MAIZE_VM_SOURCES "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" "src/perf.cpp" ${MAIZE_HOSTFS_SOURCES})
 add_executable(maize  ${MAIZE_VM_SOURCES})
 add_executable(maizec ${MAIZE_VM_SOURCES})
 
