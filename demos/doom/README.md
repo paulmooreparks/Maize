@@ -4,6 +4,100 @@ This directory hosts the Maize DOOM port. The engine itself is the
 vendored `doomgeneric` submodule; every Maize-specific glue file lives here,
 OUTSIDE the submodule, which is never edited.
 
+## Build and run it yourself
+
+This is the whole path from a fresh clone to DOOM in a window. It splits into two
+independent halves:
+
+- The DOOM image `demos/doom/doom.mzx` is **portable Maize bytecode**. It is
+  already committed, so if you only want to *play* you can skip to step 3.
+- Running it in a window needs a **display-enabled `maize` built for your OS**.
+
+You supply your own WAD. The freely-redistributable shareware `doom1.wad` works,
+as do retail `DOOM.WAD` / `DOOM2.WAD`. No game asset is committed to this repo.
+
+### 1. Build a display-enabled `maize`
+
+The SDL2 window backend is opt-in (`-DMAIZE_DISPLAY=ON`). This is all you need to
+*run* the committed image. From the repo root (see the top-level `README.md`,
+"Build a display-enabled `maize`", for other platforms):
+
+Windows (PowerShell). SDL2 is bundled under `.toolchains/`, nothing to install:
+
+    cmake --preset windows-llvm-mingw-release -DMAIZE_DISPLAY=ON
+    cmake --build --preset windows-llvm-mingw-release
+
+Linux (bash):
+
+    sudo apt-get install -y cmake ninja-build libsdl2-dev
+    cmake --preset linux-release -DMAIZE_DISPLAY=ON
+    cmake --build --preset linux-release
+
+The tools land in `build/<preset>/` (`maize`, plus `mazm`/`mzld`/`mzdis`).
+
+### 2. (optional) Rebuild the DOOM image from source
+
+Skip this to use the committed `demos/doom/doom.mzx`. To rebuild it you also need
+the C cross-compiler (vendored cproc + QBE, which lower DOOM's C to Maize code)
+and the engine submodule. cproc/QBE are **POSIX-only**, so this half runs under
+Linux, macOS, WSL, or MSYS2 (never native Windows) even though the resulting
+bytecode then runs on the native `maize.exe`:
+
+    git submodule update --init demos/doom/doomgeneric   # pinned engine source
+    scripts/build-toolchain.sh                           # cproc + QBE + Maize QBE target
+
+    scripts/cc-maize.sh --preset linux-release --dev \
+        -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
+        -o demos/doom/doom.mzx \
+        --sources demos/doom/doom.sources \
+        demos/doom/doom_main.c demos/doom/doomgeneric_maize.c
+
+`cc-maize.sh` compiles all ~83 DOOM translation units through cproc -> QBE ->
+mazm and links them with the Maize C runtime into `demos/doom/doom.mzx` (about
+675 KB of Maize bytecode). `--dev` adds the device-access shim the
+framebuffer/keyboard platform layer needs; the `-D` flags pin the frame to a
+native 320x200 (see "Geometry" below). `--preset` picks which `build/<preset>/`
+`mazm`/`mzld` to drive, so build those tools for the same POSIX preset first
+(e.g. via `cmake --preset linux-release && cmake --build --preset linux-release`,
+or `scripts/run-tests.sh`). The image is portable, so you can build it under WSL
+and run it with the native Windows `maize.exe` from step 1.
+
+### 3. Run it in a window
+
+Point the display-enabled `maize` at a directory holding your WAD and launch:
+
+    build/<preset>/maize --display --input=keyboard \
+        --mount "<your-wad-dir>=/doom:ro" \
+        demos/doom/doom.mzx -iwad /doom/doom1.wad
+
+`--mount HOST=/doom:ro` gives the guest a read-only view of your WAD directory at
+the guest path `/doom`; `-iwad /doom/doom1.wad` is what DOOM opens. Replace
+`<preset>` and the mount path with your own. Handy extras: `-warp 1 1` jumps to
+E1M1, `-nomonsters` quiets the level, and `--show-perf` overlays guest MIPS + FPS
+(and prints the peaks on exit).
+
+Windows / Git Bash note: the shell rewrites a bare `/doom/...` argument into a
+Windows path before `maize.exe` sees it. `-iwad` is a GUEST path (resolved by
+maize's sandbox), so exempt it: prefix the command with
+`MSYS2_ARG_CONV_EXCL='/doom'`. The `--mount` host side is a real `C:\...` path and
+needs no exemption.
+
+Simpler, persistent alternative: maize's default sandbox root is `~/.maize/root`
+(mounted as `/`, startup cwd `/home/user`). Drop your WAD once at
+`~/.maize/root/home/user/doom/doom1.wad`, then no `--mount` is needed:
+
+    build/<preset>/maize --display demos/doom/doom.mzx -iwad doom/doom1.wad
+
+You can also make `--display` and `--input=keyboard` the defaults by putting
+`display=true` and `input=keyboard` in `~/.maize/config` (one `key=value` per
+line); a CLI flag always overrides the file.
+
+### Controls
+
+Arrows move, Ctrl fires, Space uses, Alt strafes, Enter/Escape drive the menus,
+the number keys select weapons: the Set-1 to DOOM keymap in
+`doomgeneric_maize.c`.
+
 ## Layout
 
 - `doomgeneric/`: pinned git submodule, `github.com/ozkl/doomgeneric`, commit
@@ -101,32 +195,12 @@ gate), distinct from the platform-only `run_doom_selfcheck`.
 
 ## Operator SDL demo (play a rendered first level)
 
-To watch DOOM render and play it in a window, build a `maize` with the SDL
-display backend (`cmake -DMAIZE_DISPLAY=ON ...`), build the interactive demo
-image from `doom_main.c`, and run it with `--display` and YOUR OWN `doom1.wad`
-directory mounted read-only. Nothing real-game is committed; you supply the WAD.
-
-    scripts/cc-maize.sh --dev -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
-        -o demos/doom/doom.mzx \
-        --sources demos/doom/doom.sources \
-        demos/doom/doom_main.c demos/doom/doomgeneric_maize.c
-
-    build/<preset>/maize --display --input=keyboard \
-        --mount "<your-doom-wad-dir>=/doom:ro" \
-        demos/doom/doom.mzx -iwad /doom/doom1.wad -warp 1 1
-
-The window opens at the native 320x200 (the default framebuffer geometry the
-platform layer is built against). Keyboard controls follow the Set-1 to DOOM
-keymap in `doomgeneric_maize.c`: arrows to move, Ctrl to fire, Space to use,
-Enter / Escape for menus. This demo is the visible payoff; it is not a CI gate.
-
-On Windows under Git Bash / MSYS2, the shell rewrites a bare POSIX argument like
-`/doom/doom1.wad` (or `/ro/min.wad`) into a Windows path before the native
-`maize.exe` receives it, so DOOM cannot find the WAD at its guest mount point.
-Those `-iwad` values are GUEST paths (resolved by maize's hostfs), not host
-paths, so exempt them from the rewrite: prefix the command with
-`MSYS2_ARG_CONV_EXCL='/doom'` (or `'/ro'` for the render gate). The `--mount` host
-side needs no exemption (it is already a native `C:\...` path).
+Watching DOOM render and playing it in a window on your own `doom1.wad` is the
+visible payoff (it is not a CI gate). The full walkthrough is "Build and run it
+yourself" at the top of this file: build a display-enabled `maize`, build (or use
+the committed) `doom.mzx`, and run it with `--display` and your WAD mounted
+read-only. The window opens at the native 320x200, the default framebuffer
+geometry the platform layer is built against.
 
 ## Status: Phase C, DOOM boots and renders a first level
 
