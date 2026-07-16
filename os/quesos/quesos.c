@@ -89,8 +89,14 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define SYS_write  0x01
 #define SYS_open   0x02
 #define SYS_close  0x03
-#define SYS_getpid 0x27   /* Linux x86-64 number for getpid */
+#define SYS_pipe   0x16   /* Linux x86-64 numbers below */
+#define SYS_dup    0x20
+#define SYS_dup2   0x21
+#define SYS_getpid 0x27
+#define SYS_fork   0x39
+#define SYS_execve 0x3B
 #define SYS_exit   0x3C
+#define SYS_wait4  0x3D
 
 /* ==================================================================================
  * Process table.
@@ -110,6 +116,8 @@ struct pcb {
     long parent;
     int  state;
     long exit_status;
+    long wait_for;                /* waitpid target while BLOCKED (-1 = any child)     */
+    u64  wait_status_uva;         /* user address to receive the wait status, or 0     */
     char path[QUESOS_PATH_CAP];   /* argv[0] for the reap transcript                   */
 };
 
@@ -120,7 +128,6 @@ static long g_next_pid = 1;
 /* Boot worklist: quesOS's own argv[1..] is the exec worklist (maize-24 decision D7). */
 static char g_pathbuf[QUESOS_MAX_PROC][QUESOS_PATH_CAP];
 static long g_worklist_count;
-static long g_worklist_next;
 
 /* Whole child image is slurped here before segment placement. */
 #define QUESOS_FILEBUF_CAP (256u * 1024u)
@@ -250,6 +257,7 @@ static u64 user_pa(struct pcb *p, u64 va) {
 }
 
 static void as_write8(struct pcb *p, u64 va, u8 val)   { *(u8 *)user_pa(p, va) = val; }
+static void as_write32(struct pcb *p, u64 va, u32 val) { *(u32 *)user_pa(p, va) = val; }
 static void as_write64(struct pcb *p, u64 va, u64 val) { *(u64 *)user_pa(p, va) = val; }
 
 /* Ensure the page containing user VA `va` is mapped (allocate + map on first touch). */
@@ -398,27 +406,44 @@ static struct pcb *spawn(const char *path, long parent) {
 }
 
 /* ==================================================================================
- * Reap loop: run the boot worklist one process at a time (single-tasking behavior is
- * the degenerate case of the multi-process kernel; the maize-24 selfcheck exercises
- * it and is the regression anchor). fork/wait/scheduler land in later phases.
+ * Scheduler: round-robin over the process table. schedule() picks the next RUNNABLE
+ * process after g_current and enters it (noreturn); with no runnable process the VM
+ * powers off. Cooperative today (processes yield by blocking on wait or exiting); the
+ * instruction-tick timer adds preemption in a later phase. Single-tasking is the
+ * degenerate case (one runnable process), which the maize-24 selfcheck exercises.
  * ================================================================================== */
-static void run_next_worklist(void) {
-    for (;;) {
-        struct pcb *p;
-        if (g_worklist_next >= g_worklist_count) {
-            quesos_poweroff();   /* noreturn */
+static void schedule(void) {
+    int base = (g_current != 0) ? (int)(g_current - g_proc) : -1;
+    int i;
+    for (i = 1; i <= QUESOS_MAX_PROC; ++i) {
+        int idx = (base + i) % QUESOS_MAX_PROC;
+        if (g_proc[idx].state == P_RUNNABLE) {
+            g_current = &g_proc[idx];
+            quesos_switch_to(g_current);   /* noreturn */
         }
-        p = spawn(g_pathbuf[g_worklist_next], 0);
-        if (p == 0) {
-            qos_puts("[quesos] cannot start ");
-            qos_puts(g_pathbuf[g_worklist_next]);
-            qos_puts("\n");
-            ++g_worklist_next;
-            continue;
-        }
-        g_current = p;
-        quesos_switch_to(p);   /* noreturn: enter the process in user mode */
     }
+    quesos_poweroff();   /* nothing runnable: worklist drained */
+}
+
+/* Does `parent_pid` have any child (matching wpid) still alive or unreaped? */
+static int has_child(long parent_pid, long wpid) {
+    int i;
+    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+        struct pcb *c = &g_proc[i];
+        if (c->state != P_FREE && c->parent == parent_pid
+            && (wpid <= 0 || c->pid == wpid)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static struct pcb *find_by_pid(long pid) {
+    int i;
+    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+        if (g_proc[i].state != P_FREE && g_proc[i].pid == pid) { return &g_proc[i]; }
+    }
+    return 0;
 }
 
 /* ==================================================================================
@@ -457,21 +482,111 @@ static long do_read(u64 fd, u64 uva, long count) {
     return got;
 }
 
-/* Record the exiting process's status and run the next worklist entry (or power off).
- * Later phases turn this into zombie + waitpid + scheduler; single-tasking today. */
+/* Encode a normal-exit wait status the way Linux does: exit code in bits 8..15
+ * (WIFEXITED true, WEXITSTATUS = (status >> 8) & 0xFF). */
+static u32 wait_status(long exit_code) {
+    return (u32)((exit_code & 0xFF) << 8);
+}
+
+/* fork (eager copy, ratified). Allocate a child, build it a fresh address space, and
+ * EAGER-COPY every mapped user page into distinct child frames (the separation that
+ * makes the two address spaces independent). The child resumes at the same saved
+ * context (the copied stack holds an identical frame) with the fork result forced to 0;
+ * the parent's fork returns the child pid. */
+static long do_fork(void) {
+    struct pcb *parent = g_current;
+    struct pcb *child = alloc_pcb();
+    u64 idx;
+    unsigned long k;
+
+    if (child == 0) { return -11; }   /* -EAGAIN */
+    child->state = P_RUNNABLE;
+    child->pid = g_next_pid++;
+    child->parent = parent->pid;
+    child->exit_status = 0;
+    child->wait_for = 0;
+    child->wait_status_uva = 0;
+    for (k = 0; k < QUESOS_PATH_CAP; ++k) { child->path[k] = parent->path[k]; }
+
+    build_address_space(child);
+    for (idx = 0; idx < 512; ++idx) {
+        u64 ppte = pte_get(parent->l0_pa, idx);
+        if ((ppte & PTE_V) && (ppte & PTE_U)) {
+            u64 cframe = alloc_frame();
+            memcpy((void *)cframe, (void *)(ppte & ~0xFFFul), PAGE_SIZE);
+            pte_set(child->l0_pa, idx, (cframe & ~0xFFFul) | PTE_USER);
+        }
+    }
+
+    /* Child's saved context is the copy at the same stack VA; force its RV slot to 0. */
+    child->saved_rs = parent->saved_rs;
+    as_write64(child, child->saved_rs + 11ul * 8ul, 0);
+    return child->pid;
+}
+
+/* Deliver a reaped child's result into a waiting parent's saved context + status word,
+ * free the child, and mark the parent runnable. */
+static void deliver_wait(struct pcb *parent, struct pcb *child) {
+    as_write64(parent, parent->saved_rs + 11ul * 8ul, (u64)child->pid);  /* RV = pid  */
+    if (parent->wait_status_uva != 0) {
+        as_write32(parent, parent->wait_status_uva, wait_status(child->exit_status));
+    }
+    child->state = P_FREE;
+    parent->state = P_RUNNABLE;
+}
+
+/* wait4/waitpid. Reap a matching zombie child immediately, or block until one exits
+ * (the exiting child completes this call via deliver_wait). Returns the child pid, or
+ * -ECHILD when there is no matching child. */
+static long do_wait(long wpid, u64 status_uva) {
+    struct pcb *parent = g_current;
+    int i;
+
+    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+        struct pcb *c = &g_proc[i];
+        if (c->state == P_ZOMBIE && c->parent == parent->pid
+            && (wpid <= 0 || c->pid == wpid)) {
+            long rpid = c->pid;
+            if (status_uva != 0) { as_write32(parent, status_uva, wait_status(c->exit_status)); }
+            c->state = P_FREE;
+            return rpid;
+        }
+    }
+
+    if (!has_child(parent->pid, wpid)) { return -10; }   /* -ECHILD */
+
+    parent->wait_for = wpid;
+    parent->wait_status_uva = status_uva;
+    parent->state = P_BLOCKED;
+    schedule();   /* noreturn: the waker (do_exit) delivers this call's result later */
+    return 0;     /* unreachable */
+}
+
+/* Terminate the current process. A child of a parent blocked in wait completes that
+ * parent's wait; a child of init (a top-level worklist process, parent 0) is reaped by
+ * quesOS with the transcript line; otherwise it lingers as a zombie until reaped. */
 static void do_exit(long status) {
-    g_current->exit_status = status;
-    g_current->state = P_ZOMBIE;
+    struct pcb *self = g_current;
+    struct pcb *parent;
 
-    qos_puts("[quesos] reaped ");
-    qos_puts(g_current->path);
-    qos_puts(" status=");
-    qos_put_u64((u64)(status & 0xFF));
-    qos_puts("\n");
+    self->exit_status = status;
+    self->state = P_ZOMBIE;
 
-    g_current->state = P_FREE;
-    ++g_worklist_next;
-    run_next_worklist();   /* noreturn */
+    parent = find_by_pid(self->parent);
+    if (parent != 0 && parent->state == P_BLOCKED
+        && (parent->wait_for <= 0 || parent->wait_for == self->pid)) {
+        deliver_wait(parent, self);   /* frees self, wakes parent */
+    } else if (self->parent == 0) {
+        qos_puts("[quesos] reaped ");
+        qos_puts(self->path);
+        qos_puts(" status=");
+        qos_put_u64((u64)(status & 0xFF));
+        qos_puts("\n");
+        self->state = P_FREE;
+    }
+    /* else: leave a zombie for a later wait. */
+
+    schedule();   /* noreturn */
 }
 
 void quesos_syscall(void) {
@@ -484,6 +599,8 @@ void quesos_syscall(void) {
         case SYS_write:  result = do_write(a0, a1, (long)a2); break;
         case SYS_read:   result = do_read(a0, a1, (long)a2);  break;
         case SYS_getpid: result = g_current->pid;             break;
+        case SYS_fork:   result = do_fork();                  break;
+        case SYS_wait4:  result = do_wait((long)a0, a1);      break;
         case SYS_exit:   do_exit((long)a0); return;           /* noreturn */
         default:
             qos_puts("[quesos] unhandled syscall ");
@@ -504,7 +621,6 @@ void quesos_main(long argc, char **argv) {
     long i;
 
     g_worklist_count = 0;
-    g_worklist_next = 0;
 
     for (i = 1; i < argc && g_worklist_count < QUESOS_MAX_PROC; ++i) {
         const char *src = argv[i];
@@ -526,5 +642,18 @@ void quesos_main(long argc, char **argv) {
     qos_put_u64((u64)g_worklist_count);
     qos_puts(" program(s)\n");
 
-    run_next_worklist();   /* noreturn */
+    /* Spawn every worklist entry as a top-level process (parent = init = 0), then let
+     * the scheduler run them. With no forking and no timer this is round-robin over
+     * processes that each run to exit, so the worklist runs in order (the maize-24
+     * transcript); a process that forks introduces real concurrency the scheduler and
+     * wait path handle. */
+    for (i = 0; i < g_worklist_count; ++i) {
+        if (spawn(g_pathbuf[i], 0) == 0) {
+            qos_puts("[quesos] cannot start ");
+            qos_puts(g_pathbuf[i]);
+            qos_puts("\n");
+        }
+    }
+
+    schedule();   /* noreturn */
 }

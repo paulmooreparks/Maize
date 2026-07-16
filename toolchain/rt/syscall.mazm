@@ -100,6 +100,20 @@ GLOBAL sys_palette_blit
 GLOBAL sys_bulk_copy
 GLOBAL sys_bulk_set
 
+; maize-93 process ladder: guest-OS process calls. These trap to quesOS's cause-7
+; dispatcher (a user process runs with the syscall-guest flag SET), which implements
+; them in GUEST code (never in src/sys.cpp). The numbers mirror the Linux x86-64 table
+; (fork=57, dup=32, dup2=33, pipe=22, execve=59, wait4=61, getpid=39) per the
+; numbering policy; they are the guest-OS surface, a namespace distinct from the native
+; SYS table (a program run directly by the VM, not under quesOS, must not call these).
+GLOBAL sys_fork
+GLOBAL sys_wait4
+GLOBAL sys_getpid
+GLOBAL sys_execve
+GLOBAL sys_pipe
+GLOBAL sys_dup2
+GLOBAL sys_dup
+
 sys_read:
     SYS $00                 ; fd/buf/count already in R0/R1/R2 per the C ABI
     RET
@@ -174,6 +188,34 @@ sys_bulk_copy:
 
 sys_bulk_set:
     SYS $F5                 ; R0=dst, R1=value, R2=n; RV = n or -errno
+    RET
+
+sys_fork:
+    SYS $39                 ; no args; RV = child pid in the parent, 0 in the child
+    RET
+
+sys_wait4:
+    SYS $3D                 ; R0=pid, R1=status*, R2=options, R3=rusage*; RV = pid or -errno
+    RET
+
+sys_getpid:
+    SYS $27                 ; no args; RV = caller pid
+    RET
+
+sys_execve:
+    SYS $3B                 ; R0=path, R1=argv, R2=envp; does not return on success
+    RET
+
+sys_pipe:
+    SYS $16                 ; R0=int[2] fds; RV = 0 or -errno
+    RET
+
+sys_dup2:
+    SYS $21                 ; R0=oldfd, R1=newfd; RV = newfd or -errno
+    RET
+
+sys_dup:
+    SYS $20                 ; R0=oldfd; RV = newfd or -errno
     RET
 
 _exit:
