@@ -1334,6 +1334,21 @@ int main(int argc, char *argv[]) {
 
 	sys::init();
 
+#ifdef MAIZE_CONSOLE_ONLY
+	/* maize-221: the console build has no window to show the framebuffer. On an interactive
+	   run, arm the takeover trap: a guest that programs the framebuffer base (a graphics
+	   program declaring itself) stops the VM instead of running invisibly, and the matching
+	   check after the run prints a use-the-graphical-binary diagnostic. The whole behavior
+	   (arm AND diagnose) is gated on an interactive tty (the maize-225 gate): piped /
+	   redirected / CI runs, including the asm harness and its headless framebuffer device
+	   test, must keep the framebuffer usable without a window and exit on the guest's own
+	   terms. */
+	const bool fb_trap_interactive = stdin_is_interactive();
+	if (fb_trap_interactive) {
+		framebuffer.set_stop_on_claim(true);
+	}
+#endif
+
 	/* Headless by default (no window, no display dependency). A window is created only
 	   when --display is passed AND a display backend is compiled in (MAIZE_DISPLAY);
 	   otherwise the run stays headless with a one-line note. In windowed mode the guest
@@ -1384,6 +1399,19 @@ int main(int argc, char *argv[]) {
 	}
 
 	sys::exit();
+
+#ifdef MAIZE_CONSOLE_ONLY
+	/* maize-221: the guest claimed the framebuffer under the console build (the takeover
+	   trap above stopped the VM). Tell the operator to use the graphical binary rather than
+	   exiting silently as if the program had simply run. Distinct exit code (3). */
+	if (fb_trap_interactive && framebuffer.graphics_claimed()) {
+		std::cerr << "maize: '" << file_path << "' drives the graphical framebuffer, which this "
+			"console build cannot display." << std::endl
+			<< "maize: run it with the graphical Maize binary (the build that opens a window)."
+			<< std::endl;
+		return 3;
+	}
+#endif
 
 	/* card maize-58: surface main's return value as the host process's own exit
 	   status. SYS $3C (sys_exit) recorded the low 8 bits of R0 here; a program

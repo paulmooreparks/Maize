@@ -158,6 +158,12 @@ namespace maize {
 			   action, NOT host-side auto-detection of the output byte stream. */
 			bool graphics_claimed() const { return claimed_.load(std::memory_order_acquire); }
 
+			/* maize-221: a console-only VM (no display backend) has no window to show the
+			   framebuffer. When set, the first framebuffer takeover stops the VM (cpu::power_off)
+			   so main can print a "run this with the graphical binary" diagnostic instead of
+			   letting a graphical guest run invisibly (and, for a render loop, forever). */
+			void set_stop_on_claim(bool on) { stop_on_claim_.store(on, std::memory_order_relaxed); }
+
 			/* Called by the display thread once per refresh (vblank). If the guest has enabled
 			   the vsync IRQ (port $55 bit1), set vsync-pending and raise the framebuffer IRQ so
 			   a guest parked in HALT wakes at the refresh rate. This is the periodic "monitor"
@@ -190,6 +196,7 @@ namespace maize {
 			/* maize-140: latched true when a guest programs a nonzero framebuffer base (the
 			   explicit raw-framebuffer takeover signal). Read by the display thread. */
 			std::atomic<bool> claimed_ {false};
+			std::atomic<bool> stop_on_claim_ {false};   // maize-221: console build stops the VM on takeover
 			std::vector<std::uint32_t> frame_;
 		};
 

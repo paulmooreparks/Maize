@@ -247,7 +247,15 @@ namespace maize {
 					   a text-console program never does, so it latches graphics mode for the
 					   display's text/graphics arbitration. */
 					if (bits != 0) {
-						claimed_.store(true, std::memory_order_release);
+						bool was = claimed_.exchange(true, std::memory_order_acq_rel);
+						/* maize-221: on a console-only VM there is no window for the framebuffer.
+						   The first takeover is where a graphical guest declares itself, so stop
+						   the VM here (once) and let main print a use-the-graphical-binary
+						   diagnostic instead of running invisibly. cpu::power_off() from the CPU
+						   thread mirrors the console read_in park/unpark (set_running) pattern. */
+						if (!was && stop_on_claim_.load(std::memory_order_relaxed)) {
+							cpu::power_off();
+						}
 					}
 					break;
 				case ROLE_PRESENT:

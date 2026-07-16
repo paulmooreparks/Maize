@@ -129,6 +129,14 @@ if [ ! -x "$MAIZE_EXE" ]; then
     echo "Expected built executable not found: ${MAIZE_EXE}" >&2
     exit 2
 fi
+
+# maize-221: give every test child a non-interactive stdin. The console VM traps a
+# framebuffer takeover ONLY on an interactive tty (so a real graphical guest run by
+# hand gets a diagnostic); closing the suite's stdin keeps the headless framebuffer
+# tests (test_framebuffer, doom self-checks) untrapped no matter how the suite is
+# launched. Tests that need input pipe their own (printf ... | maize ...), which
+# overrides this.
+exec 0</dev/null
 if [ ! -x "$MZLD_EXE" ]; then
     echo "Expected built executable not found: ${MZLD_EXE}" >&2
     exit 2

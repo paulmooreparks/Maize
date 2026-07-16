@@ -290,7 +290,10 @@ function Invoke-Test($test) {
     # as the mazm call above and scripts/install-mazm.ps1:90-98).
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    & $MaizeExe $binPath > $stdoutFile 2> $stderrFile
+    # maize-221: pipe $null so the child gets a non-interactive (closed) stdin; the
+    # console VM traps a framebuffer takeover only on an interactive tty, so this keeps
+    # the headless test_framebuffer untrapped no matter how the suite is launched.
+    $null | & $MaizeExe $binPath > $stdoutFile 2> $stderrFile
     $maizeExit = $LASTEXITCODE
     $ErrorActionPreference = $prevEap
     $actualRaw = Get-Content -Raw -Path $stdoutFile -ErrorAction SilentlyContinue

@@ -105,6 +105,11 @@ MAIZE=$(resolve_exe "${BUILD_DIR}/maizec") || {   # maize-225: SDL-free console 
 MZLD=$(resolve_exe "${BUILD_DIR}/mzld") || {
     echo "run-ctest.sh: mzld not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 
+# maize-221: non-interactive stdin for every test child, so the console VM's
+# framebuffer-takeover trap (interactive-tty only) never fires on the headless
+# doom self-checks regardless of how this script is launched. See run-tests.sh.
+exec 0</dev/null
+
 mkdir -p "${WORK_DIR}"
 
 FAIL_COUNT=0
