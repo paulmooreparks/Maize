@@ -102,6 +102,12 @@ static void print_usage(std::ostream &out) {
 	out <<
 		"maize - run a Maize program\n"
 		"\n"
+		"There are two VM binaries: 'maizec' is the console build (its output goes to the\n"
+		"terminal; use it for programs that print, e.g. hello, quesOS), and 'maize' is the\n"
+		"graphical build (an on-screen window; use it for the framebuffer, e.g. DOOM). Both\n"
+		"take the same options below. On 'maize', --pause-on-halt holds the window open on\n"
+		"the final frame (and any --show-perf report) until you press a key or close it.\n"
+		"\n"
 		"Usage:\n"
 		"  maize [options] <image> [guest-args...]\n"
 		"\n"
@@ -132,7 +138,8 @@ static void print_usage(std::ostream &out) {
 		"  ~/.maize/config   default values for the launcher flags, one key=value per\n"
 		"                    line (blank and #-comment lines ignored). Keys are the long\n"
 		"                    flag names without dashes: display-scale, refresh-hz,\n"
-		"                    resolution, root, show-perf, display, input, no-root.\n"
+		"                    resolution, root, show-perf, pause-on-halt, display,\n"
+		"                    input, no-root. (maizec ignores the graphical-only keys.)\n"
 		"                    Booleans accept true/false, 1/0, or yes/no. Precedence is\n"
 		"                    built-in default < ~/.maize/config < CLI flag (a CLI flag\n"
 		"                    always wins). A bad key or value is warned and ignored.\n"
@@ -409,7 +416,8 @@ static void load_config_file(const std::string &path,
 	unsigned &display_scale, unsigned &refresh_hz,
 	maize::u_hword &fb_width, maize::u_hword &fb_height,
 	std::string &root_override, bool &show_perf,
-	bool &display_requested, std::string &input_source, bool &no_root) {
+	bool &display_requested, std::string &input_source, bool &no_root,
+	bool &pause_on_halt) {
 	std::ifstream f(path);
 	if (!f.is_open()) {
 		return;   /* optional file absent: built-in defaults stand (unchanged behavior) */
@@ -493,6 +501,14 @@ static void load_config_file(const std::string &path,
 				continue;
 			}
 			show_perf = b;
+		} else if (key == "pause-on-halt") {
+			bool b = false;
+			if (!parse_config_bool(val, b)) {
+				std::cerr << "maize: ignoring config pause-on-halt '" << val
+					<< "' (expected true/false, 1/0, or yes/no)" << std::endl;
+				continue;
+			}
+			pause_on_halt = b;
 		} else if (key == "display") {
 			bool b = false;
 			if (!parse_config_bool(val, b)) {
@@ -602,6 +618,7 @@ int main(int argc, char *argv[]) {
 	bool console_dump = false;       // --console-dump: bind the text console headlessly and
 	                                 // dump its grid at exit (headless CI self-check channel)
 	bool show_perf = false;          // --show-perf: draw guest MIPS + FPS in the window corner
+	bool pause_on_halt = false;      // --pause-on-halt: hold the window open after the guest halts
 	unsigned display_scale = 3;      // window = framebuffer size * scale (--display-scale)
 	unsigned refresh_hz = 60;        // "monitor" refresh + vsync-IRQ rate (--refresh-hz)
 	maize::u_hword fb_width = 320;   // framebuffer host config (OQ: default 320x200)
@@ -633,7 +650,8 @@ int main(int argc, char *argv[]) {
 			std::filesystem::path base = std::filesystem::path(cfg_home) / ".maize";
 			load_config_file((base / "config").string(),
 				display_scale, refresh_hz, fb_width, fb_height,
-				root_override, show_perf, display_requested, input_source, no_root);
+				root_override, show_perf, display_requested, input_source, no_root,
+				pause_on_halt);
 			if (show_perf) {
 				/* config-supplied default: match the --show-perf side effect (the CLI
 				   path also calls this; enable_perf_counter just sets a bool, so a
@@ -813,6 +831,14 @@ int main(int argc, char *argv[]) {
 			   peak MIPS/FPS on exit. Enables the per-instruction counter. */
 			show_perf = true;
 			cpu::enable_perf_counter();
+			++idx;
+			continue;
+		}
+		if (arg == "--pause-on-halt" || arg == "--no-pause-on-halt") {
+			/* Hold the graphical window open on the guest's final frame (and any --show-perf
+			   report) until a keypress or window-close, then exit with the guest code. Default
+			   off; graphical binary only (maizec has no window). A CLI flag overrides config. */
+			pause_on_halt = (arg == "--pause-on-halt");
 			++idx;
 			continue;
 		}
@@ -1170,7 +1196,7 @@ int main(int argc, char *argv[]) {
 	   keyboard. */
 	if (display_requested) {
 #ifdef MAIZE_DISPLAY
-		devices::display::run(framebuffer, keyboard, console_dev, display_scale, show_perf, refresh_hz);
+		devices::display::run(framebuffer, keyboard, console_dev, display_scale, show_perf, refresh_hz, pause_on_halt);
 #else
 		if (!console_dump) {
 			std::cerr << "maize: --display requested but no display backend was compiled in "

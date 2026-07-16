@@ -271,6 +271,13 @@ line is:
 maize [options] <image> [guest-args...]
 ```
 
+There are two VM binaries. **`maizec`** is the console build: its output goes to
+the terminal, so use it for programs that print (`maizec hello.mzb`, quesOS).
+**`maize`** is the graphical build: it opens an on-screen window, so use it for
+framebuffer programs (DOOM). Both accept the same options. On Windows the split is
+load-bearing: a graphical binary is linked as a GUI-subsystem app and cannot write
+to the terminal it was launched from, which is why console output lives in `maizec`.
+
 Options are consumed up to the first non-option token, which is `<image>`;
 everything after `<image>` is passed to the program as its `argv`, verbatim (a
 `-flag` after the image is a guest argument, never a maize option). `argv[0]` is
@@ -333,6 +340,8 @@ names **without** the leading dashes:
 - `input` = `sys`, `keyboard`, or `console`
 - `show-perf` = boolean
 - `display` = boolean
+- `pause-on-halt` = boolean (graphical `maize` only: hold the window open on the
+  final frame, and any `--show-perf` report, until a key or window-close)
 - `no-root` = boolean
 
 Booleans accept `true`/`false`, `1`/`0`, or `yes`/`no`. Parsing is fail-soft: an

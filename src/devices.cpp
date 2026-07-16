@@ -910,7 +910,7 @@ namespace maize {
 			}
 
 			void run(framebuffer_device& fb, keyboard_device& kbd, text_console& con,
-				unsigned scale, bool show_perf, unsigned refresh_hz) {
+				unsigned scale, bool show_perf, unsigned refresh_hz, bool pause_on_halt) {
 				kbd.use_window_source();
 
 				/* Refresh period from the requested rate (the "monitor" cadence). Clamp to a sane
@@ -964,6 +964,7 @@ namespace maize {
 				std::uint64_t perf_last_present = con.render_count();
 				std::uint64_t perf_last_insn = cpu::instruction_count();
 				std::uint32_t perf_last_ticks = SDL_GetTicks();
+				std::uint32_t start_ticks = perf_last_ticks;   // maize-217: baseline for the avg-rate exit report
 				std::string perf_str = "M0 F0";
 				int peak_fps = 0;
 				int peak_mips = 0;
@@ -1250,6 +1251,11 @@ namespace maize {
 					}
 				}
 
+				/* Distinguish a genuine guest halt from a user window-close: --pause-on-halt
+				   only holds for a halt. If the loop exited on SDL_QUIT the guest is usually
+				   still running (guest_done false) and power_off below stops it. */
+				bool guest_halted = guest_done.load(std::memory_order_acquire);
+
 				/* Unblock a console fd-0 read parked on the scancode queue, then stop the VM,
 				   so a guest blocked in read() at window-close does not wedge the join below. */
 				con.stop();
@@ -1258,15 +1264,60 @@ namespace maize {
 					guest.join();
 				}
 
-				/* Report the peaks on exit. A windowed process has no visible stderr, so
-				   surface them in a GUI message box (with the still-open window as parent);
-				   the stderr line is kept for console runs / logs. */
+				/* maize-217: on-exit performance report. Replaces the old modal message box
+				   (SDL_ShowSimpleMessageBox), which was intrusive and blocked teardown. The
+				   report goes to stderr (visible on console runs / maizec / logs) AND is written
+				   into the text-console grid so a windowed run can read it when the window is
+				   held open with --pause-on-halt. */
 				if (show_perf) {
-					std::string msg = "Peak: " + std::to_string(peak_mips) + " MIPS, "
-						+ std::to_string(peak_fps) + " FPS";
-					std::cerr << "maize: " << msg << std::endl;
-					SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,
-						"Maize performance", msg.c_str(), win);
+					std::uint32_t elapsed_ms = SDL_GetTicks() - start_ticks;
+					std::uint64_t total_insn = cpu::instruction_count();
+					std::uint64_t frames = fb.present_count();
+					int avg_mips = elapsed_ms
+						? static_cast<int>(total_insn / (static_cast<std::uint64_t>(elapsed_ms) * 1000ull)) : 0;
+					int avg_fps = elapsed_ms
+						? static_cast<int>(frames * 1000ull / elapsed_ms) : 0;
+					std::string report =
+						std::string("\r\n[maize] performance report\r\n")
+						+ "  instructions : " + std::to_string(total_insn) + "\r\n"
+						+ "  elapsed      : " + std::to_string(elapsed_ms) + " ms\r\n"
+						+ "  MIPS         : " + std::to_string(avg_mips) + " avg / " + std::to_string(peak_mips) + " peak\r\n"
+						+ "  frames       : " + std::to_string(frames) + "\r\n"
+						+ "  FPS          : " + std::to_string(avg_fps) + " avg / " + std::to_string(peak_fps) + " peak\r\n";
+					std::cerr << "maize:" << report << std::flush;
+					con.write_out(reinterpret_cast<const unsigned char*>(report.data()),
+						static_cast<unsigned long>(report.size()));
+					/* Show the console (carrying the report) for the pause; reset the logical
+					   size in case a graphics guest had switched it to the framebuffer geometry. */
+					graphics_mode = false;
+					SDL_RenderSetLogicalSize(ren, cw, ch);
+				}
+
+				/* maize-217: --pause-on-halt. On a genuine guest halt (not a user window-close),
+				   hold the window open on its final frame (plus any perf report just written to
+				   the console) until the operator presses a key or closes the window, then tear
+				   down. Default off: a plain run closes immediately, as before. */
+				if (pause_on_halt && guest_halted) {
+					SDL_SetWindowTitle(win, "Maize - halted (press a key or close the window)");
+					SDL_RenderClear(ren);
+					if (graphics_mode) {
+						const std::vector<std::uint32_t>& frame = fb.frame();
+						if (!frame.empty()) {
+							SDL_UpdateTexture(fb_tex, nullptr, frame.data(),
+								fbw * static_cast<int>(sizeof(std::uint32_t)));
+							SDL_RenderCopy(ren, fb_tex, nullptr, nullptr);
+						}
+					} else {
+						SDL_UpdateTexture(con_tex, nullptr, con.pixels(),
+							cw * static_cast<int>(sizeof(std::uint32_t)));
+						SDL_RenderCopy(ren, con_tex, nullptr, nullptr);
+					}
+					SDL_RenderPresent(ren);
+					bool held = true;
+					SDL_Event pe;
+					while (held && SDL_WaitEvent(&pe)) {
+						if (pe.type == SDL_QUIT || pe.type == SDL_KEYDOWN) { held = false; }
+					}
 				}
 
 				SDL_DestroyTexture(con_tex);
