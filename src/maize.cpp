@@ -615,7 +615,14 @@ int main(int argc, char *argv[]) {
 	std::vector<mount_grant> grants;
 	bool no_root = false;            // --no-root: disable the default sandbox root
 	std::string root_override;       // --root <hostpath>: redirect the sandbox root
-	bool display_requested = false;
+#ifdef MAIZE_DISPLAY
+	/* maize-217 (Option A): the graphical `maize` binary opens a window by DEFAULT, so the
+	   binary name determines the mode (maize = the screen; maizec = the terminal). A config
+	   `display=false` still forces headless, and --console-dump overrides to headless below. */
+	bool display_requested = true;
+#else
+	bool display_requested = false;  // headless / maizec build: never a window
+#endif
 	bool console_dump = false;       // --console-dump: bind the text console headlessly and
 	                                 // dump its grid at exit (headless CI self-check channel)
 	bool show_perf = false;          // --show-perf: draw guest MIPS + FPS in the window corner
@@ -1177,6 +1184,12 @@ int main(int argc, char *argv[]) {
 	   SDL scancode queue; the headless source is host stdin (each byte one Set-1
 	   scancode). A --display run without a compiled backend falls back to headless and
 	   does NOT bind the console (host stdio, as before), unless --console-dump is set. */
+	/* maize-217 (Option A): --console-dump is the headless grid-capture channel (CI self-check),
+	   so it forces the graphical binary's window-by-default off: host stdio + a grid dump, no
+	   SDL window. Must run before windowed_console is derived from display_requested. */
+	if (console_dump) {
+		display_requested = false;
+	}
 	bool windowed_console = false;
 #ifdef MAIZE_DISPLAY
 	windowed_console = display_requested;

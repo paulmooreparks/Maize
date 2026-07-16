@@ -339,7 +339,8 @@ names **without** the leading dashes:
 - `root` = host path for the sandbox root (as `--root`)
 - `input` = `sys`, `keyboard`, or `console`
 - `show-perf` = boolean
-- `display` = boolean
+- `display` = boolean (graphical `maize` only, which opens a window by default; set
+  `display=false` to force it headless. `maizec` ignores this key.)
 - `pause-on-halt` = boolean (graphical `maize` only: hold the window open on the
   final frame, and any `--show-perf` report, until a key or window-close)
 - `no-root` = boolean
