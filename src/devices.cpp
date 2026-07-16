@@ -890,7 +890,8 @@ namespace maize {
 			}
 
 			void run(framebuffer_device& fb, keyboard_device& kbd, text_console& con,
-				unsigned scale, bool show_perf, unsigned refresh_hz, bool pause_on_halt) {
+				unsigned scale, bool show_perf, unsigned refresh_hz, bool pause_on_halt,
+				bool vsync) {
 				kbd.use_window_source();
 
 				/* Refresh period from the requested rate (the "monitor" cadence). Clamp to a sane
@@ -938,6 +939,22 @@ namespace maize {
 					cw * static_cast<int>(scale), ch * static_cast<int>(scale),
 					SDL_WINDOW_RESIZABLE);
 				SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+				/* maize-227: align presents to the monitor's vblank. Without this the
+				   graphics present is paced only by the software refresh_ms timer and
+				   SDL_RenderPresent returns immediately, so presents free-run against the
+				   physical monitor / compositor and slowly beat with it -- the rare "freeze
+				   a frame or two, then catch up" hitch. With vsync, SDL_RenderPresent blocks
+				   until vblank; the next_vsync deadline goes overdue during that block, so
+				   the following wait shrinks and present throughput is not capped below the
+				   guest's frame rate. refresh_hz still drives the guest vsync-IRQ cadence
+				   (fb.on_display_refresh), so the guest contract is unchanged. Fail-soft: a
+				   driver that cannot vsync logs once and presents unsynced (prior behavior). */
+				if (vsync && ren) {
+					if (SDL_RenderSetVSync(ren, 1) != 0) {
+						std::cerr << "maize: display vsync unavailable (" << SDL_GetError()
+							<< "); presenting unsynced\n";
+					}
+				}
 				SDL_RenderSetLogicalSize(ren, cw, ch);
 				SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);   // alpha for the fps box
 				SDL_Texture* con_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,

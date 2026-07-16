@@ -183,8 +183,8 @@ static void print_usage(std::ostream &out) {
 		"                    line (blank and #-comment lines ignored). Keys are the long\n"
 		"                    flag names without dashes: display-scale, refresh-hz,\n"
 		"                    resolution, console-size, root, show-perf, pause-on-halt,\n"
-		"                    display, input, no-root. (maizec ignores the graphical-only\n"
-		"                    keys.) console-size is <cols>x<rows> (e.g. 80x25).\n"
+		"                    vsync, display, input, no-root. (maizec ignores the\n"
+		"                    graphical-only keys.) console-size is <cols>x<rows> (e.g. 80x25).\n"
 		"                    Booleans accept true/false, 1/0, or yes/no. Precedence is\n"
 		"                    built-in default < ~/.maize/config < CLI flag (a CLI flag\n"
 		"                    always wins). A bad key or value is warned and ignored.\n"
@@ -449,8 +449,8 @@ static bool parse_config_bool(const std::string &val, bool &out) {
    --env-file: one `key=value` per line, blank lines and lines whose first
    non-whitespace character is '#' ignored. Keys are the long flag names WITHOUT
    the leading dashes. Covered keys (scalar + boolean launcher flags only):
-   display-scale, refresh-hz, resolution, console-size, root, show-perf, display,
-   input, and the boolean no-root. Precedence is built-in default < config < CLI, so this runs
+   display-scale, refresh-hz, resolution, console-size, root, show-perf, pause-on-halt,
+   vsync, display, input, and the boolean no-root. Precedence is built-in default < config < CLI, so this runs
    BEFORE the CLI argument loop and only changes the value each flag STARTS from; a
    CLI flag always wins because the loop overrides afterward. Fail-soft (per the
    card): an unknown key or a malformed value produces a stderr warning and is
@@ -463,7 +463,7 @@ static void load_config_file(const std::string &path,
 	maize::u_hword &console_width, maize::u_hword &console_height,
 	std::string &root_override, bool &show_perf,
 	bool &display_requested, std::string &input_source, bool &no_root,
-	bool &pause_on_halt) {
+	bool &pause_on_halt, bool &vsync) {
 	std::ifstream f(path);
 	if (!f.is_open()) {
 		return;   /* optional file absent: built-in defaults stand (unchanged behavior) */
@@ -566,6 +566,14 @@ static void load_config_file(const std::string &path,
 				continue;
 			}
 			pause_on_halt = b;
+		} else if (key == "vsync") {
+			bool b = false;
+			if (!parse_config_bool(val, b)) {
+				std::cerr << "maize: ignoring config vsync '" << val
+					<< "' (expected true/false, 1/0, or yes/no)" << std::endl;
+				continue;
+			}
+			vsync = b;
 		} else if (key == "display") {
 			bool b = false;
 			if (!parse_config_bool(val, b)) {
@@ -683,6 +691,7 @@ int main(int argc, char *argv[]) {
 	                                 // dump its grid at exit (headless CI self-check channel)
 	bool show_perf = false;          // --show-perf: draw guest MIPS + FPS in the window corner
 	bool pause_on_halt = false;      // --pause-on-halt: hold the window open after the guest halts
+	bool vsync = true;               // --vsync/--no-vsync: sync graphics presents to the monitor vblank (maize-227)
 	unsigned display_scale = 3;      // window = framebuffer size * scale (--display-scale)
 	unsigned refresh_hz = 60;        // "monitor" refresh + vsync-IRQ rate (--refresh-hz)
 	maize::u_hword fb_width = 320;   // framebuffer host config (OQ: default 320x200)
@@ -716,7 +725,7 @@ int main(int argc, char *argv[]) {
 				display_scale, refresh_hz, fb_width, fb_height,
 				console_width, console_height,
 				root_override, show_perf, display_requested, input_source, no_root,
-				pause_on_halt);
+				pause_on_halt, vsync);
 			if (show_perf) {
 				/* config-supplied default: match the --show-perf side effect (the CLI
 				   path also calls this; enable_perf_counter just sets a bool, so a
@@ -904,6 +913,14 @@ int main(int argc, char *argv[]) {
 			   report) until a keypress or window-close, then exit with the guest code. Default
 			   off; graphical binary only (maizec has no window). A CLI flag overrides config. */
 			pause_on_halt = (arg == "--pause-on-halt");
+			++idx;
+			continue;
+		}
+		if (arg == "--vsync" || arg == "--no-vsync") {
+			/* maize-227: sync graphics presents to the monitor's vblank (default on). Removes
+			   the free-running present beat; --no-vsync restores unsynced presents paced only
+			   by refresh-hz. Graphical binary only. A CLI flag overrides config. */
+			vsync = (arg == "--vsync");
 			++idx;
 			continue;
 		}
@@ -1301,7 +1318,7 @@ int main(int argc, char *argv[]) {
 
 	if (display_requested) {
 #ifdef MAIZE_DISPLAY
-		devices::display::run(framebuffer, keyboard, console_dev, display_scale, show_perf, refresh_hz, pause_on_halt);
+		devices::display::run(framebuffer, keyboard, console_dev, display_scale, show_perf, refresh_hz, pause_on_halt, vsync);
 		used_display = true;
 #else
 		if (!console_dump) {

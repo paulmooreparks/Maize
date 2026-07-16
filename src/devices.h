@@ -349,7 +349,8 @@ namespace maize {
 			   default surface (text console); fb takes over for a raw-framebuffer program
 			   (DOOM) once it claims the framebuffer, mutually exclusive per run. */
 			void run(framebuffer_device& fb, keyboard_device& kbd, text_console& con,
-				unsigned scale, bool show_perf, unsigned refresh_hz, bool pause_on_halt);
+				unsigned scale, bool show_perf, unsigned refresh_hz, bool pause_on_halt,
+				bool vsync);
 		}
 #endif
 
