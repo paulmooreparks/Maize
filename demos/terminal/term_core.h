@@ -23,7 +23,7 @@
 #define MAIZE_TERM_CORE_H
 
 #include "mzdev.h"
-#include "font8x8.h"
+#include "../../src/font8x8.h"
 
 #define TERM_COLS 40
 #define TERM_ROWS 25

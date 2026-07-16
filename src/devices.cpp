@@ -5,7 +5,7 @@
 
 #include "maize.h"
 #include "devices.h"
-#include "../demos/terminal/font8x8.h"
+#include "font8x16.h"
 #include <cstring>
 
 namespace maize {
@@ -326,8 +326,8 @@ namespace maize {
 
 		text_console::text_console(unsigned width_px, unsigned height_px)
 			: width_px_(width_px), height_px_(height_px),
-			  cols_(static_cast<int>(width_px / 8)),
-			  rows_(static_cast<int>(height_px / 8)),
+			  cols_(static_cast<int>(width_px / FONT_W)),
+			  rows_(static_cast<int>(height_px / FONT_H)),
 			  pixels_(static_cast<size_t>(width_px) * height_px, 0u) {
 			if (cols_ < 1) { cols_ = 1; }
 			if (rows_ < 1) { rows_ = 1; }
@@ -359,10 +359,10 @@ namespace maize {
 			std::uint32_t bg = con_palette[(a >> 4) & 7];
 			if (ch < FONT_FIRST || ch > FONT_LAST) { ch = 0x20; }
 			int idx = ch - FONT_FIRST;
-			for (int gy = 0; gy < 8; ++gy) {
-				int bits = font8x8[idx][gy];
-				size_t base = (static_cast<size_t>(row) * 8 + gy) * width_px_ + static_cast<size_t>(col) * 8;
-				for (int gx = 0; gx < 8; ++gx) {
+			for (int gy = 0; gy < FONT_H; ++gy) {
+				int bits = font8x16[idx][gy];
+				size_t base = (static_cast<size_t>(row) * FONT_H + gy) * width_px_ + static_cast<size_t>(col) * FONT_W;
+				for (int gx = 0; gx < FONT_W; ++gx) {
 					pixels_[base + gx] = ((bits >> gx) & 1) ? fg : bg;
 				}
 			}
@@ -1203,13 +1203,13 @@ namespace maize {
 							   cell-restore bookkeeping and cannot leave artifacts on move/scroll.
 							   Console surface only; honor the guest's ESC[?25l hide. Drawn when
 							   the cursor is solid (recent typing) or the blink phase is on. The
-							   cell is an 8x8 block at (col*8, row*8) in logical space, which
+							   cell is a FONT_W x FONT_H block at (col*FONT_W, row*FONT_H) in logical space, which
 							   equals the console pixel space (RenderSetLogicalSize == console
 							   resolution), so SDL scales it by the same factor as the console
 							   texture. A translucent light fill reads as a classic inverted block
 							   while leaving the glyph legible. */
 							if (cursor_on) {
-								SDL_Rect cur { con.cursor_col() * 8, con.cursor_row() * 8, 8, 8 };
+								SDL_Rect cur { con.cursor_col() * FONT_W, con.cursor_row() * FONT_H, FONT_W, FONT_H };
 								SDL_SetRenderDrawColor(ren, 0xC0, 0xC0, 0xC0, 0xA0);
 								SDL_RenderFillRect(ren, &cur);
 							}

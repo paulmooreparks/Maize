@@ -1,10 +1,12 @@
-/* demos/terminal/font8x8.h -- embedded 8x8 bitmap font (maize-121).
+/* src/font8x8.h -- embedded 8x8 bitmap font (maize-121; relocated to src/ in maize-219).
  *
  * font8x8_basic: Daniel Hepper's public-domain font8x8 (github.com/dhepper/font8x8),
- * derived from the IBM PC BIOS font. Public domain; embedded in-source so the terminal
- * needs no runtime font file. Rows 0x20..0x7F of the ASCII block are included (index
- * i corresponds to character 0x20 + i); 0x7F (DEL) is blank. Each glyph is 8 bytes, one
- * per pixel row top-to-bottom; within a row byte, bit 0 (LSB) is the LEFTMOST pixel.
+ * derived from the IBM PC BIOS font. Public domain (see THIRD-PARTY-NOTICES.md); embedded
+ * in-source so the terminal needs no runtime font file. Rows 0x20..0x7F of the ASCII block
+ * are included (index i corresponds to character 0x20 + i); 0x7F (DEL) is blank. Each glyph
+ * is 8 bytes, one per pixel row top-to-bottom; within a row byte, bit 0 (LSB) is the
+ * LEFTMOST pixel. Now used by the demos/terminal guest console; the host VM console
+ * (src/devices.cpp) uses the 8x16 font (src/font8x16.h) as of maize-219.
  */
 #ifndef MAIZE_TERM_FONT8X8_H
 #define MAIZE_TERM_FONT8X8_H

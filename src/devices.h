@@ -195,7 +195,7 @@ namespace maize {
 
 		/* maize-140: host/VM text console (approach (i)). The window becomes a first-class
 		   glass TTY: the guest writes BYTES on fd 1/2 and this device renders GLYPHS into a
-		   host pixel buffer (an 80x50 cell grid over font8x8 at a 640x400 default, distinct
+		   host pixel buffer (an 80x25 cell grid over font8x16 at a 640x400 default, distinct
 		   from the framebuffer's 320x200 DOOM default), interpreting the same VT/ANSI output
 		   subset the maize-121 term_core engine honors (LF/CR/BS/HT, CUU/CUD/CUF/CUB, CUP,
 		   ED, EL, SGR basic colors, right-margin wrap, bottom-of-screen scroll). Physical

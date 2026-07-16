@@ -632,7 +632,7 @@ int main(int argc, char *argv[]) {
 	maize::u_hword fb_width = 320;   // framebuffer host config (OQ: default 320x200)
 	maize::u_hword fb_height = 200;
 	/* maize-140: the text console has its OWN default resolution, distinct from the
-	   framebuffer's 320x200 DOOM default (OQ2). 640x400 at font8x8 is an 80x50 cell grid,
+	   framebuffer's 320x200 DOOM default (OQ2). 640x400 at font8x16 is an 80x25 cell grid,
 	   the >= 80-column floor the console targets; keeping it separate from fb_width/height
 	   means the framebuffer default (and DOOM's geometry guard) is untouched. */
 	maize::u_hword console_width = 640;
