@@ -340,7 +340,8 @@ vformat(struct fmtout *o, const char *fmt, va_list ap)
         lng = 0;
         prec = -1;                                      /* -1 == precision absent */
         if (*p == '0') { zero = 1; p++; }               /* zero-pad flag */
-        while (*p >= '0' && *p <= '9')                  /* minimum field width */
+        if (*p == '*') { width = va_arg(ap, int); p++; } /* width from an int arg (%*d/%*s) */
+        else while (*p >= '0' && *p <= '9')             /* minimum field width */
             width = width * 10 + (*p++ - '0');
         if (*p == '.') {                                /* precision (.N or .*) */
             p++;
