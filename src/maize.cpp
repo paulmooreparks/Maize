@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <string>
 #include <cctype>
+#include <chrono>
 #include "maize.h"
 #include "maize_obj.h"
 #include "hostfs/hostfs_core.h"
@@ -1194,9 +1195,16 @@ int main(int argc, char *argv[]) {
 	   otherwise the run stays headless with a one-line note. In windowed mode the guest
 	   runs on a background thread while the SDL2 event loop presents frames and feeds the
 	   keyboard. */
+	/* maize-217: time the run so --show-perf prints an average-rate report on the headless
+	   path too (maizec, or a --display build with no backend). The graphical display::run
+	   prints its own richer report (with frames/FPS); used_display suppresses the duplicate. */
+	auto perf_start = std::chrono::steady_clock::now();
+	bool used_display = false;
+
 	if (display_requested) {
 #ifdef MAIZE_DISPLAY
 		devices::display::run(framebuffer, keyboard, console_dev, display_scale, show_perf, refresh_hz, pause_on_halt);
+		used_display = true;
 #else
 		if (!console_dump) {
 			std::cerr << "maize: --display requested but no display backend was compiled in "
@@ -1207,6 +1215,25 @@ int main(int argc, char *argv[]) {
 	}
 	else {
 		cpu::run();
+	}
+
+	/* maize-217: headless --show-perf report (console binary / no-window runs). Instructions
+	   and average MIPS over the wall-clock run; frames/FPS are graphical-only, so they are
+	   omitted here. Goes to stderr so it never pollutes the guest's stdout (safe under pipes). */
+	if (show_perf && !used_display) {
+		long long elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now() - perf_start).count();
+		std::uint64_t total_insn = cpu::instruction_count();
+		long long mips = elapsed_us > 0
+			? static_cast<long long>(total_insn / static_cast<std::uint64_t>(elapsed_us)) : 0;
+		std::cerr << "maize: performance report" << std::endl
+			<< "  instructions : " << total_insn << std::endl;
+		if (elapsed_us < 10000) {
+			std::cerr << "  elapsed      : " << elapsed_us << " us" << std::endl;
+		} else {
+			std::cerr << "  elapsed      : " << (elapsed_us / 1000) << " ms" << std::endl;
+		}
+		std::cerr << "  MIPS         : " << mips << std::endl;
 	}
 #ifdef __linux__
 	/* maize-140: the trailing-newline convenience (a Linux-only readability nicety on

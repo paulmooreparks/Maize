@@ -1299,6 +1299,12 @@ namespace maize {
 				   down. Default off: a plain run closes immediately, as before. */
 				if (pause_on_halt && guest_halted) {
 					SDL_SetWindowTitle(win, "Maize - halted (press a key or close the window)");
+					/* Visible prompt: written to the text console so it shows in the window for
+					   a text program (and after any perf report just written above); graphics
+					   programs (DOOM) keep their final frame, with the prompt in the title bar. */
+					std::string prompt = "\r\n-- Maize halted: press any key or close the window to exit --\r\n";
+					con.write_out(reinterpret_cast<const unsigned char*>(prompt.data()),
+						static_cast<unsigned long>(prompt.size()));
 					SDL_RenderClear(ren);
 					if (graphics_mode) {
 						const std::vector<std::uint32_t>& frame = fb.frame();
