@@ -335,7 +335,9 @@ names **without** the leading dashes:
 
 - `display-scale` = 1..16
 - `refresh-hz` = 1..1000
-- `resolution` = `<width>x<height>` (e.g. `320x200`)
+- `resolution` = `<width>x<height>` (e.g. `320x200`) -- framebuffer pixels
+- `console-size` = `<cols>x<rows>` (e.g. `80x25`, the default; cols 20..500, rows
+  10..200) -- the text console grid, as `--console-size`
 - `root` = host path for the sandbox root (as `--root`)
 - `input` = `sys`, `keyboard`, or `console`
 - `show-perf` = boolean

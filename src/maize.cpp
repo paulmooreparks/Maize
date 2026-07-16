@@ -61,6 +61,31 @@ static bool parse_resolution(const std::string &spec, maize::u_hword &width, mai
 	return true;
 }
 
+/* maize-220: the text console renders each cell as one glyph of the built-in bitmap
+   font. These MUST match FONT_W/FONT_H in src/font8x16.h; the console pixel canvas is
+   simply (cols * cell width) x (rows * cell height). */
+static const maize::u_hword CONSOLE_CELL_W = 8;
+static const maize::u_hword CONSOLE_CELL_H = 16;
+
+/* maize-220: parse a `<cols>x<rows>` console-size spec (e.g. "132x43") into a pixel
+   canvas, reusing parse_resolution's WxH validation and multiplying by the font cell
+   size. Clamps the cell geometry to a sane range (cols 20..500, rows 10..200) so a
+   typo cannot request a multi-megapixel console. Returns false on malformed or
+   out-of-range input so the caller can warn and keep the default. */
+static bool parse_console_size(const std::string &spec, maize::u_hword &width, maize::u_hword &height) {
+	maize::u_hword cols = 0;
+	maize::u_hword rows = 0;
+	if (!parse_resolution(spec, cols, rows)) {
+		return false;
+	}
+	if (cols < 20 || cols > 500 || rows < 10 || rows > 200) {
+		return false;
+	}
+	width = static_cast<maize::u_hword>(cols * CONSOLE_CELL_W);
+	height = static_cast<maize::u_hword>(rows * CONSOLE_CELL_H);
+	return true;
+}
+
 /* maize-12: load a linked .mzx executable. Walk the segment table, copy each
    segment's file bytes to its load address, zero-fill NOBITS/uninitialized
    tails, and set PC to the recorded entry. Returns false if the buffer is not a
@@ -157,8 +182,9 @@ static void print_usage(std::ostream &out) {
 		"  ~/.maize/config   default values for the launcher flags, one key=value per\n"
 		"                    line (blank and #-comment lines ignored). Keys are the long\n"
 		"                    flag names without dashes: display-scale, refresh-hz,\n"
-		"                    resolution, root, show-perf, pause-on-halt, display,\n"
-		"                    input, no-root. (maizec ignores the graphical-only keys.)\n"
+		"                    resolution, console-size, root, show-perf, pause-on-halt,\n"
+		"                    display, input, no-root. (maizec ignores the graphical-only\n"
+		"                    keys.) console-size is <cols>x<rows> (e.g. 80x25).\n"
 		"                    Booleans accept true/false, 1/0, or yes/no. Precedence is\n"
 		"                    built-in default < ~/.maize/config < CLI flag (a CLI flag\n"
 		"                    always wins). A bad key or value is warned and ignored.\n"
@@ -423,8 +449,8 @@ static bool parse_config_bool(const std::string &val, bool &out) {
    --env-file: one `key=value` per line, blank lines and lines whose first
    non-whitespace character is '#' ignored. Keys are the long flag names WITHOUT
    the leading dashes. Covered keys (scalar + boolean launcher flags only):
-   display-scale, refresh-hz, resolution, root, show-perf, display, input, and the
-   boolean no-root. Precedence is built-in default < config < CLI, so this runs
+   display-scale, refresh-hz, resolution, console-size, root, show-perf, display,
+   input, and the boolean no-root. Precedence is built-in default < config < CLI, so this runs
    BEFORE the CLI argument loop and only changes the value each flag STARTS from; a
    CLI flag always wins because the loop overrides afterward. Fail-soft (per the
    card): an unknown key or a malformed value produces a stderr warning and is
@@ -434,6 +460,7 @@ static bool parse_config_bool(const std::string &val, bool &out) {
 static void load_config_file(const std::string &path,
 	unsigned &display_scale, unsigned &refresh_hz,
 	maize::u_hword &fb_width, maize::u_hword &fb_height,
+	maize::u_hword &console_width, maize::u_hword &console_height,
 	std::string &root_override, bool &show_perf,
 	bool &display_requested, std::string &input_source, bool &no_root,
 	bool &pause_on_halt) {
@@ -499,6 +526,17 @@ static void load_config_file(const std::string &path,
 			}
 			fb_width = w;
 			fb_height = h;
+		} else if (key == "console-size") {
+			maize::u_hword cw = 0;
+			maize::u_hword ch = 0;
+			if (!parse_console_size(val, cw, ch)) {
+				std::cerr << "maize: ignoring config console-size '" << val
+					<< "' (expected <cols>x<rows>, e.g. 80x25; cols 20..500, rows 10..200)"
+					<< std::endl;
+				continue;
+			}
+			console_width = cw;
+			console_height = ch;
 		} else if (key == "root") {
 			if (val.empty()) {
 				std::cerr << "maize: ignoring config root (empty host path)" << std::endl;
@@ -676,6 +714,7 @@ int main(int argc, char *argv[]) {
 			std::filesystem::path base = std::filesystem::path(cfg_home) / ".maize";
 			load_config_file((base / "config").string(),
 				display_scale, refresh_hz, fb_width, fb_height,
+				console_width, console_height,
 				root_override, show_perf, display_requested, input_source, no_root,
 				pause_on_halt);
 			if (show_perf) {
@@ -937,6 +976,33 @@ int main(int argc, char *argv[]) {
 			if (!parse_resolution(spec, fb_width, fb_height)) {
 				std::cerr << "maize: invalid --resolution '" << spec
 					<< "' (expected <width>x<height>, e.g. 320x200)" << std::endl;
+				return 2;
+			}
+			continue;
+		}
+		if (arg == "--console-size" || arg.rfind("--console-size=", 0) == 0) {
+			/* maize-220: text console geometry in CELLS (<cols>x<rows>, e.g. 132x43),
+			   distinct from --resolution which sizes the framebuffer. Default 80x25.
+			   The pixel canvas handed to text_console is cols/rows * the font cell size. */
+			std::string spec;
+			if (arg.rfind("--console-size=", 0) == 0) {   /* "--console-size=" is 15 chars */
+				spec = arg.substr(15);
+				++idx;
+			}
+			else {
+				if (idx + 1 >= argc) {
+					std::cerr << "maize: option '--console-size' requires a <cols>x<rows> argument"
+						<< std::endl;
+					print_usage(std::cerr);
+					return 2;
+				}
+				spec = argv[idx + 1];
+				idx += 2;
+			}
+			if (!parse_console_size(spec, console_width, console_height)) {
+				std::cerr << "maize: invalid --console-size '" << spec
+					<< "' (expected <cols>x<rows>, e.g. 80x25; cols 20..500, rows 10..200)"
+					<< std::endl;
 				return 2;
 			}
 			continue;
