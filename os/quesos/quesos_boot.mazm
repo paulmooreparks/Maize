@@ -28,9 +28,11 @@ SECTION CODE
 GLOBAL _start
 GLOBAL quesos_switch_to
 GLOBAL quesos_poweroff
+GLOBAL quesos_arm_timer
 
 EXTERN quesos_main             ; quesos.c: init entry, runs the worklist (noreturn)
 EXTERN quesos_syscall          ; quesos.c: cause-7 dispatcher (reads g_current->saved_rs)
+EXTERN quesos_timer_tick       ; quesos.c: timer preemption (marks runnable + schedule)
 EXTERN quesos_stack            ; quesos.c: 64 KiB private kernel-stack byte array (base)
 EXTERN g_current               ; quesos.c: struct pcb * of the running process
 
@@ -47,6 +49,12 @@ _start:
     ; Install the cause-7 handler at trap-vector-table entry 7 (0x1000 + 7*8 = 0x1038).
     CP  quesos_syscall_handler R3
     CP  $1038 RT
+    ST  R3 @RT
+
+    ; Install the timer IRQ handler at entry 32 (0x1000 + 32*8 = 0x1100). The timer is
+    ; ARMED later (quesos_arm_timer, after quesos_main finishes setup), not here.
+    CP  quesos_timer_handler R3
+    CP  $1100 RT
     ST  R3 @RT
 
     ; Switch to quesOS's kernel stack: full-descending, top = base + size (0x10000).
@@ -138,4 +146,55 @@ quesos_poweroff:
     CLRSYSG
     CLR R0                     ; exit status 0
     SYS $3C                    ; native sys_exit: halt the VM
+    HALT                       ; safety net (unreachable)
+
+; ----------------------------------------------------------------------------------
+; quesos_arm_timer(): program the instruction-tick timer for round-robin preemption.
+; Provisional timer pinout (maize-21): period port $40, control port $41 (bit0 enable,
+; bit1 periodic), status/ack port $42, IRQ vector 32. A user process runs with
+; interrupts enabled (its saved RF), so the timer fires during user execution and
+; preempts it; quesOS's own trap handlers run with interrupts masked, so the timer
+; never fires mid-handler.
+; ----------------------------------------------------------------------------------
+quesos_arm_timer:
+    CP  $00001388 R0           ; slice = 5000 instructions
+    OUT R0.H0 $40              ; period register (32-bit)
+    CP  $03 R0                 ; bit0 enable | bit1 periodic
+    OUT R0.B0 $41              ; control register
+    RET
+
+; ----------------------------------------------------------------------------------
+; quesos_timer_handler: timer IRQ (vector 32) entry. Runs supervisor, interrupts masked,
+; on the preempted process's user stack with RS at the aux word. Save the full user GP
+; context (identical layout to the syscall trampoline), record RS in the PCB, drop the
+; provider flag, acknowledge the timer, switch to the kernel stack, and reschedule.
+; quesos_timer_tick marks the preempted process runnable and enters the next one.
+; ----------------------------------------------------------------------------------
+quesos_timer_handler:
+    PUSH RB
+    PUSH RV
+    PUSH RT
+    PUSH R9
+    PUSH R8
+    PUSH R7
+    PUSH R6
+    PUSH R5
+    PUSH R4
+    PUSH R3
+    PUSH R2
+    PUSH R1
+    PUSH R0                     ; RS -> R0 slot = the saved-context block base
+
+    CP  g_current R0
+    LD  @R0 R0                  ; R0 = g_current (pcb*)
+    ST  RS @R0                  ; pcb->saved_rs = RS
+
+    CLRSYSG
+    CLR R2
+    OUT R2.B0 $42              ; ack the timer (clear pending; re-arm the periodic slice)
+
+    CP  quesos_stack R1        ; switch to the kernel stack
+    ADD $00010000 R1
+    CP  R1 SP
+    CALL quesos_timer_tick     ; mark current runnable + schedule (noreturn)
     HALT                       ; safety net (unreachable)

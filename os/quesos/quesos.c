@@ -45,6 +45,7 @@ long sys_write(long fd, const void *buf, long count);
 struct pcb;
 void quesos_switch_to(struct pcb *p);        /* MOVTCR satp; restore regs; IRET (noreturn) */
 void quesos_poweroff(void);                  /* CLRSYSG; SYS $3C (native VM halt)          */
+void quesos_arm_timer(void);                 /* program the instruction-tick timer (OUT)   */
 
 /* quesOS's private kernel stack (quesos_boot.mazm switches RS here at _start and on
  * every trap entry, so the C dispatcher never runs on a user stack). 64 KiB. */
@@ -987,6 +988,15 @@ static long do_execve(u64 path_uva, u64 argv_uva, u64 envp_uva) {
     return 0;
 }
 
+/* Timer IRQ (vector 32): the running process is preempted at an instruction boundary.
+ * The metal handler already saved its context and acked the timer; leave it RUNNABLE
+ * (it was running, not blocked) and round-robin to the next runnable process. This is
+ * what bounds a compute-bound process so it cannot starve the others. */
+void quesos_timer_tick(void) {
+    g_current->state = P_RUNNABLE;
+    schedule();   /* noreturn */
+}
+
 void quesos_syscall(void) {
     u64 *r = (u64 *)g_current->saved_rs;
     u64 num = r[13];
@@ -1063,5 +1073,10 @@ void quesos_main(long argc, char **argv) {
         }
     }
 
+    /* Arm the instruction-tick timer only now that setup is done, so no interrupt is
+     * pending when the first process is entered (the timer counts its first full slice
+     * from the first user instruction; a program shorter than a slice is never
+     * preempted, which keeps short-program transcripts stable). */
+    quesos_arm_timer();
     schedule();   /* noreturn */
 }
