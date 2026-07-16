@@ -1650,6 +1650,66 @@ run_quesos_selfcheck() {
 
 run_quesos_selfcheck
 
+# maize-93 process ladder: the multi-process quesOS acceptance fixtures. Each is a C
+# program compiled by the ordinary cc-maize.sh pipeline (stock .mzx) and run UNDER
+# quesOS, which exercises fork (eager copy on Sv48), execve, waitpid/zombies, pipes +
+# dup2 + per-process fd tables, and the preemptive round-robin timer scheduler. quesOS
+# is linked once; each scenario runs its launcher off the worklist (exec/pipeline
+# targets are built into /progs but not on the worklist). The gate is the fixture's own
+# self-checked PASS marker in the transcript. Wrapped in `timeout` so a scheduler or
+# blocking-semantics regression that livelocks is a failure, not a hung suite.
+run_quesos_ac_fixtures() {
+    builder="${REPO_ROOT}/os/quesos/build-quesos.sh"
+    progs="${WORK_DIR}/quesos-ac"
+    quesos="${WORK_DIR}/quesos-ac.mzx"
+    log="${WORK_DIR}/quesos-ac.log"
+    rm -rf "$progs"; mkdir -p "$progs"
+
+    if ! sh "$builder" --preset "$PRESET" -o "$quesos" >"$log" 2>&1 || [ ! -f "$quesos" ]; then
+        echo "[FAIL] quesos_ac: quesOS link failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    for src in fork_isolation fork_multi exec_launch exec_target pipe_roundtrip \
+               pipe_bigwrite pipeline producer filter consumer stress20 preempt blocked; do
+        if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
+                "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
+            echo "[FAIL] quesos_ac: ${src}.c compile failed"; cat "$log" >&2
+            TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+        fi
+    done
+    nat=$(host_to_native "$progs")
+
+    quesos_ac_case() {
+        name="$1"; marker="$2"; launcher="$3"
+        TOTAL=$((TOTAL + 1))
+        set +e
+        out=$(MSYS2_ARG_CONV_EXCL='/progs' timeout 90 "$MAIZE" --no-root \
+            --mount "${nat}=/progs:ro" "$quesos" "/progs/${launcher}.mzx" 2>/dev/null \
+            | grep -v '^$')
+        set -e
+        if printf '%s\n' "$out" | grep -qF "$marker"; then
+            echo "[PASS] ${name}"
+        else
+            echo "[FAIL] ${name}"
+            echo "        expected marker: \"${marker}\""
+            printf '%s\n' "$out" | sed 's/^/          | /'
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+    }
+
+    quesos_ac_case quesos_fork_isolation "fork-isolation: PASS"  fork_isolation
+    quesos_ac_case quesos_wait_anyorder  "wait-anyorder: PASS"   fork_multi
+    quesos_ac_case quesos_execve         "exec: PASS"            exec_launch
+    quesos_ac_case quesos_pipe_roundtrip "pipe-roundtrip: PASS"  pipe_roundtrip
+    quesos_ac_case quesos_pipe_bigwrite  "pipe-bigwrite: PASS"   pipe_bigwrite
+    quesos_ac_case quesos_pipeline       "pipeline: PASS"        pipeline
+    quesos_ac_case quesos_stress20       "stress20: PASS"        stress20
+    quesos_ac_case quesos_preempt        "preempt: PASS"         preempt
+    quesos_ac_case quesos_blocked        "blocked-noslice: PASS" blocked
+}
+
+run_quesos_ac_fixtures
+
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then
     echo "C toolchain: ${TOTAL} passed, 0 failed."

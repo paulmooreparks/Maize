@@ -200,3 +200,37 @@ the private block instead.
 Once C compiles against these stubs, the numbers are ABI. The convention frozen here
 (RV result, the `[-4095, -1]` errno range, the raw/wrapper split, Linux-mirrored
 numbers) is binding for everything built on top.
+
+## quesOS guest-OS process calls (maize-93)
+
+The process calls below are the **guest-OS surface**: they are dispatched by quesOS's
+own cause-7 handler in GUEST code (a user process runs with the syscall-guest flag SET,
+so its `SYS` traps into quesOS), never by the native `sys::call` provider, and nothing
+is added to `src/sys.cpp` for them (the maize-24 placement rule). They are a namespace
+distinct from the native hosted table above; a program run **directly by the VM** (not
+under quesOS) must not call them. The raw stubs live in `toolchain/rt/syscall.mazm`
+(`sys_fork` / `sys_wait4` / `sys_getpid` / `sys_execve` / `sys_pipe` / `sys_dup2` /
+`sys_dup`), each a `SYS <n>; RET` over the C ABI argument registers. The numbers mirror
+the Linux x86-64 table per the numbering policy.
+
+| Number | Symbol | Args | Result |
+|--------|--------|------|--------|
+| `$16` | `sys_pipe` | `R0`=`int fds[2]` | `RV`=0 or `-errno`; `fds[0]` read end, `fds[1]` write end |
+| `$20` | `sys_dup` | `R0`=oldfd | `RV`=new fd or `-errno` |
+| `$21` | `sys_dup2` | `R0`=oldfd, `R1`=newfd | `RV`=newfd or `-errno` |
+| `$27` | `sys_getpid` | none | `RV`=caller pid |
+| `$39` | `sys_fork` | none | `RV`=child pid in the parent, `0` in the child, or `-errno` |
+| `$3B` | `sys_execve` | `R0`=path, `R1`=argv, `R2`=envp | does not return on success; `-errno` on failure |
+| `$3D` | `sys_wait4` | `R0`=pid (`-1`=any), `R1`=`int *status`, `R2`=options, `R3`=rusage | `RV`=reaped pid or `-errno` |
+
+Semantics quesOS implements: `fork` gives the child its own Sv48 address space with an
+eager copy of the parent's mapped pages (independent memory) and a copied fd table
+(shared open-file descriptions); `execve` rebuilds the address space + the SysV start
+block from `argv`/`envp` while the fd table survives; `pipe` is a kernel ring buffer
+whose empty-read / full-write parks the PROCESS (never the VM) and whose last-writer
+close is EOF; `wait4` blocks until a matching child is a zombie and reports its status
+(`WEXITSTATUS` in bits 8..15), reaping in any order; `dup2`/`dup` alias fd-table slots.
+The file/IO calls a process makes (`read`/`write`/`open`/`close`) are dispatched by the
+same quesOS handler: fd 0/1/2 and hostfs fds bounce through quesOS to the native
+provider, pipe-end fds go to the ring buffer. Job control, signals (`kill`), and the
+`INT $80` naming are Phase 2, out of scope here.
