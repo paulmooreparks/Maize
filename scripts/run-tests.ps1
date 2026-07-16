@@ -853,11 +853,11 @@ function Invoke-MzdisReservedTest {
     # Reserved-byte resyncs alone must NOT force exit 1 (spec: "Exit codes").
     $decodePass = ($disExit -eq 0) `
         -and ($text -match [regex]::Escape('DATA $37') + '.*unknown opcode') `
-        -and ($text -match [regex]::Escape('DATA $93') + '.*unknown opcode') `
+        -and ($text -match [regex]::Escape('DATA $38') + '.*unknown opcode') `
         -and ($text -match '(?m)^\s+NOP\b') `
         -and ($text -notmatch '(?i)TRUNCATED')
     if (-not $decodePass) {
-        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'DATA $37/$93 unknown-opcode lines, NOP decodes correctly after, exit 0'; Actual = "exit $disExit; see $disPath" }
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'DATA $37/$38 unknown-opcode lines, NOP decodes correctly after, exit 0'; Actual = "exit $disExit; see $disPath" }
     }
 
     $reasmBin = [System.IO.Path]::ChangeExtension($disPath, 'mzb')
