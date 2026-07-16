@@ -63,6 +63,11 @@ GLOBAL sys_clock_ms
 GLOBAL sys_tcgetattr
 GLOBAL sys_tcsetattr
 
+; maize-228 terminal size: Maize-private high-block number ($F6, no Linux mirror). Fills
+; a struct winsize (ws_row, ws_col, ...) from the REAL host terminal so ioctl(TIOCGWINSZ)
+; works on the console binary. sys_ttysize(fd, winsize*); RV = 0 or -ENOTTY.
+GLOBAL sys_ttysize
+
 ; path-mutating stubs: sys_unlink ($57), sys_mkdir ($53), sys_rename ($52), the
 ; canonical Linux x86-64 numbers (87/83/82). maize-151 wires these through the confined
 ; hostfs backends: src/sys.cpp dispatches $52/$53/$57 to hostfs_rename/mkdir/unlink, each
@@ -137,6 +142,10 @@ sys_tcgetattr:
 
 sys_tcsetattr:
     SYS $F2                 ; R0=fd, R1=optional_actions, R2=termios*; RV = 0 or -errno
+    RET
+
+sys_ttysize:
+    SYS $F6                 ; R0=fd, R1=winsize*; RV = 0 or -ENOTTY
     RET
 
 sys_unlink:

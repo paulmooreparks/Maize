@@ -13,6 +13,7 @@
 #include "hostfs/hostfs_core.h"
 #include "devices.h"
 #include "perf.h"
+#include "host_tty.h"
 #ifdef _WIN32
 #include <io.h>
 #else
@@ -1335,6 +1336,11 @@ int main(int argc, char *argv[]) {
 	sys::init();
 
 #ifdef MAIZE_CONSOLE_ONLY
+	/* maize-228: put the real host terminal into VT/raw mirroring for an interactive run.
+	   init() saves the original mode, enables VT output, and registers the exit + crash
+	   restore handlers; it no-ops for a pipe/file so headless/CI runs stay byte-clean. The
+	   guest's tcsetattr(raw) then drives the host terminal raw via SYS $F2 -> host_tty. */
+	maize::host_tty::init();
 	/* maize-221: the console build has no window to show the framebuffer. On an interactive
 	   run, arm the takeover trap: a guest that programs the framebuffer base (a graphics
 	   program declaring itself) stops the VM instead of running invisibly, and the matching
@@ -1375,6 +1381,13 @@ int main(int argc, char *argv[]) {
 	else {
 		cpu::run();
 	}
+
+#ifdef MAIZE_CONSOLE_ONLY
+	/* maize-228: the guest has halted; put the host terminal back to cooked before any
+	   post-run host output (the perf report, the fb diagnostic). The atexit + signal/console
+	   handlers also restore, so an abnormal exit is covered; this is the clean-exit path. */
+	maize::host_tty::restore();
+#endif
 
 	/* maize-217: headless --show-perf report (console binary / no-window runs). Instructions
 	   and average MIPS over the wall-clock run; frames/FPS are graphical-only, so they are

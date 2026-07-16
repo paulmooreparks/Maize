@@ -19,6 +19,8 @@
 #define MAIZE_SYS_IOCTL_H
 
 #include <errno.h>
+#include <stdarg.h>
+#include "../syscall.h"
 
 /* TIOCGWINSZ (Linux value). Defined only so the source compiles; ioctl() below
  * never acts on it. */
@@ -34,8 +36,24 @@ struct winsize {
 static inline int
 ioctl(int fd, unsigned long request, ...)
 {
+	/* maize-228: TIOCGWINSZ is answered by the real host terminal via SYS $F6 on the
+	   console binary (so kilo's getWindowSize succeeds via ioctl instead of the ESC[6n
+	   cursor-probe, which stalls a cooked read). The windowed console and non-tty host
+	   stdio return -ENOTTY here, and the caller keeps its ESC[6n fallback. Every other
+	   request still fails ENOTTY: Maize has no ioctl multiplexor. */
+	if (request == TIOCGWINSZ) {
+		va_list ap;
+		void *ws;
+		va_start(ap, request);
+		ws = va_arg(ap, void *);
+		va_end(ap);
+		if (sys_ttysize(fd, ws) != 0) {
+			errno = ENOTTY;
+			return -1;
+		}
+		return 0;
+	}
 	(void)fd;
-	(void)request;
 	errno = ENOTTY;
 	return -1;
 }

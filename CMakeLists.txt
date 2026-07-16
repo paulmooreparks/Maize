@@ -22,7 +22,7 @@ set(MAIZE_HOSTFS_SOURCES
 # GUI-subsystem binary whose output is the window. `maize` is the console build: no SDL, so it
 # stays a console-subsystem binary whose stdout/stderr reach the invoking terminal. Console
 # programs (hello, quesOS) run under `maize`; the screen (framebuffer, DOOM) runs under `maizeg`.
-set(MAIZE_VM_SOURCES "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" "src/perf.cpp" ${MAIZE_HOSTFS_SOURCES})
+set(MAIZE_VM_SOURCES "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" "src/perf.cpp" "src/host_tty.cpp" ${MAIZE_HOSTFS_SOURCES})
 add_executable(maizeg ${MAIZE_VM_SOURCES})
 add_executable(maize  ${MAIZE_VM_SOURCES})
 
@@ -33,7 +33,7 @@ add_executable(maize  ${MAIZE_VM_SOURCES})
 # It is distinct from MAIZE_DISPLAY: the headless CI `maizeg` (no MAIZE_DISPLAY) still honors
 # those knobs for the scancode-injection tests; only the console `maize` opts out.
 target_compile_definitions(maize PRIVATE MAIZE_CONSOLE_ONLY)
-add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp" ${MAIZE_HOSTFS_SOURCES})
+add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp" "src/host_tty.cpp" ${MAIZE_HOSTFS_SOURCES})
 add_executable(mzld "src/mzld.cpp")
 add_executable(mzdis "src/mzdis.cpp")
 

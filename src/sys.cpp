@@ -1,10 +1,12 @@
 #include "maize.h"
 // #include "maize_sys.h"
 #include "console_io.h"
+#include "host_tty.h"
 #include "hostfs/hostfs_core.h"
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <iostream>
 #include <string>
 
 /* This is all very broken right now, but I'm going to replace it with a sys_call architecture instead. */
@@ -488,6 +490,18 @@ namespace maize {
                         return retval;
                     }
 
+                    /* maize-228: host-side kill escape (Ctrl-] x3) on the real terminal's raw
+                       input. Only the console binary's host-stdio fd 0 path (no bound window
+                       console) and only in raw mode; check_kill_escape self-gates. On trigger:
+                       restore the terminal and stop the VM, so a wedged raw guest can be killed
+                       from the same terminal (raw Ctrl-C is just a byte to the guest). */
+                    if (fd == 0 && console_dev == nullptr
+                        && host_tty::check_kill_escape(bufvec, retval)) {
+                        host_tty::restore();
+                        std::cerr << "\r\nmaize: terminated by host escape (Ctrl-] x3)\r\n";
+                        cpu::power_off();
+                    }
+
                     /* Copy only the bytes actually read (retval), not the full
                        requested count; a short read must not spill the
                        uninitialized buffer tail. EOF (retval == 0) copies
@@ -738,11 +752,17 @@ namespace maize {
                 case 0x00F1U: {
                     u_word fd {regs::r0.h0()};
                     u_word address {regs::r1.w0};
-                    if (console_dev == nullptr || fd > 2) {
+                    if (fd > 2) {
                         return static_cast<u_word>(-static_cast<long>(9));  /* -EBADF */
                     }
                     unsigned char img[console::TERMIOS_SIZE];
-                    console_dev->termios_get(img);
+                    if (console_dev != nullptr) {
+                        console_dev->termios_get(img);   /* windowed text console */
+                    } else if (host_tty::active()) {
+                        host_tty::termios_get(img);       /* maize-228: real host terminal */
+                    } else {
+                        return static_cast<u_word>(-static_cast<long>(9));  /* -EBADF: non-tty host stdio */
+                    }
                     for (u_word i = 0; i < console::TERMIOS_SIZE; ++i) {
                         cpu::mm.write_byte(address + i, img[i]);
                     }
@@ -756,14 +776,51 @@ namespace maize {
                 case 0x00F2U: {
                     u_word fd {regs::r0.h0()};
                     u_word address {regs::r2.w0};
-                    if (console_dev == nullptr || fd > 2) {
+                    if (fd > 2) {
                         return static_cast<u_word>(-static_cast<long>(9));  /* -EBADF */
+                    }
+                    if (console_dev == nullptr && !host_tty::active()) {
+                        return static_cast<u_word>(-static_cast<long>(9));  /* -EBADF: non-tty host stdio */
                     }
                     unsigned char img[console::TERMIOS_SIZE];
                     for (u_word i = 0; i < console::TERMIOS_SIZE; ++i) {
                         img[i] = cpu::mm.read_byte(address + i);
                     }
-                    console_dev->termios_set(img);
+                    if (console_dev != nullptr) {
+                        console_dev->termios_set(img);   /* windowed text console */
+                    } else {
+                        host_tty::termios_set(img);       /* maize-228: real host terminal */
+                    }
+                    return 0;
+                }
+
+                /* sys_ttysize (maize-228): fd R0.H0, struct winsize* R1 (ws_row, ws_col,
+                   ws_xpixel, ws_ypixel; four u16). Fills the row/col fields from the REAL host
+                   terminal so a guest's ioctl(TIOCGWINSZ) succeeds on the console binary and
+                   never falls back to the ESC[6n cursor-probe (which stalls a cooked read).
+                   Maize-private high-block number ($F6), no Linux mirror. Returns 0 on success,
+                   -ENOTTY (25) when there is no host terminal size (windowed console or non-tty
+                   host stdio -> the guest keeps its ESC[6n fallback, which the windowed console
+                   answers). */
+                case 0x00F6U: {
+                    u_word fd {regs::r0.h0()};
+                    u_word address {regs::r1.w0};
+                    if (fd > 2 || console_dev != nullptr || !host_tty::active()) {
+                        return static_cast<u_word>(-static_cast<long>(25));  /* -ENOTTY */
+                    }
+                    unsigned short rows = 0, cols = 0;
+                    if (!host_tty::get_winsize(&rows, &cols)) {
+                        return static_cast<u_word>(-static_cast<long>(25));  /* -ENOTTY */
+                    }
+                    /* struct winsize little-endian: ws_row @0, ws_col @2 (u16 each). */
+                    cpu::mm.write_byte(address + 0, static_cast<u_byte>(rows & 0xFF));
+                    cpu::mm.write_byte(address + 1, static_cast<u_byte>((rows >> 8) & 0xFF));
+                    cpu::mm.write_byte(address + 2, static_cast<u_byte>(cols & 0xFF));
+                    cpu::mm.write_byte(address + 3, static_cast<u_byte>((cols >> 8) & 0xFF));
+                    cpu::mm.write_byte(address + 4, 0);   /* ws_xpixel */
+                    cpu::mm.write_byte(address + 5, 0);
+                    cpu::mm.write_byte(address + 6, 0);   /* ws_ypixel */
+                    cpu::mm.write_byte(address + 7, 0);
                     return 0;
                 }
 

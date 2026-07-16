@@ -55,6 +55,7 @@ unsigned long sys_clock_ms(void);
  * declared void* here so syscall.h stays free of the termios type. */
 long sys_tcgetattr(int fd, void *termios_p);
 long sys_tcsetattr(int fd, int optional_actions, void *termios_p);
+long sys_ttysize(int fd, void *winsize_p);   /* maize-228: TIOCGWINSZ over the real terminal */
 
 /* path-mutating raw stubs (SYS $57 unlink / $53 mkdir / $52 rename). maize-151 wires
  * these through the confined hostfs backends, so each returns RV verbatim as a real
