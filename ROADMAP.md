@@ -15,13 +15,34 @@ implementation. Portability means anyone can implement a Maize VM in any
 language in a weekend and know they got it right, not that every language
 compiles to Maize.
 
+Speed is no longer the asterisk. A C-compiled DOOM runs on Maize at
+~70fps with the bytecode still fully interpreted, before an optimizing
+compiler backend or a JIT. This matters for positioning because speed
+costs Maize none of its defining properties: a semantics-preserving JIT
+changes how fast the machine runs, not what it computes, and the cost
+model is defined in cycles by the ISA, not in wall-clock, so Maize can be
+fast and still bit-identical, cycle-metered, and deterministic, a
+combination most fast VMs give up. The honest ceiling grows: not only a
+specification, teaching, and evaluation artifact, but a small,
+fully-specified, deterministic computer that is also fast enough to run
+real software. Determinism, cost-metering, comprehensibility, and a small
+trust base stop being interesting properties of a slow toy and become
+production-relevant properties of a runtime you could deploy, wherever
+those properties matter more than ecosystem gravity.
+
 Success criteria: the right few hundred people, independent third-party VM
 implementations, someone teaching with it, possibly a paper using it as an
 LLM evaluation environment. Not industry adoption.
 
-Explicitly out of scope: an LLVM backend (revisit only if a language worth
-its carrying cost demands it), competing with WASM as a universal compile
-target, GCC ports.
+Still out of scope: competing with WASM on ecosystem and library gravity
+as a general-purpose compile target, and chasing industry adoption as a
+goal in itself. Maize wins only where its specific properties
+(determinism, comprehensibility, cost-metering, contamination-free
+evaluation) are what you actually need, not on breadth. No longer
+excluded, and now sequenced as post-freeze campaigns rather than out of
+scope: optimizing compiler backends (GCC and LLVM) and a JIT, pursued
+precisely for the speed and language reach the positioning above now
+calls for.
 
 ## Milestone 0: ISA repairs
 
