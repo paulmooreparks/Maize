@@ -85,6 +85,16 @@ GLOBAL sys_ftruncate
 ; A graphics primitive, not a file op, so no errno wrapper: the caller ignores RV.
 GLOBAL sys_palette_blit
 
+; maize-216 bulk memory: Maize-private high-block numbers ($F4 copy / $F5 set) with
+; no Linux mirror, adjacent to $F3. Each a raw `SYS <n>; RET` over the C ABI arg
+; registers; RV = n or -errno. sys_bulk_copy(R0=dst, R1=src, R2=n) copies n bytes
+; with memmove-safe semantics (the VM stages src through a host buffer before
+; writing dst); sys_bulk_set(R0=dst, R1=value, R2=n) fills n bytes with value's low
+; byte. string.c routes large memcpy/memmove/memset here. No errno wrapper: the
+; caller ignores RV (or asserts it equals n).
+GLOBAL sys_bulk_copy
+GLOBAL sys_bulk_set
+
 sys_read:
     SYS $00                 ; fd/buf/count already in R0/R1/R2 per the C ABI
     RET
@@ -147,6 +157,14 @@ sys_ftruncate:
 
 sys_palette_blit:
     SYS $F3                 ; R0=dst, R1=src, R2=lut, R3=npixels; RV = npixels or -errno
+    RET
+
+sys_bulk_copy:
+    SYS $F4                 ; R0=dst, R1=src, R2=n; RV = n or -errno (memmove-safe)
+    RET
+
+sys_bulk_set:
+    SYS $F5                 ; R0=dst, R1=value, R2=n; RV = n or -errno
     RET
 
 _exit:

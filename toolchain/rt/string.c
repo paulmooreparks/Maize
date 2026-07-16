@@ -9,16 +9,36 @@
  * memmove's backward-overlap branch and memcmp stay byte-at-a-time (colder paths,
  * maize-212 decision). Comparisons return the unsigned-char difference, per the
  * C standard.
+ *
+ * maize-216: for large copies/sets (n >= BULK_SYSCALL_THRESHOLD) memcpy/memmove/
+ * memset hand off to the host via SYS $F4 (sys_bulk_copy, memmove-safe) / SYS $F5
+ * (sys_bulk_set), running at host memcpy speed instead of grinding the word loop
+ * one interpreter step at a time. Below the threshold the inline word loop wins
+ * (it beats a SYS dispatch + two block walks), so small struct/string copies keep
+ * the fast path. The threshold is the measured-safe crossover; retune the one
+ * constant if profiling moves it.
  */
 #include "string.h"
 #include "stdlib.h"   /* malloc (strdup); stdio.c pairs the two headers likewise */
 #include "stdint.h"   /* uint64_t for the word-at-a-time copy/set body */
+#include "syscall.h"  /* maize-216: sys_bulk_copy / sys_bulk_set for large n */
+
+/* Crossover below which the inline word loop is faster than a host round-trip
+   (SYS dispatch + two guest-memory block walks). The word loop costs ~14 host
+   cycles per guest-byte; the syscall is host memcpy speed plus a fixed overhead
+   of a few hundred cycles, so anything at or above a few dozen bytes already wins
+   -- 256 is a conservative margin that never regresses small/medium copies. */
+#define BULK_SYSCALL_THRESHOLD 256u
 
 void *
 memcpy(void *dst, const void *src, size_t n)
 {
     unsigned char *d = (unsigned char *)dst;
     const unsigned char *s = (const unsigned char *)src;
+    if (n >= BULK_SYSCALL_THRESHOLD) {   /* maize-216: hoist large copies to the host */
+        sys_bulk_copy(dst, src, n);
+        return dst;
+    }
     while (n >= 8) {
         *(uint64_t *)d = *(uint64_t *)s;
         d += 8;
@@ -37,6 +57,10 @@ memmove(void *dst, const void *src, size_t n)
     const unsigned char *s = (const unsigned char *)src;
     if (d == s || n == 0)
         return dst;
+    if (n >= BULK_SYSCALL_THRESHOLD) {   /* maize-216: sys_bulk_copy is overlap-safe */
+        sys_bulk_copy(dst, src, n);
+        return dst;
+    }
     if (d < s) {
         while (n >= 8) {
             *(uint64_t *)d = *(uint64_t *)s;
@@ -64,7 +88,12 @@ memset(void *dst, int c, size_t n)
 {
     unsigned char *d = (unsigned char *)dst;
     unsigned char v = (unsigned char)c;
-    uint64_t vv = (uint64_t)v * 0x0101010101010101UL;
+    uint64_t vv;
+    if (n >= BULK_SYSCALL_THRESHOLD) {   /* maize-216: hoist large fills to the host */
+        sys_bulk_set(dst, c, n);
+        return dst;
+    }
+    vv = (uint64_t)v * 0x0101010101010101UL;
     while (n >= 8) {
         *(uint64_t *)d = vv;
         d += 8;

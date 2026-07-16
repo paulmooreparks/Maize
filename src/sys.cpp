@@ -4,6 +4,7 @@
 #include "hostfs/hostfs_core.h"
 #include <cerrno>
 #include <chrono>
+#include <cstring>
 #include <string>
 
 /* This is all very broken right now, but I'm going to replace it with a sys_call architecture instead. */
@@ -844,6 +845,102 @@ namespace maize {
                     cpu::mm.write_from(dst_addr, reinterpret_cast<const u_byte*>(out32),
                         static_cast<size_t>(npixels) * 4u);
                     return npixels;
+                }
+
+                /* sys_bulk_copy (maize-216): copy n bytes src -> dst over sparse
+                   guest memory at host memcpy speed, hoisting the large-n case of
+                   the guest RT memcpy/memmove out of the interpreter (~14 host
+                   cycles/guest-byte through the word loop -> host memcpy speed).
+                   The boot/general-path companion to $F3's per-frame blit; a NEW
+                   Maize-private SYS number ($F4, no Linux mirror), NOT an ISA change.
+
+                   Args (Maize C ABI, R0..R2, full-64 subregisters):
+                     R0 = dst  (guest ptr)
+                     R1 = src  (guest ptr)
+                     R2 = n    (u64 byte count)
+                   RV = n on success, or a [-4095,-1] -errno on a bounds violation
+                   (NO guest write on rejection).
+
+                   memmove semantics FOR FREE: the whole src range is read into a
+                   host scratch buffer BEFORE any byte is written to dst, so
+                   overlapping ranges are correct in both directions. This one
+                   syscall therefore serves both memcpy and memmove.
+
+                   SECURITY (deny-by-default, load-bearing): mirrors $F3. The guest
+                   space is sparse and lazily zero-filled, so there is no raw host
+                   OOB deref; the risks a boundary-crossing syscall must deny are
+                   (a) a 64-bit base+len wrap letting a crafted ptr+count touch
+                   unrelated blocks and (b) an enormous n driving unbounded host
+                   CPU / block allocation. Both are rejected BEFORE any access. */
+                case 0x00F4U: {
+                    constexpr u_word MAX_BULK_BYTES {1u << 28};  /* 256 MiB */
+                    constexpr long abi_einval {22};
+                    constexpr long abi_efault {14};
+
+                    u_word dst_addr {regs::r0.w0};
+                    u_word src_addr {regs::r1.w0};
+                    u_word n        {regs::r2.w0};
+
+                    if (n == 0) {
+                        return 0;                                 /* benign no-op */
+                    }
+                    if (n > MAX_BULK_BYTES) {
+                        return static_cast<u_word>(-abi_einval);  /* oversized request */
+                    }
+                    if (src_addr + n < src_addr) {
+                        return static_cast<u_word>(-abi_efault);  /* src range wraps */
+                    }
+                    if (dst_addr + n < dst_addr) {
+                        return static_cast<u_word>(-abi_efault);  /* dst range wraps */
+                    }
+
+                    /* Reusable scratch grown on demand: zero per-call allocation in
+                       steady state (honors the maize-201 no-per-frame-alloc posture). */
+                    static thread_local std::vector<u_byte> bulk_scratch;
+                    if (bulk_scratch.size() < n) { bulk_scratch.resize(n); }
+
+                    cpu::mm.read_into(src_addr, bulk_scratch.data(), n);
+                    cpu::mm.write_from(dst_addr, bulk_scratch.data(), n);
+                    return n;
+                }
+
+                /* sys_bulk_set (maize-216): fill n bytes at dst with a single byte
+                   value, hoisting the large-n case of the guest RT memset (BSS
+                   zeroing, buffer clears) into the host. Maize-private ($F5, no
+                   Linux mirror), NOT an ISA change.
+
+                   Args (Maize C ABI):
+                     R0 = dst    (guest ptr)
+                     R1 = value  (low 8 bits used, like C memset's int c)
+                     R2 = n      (u64 byte count)
+                   RV = n on success, or a [-4095,-1] -errno on a bounds violation
+                   (NO guest write on rejection). Same deny-by-default checks as $F4
+                   (no src range to validate). */
+                case 0x00F5U: {
+                    constexpr u_word MAX_BULK_BYTES {1u << 28};  /* 256 MiB */
+                    constexpr long abi_einval {22};
+                    constexpr long abi_efault {14};
+
+                    u_word dst_addr {regs::r0.w0};
+                    u_byte value    {static_cast<u_byte>(regs::r1.w0 & 0xFFu)};
+                    u_word n        {regs::r2.w0};
+
+                    if (n == 0) {
+                        return 0;                                 /* benign no-op */
+                    }
+                    if (n > MAX_BULK_BYTES) {
+                        return static_cast<u_word>(-abi_einval);  /* oversized request */
+                    }
+                    if (dst_addr + n < dst_addr) {
+                        return static_cast<u_word>(-abi_efault);  /* dst range wraps */
+                    }
+
+                    static thread_local std::vector<u_byte> bulk_set_scratch;
+                    if (bulk_set_scratch.size() < n) { bulk_set_scratch.resize(n); }
+
+                    std::memset(bulk_set_scratch.data(), value, static_cast<size_t>(n));
+                    cpu::mm.write_from(dst_addr, bulk_set_scratch.data(), n);
+                    return n;
                 }
             }
 

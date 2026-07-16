@@ -80,6 +80,20 @@ long sys_ftruncate(int fd, long length);
  * return (or may assert it equals npixels). */
 long sys_palette_blit(void *dst, const void *src, const unsigned int *lut, unsigned long npixels);
 
+/* sys_bulk_copy (SYS $F4, maize-216): copy n bytes src -> dst over guest memory at
+ * host memcpy speed. memmove-safe: the VM reads the whole src range into a host
+ * buffer before writing dst, so overlapping ranges are correct in both directions
+ * (memcpy and memmove both route here). sys_bulk_set (SYS $F5): fill n bytes at dst
+ * with c's low byte (memset routes here). Maize-private high-block numbers with no
+ * Linux mirror (like sys_clock_ms / sys_palette_blit). Each returns n on success, or
+ * a [-4095, -1] -errno on a bounds violation (n > 2^28, or a dst/src base+len that
+ * wraps the 64-bit space); on rejection it performs NO guest write. Memory
+ * primitives, not file ops, so there is no POSIX/errno wrapper: the caller ignores
+ * the return (or may assert it equals n). string.c calls these for large copies/sets
+ * only, above BULK_SYSCALL_THRESHOLD. */
+long sys_bulk_copy(void *dst, const void *src, unsigned long n);
+long sys_bulk_set(void *dst, int c, unsigned long n);
+
 /* --- errno + wrappers (errno.c) -------------------------------------------- */
 
 /* The musl error translator: a pure function of its input. A raw result in

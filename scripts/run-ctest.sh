@@ -885,6 +885,12 @@ run_ctest "syscall_errno"
 # family over the sbrk free-list allocator (malloc), and the sbrk wrapper itself
 # (sbrk). Each is a self-checking fixture printing a single PASS line.
 run_ctest "str"
+# maize-216 large-n bulk memory: memcpy/memmove/memset at/over BULK_SYSCALL_THRESHOLD
+# route to the host via SYS $F4 (sys_bulk_copy, memmove-safe) / $F5 (sys_bulk_set).
+# str.c only exercises the sub-threshold inline word loop; this drives the syscall
+# path (aligned/unaligned, both overlap directions, threshold boundary, n==0) and
+# self-checks byte-for-byte. One "bulkmem PASS".
+run_ctest "bulkmem"
 run_ctest "ctype"
 run_ctest "sbrk"
 run_ctest "malloc"
