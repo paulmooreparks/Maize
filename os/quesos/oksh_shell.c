@@ -88,14 +88,24 @@ int main(void) {
     buf[total] = 0;
     waitpid(pid, &st, 0);
 
-    if (!contains(buf, total, "/rw"))               { printf("oksh-shell: FAIL cd/pwd\n"); return 1; }
-    if (!contains(buf, total, "shellvar=childenv")) { printf("oksh-shell: FAIL export/expand\n"); return 1; }
-    if (!contains(buf, total, "AApipe"))            { printf("oksh-shell: FAIL pipeline\n"); return 1; }
-    if (!contains(buf, total, "r1") || !contains(buf, total, "r2")) { printf("oksh-shell: FAIL redirect\n"); return 1; }
-    if (!contains(buf, total, "sf=1"))              { printf("oksh-shell: FAIL exit-status-false\n"); return 1; }
-    if (!contains(buf, total, "st=0"))              { printf("oksh-shell: FAIL exit-status-true\n"); return 1; }
-    if (!contains(buf, total, "child=childenv"))    { printf("oksh-shell: FAIL export-to-child\n"); return 1; }
-    if (!WIFEXITED(st) || WEXITSTATUS(st) != 7)     { printf("oksh-shell: FAIL shell-exit-status (st=%d)\n", st); return 1; }
+    {
+        const char *fail = 0;
+        if (!contains(buf, total, "/rw"))                    fail = "cd/pwd";
+        else if (!contains(buf, total, "shellvar=childenv")) fail = "export/expand";
+        else if (!contains(buf, total, "AApipe"))            fail = "pipeline";
+        else if (!contains(buf, total, "r1")
+                 || !contains(buf, total, "r2"))             fail = "redirect";
+        else if (!contains(buf, total, "sf=1"))              fail = "exit-status-false";
+        else if (!contains(buf, total, "st=0"))              fail = "exit-status-true";
+        else if (!contains(buf, total, "child=childenv"))    fail = "export-to-child";
+        else if (!WIFEXITED(st) || WEXITSTATUS(st) != 7)     fail = "shell-exit-status";
+        if (fail != 0) {
+            /* Dump the captured transcript + status so a platform-specific failure (e.g.
+             * the Windows leg) is diagnosable from the CI log in one shot. */
+            printf("oksh-shell: FAIL %s st=%d captured=[%s]\n", fail, st, buf);
+            return 1;
+        }
+    }
 
     printf("oksh-shell: PASS\n");
     return 0;

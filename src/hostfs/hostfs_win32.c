@@ -130,15 +130,24 @@ static int64_t map_last_error(DWORD e) {
 /* Translate the guest open flags to a Windows CreateFile disposition/access. */
 static void translate_flags(int flags, DWORD *access, DWORD *disp) {
     int acc = flags & HOSTFS_O_ACCMODE;
-    if (acc == HOSTFS_O_WRONLY) {
+    if (flags & HOSTFS_O_APPEND) {
+        /* maize-94: POSIX O_APPEND means every write lands at EOF. On Windows that
+         * requires FILE_APPEND_DATA granted WITHOUT FILE_WRITE_DATA: a handle that holds
+         * both (as GENERIC_WRITE | FILE_APPEND_DATA does) writes at the current file
+         * pointer (offset 0 on a fresh open) and silently clobbers existing data instead
+         * of appending. So for O_WRONLY|O_APPEND use FILE_APPEND_DATA alone; O_RDWR|O_APPEND
+         * adds read access. This is what the shell's `>>` relies on (it opened o.txt with
+         * O_WRONLY|O_APPEND and was overwriting rather than appending on the Windows leg). */
+        *access = FILE_APPEND_DATA;
+        if (acc == HOSTFS_O_RDWR) {
+            *access |= GENERIC_READ;
+        }
+    } else if (acc == HOSTFS_O_WRONLY) {
         *access = GENERIC_WRITE;
     } else if (acc == HOSTFS_O_RDWR) {
         *access = GENERIC_READ | GENERIC_WRITE;
     } else {
         *access = GENERIC_READ;
-    }
-    if (flags & HOSTFS_O_APPEND) {
-        *access |= FILE_APPEND_DATA;
     }
 
     if (flags & HOSTFS_O_CREAT) {
