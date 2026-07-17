@@ -50,7 +50,10 @@ main(void)
     printf("min=%d lmin=%ld\n", INT_MIN_, LONG_MIN_);
     printf("[%5s][%3c][%2d]\n", "ab", 'x', 12345);
     fprintf(stdout, "fp=%d\n", 7);
-    printf("unk=%z end\n");
+    /* Unknown conversion echoes '%' + the offending byte. Uses %q (a genuinely
+     * unrecognized specifier): z/j/t became real length modifiers in maize-94's
+     * sbase-printf work, so they no longer exercise the unknown-conversion path. */
+    printf("unk=%q end\n");
 
     /* Chunked-flush proof: a single printf line longer than PRINTF_BUFSZ (256)
      * must appear COMPLETE in stdout. 300 'A' + newline == 301 bytes > 256. */
