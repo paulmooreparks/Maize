@@ -352,12 +352,30 @@ names **without** the leading dashes:
   the present cadence; `refresh-hz` then drives only the guest vsync-IRQ cadence and
   the input-poll timeout. Set `vsync=false` to present unsynced, paced by `refresh-hz`.)
 - `no-root` = boolean
+- `mount` = `<host-path>=<guest-path>[:ro|:rw]`, byte-for-byte the same grammar as
+  `--mount` (see "The sandbox root and mounting host directories" below).
+  **Repeatable**: one grant per `mount=` line, in file order.
+- `mount-home` = `true`/`1`/`yes` or an empty value (resolve the host home via
+  `HOME`/`USERPROFILE`, like bare `--mount-home`), `false`/`0`/`no` (no-op, same as
+  omitting the key), or any other value (an explicit host-path override, like
+  `--mount-home=<path>`)
 
-Booleans accept `true`/`false`, `1`/`0`, or `yes`/`no`. Parsing is fail-soft: an
-unknown key or a malformed value is reported on stderr and ignored, so a bad line
-never bricks the launcher. Repeatable `--mount` grants are not expressible in the
-config file in v1 (a future extension); it covers the scalar and boolean flags
-only.
+Booleans accept `true`/`false`, `1`/`0`, or `yes`/`no`. Parsing is fail-soft for
+every key above **except** `mount` and `mount-home`: an unknown key or a malformed
+scalar/boolean value is reported on stderr and ignored, so a bad line never bricks
+the launcher. Mount grants are the one exception, because a dropped mount grant is
+a capability quietly vanishing, not a cosmetic fallback: a malformed or unreachable
+`mount=`/`mount-home=` line exits `maize` nonzero before the guest starts (the same
+fail-closed contract `--mount`/`--mount-home` already have), with a diagnostic
+naming the config file and the offending line.
+
+Config and CLI mounts merge the same way every other config key does: `mount=`/
+`mount-home=` lines load first as defaults, and a `--mount`/`--mount-home` on the
+command line for the exact same guest path overrides the matching config grant
+(the config grant is silently dropped, no error) -- so a one-off CLI override
+never requires editing the config file. Two grants from the SAME source (two
+config lines, or two CLI flags) that merely overlap remain a hard fail-closed
+startup error, unchanged.
 
 ```
 # ~/.maize/config
@@ -365,11 +383,15 @@ display-scale=4
 refresh-hz=20
 input=keyboard
 show-perf=true
+mount=/home/paul/data=/data:rw
+mount-home=true
 ```
 
 With that file in place, `maizeg --display doom.mzx` behaves as if you had also
-typed `--display-scale 4 --refresh-hz 20 --input=keyboard --show-perf`, and you
-can still override any of them on the command line (e.g. `--display-scale 6`).
+typed `--display-scale 4 --refresh-hz 20 --input=keyboard --show-perf --mount
+/home/paul/data=/data:rw --mount-home`, and you can still override any of them on
+the command line (e.g. `--display-scale 6`, or a `--mount` naming `/data` again to
+redirect just that one run).
 
 ### The sandbox root and mounting host directories
 
@@ -401,6 +423,9 @@ into read-write; longest guest-path prefix wins, so the root is the fallback):
   be `/` itself. `:ro` is the explicit default; `:rw` opts into writes.
 - `--mount-home[=HOST]` is sugar mapping the host home directory over
   `/home/user`, read-write.
+
+Both are also configurable as standing defaults via `~/.maize/config`'s `mount`/
+`mount-home` keys (identical grammar; see "Startup defaults" above).
 
 ```sh
 maize --mount C:/work=/proj:rw prog.mzx

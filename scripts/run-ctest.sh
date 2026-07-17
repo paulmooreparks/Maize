@@ -1578,6 +1578,171 @@ run_launcher_defaults() {
 
 run_launcher_defaults
 
+# =============================================================================
+# maize-252: config-file mount= / mount-home= grants. Kept in its OWN block,
+# separate from run_launcher_defaults above (which this is additive to, not a
+# replacement of): maize-250 is concurrently adding run-ctest fixtures on its
+# own worktree, so this boundary is a deliberate rebase-friendly seam.
+#
+# Covers, all via a throwaway HOME (never the operator's real ~/.maize),
+# reusing the cat_hostfs fixture (reads the fixed guest path /ro/payload.txt)
+# and a new maize-252 twin, cat_home_hostfs (reads /home/user/payload.txt, the
+# --mount-home / mount-home= grant's fixed guest path):
+#   1. a config-only mount= line reaches the guest with NO --mount on the CLI.
+#   2. precedence: a CLI --mount for the SAME guest path overrides the config
+#      grant (config < CLI, same as every other launcher default).
+#   3. fail-closed: a malformed/unreachable config mount= line exits nonzero
+#      with a diagnostic naming the config path and the raw offending line.
+#   4. a Windows drive-letter host value (host_to_native's native form on the
+#      MSYS2 CI leg) parses correctly -- the maize-252 review-note (b) lock:
+#      load_config_file's OWN first-'=' split and parse_mount_spec's rfind
+#      (last-'=') split must compose safely even though the host string itself
+#      carries a ':' (drive letter, never confused with '=').
+#   5. mount-home=true/empty and mount-home=<path> both mount a read-write
+#      /home/user grant (equivalent to the CLI forms; RW-ness is the same
+#      hardcoded HOSTFS_RW assignment both paths share in src/maize.cpp, so
+#      this proves reachability, the part unique to the config path); mount-
+#      home=false/0/no is a no-op (the guest sees /home/user unmounted).
+# =============================================================================
+run_launcher_config_mount() {
+    name="launcher_config_mount"
+    TOTAL=$((TOTAL + 1))
+
+    compile_c "cat_hostfs" || return
+    cat_bin="$BIN"
+    compile_c "cat_home_hostfs" || return
+    cat_home_bin="$BIN"
+    # compile_c assigns the global `name` (no `local` in POSIX sh); restore our
+    # label before the PASS/FAIL line below.
+    name="launcher_config_mount"
+
+    fake_home="${WORK_DIR}/launcher_cfg_mount_home"
+    rm -rf "$fake_home"
+    mkdir -p "$fake_home/.maize"
+    nat_home=$(host_to_native "$fake_home")
+    cfg_path="$fake_home/.maize/config"
+
+    ok=1
+
+    # (1) config-only: mount=<dir>=/ro:ro with NO --mount flag on the CLI.
+    cfg_root="${WORK_DIR}/launcher_cfg_mount_a"
+    rm -rf "$cfg_root"; mkdir -p "$cfg_root"
+    printf 'config payload\n' > "$cfg_root/payload.txt"
+    nat_cfg_root=$(host_to_native "$cfg_root")
+    printf 'mount=%s=/ro:ro\n' "$nat_cfg_root" > "$cfg_path"
+
+    set +e
+    out1=$(HOME="$nat_home" "$MAIZE" --no-root "$cat_bin" 2>/dev/null)
+    set -e
+    [ "$out1" = "config payload" ] || ok=0
+
+    # (2) precedence: the same config mount= line for /ro, PLUS a CLI --mount for
+    # the SAME guest path with DIFFERENT content; the CLI grant must win, no error.
+    cli_root="${WORK_DIR}/launcher_cfg_mount_b"
+    rm -rf "$cli_root"; mkdir -p "$cli_root"
+    printf 'cli payload\n' > "$cli_root/payload.txt"
+    nat_cli_root=$(host_to_native "$cli_root")
+
+    set +e
+    out2=$(HOME="$nat_home" "$MAIZE" --no-root --mount "${nat_cli_root}=/ro:rw" "$cat_bin" 2>/dev/null)
+    set -e
+    [ "$out2" = "cli payload" ] || ok=0
+
+    # (3) fail-closed: a config mount= line whose host directory does not exist
+    # must exit maize nonzero before the guest starts, with a diagnostic naming
+    # both the config file path and the raw offending line text.
+    bad_root="${WORK_DIR}/launcher_cfg_mount_missing"
+    rm -rf "$bad_root"
+    nat_bad_root=$(host_to_native "$bad_root")
+    bad_line="mount=${nat_bad_root}=/bad:ro"
+    printf '%s\n' "$bad_line" > "$cfg_path"
+
+    set +e
+    err3=$(HOME="$nat_home" "$MAIZE" --no-root "$cat_bin" 2>&1 >/dev/null)
+    rc3=$?
+    set -e
+    [ "$rc3" -ne 0 ] || ok=0
+    printf '%s' "$err3" | grep -qF "$cfg_path" || ok=0
+    printf '%s' "$err3" | grep -qF "$bad_line" || ok=0
+
+    # (4) Windows drive-letter host value: mechanically identical to (1), but the
+    # host_to_native translation is the point under test (native `C:\...` form on
+    # the MSYS2 CI leg), locking in review-note (b)'s split-composition invariant.
+    drv_root="${WORK_DIR}/launcher_cfg_mount_drv"
+    rm -rf "$drv_root"; mkdir -p "$drv_root"
+    printf 'drive payload\n' > "$drv_root/payload.txt"
+    nat_drv_root=$(host_to_native "$drv_root")
+    printf 'mount=%s=/ro:ro\n' "$nat_drv_root" > "$cfg_path"
+
+    set +e
+    out4=$(HOME="$nat_home" "$MAIZE" --no-root "$cat_bin" 2>/dev/null)
+    set -e
+    [ "$out4" = "drive payload" ] || ok=0
+
+    # (5a)/(5b) mount-home=true and mount-home= (empty) are the SAME boolean-true
+    # form, resolving the host home via resolve_home("", home) -- i.e. HOME itself
+    # (USERPROFILE on Windows), the identical resolver that also locates ~/.maize.
+    # So for THIS sub-case, HOME must point at a directory that is both the
+    # ~/.maize/config location AND the fixture payload directory.
+    mh_home="${WORK_DIR}/launcher_cfg_mount_home_bool"
+    rm -rf "$mh_home"; mkdir -p "$mh_home/.maize"
+    printf 'home payload bool\n' > "$mh_home/payload.txt"
+    nat_mh_home=$(host_to_native "$mh_home")
+
+    printf 'mount-home=true\n' > "$mh_home/.maize/config"
+    set +e
+    out5a=$(HOME="$nat_mh_home" "$MAIZE" --no-root "$cat_home_bin" 2>/dev/null)
+    set -e
+    [ "$out5a" = "home payload bool" ] || ok=0
+
+    printf 'mount-home=\n' > "$mh_home/.maize/config"
+    set +e
+    out5b=$(HOME="$nat_mh_home" "$MAIZE" --no-root "$cat_home_bin" 2>/dev/null)
+    set -e
+    [ "$out5b" = "home payload bool" ] || ok=0
+
+    # (5c) mount-home=<path>: an explicit host-path override, independent of HOME,
+    # using the ORIGINAL fake_home (whose ~/.maize/config we control directly).
+    mh_root2="${WORK_DIR}/launcher_cfg_mount_home_c"
+    rm -rf "$mh_root2"; mkdir -p "$mh_root2"
+    printf 'home payload path\n' > "$mh_root2/payload.txt"
+    nat_mh_root2=$(host_to_native "$mh_root2")
+    printf 'mount-home=%s\n' "$nat_mh_root2" > "$cfg_path"
+
+    set +e
+    out5c=$(HOME="$nat_home" "$MAIZE" --no-root "$cat_home_bin" 2>/dev/null)
+    set -e
+    [ "$out5c" = "home payload path" ] || ok=0
+
+    # (5d) mount-home=false is a no-op: /home/user stays unmounted (--no-root, no
+    # other grant names it), so the guest's open must fail.
+    printf 'mount-home=false\n' > "$cfg_path"
+    set +e
+    out5d=$(HOME="$nat_home" "$MAIZE" --no-root "$cat_home_bin" 2>/dev/null)
+    rc5d=$?
+    set -e
+    [ "$rc5d" -ne 0 ] || ok=0
+    [ "$out5d" != "home payload path" ] || ok=0
+
+    if [ "$ok" -eq 1 ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        (1) config-only:  \"${out1}\""
+        echo "        (2) precedence:   \"${out2}\""
+        echo "        (3) fail-closed:  rc=${rc3} stderr=\"${err3}\""
+        echo "        (4) drive-letter: \"${out4}\""
+        echo "        (5a) home=true:   \"${out5a}\""
+        echo "        (5b) home=empty:  \"${out5b}\""
+        echo "        (5c) home=<path>: \"${out5c}\""
+        echo "        (5d) home=false:  rc=${rc5d} out=\"${out5d}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_launcher_config_mount
+# =============================================================================
+
 # maize-24 keystone (Piece 3): quesOS single-tasking exec/reap. Builds the two
 # borrowed static guest printers (os/quesos/demo_child*.c) through the ordinary
 # cc-maize.sh pipeline (stock .mzx at base 0x2000), links quesOS itself at its

@@ -315,6 +315,7 @@ struct mount_grant {
 	std::string host;
 	std::string guest;
 	hostfs_mode mode;
+	std::string origin;   // maize-252: human-readable source, for diagnostics
 };
 
 /* maize-114: a guest path must be a *nix absolute path under the synthetic root.
@@ -392,7 +393,7 @@ static bool build_mount_table(std::vector<mount_grant> &grants,
 	for (std::size_t i = 0; i < grants.size(); ++i) {
 		std::error_code ec;
 		if (!std::filesystem::is_directory(grants[i].host, ec)) {
-			std::cerr << "maize: --mount host path '" << grants[i].host
+			std::cerr << "maize: " << grants[i].origin << ": host path '" << grants[i].host
 				<< "' is missing or not a directory" << std::endl;
 			return false;
 		}
@@ -400,7 +401,8 @@ static bool build_mount_table(std::vector<mount_grant> &grants,
 	for (std::size_t i = 0; i < grants.size(); ++i) {
 		for (std::size_t j = i + 1; j < grants.size(); ++j) {
 			if (guest_paths_overlap(grants[i].guest, grants[j].guest)) {
-				std::cerr << "maize: --mount guest paths '" << grants[i].guest
+				std::cerr << "maize: " << grants[i].origin << " and " << grants[j].origin
+					<< ": guest paths '" << grants[i].guest
 					<< "' and '" << grants[j].guest
 					<< "' are the same or overlap" << std::endl;
 				return false;
@@ -422,11 +424,11 @@ static bool build_mount_table(std::vector<mount_grant> &grants,
 		std::int64_t rc = hostfs_backend_anchor_open(&mounts[i]);
 		if (rc < 0) {
 			if (rc == -static_cast<std::int64_t>(HOSTFS_ENOSYS)) {
-				std::cerr << "maize: hostfs requires openat2 (Linux kernel >= 5.6); "
-					<< "cannot mount '" << grants[i].host << "'" << std::endl;
+				std::cerr << "maize: " << grants[i].origin << ": hostfs requires openat2 "
+					<< "(Linux kernel >= 5.6); cannot mount '" << grants[i].host << "'" << std::endl;
 			} else {
-				std::cerr << "maize: cannot mount '" << grants[i].host << "' at '"
-					<< grants[i].guest << "' (errno " << (-rc) << ")" << std::endl;
+				std::cerr << "maize: " << grants[i].origin << ": cannot mount '" << grants[i].host
+					<< "' at '" << grants[i].guest << "' (errno " << (-rc) << ")" << std::endl;
 			}
 			return false;
 		}
@@ -474,19 +476,27 @@ static bool parse_config_bool(const std::string &val, bool &out) {
    BEFORE the CLI argument loop and only changes the value each flag STARTS from; a
    CLI flag always wins because the loop overrides afterward. Fail-soft (per the
    card): an unknown key or a malformed value produces a stderr warning and is
-   ignored, never a hard error, so one bad line cannot brick the launcher. The file
-   is optional; an absent file leaves the built-in defaults untouched. Repeatable
-   --mount grants are intentionally out of scope for v1 (a future extension). */
-static void load_config_file(const std::string &path,
+   ignored, never a hard error, so one bad line cannot brick the launcher.
+   The file is optional; an absent file leaves the built-in defaults untouched.
+
+   maize-252 EXCEPTION: `mount` and `mount-home` are NOT fail-soft. A dropped mount
+   grant is a capability quietly vanishing, not a cosmetic fallback (see the card's
+   body), so this function returns bool: false means a fatal mount-grant error was
+   already printed to stderr and the caller must exit before doing anything else,
+   mirroring load_env_file's existing bool-return convention for the same reason
+   (a malformed entry aborts the whole file rather than degrading silently). Every
+   other key above stays fail-soft: warn and continue. */
+static bool load_config_file(const std::string &path,
 	unsigned &display_scale, unsigned &refresh_hz,
 	maize::u_hword &fb_width, maize::u_hword &fb_height,
 	maize::u_hword &console_width, maize::u_hword &console_height,
 	std::string &root_override, bool &show_perf,
 	bool &display_requested, std::string &input_source, bool &no_root,
-	bool &pause_on_halt, bool &vsync) {
+	bool &pause_on_halt, bool &vsync,
+	std::vector<mount_grant> &grants) {
 	std::ifstream f(path);
 	if (!f.is_open()) {
-		return;   /* optional file absent: built-in defaults stand (unchanged behavior) */
+		return true;   /* optional file absent: built-in defaults stand (unchanged behavior) */
 	}
 	std::string line;
 	while (std::getline(f, line)) {
@@ -610,11 +620,73 @@ static void load_config_file(const std::string &path,
 				continue;
 			}
 			no_root = b;
+		} else if (key == "mount") {
+			/* maize-252: `val` is the remainder of the line after load_config_file's OWN
+			   FIRST-'=' split above (line.find('=', start)), so for a "mount=<host>=<guest>
+			   [:ro|:rw]" line it is exactly "<host>=<guest>[:ro|:rw]" -- still containing the
+			   host/guest-separating '=', and, for a Windows host, the drive-letter ':' (a
+			   DIFFERENT character, never confused with '='). Handing `val` straight to the
+			   EXISTING parse_mount_spec, which does its OWN rfind('=') (the LAST '=') to split
+			   host from guest+suffix, is what guarantees the config grammar can never drift
+			   from the CLI grammar: no second from-scratch splitter is written here. The two
+			   splits compose safely because neither a host path nor a guest path can itself
+			   contain '=': the outer split above consumes the line's key/value '=' (the FIRST
+			   one, since the key "mount" has none of its own), and parse_mount_spec's rfind
+			   then finds the LAST '=' in what is left, which is exactly the host/guest
+			   boundary. This is fail-closed, not fail-soft (per the card): a malformed line
+			   aborts the whole config load. */
+			mount_grant g;
+			std::string err;
+			if (!parse_mount_spec(val, g, err)) {
+				std::cerr << "maize: " << path << ": malformed 'mount=" << val
+					<< "' (" << err << ")" << std::endl;
+				return false;
+			}
+			g.origin = "config mount= line ('mount=" + val + "' in " + path + ")";
+			grants.push_back(g);
+		} else if (key == "mount-home") {
+			/* maize-252: mount-home is one overloaded key, mirroring --mount-home's own
+			   single-flag-with-optional-argument shape. Empty value or a recognized boolean
+			   true (true/1/yes) means "resolve the host home", matching bare --mount-home;
+			   a recognized boolean false (false/0/no) is an explicit no-op, identical to
+			   omitting the key; anything else is a host-path override, matching
+			   --mount-home=<path>. Fail-closed: an unresolvable boolean-form home (no
+			   HOME/USERPROFILE) aborts the whole config load, same as the CLI form exiting
+			   nonzero. */
+			bool b = false;
+			bool recognized_bool = parse_config_bool(val, b);
+			if (val.empty() || recognized_bool) {
+				bool want_home = val.empty() || b;
+				if (want_home) {
+					std::string home;
+					if (!resolve_home("", home)) {
+						std::cerr << "maize: " << path << ": malformed 'mount-home=" << val
+							<< "' (no host home found; set HOME/USERPROFILE or use "
+							<< "mount-home=<path>)" << std::endl;
+						return false;
+					}
+					mount_grant g;
+					g.host = home;
+					g.guest = "/home/user";
+					g.mode = HOSTFS_RW;   /* the one rw-by-default convenience (OQ 7790) */
+					g.origin = "config mount-home= line ('mount-home=" + val + "' in " + path + ")";
+					grants.push_back(g);
+				}
+				/* else: false/0/no is an explicit no-op, identical to omitting the key. */
+			} else {
+				mount_grant g;
+				g.host = val;
+				g.guest = "/home/user";
+				g.mode = HOSTFS_RW;
+				g.origin = "config mount-home= line ('mount-home=" + val + "' in " + path + ")";
+				grants.push_back(g);
+			}
 		} else {
 			std::cerr << "maize: ignoring unknown config key '" << key
 				<< "' in " << path << std::endl;
 		}
 	}
+	return true;
 }
 
 /* maize-60: build the System V-style process-start block at the top of RAM and point
@@ -697,6 +769,7 @@ int main(int argc, char *argv[]) {
 	   the host's ambient environment is never inherited. */
 	std::vector<std::string> env_entries;
 	std::vector<mount_grant> grants;
+	std::size_t config_grant_count = 0;   // maize-252: grants.size() right after load_config_file
 	bool no_root = false;            // --no-root: disable the default sandbox root
 	std::string root_override;       // --root <hostpath>: redirect the sandbox root
 #ifdef MAIZE_DISPLAY
@@ -753,11 +826,14 @@ int main(int argc, char *argv[]) {
 		std::string cfg_home;
 		if (resolve_home("", cfg_home)) {
 			std::filesystem::path base = std::filesystem::path(cfg_home) / ".maize";
-			load_config_file((base / "config").string(),
+			if (!load_config_file((base / "config").string(),
 				display_scale, refresh_hz, fb_width, fb_height,
 				console_width, console_height,
 				root_override, show_perf, display_requested, input_source, no_root,
-				pause_on_halt, vsync);
+				pause_on_halt, vsync, grants)) {
+				return 2;   // diagnostic already printed by load_config_file
+			}
+			config_grant_count = grants.size();
 			if (show_perf) {
 				/* config-supplied default: match the --show-perf side effect (the CLI
 				   path also calls this; enable_perf_counter just sets a bool, so a
@@ -882,6 +958,7 @@ int main(int argc, char *argv[]) {
 				std::cerr << "maize: " << err << std::endl;
 				return 2;
 			}
+			g.origin = "--mount " + std::string(argv[idx + 1]);
 			grants.push_back(g);
 			idx += 2;
 			continue;
@@ -893,6 +970,7 @@ int main(int argc, char *argv[]) {
 				std::cerr << "maize: " << err << std::endl;
 				return 2;
 			}
+			g.origin = arg;
 			grants.push_back(g);
 			++idx;
 			continue;
@@ -912,6 +990,7 @@ int main(int argc, char *argv[]) {
 			g.host = home;
 			g.guest = "/home/user";
 			g.mode = HOSTFS_RW;   /* the one rw-by-default convenience (OQ 7790) */
+			g.origin = arg;
 			grants.push_back(g);
 			++idx;
 			continue;
@@ -1162,6 +1241,27 @@ int main(int argc, char *argv[]) {
 		return 2;
 	}
 
+	/* maize-252: a CLI --mount/--mount-home for the SAME guest path as a config
+	   mount=/mount-home= default overrides it (config < CLI, same as every other
+	   launcher default). Two grants from the SAME source that merely overlap stay
+	   a hard fail-closed error in build_mount_table, unchanged. Runs here, after the
+	   CLI loop has collected every CLI-sourced grant and before the sandbox-root
+	   block adds its own default grant, so root's presence/absence never
+	   participates in this merge. */
+	if (config_grant_count > 0) {
+		std::vector<mount_grant> merged;
+		for (std::size_t i = 0; i < grants.size(); ++i) {
+			bool shadowed = false;
+			if (i < config_grant_count) {
+				for (std::size_t j = config_grant_count; j < grants.size(); ++j) {
+					if (grants[j].guest == grants[i].guest) { shadowed = true; break; }
+				}
+			}
+			if (!shadowed) { merged.push_back(grants[i]); }
+		}
+		grants = std::move(merged);
+	}
+
 	/* card maize-132: unless --no-root, mount a dedicated host directory as the guest
 	   root "/", read-write, auto-created with a minimal skeleton (/home/user, /tmp) on
 	   first run. Default host location ~/.maize/root (HOME/USERPROFILE; a plain host
@@ -1210,6 +1310,7 @@ int main(int argc, char *argv[]) {
 			rg.host = root_host;
 			rg.guest = "/";
 			rg.mode = HOSTFS_RW;
+			rg.origin = "the default sandbox root (--root)";
 			grants.push_back(rg);
 			cwd = "/home/user";
 		}

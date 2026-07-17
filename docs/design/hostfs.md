@@ -76,6 +76,8 @@ The nine contract surfaces:
   grant, and a read-only dev home defeats the flag's purpose. This is the one
   documented rw-by-default convenience; plain `--mount` grants keep the `:ro`
   default.
+- The `~/.maize/config` `mount=`/`mount-home=` keys (maize-252) accept the
+  identical grammar; see README's "Startup defaults" section.
 
 ### Examples (both required)
 
