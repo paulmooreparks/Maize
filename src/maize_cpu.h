@@ -574,7 +574,7 @@ namespace maize {
 		   guest RAM and are presented through the base-address + present control ports, not
 		   a per-pixel data port. */
 		const u_qword console_port_data			{0x0000};   // R: input byte   W: output byte
-		const u_qword console_port_status		{0x0001};   // R: bit0 input-available, bit1 output-ready
+		const u_qword console_port_status		{0x0001};   // R: bit0 input-available, bit1 output-ready, bit2 end-of-input (EOF, latched)
 		const u_byte  console_irq_vector		{33};
 
 		const u_qword loopback_test_port		{0x000F};   // R/W passive scratch (relocated from port 1)

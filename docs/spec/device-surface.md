@@ -269,7 +269,10 @@ is still pollable through its status register.
 The reference device, built in and default. A native terminal remains built in and default.
 
 - **Register skeleton:** a byte-wide data register and a status register. The status
-  register carries at least an input-available bit and an output-ready bit.
+  register carries at least an input-available bit, an output-ready bit, and an
+  end-of-input (EOF) bit. The EOF bit latches once the host input stream is exhausted (a
+  read returned no byte); it stays set thereafter, so a reader that sees it delivers a
+  zero-length (EOF) read to the program rather than a synthesized data byte.
 - **Port access:** flat data register (no `address_reg` indirection). OUT writes one byte to
   the output stream; IN reads one byte from the input stream. A program polls the status
   register for readiness.
@@ -357,7 +360,7 @@ pinout:
     Port         Device / register           R / W meaning
     ----         -------------------------   ------------------------------------------
     $00          console data                R: next input byte    W: output byte
-    $01          console status              R: bit0 input-available, bit1 output-ready
+    $01          console status              R: bit0 input-available, bit1 output-ready, bit2 end-of-input
     $10          keyboard data               R: scancode (read clears key-available)
     $11          keyboard status             R: bit0 key-available
     $20 - $22    block device                reserved (no backend in this revision)

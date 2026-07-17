@@ -2081,6 +2081,25 @@ run_userland94_fixtures() {
         echo "[SKIP] userland94_oksh_keystrokes (python3 unavailable for the pty driver)"
     fi
 
+    # AC 8930 EOF (operator reopen #2, cycle 2): a piped default-path shell with NO explicit
+    # `exit` must TERMINATE when host stdin drains, not livelock on a synthesized NUL. Feed
+    # just "pwd\n" (no exit) and assert oksh ran pwd (prints "/") and reaped clean; `timeout`
+    # fails a regression of the on-demand EOF path loudly instead of hanging the suite. Plain
+    # pipe (no pty), so it runs on every leg.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(printf 'pwd\n' | MSYS2_ARG_CONV_EXCL='/bin;/rw' timeout 60 "$MAIZE" --no-root \
+        --mount "${bnat}=/bin:ro" --mount "${rnat}=/rw:rw" \
+        "$quesos" /bin/oksh.mzx 2>/dev/null | grep -v '^$')
+    set -e
+    if printf '%s\n' "$out" | grep -qxF "/" \
+    && printf '%s\n' "$out" | grep -qF "reaped /bin/oksh.mzx status=0"; then
+        echo "[PASS] userland94_oksh_eof (piped, no exit, terminates on stdin EOF)"
+    else
+        echo "[FAIL] userland94_oksh_eof"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
     # Decision 9084: libc execvp's exact -> .mzx -> .mzb name fallback. execvp_ext resolves
     # the BARE name "bin_echoer" to /bin/bin_echoer.mzx (positive) and confirms a name with
     # no existing form returns ENOENT so the child reaches its own _exit (negative), which
