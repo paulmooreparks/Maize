@@ -66,8 +66,14 @@ namespace maize {
 			}
 			else {
 				u_word s = 0x2;   // bit1 output-ready (stdout is always writable)
-				if (available_) {
-					s |= 0x1;          // bit0 input-available
+				/* bit0 input-available. Under an explicit --input=console (active injector)
+				   this reflects the latched byte, driving the guest's park+IRQ read. On the
+				   default path (no injector) report ready unconditionally so the guest reads
+				   the data port, which blocks on host stdin only when the guest asks for a
+				   byte (maize-94: demand-driven console input for the default interactive
+				   invocation). */
+				if (available_ || !active_injector_) {
+					s |= 0x1;
 				}
 				out.w0 = s;
 			}

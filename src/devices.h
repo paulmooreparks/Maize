@@ -55,6 +55,16 @@ namespace maize {
 			void attach();
 			void on_input_tick() override;
 
+			/* maize-94: mark this device as the EAGER active injector (set only under an
+			   explicit --input=console, where on_input_tick pre-reads host stdin per
+			   instruction and drives the park+IRQ multi-process model, doc 17). When it is
+			   NOT the active injector (the default console-binary path), the status port
+			   reports input-ready so the guest reads the data port on demand, which does a
+			   blocking read of host stdin only when the guest actually asks for a byte: the
+			   demand-driven model that makes an interactive quesOS shell work on the default
+			   invocation without the eager pre-read stalling the guest's own output. */
+			void set_active_injector(bool b) { active_injector_ = b; }
+
 			void port_write(int role, cpu::reg_value const& value, cpu::subreg_enum value_subreg) override;
 			cpu::reg_value port_read(int role, cpu::subreg_enum dst_subreg) override;
 
@@ -64,6 +74,7 @@ namespace maize {
 			u_word data_byte_ {0};
 			bool available_ {false};
 			bool exhausted_ {false};
+			bool active_injector_ {false};
 		};
 
 		/* Keyboard device (0x10 data, 0x11 status). Emits raw PC scancodes (Set-1 / XT

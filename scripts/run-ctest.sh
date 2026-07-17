@@ -2057,6 +2057,30 @@ run_userland94_fixtures() {
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 
+    # AC 8930 REAL-KEYSTROKE acceptance (operator reopen #2): the one that PRESSES KEYS.
+    # pty_oksh_check.py forks `maize <quesos> /bin/oksh.mzx` (the DEFAULT input path, no
+    # --input flag: exactly the operator's invocation) into a pseudo terminal, waits for the
+    # prompt, types "pwd" + an echo + "exit" as keystrokes, and asserts the shell echoed and
+    # executed them. This is the acceptance bar the piped/-c fixtures missed twice: with the
+    # default-path console input fixed (demand-driven con_data read) an interactive shell now
+    # works from a real terminal. Linux pty variant only (CI-safe, stdlib pty); the Windows
+    # ConPTY equivalent is operator/local. Skips loudly if python3 is unavailable.
+    if command -v python3 >/dev/null 2>&1; then
+        TOTAL=$((TOTAL + 1))
+        set +e
+        out=$(python3 "${REPO_ROOT}/scripts/pty_oksh_check.py" \
+            "$MAIZE" "$quesos" "$bindir" "$rwdir" 2>&1)
+        set -e
+        if printf '%s\n' "$out" | grep -qF "pty-oksh: PASS"; then
+            echo "[PASS] userland94_oksh_keystrokes (real pty, default input path)"
+        else
+            echo "[FAIL] userland94_oksh_keystrokes"; printf '%s\n' "$out" | sed 's/^/          | /'
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+    else
+        echo "[SKIP] userland94_oksh_keystrokes (python3 unavailable for the pty driver)"
+    fi
+
     # Decision 9084: libc execvp's exact -> .mzx -> .mzb name fallback. execvp_ext resolves
     # the BARE name "bin_echoer" to /bin/bin_echoer.mzx (positive) and confirms a name with
     # no existing form returns ENOENT so the child reaches its own _exit (negative), which

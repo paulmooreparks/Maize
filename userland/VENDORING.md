@@ -51,20 +51,25 @@ live at `/bin/<name>.mzx` inside the `--mount` grant (decision 8939).
 ## Running the shell (interactive vs scripted)
 
 Interactive use is the DEFAULT input path on the console binary, driven from a real
-terminal:
+terminal, with NO `--input` flag:
 
 ```
 maize --mount <bin-dir>=/bin:ro quesos.mzx /bin/oksh.mzx
 ```
 
-On a real console oksh sets raw mode and drives its emacs-mode line editor over the
-console's raw/VT passthrough (maize-228); it queries the terminal size via `$F6`
-`sys_ttysize` at startup, which quesOS forwards. `--input=console` is for device-routed /
-scripted scenarios (bytes injected through the console device IRQ path); a cooked-mode
-interactive shell on `--input=console` renders NOTHING visible on the console build (device
-output only mirrors through the raw-mode VT passthrough), so it is NOT the interactive
-invocation. Scripted, non-interactive runs (`printf '...' | maize ... /bin/oksh.mzx`, or
-`oksh -c '<script>'`) work on either path.
+The console device is quesOS's tty (doc 16). On the default path host stdin feeds the
+console device on demand: the guest runs freely and its own output (the prompt) is never
+stalled, and each fd0 read blocks on host stdin only when the shell actually asks for a
+byte, so typed keystrokes reach the raw-mode emacs line editor and commands execute. oksh
+sets raw mode and mirrors output over the console's raw/VT passthrough (maize-228), and
+queries the terminal size via `$F6 sys_ttysize` (quesOS-forwarded) at startup. Type `exit`
+to leave (Ctrl-D / true EOF is not yet propagated as a shell EOF on this path).
+
+`--input=console` is a SEPARATE, device-routed / scripted channel (host stdin is
+eager-injected into the console device per instruction, driving the park/IRQ multi-process
+model, doc 17). It is for piped / scripted runs, not the interactive terminal. Scripted,
+non-interactive runs (`printf '...' | maize ... /bin/oksh.mzx`, or `oksh -c '<script>'`)
+work on either path; the interactive keyboard shell is the default path above.
 
 ## Building
 

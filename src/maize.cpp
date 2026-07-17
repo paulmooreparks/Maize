@@ -1374,6 +1374,7 @@ int main(int argc, char *argv[]) {
 	}
 	else if (input_source == "console") {
 		cpu::set_active_input(&console);
+		console.set_active_injector(true);   /* maize-94: eager pre-read + park/IRQ model */
 	}
 
 	/* card maize-114: install the mount table built and validated above (before the
