@@ -64,6 +64,8 @@ jobs:
             gcc
             make
             git
+            patch
+            diffutils
 
       - name: Build C toolchain (cproc + qbe + Maize target)
         shell: msys2 {0}

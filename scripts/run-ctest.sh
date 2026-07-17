@@ -1861,6 +1861,107 @@ run_quesos94_fixtures() {
 
 run_quesos94_fixtures
 
+# maize-94 wave-1 userland: the VENDORED sbase binaries (userland/oksh + userland/sbase
+# submodules, built by userland/build-userland.sh through the same cc-maize.sh pipeline),
+# run UNDER quesOS. Distinct from run_quesos94_fixtures above, which proves the kernel/libc
+# plumbing with hand-written os/quesos/*.c fixtures; this proves the actual borrowed
+# programs. Two acceptance shapes:
+#   - AC 8935 (standalone): each no-arg wave-1 util (true/false/pwd) runs as a bare quesOS
+#     worklist entry, with true -> reaped status 0, false -> status 1, pwd -> prints the
+#     process cwd ("/", the per-PCB default) then status 0.
+#   - AC 8931 (pipeline substrate): a real two-stage pipeline of vendored binaries,
+#     `echo payload | cat`, driven by os/quesos/sbase_launch.c through fork+pipe+dup2+
+#     execve+wait4, with the /bin set mounted at both /progs (worklist) and /bin (PATH).
+# The arg-taking utils (echo, cat) are exercised via the launcher fixture per decision 9078
+# (quesOS worklist entries take no args). build-userland.sh needs cp/find (and, once the
+# oksh overlay lands, patch); the Windows MSYS leg installs patch+diffutils via ci.yml.
+run_userland94_fixtures() {
+    builder="${REPO_ROOT}/os/quesos/build-quesos.sh"
+    ubuild="${REPO_ROOT}/userland/build-userland.sh"
+    progs="${WORK_DIR}/ul94-progs"
+    bindir="${WORK_DIR}/ul94-bin"
+    quesos="${WORK_DIR}/ul94-quesos.mzx"
+    log="${WORK_DIR}/ul94.log"
+    rm -rf "$progs" "$bindir"; mkdir -p "$progs" "$bindir"
+
+    # build-userland.sh stages a scratch checkout with cp -a + find; skip loudly on a host
+    # lacking them rather than reporting a spurious failure (never silently pass, though:
+    # a SKIP is visible in the CI log).
+    if ! command -v find >/dev/null 2>&1 || ! command -v cp >/dev/null 2>&1; then
+        echo "[SKIP] userland94: cp/find unavailable (cannot stage the sbase scratch tree)"
+        return
+    fi
+
+    if ! sh "$builder" --preset "$PRESET" -o "$quesos" >"$log" 2>&1 || [ ! -f "$quesos" ]; then
+        echo "[FAIL] userland94: quesOS link failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    # Build the shipped wave-1 /bin set through the userland harness (the vendored sbase).
+    if ! sh "$ubuild" --preset "$PRESET" --out "$bindir" true false echo cat pwd \
+            >>"$log" 2>&1; then
+        echo "[FAIL] userland94: build-userland.sh failed to build the wave-1 sbase set"
+        cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    # The echo|cat pipeline driver is a quesOS worklist entry (compiled like any fixture).
+    if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/sbase_launch.mzx" \
+            "${REPO_ROOT}/os/quesos/sbase_launch.c" >>"$log" 2>&1; then
+        echo "[FAIL] userland94: sbase_launch.c compile failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    # The no-arg utils run as direct worklist entries: stage them under /progs too.
+    cp "${bindir}/true.mzx" "${bindir}/false.mzx" "${bindir}/pwd.mzx" "$progs/"
+    pnat=$(host_to_native "$progs")
+    bnat=$(host_to_native "$bindir")
+
+    # Helper: run one worklist program under quesOS with /progs + /bin mounted, echo stdout.
+    ul94_run() {
+        MSYS2_ARG_CONV_EXCL='/progs:/bin' timeout 90 "$MAIZE" --no-root \
+            --mount "${pnat}=/progs:ro" --mount "${bnat}=/bin:ro" \
+            "$quesos" "$1" 2>/dev/null
+    }
+
+    # AC 8931 substrate: the vendored echo|cat pipeline.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul94_run /progs/sbase_launch.mzx); set -e
+    if printf '%s\n' "$out" | grep -qF "sbase-launch: PASS"; then
+        echo "[PASS] userland94_pipeline (vendored echo | cat)"
+    else
+        echo "[FAIL] userland94_pipeline"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # AC 8935 standalone: true (status 0), false (status 1), pwd (prints "/" then status 0).
+    ul94_standalone() {
+        _name="$1"; _prog="$2"; _needle="$3"
+        TOTAL=$((TOTAL + 1))
+        set +e; _out=$(ul94_run "$_prog"); set -e
+        if printf '%s\n' "$_out" | grep -qF "$_needle"; then
+            echo "[PASS] userland94_${_name}"
+        else
+            echo "[FAIL] userland94_${_name}"
+            echo "        expected marker: \"${_needle}\""
+            printf '%s\n' "$_out" | sed 's/^/          | /'
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+    }
+    ul94_standalone true  /progs/true.mzx  "reaped /progs/true.mzx status=0"
+    ul94_standalone false /progs/false.mzx "reaped /progs/false.mzx status=1"
+    # pwd: the "/" line proves getcwd returned the per-PCB default; status 0 proves it exited
+    # clean. Grep both, so a util that printed nothing but exited 0 cannot pass.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul94_run /progs/pwd.mzx); set -e
+    if printf '%s\n' "$out" | grep -qxF "/" \
+    && printf '%s\n' "$out" | grep -qF "reaped /progs/pwd.mzx status=0"; then
+        echo "[PASS] userland94_pwd (cwd \"/\")"
+    else
+        echo "[FAIL] userland94_pwd"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_userland94_fixtures
+
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then
     echo "C toolchain: ${TOTAL} passed, 0 failed."
