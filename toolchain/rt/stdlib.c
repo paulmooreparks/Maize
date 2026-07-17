@@ -475,6 +475,152 @@ strtol(const char *nptr, char **endptr, int base)
     return neg ? -(long)acc : (long)acc;
 }
 
+/* strtoll (maize-94): the long long twin of strtol, needed by borrowed sbase
+   (libutil/strtonum.c's strtonum, which printf's estrtonum wraps for field
+   width / precision parsing). Maize is LP64 with long == long long == 64 bit
+   (limits.h), so LLONG_MAX/LLONG_MIN equal LONG_MAX/LONG_MIN and this body is
+   strtol with a wider accumulator; it shares digit_value and the same clamp. */
+#define LLONG_MAX 0x7fffffffffffffffLL
+#define LLONG_MIN (-LLONG_MAX - 1LL)
+
+long long
+strtoll(const char *nptr, char **endptr, int base)
+{
+    const char *p = nptr;
+    int neg = 0;
+    int any = 0, ovf = 0;
+    unsigned long long acc, cutoff, cutlim;
+
+    if (base != 0 && (base < 2 || base > 36)) {
+        if (endptr)
+            *endptr = (char *)nptr;
+        errno = EINVAL;
+        return 0;
+    }
+
+    while (isspace((unsigned char)*p))
+        p++;
+
+    if (*p == '+' || *p == '-') {
+        neg = (*p == '-');
+        p++;
+    }
+
+    if ((base == 0 || base == 16)
+        && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')
+        && digit_value((unsigned char)p[2], 16) >= 0) {
+        p += 2;
+        base = 16;
+    } else if (base == 0) {
+        base = (p[0] == '0') ? 8 : 10;
+    }
+
+    cutoff = neg ? (unsigned long long)LLONG_MAX + 1ULL
+                 : (unsigned long long)LLONG_MAX;
+    cutlim = cutoff % (unsigned long long)base;
+    cutoff /= (unsigned long long)base;
+    acc = 0;
+    for (;; p++) {
+        int d = digit_value((unsigned char)*p, base);
+        if (d < 0)
+            break;
+        any = 1;
+        if (ovf)
+            continue;
+        if (acc > cutoff || (acc == cutoff && (unsigned long long)d > cutlim)) {
+            ovf = 1;
+            continue;
+        }
+        acc = acc * (unsigned long long)base + (unsigned long long)d;
+    }
+
+    if (ovf) {
+        errno = ERANGE;
+        if (endptr)
+            *endptr = (char *)p;
+        return neg ? LLONG_MIN : LLONG_MAX;
+    }
+    if (!any) {
+        if (endptr)
+            *endptr = (char *)nptr;
+        return 0;
+    }
+    if (endptr)
+        *endptr = (char *)p;
+    return neg ? -(long long)acc : (long long)acc;
+}
+
+/* strtoul (maize-94): the unsigned twin of strtol, needed by borrowed sbase
+   (printf.c parses %d/%c integer arguments with strtoul). Per C, a leading '-'
+   is accepted and the result negated in the unsigned return type; on overflow it
+   clamps to ULONG_MAX with errno=ERANGE. Shares digit_value with strtol. */
+#define ULONG_MAX 0xffffffffffffffffUL
+
+unsigned long
+strtoul(const char *nptr, char **endptr, int base)
+{
+    const char *p = nptr;
+    int neg = 0;
+    int any = 0, ovf = 0;
+    unsigned long acc, cutoff, cutlim;
+
+    if (base != 0 && (base < 2 || base > 36)) {
+        if (endptr)
+            *endptr = (char *)nptr;
+        errno = EINVAL;
+        return 0;
+    }
+
+    while (isspace((unsigned char)*p))
+        p++;
+
+    if (*p == '+' || *p == '-') {
+        neg = (*p == '-');
+        p++;
+    }
+
+    if ((base == 0 || base == 16)
+        && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')
+        && digit_value((unsigned char)p[2], 16) >= 0) {
+        p += 2;
+        base = 16;
+    } else if (base == 0) {
+        base = (p[0] == '0') ? 8 : 10;
+    }
+
+    cutoff = ULONG_MAX / (unsigned long)base;
+    cutlim = ULONG_MAX % (unsigned long)base;
+    acc = 0;
+    for (;; p++) {
+        int d = digit_value((unsigned char)*p, base);
+        if (d < 0)
+            break;
+        any = 1;
+        if (ovf)
+            continue;
+        if (acc > cutoff || (acc == cutoff && (unsigned long)d > cutlim)) {
+            ovf = 1;
+            continue;
+        }
+        acc = acc * (unsigned long)base + (unsigned long)d;
+    }
+
+    if (ovf) {
+        errno = ERANGE;
+        if (endptr)
+            *endptr = (char *)p;
+        return ULONG_MAX;
+    }
+    if (!any) {
+        if (endptr)
+            *endptr = (char *)nptr;
+        return 0;
+    }
+    if (endptr)
+        *endptr = (char *)p;
+    return neg ? -acc : acc;
+}
+
 int
 atoi(const char *nptr)
 {

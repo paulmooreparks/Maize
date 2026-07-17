@@ -351,7 +351,13 @@ vformat(struct fmtout *o, const char *fmt, va_list ap)
                 prec = prec * 10 + (*p++ - '0');
             if (prec < 0) prec = -1;                    /* C rule: negative .* == omitted */
         }
-        if (*p == 'l') { lng = 1; p++; }                /* long length modifier */
+        /* Length modifier (maize-94): l / ll (long, long long) and z / j / t
+         * (size_t, intmax_t, ptrdiff_t) are all 64-bit on Maize's LP64 ABI, so
+         * each selects the wide (long) va_arg fetch; borrowed sbase printf emits
+         * "%*.*lld" and friends. h / hh (short, char) are consumed but leave the
+         * default int fetch, since varargs already promote them to int. */
+        while (*p == 'l' || *p == 'z' || *p == 'j' || *p == 't') { lng = 1; p++; }
+        while (*p == 'h') { p++; }
 
         conv = *p;
         if (conv != '\0')

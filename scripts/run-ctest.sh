@@ -1897,18 +1897,21 @@ run_userland94_fixtures() {
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
     # Build the shipped wave-1 /bin set through the userland harness (the vendored sbase).
-    if ! sh "$ubuild" --preset "$PRESET" --out "$bindir" true false echo cat pwd \
+    if ! sh "$ubuild" --preset "$PRESET" --out "$bindir" true false echo cat pwd printf \
             >>"$log" 2>&1; then
         echo "[FAIL] userland94: build-userland.sh failed to build the wave-1 sbase set"
         cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
-    # The echo|cat pipeline driver is a quesOS worklist entry (compiled like any fixture).
-    if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/sbase_launch.mzx" \
-            "${REPO_ROOT}/os/quesos/sbase_launch.c" >>"$log" 2>&1; then
-        echo "[FAIL] userland94: sbase_launch.c compile failed"; cat "$log" >&2
-        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
-    fi
+    # The launcher drivers are quesOS worklist entries (compiled like any fixture):
+    # sbase_launch (echo|cat pipeline) and printf_launch (the arg-taking printf).
+    for _drv in sbase_launch printf_launch; do
+        if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${_drv}.mzx" \
+                "${REPO_ROOT}/os/quesos/${_drv}.c" >>"$log" 2>&1; then
+            echo "[FAIL] userland94: ${_drv}.c compile failed"; cat "$log" >&2
+            TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+        fi
+    done
     # The no-arg utils run as direct worklist entries: stage them under /progs too.
     cp "${bindir}/true.mzx" "${bindir}/false.mzx" "${bindir}/pwd.mzx" "$progs/"
     pnat=$(host_to_native "$progs")
@@ -1928,6 +1931,18 @@ run_userland94_fixtures() {
         echo "[PASS] userland94_pipeline (vendored echo | cat)"
     else
         echo "[FAIL] userland94_pipeline"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # AC 8935 standalone (arg-taking): printf, exercised via its launcher fixture
+    # (decision 9078). `printf 'x=%s:%d\n' hi 42` must emit "x=hi:42\n" (literal +
+    # %s + %d integer parse + \n unescape), driven through fork+execve+pipe+wait4.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul94_run /progs/printf_launch.mzx); set -e
+    if printf '%s\n' "$out" | grep -qF "printf-launch: PASS"; then
+        echo "[PASS] userland94_printf (vendored printf %s/%d)"
+    else
+        echo "[FAIL] userland94_printf"; printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 

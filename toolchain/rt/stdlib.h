@@ -51,6 +51,16 @@ int  abs(int j);
 long labs(long j);
 long strtol(const char *nptr, char **endptr, int base);
 
+/* strtoll (maize-94): long long twin of strtol for borrowed sbase (strtonum ->
+ * printf's field width / precision). LP64 makes it numerically identical to
+ * strtol; same base / sign / overflow-clamp semantics, over a 64-bit long long. */
+long long strtoll(const char *nptr, char **endptr, int base);
+
+/* strtoul (maize-94): unsigned twin of strtol for borrowed sbase (printf parses
+ * %d/%c integer args). Accepts a leading '-' (result negated in the unsigned
+ * return type per C); clamps to ULONG_MAX with errno=ERANGE on overflow. */
+unsigned long strtoul(const char *nptr, char **endptr, int base);
+
 /* maize-94 (decision 8942) real environment support, closing maize-144's hardcoded-NULL
  * getenv deviation for the wave-1 shell (oksh PATH search + export). crt0 captures envp
  * into `environ` (a NULL-terminated "NAME=value" array); getenv walks it; setenv/putenv/

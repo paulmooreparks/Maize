@@ -383,6 +383,26 @@ strdup(const char *s)
     return p;
 }
 
+/* --- strndup (maize-94) ------------------------------------------------------
+ * POSIX strndup: copy at most n bytes of s (stopping early at a NUL) into a
+ * fresh malloc'd buffer and NUL-terminate it. Length is strnlen(s, n) so an
+ * unterminated s within n is honored. Borrowed sbase pulls this in through
+ * libutil/ealloc.c's enstrndup (printf's estrndup, for format-slice copies).
+ * The bound is computed inline (RT has no strnlen). */
+char *
+strndup(const char *s, size_t n)
+{
+    size_t len = 0;
+    while (len < n && s[len] != '\0')
+        len++;
+    char *p = malloc(len + 1u);
+    if (p == NULL)
+        return NULL;
+    memcpy(p, s, len);
+    p[len] = '\0';
+    return p;
+}
+
 /* --- strerror (maize-172) ----------------------------------------------------
  * A static message per errno code the runtime names (errno.h). The set is small
  * and matched by switch rather than a sparse table; unknown codes get a fixed

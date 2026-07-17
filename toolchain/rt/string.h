@@ -39,6 +39,10 @@ char   *strtok(char *str, const char *delim);
  * <string.h>; string.c gains #include "stdlib.h" for malloc. */
 char   *strdup(const char *s);
 
+/* strndup (maize-94): like strdup but copies at most n bytes (stopping at a NUL),
+ * always NUL-terminating. Borrowed sbase (libutil/ealloc.c enstrndup) needs it. */
+char   *strndup(const char *s, size_t n);
+
 /* strerror (maize-172): a static message for the errno codes the runtime names
  * (errno.h). Unknown codes return a fixed "Unknown error". kilo prints it via
  * perror / editorSave's I/O-error status line. The returned pointer is a static

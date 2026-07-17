@@ -1,0 +1,12 @@
+printf.c
+libutil/eprintf.c
+libutil/ealloc.c
+libutil/reallocarray.c
+libutil/strtonum.c
+libutil/estrtod.c
+libutil/unescape.c
+libutil/fshut.c
+libutf/rune.c
+libutf/utf.c
+libutf/utftorunestr.c
+libutf/fputrune.c

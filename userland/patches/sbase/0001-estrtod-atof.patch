@@ -1,0 +1,32 @@
+maize-94: estrtod() uses atof instead of strtod (printf %f/%e/%g).
+
+Upstream file/function: libutil/estrtod.c, estrtod().
+Why: Maize's freestanding libc (toolchain/rt/stdlib.c) provides atof but not yet
+a real strtod (deferred to maize-244). printf.c calls estrtod for float-format
+conversions; without this overlay the port cannot link (undefined strtod). The
+endptr-driven "not a real number" diagnostic is dropped for wave 1: an honest,
+recorded deviation, not a silent workaround. Revert this patch once maize-244
+lands a real strtod.
+
+diff --git a/libutil/estrtod.c b/libutil/estrtod.c
+index 24e4fdc..41d97c3 100644
+--- a/libutil/estrtod.c
++++ b/libutil/estrtod.c
+@@ -8,11 +8,10 @@
+ double
+ estrtod(const char *s)
+ {
+-	char *end;
+-	double d;
+-
+-	d = strtod(s, &end);
+-	if (end == s || *end != '\0')
+-		eprintf("%s: not a real number\n", s);
+-	return d;
++	/* maize-94: Maize's freestanding libc (toolchain/rt) has no strtod yet
++	 * (deferred to maize-244); use atof, which stdlib.c provides. Best-effort
++	 * parse: strtod's endptr-driven "not a real number" diagnostic on trailing
++	 * garbage / empty input is dropped for wave 1, when printf %f/%e/%g accept
++	 * an atof-grade conversion. printf's caller already guards strlen(arg) > 0. */
++	return atof(s);
+ }
