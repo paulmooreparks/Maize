@@ -784,6 +784,29 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+#ifdef MAIZE_CONSOLE_ONLY
+	/* maize-237: ~/.maize/config's `input` key is a graphical-build (maizeg) default
+	   (CMakeLists.txt's MAIZE_CONSOLE_ONLY comment: this define "makes maize.cpp ignore
+	   the graphical-only launcher knobs (display, input=keyboard scancode injection)
+	   that live in the shared ~/.maize/config for maizeg", so "maize prog.mzb" in a
+	   terminal is "always a plain console program"). The config load above does not
+	   itself honor that carve-out: it seeds input_source from the config file
+	   unconditionally, before this ifdef ever runs. On any host with a persisted config
+	   whose `input` default is `keyboard` (routine after using maizeg's scancode
+	   injector), the console binary silently inherited that default too. That default
+	   is harmless when stdin is a real interactive terminal (the maize-225 neutralize
+	   below clears it there), but when stdin is a redirected pipe or file, as with a
+	   piped test harness or any script feeding a console program its input, nothing
+	   cleared it: the guest's own first stdin byte was silently stolen and delivered to
+	   cpu::set_active_input's per-instruction scancode-injection poll
+	   (keyboard_device::on_input_tick, src/devices.cpp) instead of the guest's own
+	   SYS $00 read. Discard the config-seeded default here, before the CLI loop below,
+	   so only an EXPLICIT `--input=keyboard` on THIS invocation (as run_tests' own
+	   keyboard test passes) can arm the injector on the console build; the config
+	   default keeps applying to maizeg exactly as before. */
+	input_source.clear();
+#endif
+
 	int idx = 1;
 	while (idx < argc) {
 		std::string arg {argv[idx]};
