@@ -15,18 +15,33 @@
 #include "perf.h"
 #include "host_tty.h"
 #ifdef _WIN32
-#include <io.h>
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#  include <io.h>
 #else
 #include <unistd.h>
 #endif
 
 /* maize-225: is the process stdin an interactive terminal? Used to decide whether the console build's
-   `input=keyboard` neutralization should fire: only for an interactive tty (where the stdin
-   scancode injector would block forever, the maize-217 hang), NOT for a pipe or file that is
-   deliberately feeding scancodes (a keyboard test, or an intentional redirect). */
+   `input=keyboard` neutralization should fire and (maize-221) whether the framebuffer takeover trap
+   arms: only for an interactive tty (where the stdin scancode injector would block forever, the
+   maize-217 hang, or a graphical guest would run invisibly), NOT for a pipe or file that is
+   deliberately feeding scancodes or is a headless CI run (a keyboard test, or an intentional redirect). */
 static bool stdin_is_interactive() {
 #ifdef _WIN32
-	return _isatty(0) != 0;
+	/* On Windows _isatty() reports the NUL device as a tty (it is FILE_TYPE_CHAR), so a
+	   `< NUL` / `</dev/null` redirect, exactly what headless CI uses, would wrongly read as
+	   interactive and arm the maize-221 fb trap (which then powers off the VM the moment a
+	   guest claims the framebuffer, so the quesos_fb_* fixtures and DOOM exit silently on the
+	   Windows console binary). GetConsoleMode succeeds ONLY for a real console handle, not NUL
+	   / a pipe / a file, so it is the correct interactive gate; this mirrors the console probe
+	   in host_tty.cpp (maize-228). Keep the _isatty() short-circuit so a plain pipe/file, which
+	   is not FILE_TYPE_CHAR, stays non-interactive without a console call. */
+	if (_isatty(0) == 0) { return false; }
+	DWORD mode = 0;
+	HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+	return h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &mode) != 0;
 #else
 	return isatty(0) != 0;
 #endif
