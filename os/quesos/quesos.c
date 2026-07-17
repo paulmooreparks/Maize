@@ -158,7 +158,6 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define QOS_ENOSPC 28          /* registration table full                                 */
 #define QOS_EBADF   9          /* release with nothing registered                         */
 #define QOS_ESRCH   3          /* maize-174: kill target pid/pgid names no process        */
-#define QOS_EINVAL_SIG 22      /* maize-174: bad/uncatchable signal number                */
 
 /* maize-236: registration-table capacity, mirroring src/maize_cpu.h fb_max_slots. */
 #define QUESOS_FB_MAX_SLOTS 8
@@ -1151,6 +1150,14 @@ static long do_execve(u64 path_uva, u64 argv_uva, u64 envp_uva) {
         do_exit(127);   /* image destroyed and unloadable: terminate (noreturn) */
     }
     build_start_block(self, entry);
+    /* maize-174: POSIX exec signal semantics. A caught handler (a VA above the SIG_IGN/
+     * SIG_DFL sentinels 1/0) points into the OLD image about to be orphaned, so reset it
+     * to SIG_DFL; never jump to a stale VA. SIG_IGN dispositions are preserved, as are the
+     * blocked mask, the pending set, and the pgid (all untouched). No handler is in progress
+     * in the new image and no old signal frame is carried over. */
+    { int s; for (s = 0; s < 32; ++s) { if (self->handler[s] > 1) { self->handler[s] = 0; } } }
+    self->in_handler = 0;
+    self->sig_saved_rs = 0;
     for (i = 0; i < QUESOS_PATH_CAP - 1 && kpath[i]; ++i) { self->path[i] = kpath[i]; }
     self->path[i] = 0;
     return 0;
@@ -1343,11 +1350,14 @@ static void push_signal_frame(struct pcb *p, int sig) {
 static void deliver_pending_signal(struct pcb *p) {
     unsigned long ready;
     int sig;
-    if (p->in_handler) { return; }   /* v1: one handler at a time; defer while in one */
-    if (p->pending & (1ul << (SIGKILL - 1))) {   /* uncatchable, unblockable (OQ 9014) */
+    /* SIGKILL is uncatchable and unblockable (OQ 9014): it must terminate the process
+     * even while it is running a handler (in_handler set), so it precedes the defer
+     * guard below. Otherwise a runaway or timer-preempted handler could never be killed. */
+    if (p->pending & (1ul << (SIGKILL - 1))) {
         p->pending &= ~(1ul << (SIGKILL - 1));
         terminate_by_signal(p, SIGKILL);   /* noreturn */
     }
+    if (p->in_handler) { return; }   /* v1: one handler at a time; defer others while in one */
     ready = p->pending & ~p->blocked;
     if (ready == 0ul) { return; }
     sig = lowest_set_bit(ready);
@@ -1362,7 +1372,7 @@ static void deliver_pending_signal(struct pcb *p) {
 
 /* SYS_kill: pid>0 one process; pid==0 caller's group; pid<0 the group -pid. */
 static long do_kill(long pid, int sig) {
-    if (sig < 1 || sig > 31) { return -(long)QOS_EINVAL_SIG; }
+    if (sig < 1 || sig > 31) { return -(long)QOS_EINVAL; }
     if (pid > 0) {
         struct pcb *p = find_by_pid(pid);
         if (p == 0) { return -(long)QOS_ESRCH; }
@@ -1376,8 +1386,8 @@ static long do_kill(long pid, int sig) {
 /* SYS_rt_sigaction: subset -- sa_handler only (sa_mask/sa_flags read/written as 0). */
 static long do_rt_sigaction(long sig, u64 act_uva, u64 oldact_uva) {
     struct pcb *self = g_current;
-    if (sig < 1 || sig > 31) { return -(long)QOS_EINVAL_SIG; }
-    if (sig == SIGKILL) { return -(long)QOS_EINVAL_SIG; }   /* uncatchable (OQ 9014) */
+    if (sig < 1 || sig > 31) { return -(long)QOS_EINVAL; }
+    if (sig == SIGKILL) { return -(long)QOS_EINVAL; }   /* uncatchable (OQ 9014) */
     if (oldact_uva != 0) {
         as_write64(self, oldact_uva + 0ul, self->handler[sig]);
         as_write64(self, oldact_uva + 8ul, 0);

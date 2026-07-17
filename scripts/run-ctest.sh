@@ -1673,6 +1673,7 @@ run_quesos_ac_fixtures() {
                pipe_bigwrite pipeline producer filter consumer stress20 preempt \
                blocked console_echo \
                sig_handler sig_default sig_chld sig_pgroup \
+               sig_kill sig_exec_launch sig_exec_target \
                fb_register fb_reject fb_fork_cleanup fb_exec_launch fb_exec_target \
                fb_exit_cleanup; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
@@ -1721,6 +1722,8 @@ run_quesos_ac_fixtures() {
     quesos_ac_case quesos_sig_default    "sig-default: PASS"     sig_default
     quesos_ac_case quesos_sig_chld       "sig-chld: PASS"        sig_chld
     quesos_ac_case quesos_sig_pgroup     "sig-pgroup: PASS"      sig_pgroup
+    quesos_ac_case quesos_sig_kill       "sig-kill: PASS"        sig_kill
+    quesos_ac_case quesos_sig_exec       "sig-exec: PASS"        sig_exec_launch
 
     # maize-236 framebuffer registration table (quesOS half). fb_register: geometry +
     # slot 0 + -EBUSY + release/re-register. fb_reject: -ENODEV on a display-less view
