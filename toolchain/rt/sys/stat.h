@@ -51,6 +51,16 @@ struct stat {
 #define S_IFIFO  0010000
 #define S_ISREG(m)  (((m) & S_IFMT) == S_IFREG)
 #define S_ISDIR(m)  (((m) & S_IFMT) == S_IFDIR)
+/* maize-94: the remaining POSIX file-type predicates, over the S_IF* constants
+ * already defined above. Borrowed sbase (ls's type detection, cp's device / symlink
+ * guards) tests these by name. On hostfs, which models only regular files and
+ * directories, S_ISLNK/S_ISBLK/S_ISCHR/S_ISFIFO/S_ISSOCK are simply always false;
+ * the macros are still the honest way to spell those tests. */
+#define S_ISLNK(m)  (((m) & S_IFMT) == S_IFLNK)
+#define S_ISCHR(m)  (((m) & S_IFMT) == S_IFCHR)
+#define S_ISBLK(m)  (((m) & S_IFMT) == S_IFBLK)
+#define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
+#define S_ISSOCK(m) (((m) & S_IFMT) == S_IFSOCK)
 
 int mkdir(const char *pathname, mode_t mode);
 

@@ -1899,7 +1899,7 @@ run_userland94_fixtures() {
     fi
     # Build the shipped wave-1 /bin set through the userland harness (the vendored sbase).
     if ! sh "$ubuild" --preset "$PRESET" --out "$bindir" \
-            true false echo cat pwd printf cp mv rm >>"$log" 2>&1; then
+            true false echo cat pwd printf cp mv rm ls >>"$log" 2>&1; then
         echo "[FAIL] userland94: build-userland.sh failed to build the wave-1 sbase set"
         cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
@@ -1907,7 +1907,7 @@ run_userland94_fixtures() {
     # The launcher drivers are quesOS worklist entries (compiled like any fixture):
     # sbase_launch (echo|cat pipeline), printf_launch, and the cp/mv/rm fs launchers
     # (each seeds a file on the /rw mount, execve's its util, and verifies the result).
-    for _drv in sbase_launch printf_launch cp_launch mv_launch rm_launch; do
+    for _drv in sbase_launch printf_launch cp_launch mv_launch rm_launch ls_launch; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${_drv}.mzx" \
                 "${REPO_ROOT}/os/quesos/${_drv}.c" >>"$log" 2>&1; then
             echo "[FAIL] userland94: ${_drv}.c compile failed"; cat "$log" >&2
@@ -1972,6 +1972,7 @@ run_userland94_fixtures() {
     ul94_fslaunch cp /progs/cp_launch.mzx "cp-launch: PASS"
     ul94_fslaunch mv /progs/mv_launch.mzx "mv-launch: PASS"
     ul94_fslaunch rm /progs/rm_launch.mzx "rm-launch: PASS"
+    ul94_fslaunch ls /progs/ls_launch.mzx "ls-launch: PASS"
 
     # AC 8935 standalone: true (status 0), false (status 1), pwd (prints "/" then status 0).
     ul94_standalone() {
