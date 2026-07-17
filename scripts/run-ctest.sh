@@ -1768,23 +1768,26 @@ run_quesos94_fixtures() {
     builder="${REPO_ROOT}/os/quesos/build-quesos.sh"
     progs="${WORK_DIR}/quesos94"
     rw="${WORK_DIR}/quesos94-rw"
+    bin="${WORK_DIR}/quesos94-bin"
     quesos="${WORK_DIR}/quesos94.mzx"
     log="${WORK_DIR}/quesos94.log"
-    rm -rf "$progs" "$rw"; mkdir -p "$progs" "$rw"
+    rm -rf "$progs" "$rw" "$bin"; mkdir -p "$progs" "$rw" "$bin"
 
     if ! sh "$builder" --preset "$PRESET" -o "$quesos" >"$log" 2>&1 || [ ! -f "$quesos" ]; then
         echo "[FAIL] quesos94: quesOS link failed"; cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
-    for src in fs_forward cwd_resolve termios_raw; do
+    for src in fs_forward cwd_resolve termios_raw libc_proc execvp_run bin_echoer; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
             echo "[FAIL] quesos94: ${src}.c compile failed"; cat "$log" >&2
             TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
         fi
     done
+    cp "${progs}/bin_echoer.mzx" "${bin}/bin_echoer.mzx"   # execvp PATH search target
     pnat=$(host_to_native "$progs")
     rnat=$(host_to_native "$rw")
+    bnat=$(host_to_native "$bin")
 
     # File/dir forwarding + cwd resolution: :ro /progs (binaries) + :rw /rw (scratch).
     for case in fs_forward:fs-forward cwd_resolve:cwd-resolve; do
@@ -1818,6 +1821,39 @@ run_quesos94_fixtures() {
         echo "[PASS] quesos94_termios_raw"
     else
         echo "[FAIL] quesos94_termios_raw"
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # Phase (b) libc: real environ/getenv/setenv (crt0 capture), getcwd, fork+waitpid+
+    # WEXITSTATUS, pipe across fork, and heap (do_brk under paging -- malloc works under
+    # quesOS). Standalone /progs run.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(MSYS2_ARG_CONV_EXCL='/progs' timeout 60 "$MAIZE" --no-root \
+        --mount "${pnat}=/progs:ro" "$quesos" /progs/libc_proc.mzx 2>/dev/null | grep -v '^$')
+    set -e
+    if printf '%s\n' "$out" | grep -qF "libc-proc: PASS"; then
+        echo "[PASS] quesos94_libc_proc"
+    else
+        echo "[FAIL] quesos94_libc_proc"
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # execvp PATH search (decision 8939): the launcher forks, the child sets PATH=/bin and
+    # execvp's a bare command name; execvp walks PATH and execve's /bin/bin_echoer.mzx. The
+    # binaries are mounted at BOTH /progs (worklist) and /bin (PATH).
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(MSYS2_ARG_CONV_EXCL='/progs:/bin' timeout 60 "$MAIZE" --no-root \
+        --mount "${pnat}=/progs:ro" --mount "${bnat}=/bin:ro" \
+        "$quesos" /progs/execvp_run.mzx 2>/dev/null | grep -v '^$')
+    set -e
+    if printf '%s\n' "$out" | grep -qF "execvp: PASS"; then
+        echo "[PASS] quesos94_execvp"
+    else
+        echo "[FAIL] quesos94_execvp"
         printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi

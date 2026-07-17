@@ -19,11 +19,21 @@ extern int errno;
 
 #define EPERM   1
 #define ENOENT  2   /* open of a missing path (kilo, maize-172, checks errno != ENOENT) */
+#define ESRCH   3   /* kill/wait target names no process (maize-94 sbase/oksh) */
+#define ECHILD 10   /* wait4: no matching child (quesOS do_wait returns -10) */
+#define EAGAIN 11   /* fork: process table full (quesOS do_fork returns -11) */
+#define EACCES 13   /* permission denied (maize-94 sbase/oksh) */
+#define EEXIST 17   /* create of an existing path (maize-94 sbase/oksh) */
+#define EXDEV  18   /* cross-mount rename (quesOS/hostfs returns -18) */
+#define ENOTDIR 20  /* path component is not a directory (maize-94 sbase/oksh) */
+#define EROFS  30   /* write to a :ro mount / synthetic root (hostfs returns -30) */
+#define ENOSYS 38   /* syscall not implemented (quesOS dispatcher returns -38) */
 #define EBADF   9
 #define ENOMEM 12   /* sbrk/malloc: request over HEAP_CEILING or below the floor */
 #define EISDIR 21   /* m_misc.c:439: write target is a directory (maize-147) */
 #define EINVAL 22
 #define ENOTTY 25   /* ioctl on a non-ioctl backend; isatty on a non-tty (maize-172) */
+#define EPIPE  32   /* write to a pipe with no readers (quesOS do_write returns -32) */
 #define ERANGE 34   /* strtol: value out of long range (overflow clamp), maize-142 */
 
 #endif /* MAIZE_ERRNO_H */

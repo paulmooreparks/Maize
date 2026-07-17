@@ -88,6 +88,7 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define TRAP_TABLE_PA     0x00001000ul
 #define USER_STACK_TOP    0x00100000ul   /* user VA just above the stack region        */
 #define USER_STACK_PAGES  16u            /* 64 KiB user stack, [0xF0000, 0x100000)      */
+#define USER_BRK_MAX      0x000F0000ul   /* maize-94: heap ceiling (stack bottom)       */
 #define QUESOS_IMG_BASE   0x00100000ul   /* quesOS link base; code+data in [base,+1MiB) */
 #define QUESOS_IMG_TOP    0x00200000ul
 #define POOL_BASE         0x00400000ul   /* frame + page-table pool (2 MiB aligned)     */
@@ -120,6 +121,7 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define SYS_write  0x01
 #define SYS_open   0x02
 #define SYS_close  0x03
+#define SYS_brk    0x0C   /* maize-94: heap break, implemented against the process page table */
 #define SYS_pipe   0x16   /* Linux x86-64 numbers below */
 #define SYS_dup    0x20
 #define SYS_dup2   0x21
@@ -254,6 +256,7 @@ struct pcb {
     int  in_handler;             /* maize-174: a signal handler is in progress          */
     char path[QUESOS_PATH_CAP];   /* argv[0] for the reap transcript                   */
     char cwd[QUESOS_PATH_CAP];    /* maize-94 decision 8940: per-process cwd (def "/") */
+    u64  brk_cur;                 /* maize-94: current heap break (grows via SYS_brk)  */
 };
 
 static struct pcb g_proc[QUESOS_MAX_PROC];
@@ -505,6 +508,7 @@ static int load_segments(struct pcb *p, const char *path, u64 *entry_out) {
     const u8 *b = g_filebuf;
     u16 seg_count;
     u64 shoff;
+    u64 top_va = 0;   /* maize-94: highest segment end, becomes the initial heap break */
     u16 i;
 
     if (size < (long)MZX_HEADER_SIZE
@@ -537,7 +541,11 @@ static int load_segments(struct pcb *p, const char *path, u64 *entry_out) {
         }
         for (j = 0; j < file_size; ++j) { as_write8(p, vaddr + j, b[file_off + j]); }
         for (j = file_size; j < mem_size; ++j) { as_write8(p, vaddr + j, 0); }
+        if (vaddr + mem_size > top_va) { top_va = vaddr + mem_size; }
     }
+    /* maize-94: the heap break starts page-aligned above the highest loaded segment and
+     * grows upward via SYS_brk (do_brk maps pages on demand up to USER_BRK_MAX). */
+    p->brk_cur = (top_va + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     return 0;
 }
 
@@ -1148,6 +1156,28 @@ static long do_getcwd(u64 buf_uva, long size) {
     return len + 1;                                /* Linux getcwd: bytes incl. the NUL */
 }
 
+/* maize-94: heap break for a quesOS process. The native SYS_brk manages the VM's flat
+ * memory break, which is meaningless under per-process Sv48 paging, so quesOS implements
+ * brk against the process's own page table: a grow maps fresh (zeroed) user pages on
+ * demand up to USER_BRK_MAX (just below the stack); a query (new==0) returns the current
+ * break. Like the native brk, this is exempt from the errno convention (it always returns
+ * a break address, never -errno): the sbrk wrapper detects failure by comparing the
+ * returned break to the requested one, so a refused grow returns the UNCHANGED break. */
+static long do_brk(u64 newbrk) {
+    struct pcb *self = g_current;
+    u64 cur = self->brk_cur;
+    u64 va;
+    if (newbrk == 0) { return (long)cur; }         /* query */
+    if (newbrk > USER_BRK_MAX) { return (long)cur; }   /* refuse: caller sees no change */
+    if (newbrk > cur) {
+        for (va = cur & ~(PAGE_SIZE - 1); va < newbrk; va += PAGE_SIZE) {
+            ensure_user_page(self, va);            /* map + zero-fill each new heap page */
+        }
+    }
+    self->brk_cur = newbrk;
+    return (long)newbrk;
+}
+
 /* maize-94 (OQ 8951 ruling): termios forwarders. A quesOS process's SYS $F1/$F2 bounces
  * the 36-byte termios wire image through g_iobuf to/from the native window console. A
  * non-native (pipe) fd is -ENOTTY. do_tcsetattr also mirrors the ISIG lflag into
@@ -1278,6 +1308,7 @@ static long do_fork(void) {
     { unsigned long _s; for (_s = 0; _s < 32; ++_s) { child->handler[_s] = parent->handler[_s]; } }
     for (k = 0; k < QUESOS_PATH_CAP; ++k) { child->path[k] = parent->path[k]; }
     for (k = 0; k < QUESOS_PATH_CAP; ++k) { child->cwd[k] = parent->cwd[k]; }   /* maize-94: cwd inherited */
+    child->brk_cur = parent->brk_cur;   /* maize-94: heap break inherited (pages copied below) */
     fdtable_copy(child, parent);   /* the child inherits the fd table (shared OFDs) */
 
     build_address_space(child);
@@ -1686,6 +1717,7 @@ void quesos_syscall(void) {
         case SYS_read:   result = do_read(a0, a1, (long)a2);       break;
         case SYS_open:   result = do_open(a0, (long)a1, (long)a2); break;
         case SYS_close:  result = do_close(a0);                    break;
+        case SYS_brk:    result = do_brk(a0);                      break;   /* maize-94 */
         /* maize-94 decision 8941: native hostfs file/dir forwarders. */
         case SYS_fstat:      result = do_fstat(a0, a1);                    break;
         case SYS_lseek:      result = do_lseek(a0, (long)a1, (long)a2);    break;

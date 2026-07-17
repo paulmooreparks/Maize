@@ -46,4 +46,20 @@ pid_t getpgid(pid_t pid);
 pid_t tcgetpgrp(int fd);
 int   tcsetpgrp(int fd, pid_t pgid);
 
+/* maize-94 (decisions 8943 / 8940 / 8939): POSIX process-control + cwd wrappers over the
+ * guest-only quesOS syscalls, for the wave-1 shell/userland port. fork/execve/execv/pipe/
+ * dup/dup2/getpid are thin __syscall_ret calls; execvp adds PATH search (default /bin);
+ * chdir/getcwd drive the per-process working directory. wait/waitpid live in <sys/wait.h>.
+ * execve/execv/execvp take char *const argv[]/envp[] (the POSIX signatures). */
+pid_t fork(void);
+pid_t getpid(void);
+int   execve(const char *path, char *const argv[], char *const envp[]);
+int   execv(const char *path, char *const argv[]);
+int   execvp(const char *file, char *const argv[]);
+int   pipe(int fds[2]);
+int   dup(int oldfd);
+int   dup2(int oldfd, int newfd);
+int   chdir(const char *path);
+char *getcwd(char *buf, unsigned long size);
+
 #endif /* MAIZE_UNISTD_H */

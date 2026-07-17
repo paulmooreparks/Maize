@@ -489,14 +489,169 @@ atoi(const char *nptr)
  * No new VM/ISA surface. Each helper stays inside the pinned qbe-maize backend's
  * authoring budget (small frame, a single loop per helper). */
 
-/* getenv: Maize runs with an EMPTY environment, so every lookup returns NULL. DOOM
- * only needs getenv not to crash. A real environ-backed lookup would add crt0 /
- * marshalling surface for no boot benefit and is out of scope (decision 8351). */
+/* --- environment (maize-94 decision 8942) ------------------------------------
+ * crt0.mazm captures the process envp into `environ`, a NULL-terminated array of
+ * "NAME=value" strings. getenv walks it; setenv/putenv/unsetenv mutate it over a
+ * malloc-backed, growable array (no fixed cap -- DIRT: no silent failure ceiling). The
+ * initial environ points into the SysV start block (the stack), so the first mutation
+ * migrates it to a heap array this module owns (env_owned). This closes maize-144's
+ * hardcoded-NULL getenv deviation; DOOM is unaffected (a real empty-environment lookup
+ * still returns NULL). One loop per helper keeps each inside the qbe-maize backend's
+ * pointer-indexing budget. */
+
+char **environ = 0;                 /* set by crt0 (decision 8942); NULL before _start */
+
+static char  **env_owned = 0;       /* this module's malloc'd array once migrated */
+static size_t  env_cap   = 0;       /* slots in env_owned, including the NULL terminator */
+
+static size_t
+env_count(void)
+{
+    size_t n = 0;
+    if (environ != NULL) { while (environ[n] != NULL) { n++; } }
+    return n;
+}
+
+/* True when `entry` ("NAME=value") has key `name` (matched up to '=' / the NUL). */
+static int
+env_match(const char *entry, const char *name)
+{
+    size_t i = 0;
+    while (name[i] != '\0' && entry[i] == name[i]) { i++; }
+    return name[i] == '\0' && entry[i] == '=';
+}
+
+/* Index of `name` in environ, or -1. */
+static long
+env_find(const char *name)
+{
+    long i;
+    if (environ == NULL) { return -1; }
+    for (i = 0; environ[i] != NULL; i++) {
+        if (env_match(environ[i], name)) { return i; }
+    }
+    return -1;
+}
+
 char *
 getenv(const char *name)
 {
-    (void)name;
-    return NULL;
+    long idx;
+    char *p;
+    if (name == NULL || name[0] == '\0') { return NULL; }
+    idx = env_find(name);
+    if (idx < 0) { return NULL; }
+    p = environ[idx];
+    while (*p != '\0' && *p != '=') { p++; }
+    return (*p == '=') ? p + 1 : NULL;
+}
+
+/* Ensure environ is env_owned with room for `need` entries + the NULL terminator,
+ * migrating the initial stack-backed environ on first use. Returns 0, or -1 on OOM. */
+static int
+env_reserve(size_t need)
+{
+    size_t want = need + 1;
+    size_t n, newcap, i;
+    char **buf;
+    if (environ == env_owned && env_cap >= want) { return 0; }
+    n = env_count();
+    newcap = (env_cap != 0) ? env_cap : 8;
+    while (newcap < want) { newcap *= 2; }
+    buf = (char **)malloc(newcap * sizeof(char *));
+    if (buf == NULL) { return -1; }
+    for (i = 0; i < n; i++) { buf[i] = environ[i]; }
+    buf[n] = NULL;
+    if (env_owned != NULL && environ == env_owned) { free(env_owned); }
+    env_owned = buf;
+    env_cap = newcap;
+    environ = buf;
+    return 0;
+}
+
+/* True when `s` contains an '=' (an invalid environment variable NAME). */
+static int
+name_has_eq(const char *s)
+{
+    size_t i = 0;
+    while (s[i] != '\0') { if (s[i] == '=') { return 1; } i++; }
+    return 0;
+}
+
+/* Build a freshly-malloc'd "NAME=value" string, or NULL on OOM. */
+static char *
+env_make_entry(const char *name, const char *value)
+{
+    size_t nlen = strlen(name);
+    size_t vlen = strlen(value);
+    char *entry = (char *)malloc(nlen + vlen + 2);
+    if (entry == NULL) { return NULL; }
+    memcpy(entry, name, nlen);
+    entry[nlen] = '=';
+    memcpy(entry + nlen + 1, value, vlen);
+    entry[nlen + vlen + 1] = '\0';
+    return entry;
+}
+
+int
+setenv(const char *name, const char *value, int overwrite)
+{
+    long idx;
+    size_t n;
+    char *entry;
+    if (name == NULL || name[0] == '\0' || name_has_eq(name)) { errno = EINVAL; return -1; }
+    idx = env_find(name);
+    if (idx >= 0 && !overwrite) { return 0; }
+    entry = env_make_entry(name, value);
+    if (entry == NULL) { errno = ENOMEM; return -1; }
+    if (idx >= 0) {                              /* overwrite in place */
+        environ[idx] = entry;                    /* old string leaked (POC allocator) */
+        return 0;
+    }
+    n = env_count();
+    if (env_reserve(n + 1) != 0) { free(entry); errno = ENOMEM; return -1; }
+    environ[n] = entry;
+    environ[n + 1] = NULL;
+    return 0;
+}
+
+int
+unsetenv(const char *name)
+{
+    long idx;
+    size_t n, k;
+    if (name == NULL || name[0] == '\0' || name_has_eq(name)) { errno = EINVAL; return -1; }
+    idx = env_find(name);
+    if (idx < 0) { return 0; }
+    if (env_reserve(env_count()) != 0) { errno = ENOMEM; return -1; }
+    idx = env_find(name);                        /* re-find after a possible migration */
+    if (idx < 0) { return 0; }
+    n = env_count();
+    for (k = (size_t)idx; k < n; k++) { environ[k] = environ[k + 1]; }
+    return 0;
+}
+
+int
+putenv(char *string)
+{
+    /* string is "NAME=value"; POSIX lets it become part of the environment directly. We
+     * copy the key out to reuse setenv's insert/replace, then point the slot at `string`
+     * itself so a later getenv returns the caller's buffer (matching glibc's aliasing). */
+    char key[256];
+    size_t i;
+    long idx;
+    size_t n;
+    if (string == NULL) { errno = EINVAL; return -1; }
+    for (i = 0; string[i] != '\0' && string[i] != '=' && i < sizeof(key) - 1; i++) { key[i] = string[i]; }
+    key[i] = '\0';
+    if (string[i] != '=') { errno = EINVAL; return -1; }   /* no '=' : malformed */
+    idx = env_find(key);
+    if (idx >= 0) { environ[idx] = string; return 0; }
+    n = env_count();
+    if (env_reserve(n + 1) != 0) { errno = ENOMEM; return -1; }
+    environ[n] = string;
+    environ[n + 1] = NULL;
+    return 0;
 }
 
 /* Swap `size` bytes between a and b using a single 1-byte temp (no dynamic

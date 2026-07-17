@@ -20,6 +20,9 @@
 #include "termios.h"
 #include "errno.h"
 #include "syscall.h"
+#include "sys/wait.h"   /* maize-94: wait/waitpid bodies live here (over sys_wait4) */
+#include "stdlib.h"     /* maize-94: environ / getenv for execv / execvp */
+#include "string.h"     /* maize-94: strlen / memcpy for execvp's PATH search */
 
 int
 usleep(unsigned useconds)
@@ -86,4 +89,134 @@ tcsetpgrp(int fd, pid_t pgid)
 {
     (void)fd;
     return (int)__syscall_ret((unsigned long)sys_tcsetpgrp((long)pgid));
+}
+
+/* ==================================================================================
+ * maize-94 (decision 8943): POSIX process-control wrappers over the maize-93 guest-only
+ * raw stubs. Each is a thin call through __syscall_ret, exactly like read/write/open, so
+ * a [-4095,-1] raw result becomes errno + -1. These let oksh/sbase fork+exec+wait+pipe
+ * without touching the raw SYS layer.
+ * ================================================================================== */
+
+pid_t
+fork(void)
+{
+    return (pid_t)__syscall_ret((unsigned long)sys_fork());
+}
+
+pid_t
+getpid(void)
+{
+    return (pid_t)sys_getpid();   /* getpid never fails, so no __syscall_ret band check */
+}
+
+int
+execve(const char *path, char *const argv[], char *const envp[])
+{
+    return (int)__syscall_ret((unsigned long)sys_execve(path, argv, envp));
+}
+
+int
+execv(const char *path, char *const argv[])
+{
+    return execve(path, argv, (char *const *)environ);
+}
+
+int
+pipe(int fds[2])
+{
+    return (int)__syscall_ret((unsigned long)sys_pipe(fds));
+}
+
+int
+dup(int oldfd)
+{
+    return (int)__syscall_ret((unsigned long)sys_dup((long)oldfd));
+}
+
+int
+dup2(int oldfd, int newfd)
+{
+    return (int)__syscall_ret((unsigned long)sys_dup2((long)oldfd, (long)newfd));
+}
+
+/* maize-94 (decision 8940): cwd wrappers over the new guest-only chdir/getcwd stubs.
+ * getcwd returns buf on success, NULL + errno (ERANGE) when the buffer is too small. */
+int
+chdir(const char *path)
+{
+    return (int)__syscall_ret((unsigned long)sys_chdir(path));
+}
+
+char *
+getcwd(char *buf, unsigned long size)
+{
+    if (__syscall_ret((unsigned long)sys_getcwd(buf, size)) < 0) {
+        return (char *)0;   /* errno set by __syscall_ret (ERANGE) */
+    }
+    return buf;
+}
+
+/* maize-94 (decision 8943): sys/wait.h wait/waitpid over the raw sys_wait4 stub. */
+pid_t
+wait(int *status)
+{
+    return (pid_t)__syscall_ret((unsigned long)sys_wait4(-1L, status, 0L, (void *)0));
+}
+
+pid_t
+waitpid(pid_t pid, int *status, int options)
+{
+    return (pid_t)__syscall_ret((unsigned long)sys_wait4((long)pid, status, (long)options, (void *)0));
+}
+
+/* Does `s` contain a '/'? (Its own function: one loop, keeping execvp's own body simple
+ * for the qbe-maize backend.) A file with a slash is exec'd directly, no PATH search. */
+static int
+path_has_slash(const char *s)
+{
+    long i = 0;
+    while (s[i] != '\0') { if (s[i] == '/') { return 1; } i++; }
+    return 0;
+}
+
+/* execvp: like execv, but a file with no '/' is searched along PATH (colon-separated;
+ * default "/bin" when PATH is unset/empty, per the /bin convention, decision 8939). An
+ * empty PATH entry means the current directory. execve only returns on failure; a
+ * per-candidate ENOENT keeps searching, any other error stops. */
+int
+execvp(const char *file, char *const argv[])
+{
+    char buf[256];
+    const char *path;
+    const char *p;
+    unsigned long flen;
+
+    if (file == (const char *)0 || file[0] == '\0') { errno = ENOENT; return -1; }
+    if (path_has_slash(file)) { return execve(file, argv, (char *const *)environ); }
+
+    path = getenv("PATH");
+    if (path == (const char *)0 || path[0] == '\0') { path = "/bin"; }
+    flen = strlen(file);
+
+    p = path;
+    for (;;) {
+        const char *start = p;
+        unsigned long dlen;
+        while (*p != '\0' && *p != ':') { p++; }
+        dlen = (unsigned long)(p - start);
+        if (dlen == 0) { start = "."; dlen = 1; }             /* empty entry = cwd */
+        if (dlen + 1 + flen + 1 <= sizeof(buf)) {
+            memcpy(buf, start, dlen);
+            buf[dlen] = '/';
+            memcpy(buf + dlen + 1, file, flen);
+            buf[dlen + 1 + flen] = '\0';
+            execve(buf, argv, (char *const *)environ);        /* returns only on error */
+            if (errno != ENOENT) { return -1; }               /* a real error: stop */
+        }
+        if (*p == '\0') { break; }
+        p++;                                                   /* skip the ':' */
+    }
+    errno = ENOENT;
+    return -1;
 }

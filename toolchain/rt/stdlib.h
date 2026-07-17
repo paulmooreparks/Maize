@@ -51,14 +51,18 @@ int  abs(int j);
 long labs(long j);
 long strtol(const char *nptr, char **endptr, int base);
 
-/* maize-144 libc growth for the DOOM boot. getenv always returns NULL: Maize runs
- * with an EMPTY environment (no environ-backed lookup), an honest deviation DOOM
- * tolerates. qsort is a correctness-first, in-place O(n^2) selection sort using a
- * fixed 1-byte swap temp (no VLA, no recursion); a faster sort is a perf-shelf
- * follow-up. atof is strtod-lite: whitespace + sign + integer + optional '.'fraction
- * (no exponent, not full IEEE round-tripping), over the maize-137 signed int<->double
- * float codegen (simple decimals like "3.14" / "-2" / "0.5"). */
+/* maize-94 (decision 8942) real environment support, closing maize-144's hardcoded-NULL
+ * getenv deviation for the wave-1 shell (oksh PATH search + export). crt0 captures envp
+ * into `environ` (a NULL-terminated "NAME=value" array); getenv walks it; setenv/putenv/
+ * unsetenv mutate it over a malloc-backed growable array (no fixed cap). getenv still
+ * returns NULL for a name absent from a real (or empty) environment, so DOOM is
+ * unaffected. setenv/unsetenv reject a NAME containing '=' (EINVAL); putenv takes a
+ * "NAME=value" string the environment then aliases (glibc semantics). */
+extern char **environ;
 char  *getenv(const char *name);
+int    setenv(const char *name, const char *value, int overwrite);
+int    unsetenv(const char *name);
+int    putenv(char *string);
 void   qsort(void *base, size_t nmemb, size_t size,
              int (*compar)(const void *, const void *));
 double atof(const char *nptr);

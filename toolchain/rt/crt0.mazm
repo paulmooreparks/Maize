@@ -39,6 +39,7 @@ SECTION CODE
 GLOBAL _start
 EXTERN main                    ; main is defined in another object; declare the import (maize-71)
 EXTERN exit                    ; exit() funnel in stdlib.mzo (maize-76 decision 7346)
+EXTERN environ                 ; char **environ, storage in stdlib.mzo (maize-94 decision 8942)
 _start:
     LD  @RS R0              ; R0 = argc            = [RS]
     LEA $08 RS R1           ; R1 = argv (&argv[0]) = RS + 8
@@ -46,6 +47,12 @@ _start:
     INC R2                  ; R2 = argc + 1        (skip argv[] and its NULL terminator)
     SHL $03 R2             ; R2 = (argc + 1) * 8   (bytes to skip)
     LEA R2 R1 R2          ; R2 = envp             = argv + (argc+1)*8
+    ; maize-94 decision 8942: capture envp into the global char **environ before main, so
+    ; getenv/setenv walk the real environment. Additive: main(void) callers ignore R2, and
+    ; the RT set already links stdlib.mzo where environ has its storage. RT is scratch (not
+    ; an argument register), so R0/R1/R2 stay set for the call below.
+    CP  environ RT         ; RT = &environ
+    ST  R2 @RT             ; environ = envp
     CALL main              ; main(R0=argc, R1=argv, R2=envp)
     CP RV R0               ; main's return value (RV, C ABI) -> R0 (exit-code arg)
     CALL exit              ; exit(R0): terminate through the library funnel (never returns)
