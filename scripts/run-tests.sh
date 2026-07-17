@@ -675,7 +675,10 @@ run_fb_reject_test() {
         return
     fi
     out_file=$(mktemp)
-    if "$MAIZE_EXE" --fb-no-display "$bin_path" >"$out_file" 2>/dev/null; then
+    # Explicit </dev/null closes stdin so an interactive-tty launch cannot arm the maize-221
+    # fb trap (isatty(0)) before the fixture runs; robust even without the suite-wide
+    # `exec 0</dev/null` above. --fb-no-display already forces the rejection path.
+    if "$MAIZE_EXE" --fb-no-display "$bin_path" >"$out_file" 2>/dev/null </dev/null; then
         me=0
     else
         me=$?
@@ -709,7 +712,9 @@ run_fb_stop_test() {
         return
     fi
     out_file=$(mktemp)
-    if timeout 10 "$MAIZE_EXE" --fb-no-display --fb-stop-on-claim "$bin_path" >"$out_file" 2>/dev/null; then
+    # Explicit </dev/null (see run_fb_reject_test) keeps the maize-221 fb trap from arming on
+    # an interactive tty before this fixture's own --fb-stop-on-claim power-off path is hit.
+    if timeout 10 "$MAIZE_EXE" --fb-no-display --fb-stop-on-claim "$bin_path" >"$out_file" 2>/dev/null </dev/null; then
         me=0
     else
         me=$?

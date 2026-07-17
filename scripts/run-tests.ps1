@@ -532,7 +532,11 @@ function Invoke-FbRejectTest {
         return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'mazm failed to assemble' }
     }
 
-    $out = & $MaizeExe --fb-no-display $binPath 2>$null
+    # Pipe $null so the child gets a non-interactive (closed) stdin, matching the main
+    # run_test at line 297: on an interactive console _isatty(0)=true otherwise arms the
+    # maize-221 fb trap (src/maize.cpp) and the console binary exits 3 before the fixture
+    # runs. --fb-no-display already forces the rejection path this test wants.
+    $out = $null | & $MaizeExe --fb-no-display $binPath 2>$null
     $me = $LASTEXITCODE
     $actual = Trim-TrailingNewlines ($out -join "`n")
     $pass = ($me -eq 0) -and ($actual -eq $expected)
@@ -552,7 +556,10 @@ function Invoke-FbStopTest {
         return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'mazm failed to assemble' }
     }
 
-    $out = & $MaizeExe --fb-no-display --fb-stop-on-claim $binPath 2>$null
+    # Pipe $null for a closed stdin (see Invoke-FbRejectTest / line 297): an interactive
+    # console would otherwise arm the maize-221 fb trap and exit 3 before this fixture's own
+    # --fb-stop-on-claim power-off path is reached.
+    $out = $null | & $MaizeExe --fb-no-display --fb-stop-on-claim $binPath 2>$null
     $me = $LASTEXITCODE
     $actual = Trim-TrailingNewlines ($out -join "`n")
     $pass = ($me -eq 0) -and ($actual -notmatch 'PASS') -and ($actual -notmatch 'FAIL')
