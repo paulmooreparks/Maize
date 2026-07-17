@@ -1621,6 +1621,11 @@ run_launcher_config_mount() {
     mkdir -p "$fake_home/.maize"
     nat_home=$(host_to_native "$fake_home")
     cfg_path="$fake_home/.maize/config"
+    # maize (a native Windows exe under MSYS2) reports paths in ITS OWN native
+    # form (backslashes), built from the HOME we hand it (nat_home, already
+    # native); this script's own $cfg_path stays POSIX-style (MSYS bash's pwd).
+    # Use the native form for substring checks against maize's own stderr.
+    nat_cfg_path=$(host_to_native "$cfg_path")
 
     ok=1
 
@@ -1662,7 +1667,7 @@ run_launcher_config_mount() {
     rc3=$?
     set -e
     [ "$rc3" -ne 0 ] || ok=0
-    printf '%s' "$err3" | grep -qF "$cfg_path" || ok=0
+    printf '%s' "$err3" | grep -qF "$nat_cfg_path" || ok=0
     printf '%s' "$err3" | grep -qF "$bad_line" || ok=0
 
     # (4) Windows drive-letter host value: mechanically identical to (1), but the
