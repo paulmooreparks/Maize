@@ -1713,6 +1713,14 @@ run_quesos_ac_fixtures() {
     quesos_ac_case quesos_preempt        "preempt: PASS"         preempt
     quesos_ac_case quesos_blocked        "blocked-noslice: PASS" blocked
 
+    # maize-174 guest signal subsystem. sig_handler proves the handler-dispatch path
+    # (rt_sigaction -> kill -> user trampoline -> rt_sigreturn -> resume) deterministically
+    # via a pipe-synchronized fork, with no console-input timing dependency.
+    quesos_ac_case quesos_sig_handler    "sig-handler: PASS"     sig_handler
+    quesos_ac_case quesos_sig_default    "sig-default: PASS"     sig_default
+    quesos_ac_case quesos_sig_chld       "sig-chld: PASS"        sig_chld
+    quesos_ac_case quesos_sig_pgroup     "sig-pgroup: PASS"      sig_pgroup
+
     # maize-236 framebuffer registration table (quesOS half). fb_register: geometry +
     # slot 0 + -EBUSY + release/re-register. fb_reject: -ENODEV on a display-less view
     # (--fb-no-display) with the VM still running. fb_fork/exec/exit: fork non-propagation

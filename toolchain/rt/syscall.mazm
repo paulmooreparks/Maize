@@ -125,6 +125,19 @@ GLOBAL sys_fb_geometry
 GLOBAL sys_fb_register
 GLOBAL sys_fb_release
 
+; maize-174 guest signal subsystem: six Linux-mirror numbers (kill $3E, rt_sigaction $0D,
+; rt_sigprocmask $0E, rt_sigreturn $0F, setpgid $6D, getpgid $79) plus two Maize-private
+; job-control numbers (tcgetpgrp $FA / tcsetpgrp $FB, no Linux syscall equivalent). All
+; trap to quesOS's cause-7 dispatcher (guest-only); a bare-VM caller hits the native table.
+GLOBAL sys_kill
+GLOBAL sys_rt_sigaction
+GLOBAL sys_rt_sigprocmask
+GLOBAL sys_rt_sigreturn
+GLOBAL sys_setpgid
+GLOBAL sys_getpgid
+GLOBAL sys_tcgetpgrp
+GLOBAL sys_tcsetpgrp
+
 sys_read:
     SYS $00                 ; fd/buf/count already in R0/R1/R2 per the C ABI
     RET
@@ -239,6 +252,38 @@ sys_fb_register:
 
 sys_fb_release:
     SYS $F9                 ; no args; RV = 0 or -errno
+    RET
+
+sys_kill:
+    SYS $3E                 ; R0=pid, R1=sig; RV = 0 or -errno
+    RET
+
+sys_rt_sigaction:
+    SYS $0D                 ; R0=sig, R1=act, R2=oldact; RV = 0 or -errno
+    RET
+
+sys_rt_sigprocmask:
+    SYS $0E                 ; R0=how, R1=set, R2=oldset; RV = 0 or -errno
+    RET
+
+sys_rt_sigreturn:
+    SYS $0F                 ; pops the signal frame; resumes the interrupted context
+    RET
+
+sys_setpgid:
+    SYS $6D                 ; R0=pid, R1=pgid; RV = 0 or -errno
+    RET
+
+sys_getpgid:
+    SYS $79                 ; R0=pid; RV = pgid or -errno
+    RET
+
+sys_tcgetpgrp:
+    SYS $FA                 ; no args; RV = foreground pgid
+    RET
+
+sys_tcsetpgrp:
+    SYS $FB                 ; R0=pgid; RV = 0
     RET
 
 _exit:

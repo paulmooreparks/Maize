@@ -202,8 +202,9 @@ that merely looks free in a partial dispatch switch): `$F0` `sys_clock_ms`; `$F1
 termios (`sys_tcgetattr`/`sys_tcsetattr`); `$F3` `sys_palette_blit` (maize-213); `$F4`/`$F5`
 bulk memory (`sys_bulk_copy`/`sys_bulk_set`, maize-216); `$F6` `sys_ttysize` (maize-228);
 `$F7`/`$F8`/`$F9` the quesOS-guest framebuffer registration calls (maize-236, documented in
-the guest section below); `$FA`-`$FF` free. `$F3`-`$F9` are native or guest calls that this
-doc had not previously enumerated here; they are listed now so the block map is complete.
+the guest section below); `$FA`/`$FB` the quesOS-guest job-control calls (maize-174,
+`sys_tcgetpgrp`/`sys_tcsetpgrp`, documented in the signal section below); `$FC`-`$FF` free.
+`$F3`-`$FB` are native or guest calls that this doc enumerates here so the block map is complete.
 
 Once C compiles against these stubs, the numbers are ABI. The convention frozen here
 (RV result, the `[-4095, -1]` errno range, the raw/wrapper split, Linux-mirrored
@@ -230,6 +231,12 @@ the Linux x86-64 table per the numbering policy.
 | `$39` | `sys_fork` | none | `RV`=child pid in the parent, `0` in the child, or `-errno` |
 | `$3B` | `sys_execve` | `R0`=path, `R1`=argv, `R2`=envp | does not return on success; `-errno` on failure |
 | `$3D` | `sys_wait4` | `R0`=pid (`-1`=any), `R1`=`int *status`, `R2`=options, `R3`=rusage | `RV`=reaped pid or `-errno` |
+| `$0D` | `sys_rt_sigaction` | `R0`=sig, `R1`=act, `R2`=oldact | `RV`=0 or `-errno` (maize-174) |
+| `$0E` | `sys_rt_sigprocmask` | `R0`=how, `R1`=set, `R2`=oldset | `RV`=0 or `-errno` (maize-174) |
+| `$0F` | `sys_rt_sigreturn` | none (pops the kernel-pushed signal frame) | does not return normally (maize-174) |
+| `$3E` | `sys_kill` | `R0`=pid (`<0`=pgid `-pid`, `0`=own group), `R1`=sig | `RV`=0 or `-errno` (maize-174) |
+| `$6D` | `sys_setpgid` | `R0`=pid (`0`=self), `R1`=pgid (`0`=use pid) | `RV`=0 or `-errno` (maize-174) |
+| `$79` | `sys_getpgid` | `R0`=pid (`0`=self) | `RV`=pgid or `-errno` (maize-174) |
 
 Semantics quesOS implements: `fork` gives the child its own Sv48 address space with an
 eager copy of the parent's mapped pages (independent memory) and a copied fd table
@@ -243,8 +250,34 @@ same quesOS handler: fd 1/2 and hostfs fds bounce through quesOS to the native p
 pipe-end fds go to the ring buffer. A read of fd 0 rides the console device's
 IRQ/status path (vector 33, ports `$00`/`$01`), NOT a native blocking read: when no byte
 is available the reading PROCESS parks and the console IRQ delivers each byte and wakes
-it, so a waiting reader never parks the whole CPU thread (design doc 17). Job control,
-signals (`kill`), and the `INT $80` naming are Phase 2, out of scope here.
+it, so a waiting reader never parks the whole CPU thread (design doc 17). The `INT $80`
+naming remains a later concern; job control and signals (`kill`) land in maize-174 below.
+
+### Guest signal subsystem (maize-174)
+
+quesOS Phase-2 process-model signals, dispatched by quesOS's cause-7 handler in GUEST
+code (never `sys::call`; nothing added to `src/sys.cpp`, the maize-24 rule). Six calls
+mirror their Linux x86-64 numbers (`rt_sigaction` $0D, `rt_sigprocmask` $0E,
+`rt_sigreturn` $0F, `kill` $3E, `setpgid` $6D, `getpgid` $79); the two controlling-tty
+calls have no Linux syscall equivalent (real Linux drives them through
+`ioctl(TIOCGPGRP/TIOCSPGRP)`, which this dispatcher does not forward), so they take the
+next free numbers in the Maize-private `$F0`-`$FF` block after maize-236's `$F7`-`$F9`.
+
+| Number | Symbol | Args | Result |
+|--------|--------|------|--------|
+| `$FA` | `sys_tcgetpgrp` | none | `RV`=foreground pgid of the controlling tty |
+| `$FB` | `sys_tcsetpgrp` | `R0`=pgid | `RV`=0 (sets the foreground pgid; no session check, v1) |
+
+`rt_sigaction` reads/writes `sa_handler` + `sa_mask` only (`sa_flags`/`sa_restorer`/siginfo
+not modeled; SA_RESTART is implicitly on because no quesOS syscall returns EINTR).
+`SIGKILL` cannot be caught (`rt_sigaction` on it returns `-EINVAL`) or blocked. Default
+actions: SIGINT/SIGQUIT/SIGTERM/SIGKILL terminate (`wait4` then reports WIFSIGNALED with
+the low 7 status bits = the signal); SIGCHLD is ignored. Handler dispatch pushes a signal
+frame on the user stack and enters the handler with the signal number in `R0`; the handler
+returns through a small user trampoline whose `SYS $0F` (`rt_sigreturn`) restores the
+interrupted context. The console recognizes 0x03 (INTR)/0x1C (QUIT) by raw byte value in
+quesOS's own input path and raises SIGINT/SIGQUIT on the foreground process group; the
+host machine layer is unchanged (no host-side signal awareness, doc 18).
 
 ### Framebuffer registration calls (maize-236)
 

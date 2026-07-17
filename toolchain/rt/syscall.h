@@ -95,6 +95,19 @@ long sys_palette_blit(void *dst, const void *src, const unsigned int *lut, unsig
 long sys_bulk_copy(void *dst, const void *src, unsigned long n);
 long sys_bulk_set(void *dst, int c, unsigned long n);
 
+/* maize-174 guest signal subsystem raw stubs (SYS $0D/$0E/$0F/$3E/$6D/$79/$FA/$FB).
+ * Guest-only (quesOS's cause-7 dispatcher implements them; a bare-VM caller hits the
+ * native table). Each returns RV verbatim. signal.h wraps rt_sigaction/rt_sigprocmask;
+ * the unistd wrappers wrap kill/setpgid/getpgid/tcgetpgrp/tcsetpgrp. */
+long sys_kill(long pid, long sig);
+long sys_rt_sigaction(long sig, const void *act, void *oldact);
+long sys_rt_sigprocmask(long how, const void *set, void *oldset);
+long sys_rt_sigreturn(void);
+long sys_setpgid(long pid, long pgid);
+long sys_getpgid(long pid);
+long sys_tcgetpgrp(void);
+long sys_tcsetpgrp(long pgid);
+
 /* --- errno + wrappers (errno.c) -------------------------------------------- */
 
 /* The musl error translator: a pure function of its input. A raw result in

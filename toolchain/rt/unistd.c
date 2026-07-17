@@ -51,3 +51,39 @@ ftruncate(int fd, long length)
        errno + -1, so a shrink-save (kilo) is now byte-exact with no stale tail. */
     return (int)__syscall_ret((unsigned long)sys_ftruncate(fd, length));
 }
+
+/* maize-174 job-control wrappers. Each guest-only syscall is dispatched by quesOS; a
+ * bare-VM caller reaches the native table (harmless no-op / -errno). tcgetpgrp returns
+ * the foreground pgid directly (never -errno); the rest pass through __syscall_ret so a
+ * [-4095,-1] result becomes errno + -1, matching read/write/close. */
+int
+kill(pid_t pid, int sig)
+{
+    return (int)__syscall_ret((unsigned long)sys_kill((long)pid, (long)sig));
+}
+
+int
+setpgid(pid_t pid, pid_t pgid)
+{
+    return (int)__syscall_ret((unsigned long)sys_setpgid((long)pid, (long)pgid));
+}
+
+pid_t
+getpgid(pid_t pid)
+{
+    return (pid_t)__syscall_ret((unsigned long)sys_getpgid((long)pid));
+}
+
+pid_t
+tcgetpgrp(int fd)
+{
+    (void)fd;   /* exactly one controlling tty; the fd is ignored (decision) */
+    return (pid_t)sys_tcgetpgrp();
+}
+
+int
+tcsetpgrp(int fd, pid_t pgid)
+{
+    (void)fd;
+    return (int)__syscall_ret((unsigned long)sys_tcsetpgrp((long)pgid));
+}

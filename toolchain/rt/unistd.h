@@ -33,4 +33,17 @@ int isatty(int fd);
  * save rewrites the whole buffer after ftruncate, so a shrink is now byte-exact. */
 int ftruncate(int fd, long length);
 
+/* maize-174 job-control wrappers over the guest-only signal/pgroup syscalls. pid_t is
+ * defined here (guarded) so a ported shell that reaches for <unistd.h> gets it. */
+#ifndef MAIZE_PID_T_DEFINED
+#define MAIZE_PID_T_DEFINED
+typedef int pid_t;
+#endif
+
+int   kill(pid_t pid, int sig);
+int   setpgid(pid_t pid, pid_t pgid);
+pid_t getpgid(pid_t pid);
+pid_t tcgetpgrp(int fd);
+int   tcsetpgrp(int fd, pid_t pgid);
+
 #endif /* MAIZE_UNISTD_H */

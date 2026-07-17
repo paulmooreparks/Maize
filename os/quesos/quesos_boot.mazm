@@ -32,6 +32,8 @@ GLOBAL quesos_arm_timer
 GLOBAL quesos_idle
 GLOBAL quesos_con_status
 GLOBAL quesos_con_data
+GLOBAL quesos_sigreturn_tramp
+GLOBAL quesos_sigreturn_tramp_end
 GLOBAL quesos_fb_width
 GLOBAL quesos_fb_height
 GLOBAL quesos_fb_format
@@ -270,6 +272,19 @@ quesos_con_data:
     CLR RV
     IN  $00 RV.B0              ; RV = console data byte (clears input-available)
     RET
+
+; ----------------------------------------------------------------------------------
+; quesos_sigreturn_tramp (maize-174): the user-mode signal-return trampoline. When a
+; signal handler RETs, it lands here; SYS $0F is rt_sigreturn, which pops the signal
+; frame the kernel pushed and resumes the interrupted context. push_signal_frame
+; (quesos.c) copies these bytes onto the delivering process's stack (RWX user pages)
+; and points the handler's return address at the copy, so the trampoline needs no
+; fixed reserved VA and is position-independent (SYS rides an immediate, not a
+; PC-relative operand). The _end label bounds the blob so C can size the copy.
+; ----------------------------------------------------------------------------------
+quesos_sigreturn_tramp:
+    SYS $0F                    ; rt_sigreturn: kernel restores the pre-signal context
+quesos_sigreturn_tramp_end:
 
 ; ----------------------------------------------------------------------------------
 ; maize-236: framebuffer registration-table metal helpers. Privileged IN/OUT over the

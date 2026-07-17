@@ -49,6 +49,10 @@ void quesos_arm_timer(void);                 /* program the instruction-tick tim
 void quesos_idle(void);                      /* SETINT; spin so on_input_tick keeps running */
 u64  quesos_con_status(void);                /* IN $01: console status (bit0 input-avail)  */
 u64  quesos_con_data(void);                  /* IN $00: console data byte (clears avail)   */
+/* maize-174: the user-mode signal-return trampoline lives in quesos_boot.mazm; its bytes
+ * are copied onto a delivering process's stack and RET'd into, so it needs no fixed VA. */
+extern u8 quesos_sigreturn_tramp[];
+extern u8 quesos_sigreturn_tramp_end[];
 /* maize-236: framebuffer registration-table ports (privileged IN/OUT, supervisor only). */
 u64  quesos_fb_width(void);                  /* IN $50: framebuffer width (pixels)         */
 u64  quesos_fb_height(void);                 /* IN $51: framebuffer height (pixels)        */
@@ -110,6 +114,25 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define SYS_exit   0x3C
 #define SYS_wait4  0x3D
 
+/* maize-174: guest signal subsystem. The six Linux-mirror numbers plus two Maize-private
+ * job-control numbers ($FA/$FB) drawn from the SYSCALL-ABI.md $F0-$FF ledger. */
+#define SYS_rt_sigaction   0x0D
+#define SYS_rt_sigprocmask 0x0E
+#define SYS_rt_sigreturn   0x0F
+#define SYS_kill           0x3E
+#define SYS_setpgid        0x6D
+#define SYS_getpgid        0x79
+#define SYS_tcgetpgrp      0xFA
+#define SYS_tcsetpgrp      0xFB
+
+/* maize-174: signal numbers (Linux values, matching the syscall numbering convention). */
+#define SIGHUP   1
+#define SIGINT   2
+#define SIGQUIT  3
+#define SIGKILL  9
+#define SIGTERM  15
+#define SIGCHLD  17
+
 /* maize-236: framebuffer registration syscalls (Decision D6). These are quesOS-private,
  * guest-only, and Maize-specific display arbitration with no real Linux syscall-number
  * analog (Linux does it via ioctl on /dev/fb0 or a VT ioctl). Decision D6 names the
@@ -134,6 +157,8 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define QOS_EINVAL 22          /* base_uva page unmapped / zero                           */
 #define QOS_ENOSPC 28          /* registration table full                                 */
 #define QOS_EBADF   9          /* release with nothing registered                         */
+#define QOS_ESRCH   3          /* maize-174: kill target pid/pgid names no process        */
+#define QOS_EINVAL_SIG 22      /* maize-174: bad/uncatchable signal number                */
 
 /* maize-236: registration-table capacity, mirroring src/maize_cpu.h fb_max_slots. */
 #define QUESOS_FB_MAX_SLOTS 8
@@ -172,6 +197,13 @@ struct pcb {
     long block_count;            /* requested byte count for a blocked pipe op        */
     int  fd[QUESOS_MAX_FD];      /* per-process fd table: open-file-description index  */
     long fb_slot;                /* maize-236: held framebuffer slot, or -1 (none)     */
+    long pgid;                   /* maize-174: process group id (fg-group signal target)*/
+    unsigned long pending;       /* maize-174: pending-signal bitmask (bit sig-1)      */
+    unsigned long blocked;       /* maize-174: sigprocmask block mask                  */
+    u64  handler[32];            /* maize-174: per-signal action VA (0=DFL, 1=IGN)     */
+    long term_signal;            /* maize-174: terminating signal (0 = normal _exit)   */
+    u64  sig_saved_rs;           /* maize-174: saved_rs to restore on rt_sigreturn     */
+    int  in_handler;             /* maize-174: a signal handler is in progress          */
     char path[QUESOS_PATH_CAP];   /* argv[0] for the reap transcript                   */
 };
 
@@ -181,6 +213,9 @@ static long g_next_pid = 1;
 
 static void schedule(void);       /* round-robin scheduler; noreturn (defined below)    */
 static void fb_release_held(struct pcb *p);   /* maize-236: release a held fb slot (exit/exec) */
+static void deliver_pending_signal(struct pcb *p);   /* maize-174: apply a pending signal on resume */
+static void terminate_by_signal(struct pcb *p, int sig);   /* maize-174: default-terminate (noreturn) */
+static void reap_tail(struct pcb *self);             /* maize-174: shared zombie/reap/SIGCHLD tail */
 
 /* Boot worklist: quesOS's own argv[1..] is the exec worklist (maize-24 decision D7). */
 static char g_pathbuf[QUESOS_MAX_PROC][QUESOS_PATH_CAP];
@@ -646,6 +681,9 @@ static struct pcb *spawn(const char *path, long parent) {
     p->exit_status = 0;
     p->block_kind = BLK_NONE;
     p->fb_slot = -1;   /* maize-236: no framebuffer registration until SYS_fb_register */
+    p->pgid = p->pid;  /* maize-174: a top-level spawn starts its own process group */
+    p->pending = 0; p->blocked = 0; p->term_signal = 0; p->in_handler = 0;
+    { int _s; for (_s = 0; _s < 32; ++_s) { p->handler[_s] = 0; } }
     for (j = 0; j < QUESOS_PATH_CAP - 1 && path[j]; ++j) { p->path[j] = path[j]; }
     p->path[j] = 0;
     fdtable_init(p);
@@ -673,6 +711,7 @@ static void schedule(void) {
         int idx = (base + i) % QUESOS_MAX_PROC;
         if (g_proc[idx].state == P_RUNNABLE) {
             g_current = &g_proc[idx];
+            deliver_pending_signal(g_current);   /* maize-174: apply pending signals on resume */
             quesos_switch_to(g_current);   /* noreturn */
         }
     }
@@ -779,15 +818,65 @@ static long do_write(u64 fd_num, u64 uva, long count) {
     return -9;
 }
 
+/* ==================================================================================
+ * maize-174: guest signal subsystem -- console ISIG interception + foreground group.
+ *
+ * quesOS reads the console as an undifferentiated raw byte stream (it forwards no
+ * termios to the host), so ISIG is realized here, in guest code, by raw byte VALUE:
+ * the console IRQ recognizes 0x03 (INTR) / 0x1C (QUIT) and raises SIGINT / SIGQUIT on
+ * the foreground process group, even when that group is compute-bound and not blocked
+ * in read(). Data bytes are queued in a small kernel input ring (a bounded tty input
+ * queue) so a byte read for inspection in the IRQ is not lost when no reader is parked.
+ * ================================================================================== */
+#define CON_RING_CAP 64
+static u8  g_con_ring[CON_RING_CAP];
+static u32 g_con_r, g_con_w, g_con_count;
+static void con_ring_push(u8 b) {
+    if (g_con_count < CON_RING_CAP) { g_con_ring[g_con_w] = b; g_con_w = (g_con_w + 1) % CON_RING_CAP; ++g_con_count; }
+}
+static int con_ring_pop(u8 *b) {
+    if (g_con_count == 0) { return 0; }
+    *b = g_con_ring[g_con_r]; g_con_r = (g_con_r + 1) % CON_RING_CAP; --g_con_count; return 1;
+}
+
+/* The single controlling tty's foreground process group; set at boot to the first
+ * worklist job's pgid, changed only by SYS_tcsetpgrp. */
+static long g_fg_pgid;
+
+/* Record a pending signal. Signals are always recorded regardless of the block mask;
+ * `blocked` only gates DELIVERY (deliver_pending_signal), per POSIX. A signal raised on
+ * a process blocked in a syscall is delivered when it next becomes runnable; in-flight
+ * blocking syscalls are not interrupted (the SA_RESTART-implicit, no-EINTR model). */
+static void raise_on_pcb(struct pcb *p, int sig) {
+    if (p->state == P_RUNNABLE || p->state == P_BLOCKED) { p->pending |= (1ul << (sig - 1)); }
+}
+static int raise_on_pgid(long pgid, int sig) {
+    int i, found = 0;
+    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+        struct pcb *p = &g_proc[i];
+        if ((p->state == P_RUNNABLE || p->state == P_BLOCKED) && p->pgid == pgid) {
+            raise_on_pcb(p, sig); found = 1;
+        }
+    }
+    return found;
+}
+static void signal_fg_group(int sig) { raise_on_pgid(g_fg_pgid, sig); }
+
 /* Console (fd 0) read via the device IRQ/status path, NEVER the native blocking read:
  * a native read(0) would park the whole CPU thread and freeze every process (doc 17).
  * Poll the console status port; if a byte is latched, take it; otherwise park the
  * PROCESS on the console IRQ, which delivers the byte and wakes it. */
 static long console_read(struct pcb *self, u64 uva, long count) {
+    u8 b;
     if (count <= 0) { return 0; }
+    if (con_ring_pop(&b)) { as_write8(self, uva, b); return 1; }   /* queued data byte */
     if (quesos_con_status() & 1ul) {
-        as_write8(self, uva, (u8)quesos_con_data());
-        return 1;
+        b = (u8)quesos_con_data();
+        if (b == 0x03) { signal_fg_group(SIGINT); }        /* INTR: no data delivered */
+        else if (b == 0x1C) { signal_fg_group(SIGQUIT); }  /* QUIT: no data delivered */
+        else { as_write8(self, uva, b); return 1; }
+        /* a control byte was consumed; fall through and park (the raised signal is
+         * delivered the next time a targeted process is runnable). */
     }
     self->block_kind = BLK_CONSOLE;
     self->block_buf = uva;
@@ -899,8 +988,12 @@ static long do_pipe(u64 fds_uva) {
 
 /* Encode a normal-exit wait status the way Linux does: exit code in bits 8..15
  * (WIFEXITED true, WEXITSTATUS = (status >> 8) & 0xFF). */
-static u32 wait_status(long exit_code) {
-    return (u32)((exit_code & 0xFF) << 8);
+/* maize-174: WIFSIGNALED (low 7 bits = terminating signal) when term_signal is set;
+ * else WIFEXITED (exit code in bits 8..15). This discharges maize-94's stubbed-false
+ * WIFSIGNALED deviation for real. */
+static u32 wait_status(struct pcb *c) {
+    if (c->term_signal != 0) { return (u32)(c->term_signal & 0x7F); }
+    return (u32)((c->exit_status & 0xFF) << 8);
 }
 
 /* fork (eager copy, ratified). Allocate a child, build it a fresh address space, and
@@ -926,6 +1019,12 @@ static long do_fork(void) {
      * registered base is a physical-frame snapshot belonging to the parent; copying fb_slot
      * would let the child's later exit wrongly release the parent's still-live claim. */
     child->fb_slot = -1;
+    /* maize-174: fork inherits the process group, the block mask, and the installed
+     * handlers (POSIX); pending signals are NOT inherited. */
+    child->pgid = parent->pgid;
+    child->pending = 0; child->blocked = parent->blocked;
+    child->term_signal = 0; child->in_handler = 0;
+    { unsigned long _s; for (_s = 0; _s < 32; ++_s) { child->handler[_s] = parent->handler[_s]; } }
     for (k = 0; k < QUESOS_PATH_CAP; ++k) { child->path[k] = parent->path[k]; }
     fdtable_copy(child, parent);   /* the child inherits the fd table (shared OFDs) */
 
@@ -950,7 +1049,7 @@ static long do_fork(void) {
 static void deliver_wait(struct pcb *parent, struct pcb *child) {
     as_write64(parent, parent->saved_rs + 11ul * 8ul, (u64)child->pid);  /* RV = pid  */
     if (parent->wait_status_uva != 0) {
-        as_write32(parent, parent->wait_status_uva, wait_status(child->exit_status));
+        as_write32(parent, parent->wait_status_uva, wait_status(child));
     }
     child->state = P_FREE;
     parent->state = P_RUNNABLE;
@@ -968,7 +1067,7 @@ static long do_wait(long wpid, u64 status_uva) {
         if (c->state == P_ZOMBIE && c->parent == parent->pid
             && (wpid <= 0 || c->pid == wpid)) {
             long rpid = c->pid;
-            if (status_uva != 0) { as_write32(parent, status_uva, wait_status(c->exit_status)); }
+            if (status_uva != 0) { as_write32(parent, status_uva, wait_status(c)); }
             c->state = P_FREE;
             return rpid;
         }
@@ -988,27 +1087,10 @@ static long do_wait(long wpid, u64 status_uva) {
  * quesOS with the transcript line; otherwise it lingers as a zombie until reaped. */
 static void do_exit(long status) {
     struct pcb *self = g_current;
-    struct pcb *parent;
 
     self->exit_status = status;
-    self->state = P_ZOMBIE;
-    fdtable_close_all(self);   /* closing a pipe write end wakes blocked readers (EOF) */
-    fb_release_held(self);     /* maize-236: free any framebuffer registration (switch-back) */
-
-    parent = find_by_pid(self->parent);
-    if (parent != 0 && parent->state == P_BLOCKED
-        && (parent->wait_for <= 0 || parent->wait_for == self->pid)) {
-        deliver_wait(parent, self);   /* frees self, wakes parent */
-    } else if (self->parent == 0) {
-        qos_puts("[quesos] reaped ");
-        qos_puts(self->path);
-        qos_puts(" status=");
-        qos_put_u64((u64)(status & 0xFF));
-        qos_puts("\n");
-        self->state = P_FREE;
-    }
-    /* else: leave a zombie for a later wait. */
-
+    self->term_signal = 0;         /* maize-174: a normal _exit clears WIFSIGNALED */
+    reap_tail(self);               /* maize-174: shared zombie/reap/SIGCHLD tail */
     schedule();   /* noreturn */
 }
 
@@ -1162,18 +1244,174 @@ void quesos_timer_tick(void) {
 void quesos_console_irq(void) {
     struct pcb *r = 0;
     int i;
-    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
-        if (g_proc[i].state == P_BLOCKED && g_proc[i].block_kind == BLK_CONSOLE) {
-            r = &g_proc[i];
-            break;
-        }
+    /* Drain the device latch. A control byte (0x03/0x1C) is intercepted as a signal on
+     * the foreground group and never delivered as data; any other byte is queued. */
+    if (quesos_con_status() & 1ul) {
+        u8 b = (u8)quesos_con_data();
+        if (b == 0x03) { signal_fg_group(SIGINT); }
+        else if (b == 0x1C) { signal_fg_group(SIGQUIT); }
+        else { con_ring_push(b); }
     }
-    if (r != 0 && (quesos_con_status() & 1ul)) {
-        as_write8(r, r->block_buf, (u8)quesos_con_data());
-        wake_with(r, 1);
+    /* Hand one queued byte to a parked reader, if any. */
+    if (g_con_count > 0) {
+        for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+            if (g_proc[i].state == P_BLOCKED && g_proc[i].block_kind == BLK_CONSOLE) {
+                r = &g_proc[i];
+                break;
+            }
+        }
+        if (r != 0) {
+            u8 db;
+            if (con_ring_pop(&db)) { as_write8(r, r->block_buf, db); wake_with(r, 1); }
+        }
     }
     if (g_current != 0) { g_current->state = P_RUNNABLE; }
     schedule();   /* noreturn */
+}
+
+/* ==================================================================================
+ * maize-174: signal delivery, default actions, and the job-control / signal syscalls.
+ * ================================================================================== */
+static int lowest_set_bit(unsigned long m) {
+    int b = 0;
+    while ((m & 1ul) == 0ul) { m >>= 1; ++b; }
+    return b + 1;   /* signal number (1-based) */
+}
+
+/* Shared zombie/reap tail for do_exit and terminate_by_signal, so wait4/zombie/reap
+ * semantics are identical however a process ends. Also raises SIGCHLD on the parent. */
+static void reap_tail(struct pcb *self) {
+    struct pcb *parent;
+    self->state = P_ZOMBIE;
+    fdtable_close_all(self);   /* closing a pipe write end wakes blocked readers (EOF) */
+    fb_release_held(self);     /* maize-236: free any framebuffer registration */
+    parent = find_by_pid(self->parent);
+    if (parent != 0) { parent->pending |= (1ul << (SIGCHLD - 1)); }   /* maize-174 SIGCHLD */
+    if (parent != 0 && parent->state == P_BLOCKED
+        && (parent->wait_for <= 0 || parent->wait_for == self->pid)) {
+        deliver_wait(parent, self);   /* frees self, wakes parent */
+    } else if (self->parent == 0) {
+        qos_puts("[quesos] reaped ");
+        qos_puts(self->path);
+        qos_puts(" status=");
+        qos_put_u64((u64)(self->exit_status & 0xFF));
+        qos_puts("\n");
+        self->state = P_FREE;
+    }
+    /* else: leave a zombie for a later wait. */
+}
+
+/* Default action: terminate. Records the terminating signal (WIFSIGNALED) and reaps. */
+static void terminate_by_signal(struct pcb *p, int sig) {
+    p->term_signal = sig;
+    p->exit_status = 0;
+    reap_tail(p);
+    schedule();   /* noreturn */
+}
+
+/* Below the interrupted frame (left intact at saved_rs), lay out the trampoline bytes,
+ * a return-address word, then a fresh handler frame. switch_to enters the handler with
+ * R0 = sig; the handler RETs into the trampoline, whose SYS $0F (rt_sigreturn) restores
+ * the interrupted context. Opaque to everything but this pair (OQ 9015). */
+static void push_signal_frame(struct pcb *p, int sig) {
+    u64 old_rs = p->saved_rs;
+    unsigned long tramp_len = (unsigned long)(quesos_sigreturn_tramp_end - quesos_sigreturn_tramp);
+    u64 tramp_va, ret_va, new_rs;
+    unsigned long k;
+
+    tramp_va = (old_rs - tramp_len) & ~15ul;
+    ret_va   = tramp_va - 8ul;
+    new_rs   = ret_va - 17ul * 8ul;   /* 13 GP + aux + cause + rf + pc */
+
+    for (k = 0; k < tramp_len; ++k) { as_write8(p, tramp_va + k, quesos_sigreturn_tramp[k]); }
+    as_write64(p, ret_va, tramp_va);                       /* handler RETs here */
+
+    as_write64(p, new_rs + 0ul * 8ul, (u64)sig);           /* R0 = signal number */
+    for (k = 1; k < 13; ++k) { as_write64(p, new_rs + k * 8ul, 0); }
+    as_write64(p, new_rs + 13ul * 8ul, 0);                 /* aux */
+    as_write64(p, new_rs + 14ul * 8ul, 0);                 /* cause */
+    as_write64(p, new_rs + 15ul * 8ul, USER_RF);           /* rf: user, ints on, guest */
+    as_write64(p, new_rs + 16ul * 8ul, p->handler[sig]);   /* pc = handler entry */
+
+    p->sig_saved_rs = old_rs;
+    p->in_handler = 1;
+    p->saved_rs = new_rs;
+}
+
+/* Apply the highest-priority pending, unblocked signal to p before it resumes. Called
+ * from schedule() at the one choke point every resume passes through. */
+static void deliver_pending_signal(struct pcb *p) {
+    unsigned long ready;
+    int sig;
+    if (p->in_handler) { return; }   /* v1: one handler at a time; defer while in one */
+    if (p->pending & (1ul << (SIGKILL - 1))) {   /* uncatchable, unblockable (OQ 9014) */
+        p->pending &= ~(1ul << (SIGKILL - 1));
+        terminate_by_signal(p, SIGKILL);   /* noreturn */
+    }
+    ready = p->pending & ~p->blocked;
+    if (ready == 0ul) { return; }
+    sig = lowest_set_bit(ready);
+    p->pending &= ~(1ul << (sig - 1));
+    if (p->handler[sig] == 0) {           /* SIG_DFL */
+        if (sig == SIGCHLD) { return; }   /* default action: ignore */
+        terminate_by_signal(p, sig);      /* default action: terminate (noreturn) */
+    }
+    if (p->handler[sig] == 1) { return; } /* SIG_IGN */
+    push_signal_frame(p, sig);            /* handler dispatch */
+}
+
+/* SYS_kill: pid>0 one process; pid==0 caller's group; pid<0 the group -pid. */
+static long do_kill(long pid, int sig) {
+    if (sig < 1 || sig > 31) { return -(long)QOS_EINVAL_SIG; }
+    if (pid > 0) {
+        struct pcb *p = find_by_pid(pid);
+        if (p == 0) { return -(long)QOS_ESRCH; }
+        raise_on_pcb(p, sig);
+        return 0;
+    }
+    if (pid == 0) { return raise_on_pgid(g_current->pgid, sig) ? 0 : -(long)QOS_ESRCH; }
+    return raise_on_pgid(-pid, sig) ? 0 : -(long)QOS_ESRCH;
+}
+
+/* SYS_rt_sigaction: subset -- sa_handler only (sa_mask/sa_flags read/written as 0). */
+static long do_rt_sigaction(long sig, u64 act_uva, u64 oldact_uva) {
+    struct pcb *self = g_current;
+    if (sig < 1 || sig > 31) { return -(long)QOS_EINVAL_SIG; }
+    if (sig == SIGKILL) { return -(long)QOS_EINVAL_SIG; }   /* uncatchable (OQ 9014) */
+    if (oldact_uva != 0) {
+        as_write64(self, oldact_uva + 0ul, self->handler[sig]);
+        as_write64(self, oldact_uva + 8ul, 0);
+        as_write32(self, oldact_uva + 16ul, 0);
+    }
+    if (act_uva != 0) { self->handler[sig] = *(u64 *)(act_uva + 0ul); }
+    return 0;
+}
+
+/* SYS_rt_sigprocmask: how in {SIG_BLOCK=0, SIG_UNBLOCK=1, SIG_SETMASK=2}. */
+static long do_rt_sigprocmask(long how, u64 set_uva, u64 oldset_uva) {
+    struct pcb *self = g_current;
+    unsigned long set;
+    if (oldset_uva != 0) { as_write64(self, oldset_uva, self->blocked); }
+    if (set_uva != 0) {
+        set = *(unsigned long *)(set_uva);
+        set &= ~(1ul << (SIGKILL - 1));   /* SIGKILL cannot be blocked (OQ 9014) */
+        if (how == 0) { self->blocked |= set; }
+        else if (how == 1) { self->blocked &= ~set; }
+        else if (how == 2) { self->blocked = set; }
+    }
+    return 0;
+}
+
+static long do_setpgid(long pid, long pgid) {
+    struct pcb *p = (pid == 0) ? g_current : find_by_pid(pid);
+    if (p == 0) { return -(long)QOS_ESRCH; }
+    p->pgid = (pgid == 0) ? p->pid : pgid;
+    return 0;
+}
+static long do_getpgid(long pid) {
+    struct pcb *p = (pid == 0) ? g_current : find_by_pid(pid);
+    if (p == 0) { return -(long)QOS_ESRCH; }
+    return p->pgid;
 }
 
 void quesos_syscall(void) {
@@ -1200,6 +1438,17 @@ void quesos_syscall(void) {
         case SYS_fb_geometry: result = do_fb_geometry(a0);        break;
         case SYS_fb_register: result = do_fb_register(a0);        break;
         case SYS_fb_release:  result = do_fb_release();           break;
+        case SYS_kill:           result = do_kill((long)a0, (int)a1);          break;
+        case SYS_rt_sigaction:   result = do_rt_sigaction((long)a0, a1, a2);   break;
+        case SYS_rt_sigprocmask: result = do_rt_sigprocmask((long)a0, a1, a2); break;
+        case SYS_rt_sigreturn:
+            g_current->saved_rs = g_current->sig_saved_rs;   /* pop the signal frame */
+            g_current->in_handler = 0;
+            return;   /* resume the interrupted context (switch_to reloads saved_rs) */
+        case SYS_setpgid:        result = do_setpgid((long)a0, (long)a1);      break;
+        case SYS_getpgid:        result = do_getpgid((long)a0);                break;
+        case SYS_tcgetpgrp:      result = g_fg_pgid;                           break;
+        case SYS_tcsetpgrp:      g_fg_pgid = (long)a0; result = 0;             break;
         default:
             qos_puts("[quesos] unhandled syscall ");
             qos_put_u64(num);
@@ -1248,10 +1497,13 @@ void quesos_main(long argc, char **argv) {
      * transcript); a process that forks introduces real concurrency the scheduler and
      * wait path handle. */
     for (i = 0; i < g_worklist_count; ++i) {
-        if (spawn(g_pathbuf[i], 0) == 0) {
+        struct pcb *sp = spawn(g_pathbuf[i], 0);
+        if (sp == 0) {
             qos_puts("[quesos] cannot start ");
             qos_puts(g_pathbuf[i]);
             qos_puts("\n");
+        } else if (g_fg_pgid == 0) {
+            g_fg_pgid = sp->pgid;   /* maize-174: the first worklist job owns the tty */
         }
     }
 
