@@ -24,6 +24,27 @@ INCLUDE_DIR="${SCRIPT_DIR}/include"
 
 die() { echo "build-userland.sh: $*" >&2; exit 2; }
 
+# Fail LOUDLY if a build claims success but the produced image is missing, empty, or not
+# a real .mzx (first 4 bytes must be the "MZX" magic + version 0x01). cc-maize.sh already
+# fails nonzero on a pipeline error, but this catches a silently-truncated or empty output
+# before it reaches quesOS as an unloadable image (the failure mode is a cryptic
+# "[quesos] not a loadable .mzx image" much later, off in a test harness).
+verify_mzx() {
+    _f="$1"
+    if [ ! -f "$_f" ]; then echo "build-userland.sh: MISSING output ${_f}" >&2; return 1; fi
+    _sz=$(wc -c < "$_f" 2>/dev/null | tr -d ' ')
+    if [ -z "$_sz" ] || [ "$_sz" -lt 24 ]; then
+        echo "build-userland.sh: output ${_f} too small (${_sz:-0} bytes, need >= 24-byte header)" >&2
+        return 1
+    fi
+    _magic=$(dd if="$_f" bs=1 count=3 2>/dev/null)
+    if [ "$_magic" != "MZX" ]; then
+        echo "build-userland.sh: output ${_f} is not a .mzx image (bad magic)" >&2
+        return 1
+    fi
+    return 0
+}
+
 UNAME=$(uname -s)
 case "$UNAME" in
     Linux)  PRESET='linux-debug' ;;
@@ -133,6 +154,7 @@ build_oksh() {
         echo "build-userland.sh: FAILED building oksh" >&2
         return 1
     fi
+    verify_mzx "${OUT}/oksh.mzx" || return 1
     echo "built ${OUT}/oksh.mzx"
 }
 
@@ -155,6 +177,7 @@ build_sbase_util() {
         echo "build-userland.sh: FAILED building sbase/${_name}" >&2
         return 1
     fi
+    verify_mzx "${OUT}/${_name}.mzx" || return 1
     echo "built ${OUT}/${_name}.mzx"
 }
 

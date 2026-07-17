@@ -1039,7 +1039,12 @@ static void join_path(const char *base, const char *in, char *out) {
  * component on "..". Used by do_chdir so pcb->cwd (and getcwd's answer) stays clean even
  * after `cd ../x`. Single forward pass building an offset stack of component starts. */
 static void normalize_path(const char *raw, char *out) {
-    int comp_start[QUESOS_MAX_ARG];   /* out[] offset where each kept component's '/' sits */
+    /* maize-94: one entry per kept component. Sized to the most components that can fit in
+     * a QUESOS_PATH_CAP buffer (each is at least a '/' + one char = 2 bytes), so no path
+     * that fits in `out` can overflow this or exceed it: the earlier QUESOS_MAX_ARG (32)
+     * bound silently mistracked '..' for paths deeper than 32 components. */
+    int comp_start[(QUESOS_PATH_CAP / 2) + 1];   /* out[] offset of each kept component's '/' */
+    int max_comp = (int)(sizeof(comp_start) / sizeof(comp_start[0]));
     int ncomp = 0;
     int n = 0;                        /* length written to out so far                      */
     int i = 0;
@@ -1059,7 +1064,7 @@ static void normalize_path(const char *raw, char *out) {
             if (ncomp > 0) { n = comp_start[--ncomp]; out[n] = 0; }
             continue;
         }
-        if (ncomp < QUESOS_MAX_ARG) { comp_start[ncomp++] = n; }
+        if (ncomp < max_comp) { comp_start[ncomp++] = n; }
         if (n < QUESOS_PATH_CAP - 1) { out[n++] = '/'; }
         { int k; for (k = 0; k < seg_len && n < QUESOS_PATH_CAP - 1; ++k) { out[n++] = seg[k]; } }
         out[n] = 0;

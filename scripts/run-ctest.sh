@@ -1795,7 +1795,13 @@ run_quesos94_fixtures() {
         TOTAL=$((TOTAL + 1))
         rm -rf "${rw:?}/"* 2>/dev/null || true
         set +e
-        out=$(MSYS2_ARG_CONV_EXCL='/progs:/rw' timeout 60 "$MAIZE" --no-root \
+        # MSYS2_ARG_CONV_EXCL is a SEMICOLON-separated list of prefixes to exempt from the
+        # MSYS2 POSIX->Windows argv rewrite; a colon-separated value is one literal prefix
+        # ("/progs:/rw") that matches nothing, so the guest worklist path /progs/<x>.mzx
+        # was rewritten to D:/.../progs/<x>.mzx and quesOS could not load it (Windows-leg
+        # regression). Single-value cases work by accident (no separator); multi-value MUST
+        # use ';'.
+        out=$(MSYS2_ARG_CONV_EXCL='/progs;/rw' timeout 60 "$MAIZE" --no-root \
             --mount "${pnat}=/progs:ro" --mount "${rnat}=/rw:rw" \
             "$quesos" "/progs/${launcher}.mzx" 2>/dev/null | grep -v '^$')
         set -e
@@ -1863,7 +1869,7 @@ run_quesos94_fixtures() {
     # binaries are mounted at BOTH /progs (worklist) and /bin (PATH).
     TOTAL=$((TOTAL + 1))
     set +e
-    out=$(MSYS2_ARG_CONV_EXCL='/progs:/bin' timeout 60 "$MAIZE" --no-root \
+    out=$(MSYS2_ARG_CONV_EXCL='/progs;/bin' timeout 60 "$MAIZE" --no-root \
         --mount "${pnat}=/progs:ro" --mount "${bnat}=/bin:ro" \
         "$quesos" /progs/execvp_run.mzx 2>/dev/null | grep -v '^$')
     set -e
@@ -1947,8 +1953,11 @@ run_userland94_fixtures() {
 
     # Helper: run one worklist program under quesOS with /progs + /bin (ro) and a
     # writable /rw scratch mounted (the cp/mv/rm launchers seed + verify files there).
+    # MSYS2_ARG_CONV_EXCL is SEMICOLON-separated (a colon value is one literal prefix that
+    # matches nothing, so the /progs/<x>.mzx worklist arg got rewritten to a Windows path
+    # and quesOS could not load it on the Windows leg).
     ul94_run() {
-        MSYS2_ARG_CONV_EXCL='/progs:/bin:/rw' timeout 90 "$MAIZE" --no-root \
+        MSYS2_ARG_CONV_EXCL='/progs;/bin;/rw' timeout 90 "$MAIZE" --no-root \
             --mount "${pnat}=/progs:ro" --mount "${bnat}=/bin:ro" \
             --mount "${rnat}=/rw:rw" \
             "$quesos" "$1" 2>/dev/null

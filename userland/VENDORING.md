@@ -39,8 +39,11 @@ trusted in this repo (`toolchain/VENDORING.md`).
 
 ## Wave-1 scope
 
-sbase utilities (operator-confirmed, OQ 8949): `ls` (plain names), `cat`, `cp`, `mv`,
-`rm`, `echo`, `printf`, `pwd`, `ed`, `true`, `false`. oksh: interactive raw-mode prompt,
+sbase utilities shipped (10, operator-confirmed OQ 8949): `ls` (plain names), `cat`,
+`cp`, `mv`, `rm`, `echo`, `printf`, `pwd`, `true`, `false`. `ed` was on the original
+11-util list but is DEFERRED out of wave 1 by operator ruling on OQ 9081: it hard-requires
+POSIX regcomp/regexec (and setjmp/longjmp, now landed), so it rides maize-243 rather than
+being faked here. oksh: interactive raw-mode prompt,
 external commands via PATH, pipelines, redirection (`<`, `>`, `>>`), builtins
 (`cd`, `exit`, `export`, `pwd`), `$?`. Binaries keep the `.mzx` extension (OQ 8950) and
 live at `/bin/<name>.mzx` inside the `--mount` grant (decision 8939).
