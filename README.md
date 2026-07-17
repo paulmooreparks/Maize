@@ -339,7 +339,8 @@ names **without** the leading dashes:
 - `console-size` = `<cols>x<rows>` (e.g. `80x25`, the default; cols 20..500, rows
   10..200) -- the text console grid, as `--console-size`
 - `root` = host path for the sandbox root (as `--root`)
-- `input` = `sys`, `keyboard`, or `console`
+- `input` = `sys`, `keyboard`, or `console` (the console `maize` ignores this
+  key; an explicit `--input` on the command line still applies)
 - `show-perf` = boolean
 - `display` = boolean (graphical `maizeg` only, which opens a window by default; set
   `display=false` to force it headless. The console `maize` ignores this key.)
