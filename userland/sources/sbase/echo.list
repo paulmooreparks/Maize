@@ -1,0 +1,4 @@
+echo.c
+libutil/putword.c
+libutil/fshut.c
+libutil/eprintf.c

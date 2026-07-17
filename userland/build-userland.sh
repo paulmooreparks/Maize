@@ -68,13 +68,14 @@ stage_project() {
             fi
         done
     fi
-    # Copy the Maize-local shim headers (e.g. the regex.h util.h pulls in) INTO the
-    # scratch checkout so cc-maize.sh's per-source `-I <source dir>` resolves the
-    # angle-bracket includes without any RT-slice change or a -I passthrough.
+    # Copy the Maize-local shim headers (e.g. the regex.h util.h pulls in) into EVERY
+    # directory of the scratch checkout, so cc-maize.sh's per-source `-I <source dir>`
+    # resolves the angle-bracket include no matter which subdir a source lives in (sbase
+    # sources sit in both the root and libutil/). No RT-slice change, no -I passthrough.
     if [ -d "$INCLUDE_DIR" ]; then
         for _h in "$INCLUDE_DIR"/*.h; do
             [ -e "$_h" ] || continue
-            cp "$_h" "$_stage/"
+            find "$_stage" -type d -exec cp "$_h" {} \;
         done
     fi
     echo "$_stage"
