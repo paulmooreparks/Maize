@@ -315,10 +315,13 @@ compile_tu() {
 # Assemble the freestanding asm runtime as relocatable objects (maize-77 decision
 # 7168): crt0/syscall each become a .mzo. mazm -c writes <input>.mzo beside its
 # input, so the sources are copied into WORK first (keeping toolchain/rt clean).
-# puts.mazm was retired in maize-76 (decision 7345): puts now lives in C (stdio.c),
-# so the asm loop is crt0 + syscall only.
+# puts.mazm was retired in maize-76 (decision 7345): puts now lives in C (stdio.c).
+# maize-94 adds setjmp.mazm (setjmp/longjmp/sigsetjmp/siglongjmp: machine-dependent
+# register save/restore over the Maize calling convention, the borrowed-shell enabler).
+# It joins the always-linked RT asm set; images that never reference the symbols simply
+# carry a few unused bytes (mzld resolves by name, so link order is irrelevant).
 RT_OBJS=""
-for rt in crt0 syscall; do
+for rt in crt0 syscall setjmp; do
     cp "${RT_DIR}/${rt}.mazm" "${WORK}/${rt}.mazm"
     if ! "$MAZM" -c "${WORK}/${rt}.mazm" >"${WORK}/${rt}.mazm.log" 2>&1 || [ ! -f "${WORK}/${rt}.mzo" ]; then
         echo "cc-maize.sh: failed to assemble runtime object ${rt}.mazm:" >&2

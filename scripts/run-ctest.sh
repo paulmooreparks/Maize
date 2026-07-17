@@ -1777,7 +1777,7 @@ run_quesos94_fixtures() {
         echo "[FAIL] quesos94: quesOS link failed"; cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
-    for src in fs_forward cwd_resolve termios_raw libc_proc execvp_run bin_echoer; do
+    for src in fs_forward cwd_resolve termios_raw libc_proc execvp_run bin_echoer setjmp_launch; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
             echo "[FAIL] quesos94: ${src}.c compile failed"; cat "$log" >&2
@@ -1837,6 +1837,23 @@ run_quesos94_fixtures() {
         echo "[PASS] quesos94_libc_proc"
     else
         echo "[FAIL] quesos94_libc_proc"
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # setjmp/longjmp/sigsetjmp/siglongjmp (OQ 9082 ruling: minimal setjmp in-card,
+    # toolchain/rt/setjmp.mazm, the oksh error-unwind enabler). The fixture proves the
+    # 0-then-value return across a real call chain, local survival, and the sigsetjmp(.,1)
+    # signal-mask save/restore over SYS $0E. Standalone /progs run.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(MSYS2_ARG_CONV_EXCL='/progs' timeout 60 "$MAIZE" --no-root \
+        --mount "${pnat}=/progs:ro" "$quesos" /progs/setjmp_launch.mzx 2>/dev/null | grep -v '^$')
+    set -e
+    if printf '%s\n' "$out" | grep -qF "setjmp-launch: PASS"; then
+        echo "[PASS] quesos94_setjmp"
+    else
+        echo "[FAIL] quesos94_setjmp"
         printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi

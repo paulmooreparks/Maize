@@ -1,0 +1,117 @@
+; ==================================================================================
+; setjmp.mazm -- setjmp/longjmp/sigsetjmp/siglongjmp for the Maize C runtime
+; (maize-94, operator ruling on OQ 9082: minimal setjmp/longjmp IN THIS CARD).
+;
+; Machine-dependent register save/restore over the Maize calling convention
+; (toolchain/qbe-maize/CALLING-CONVENTION.md). The borrowed OpenBSD shell (oksh) is
+; built on a sigsetjmp/siglongjmp error-unwind (genv->jbuf); a recompilation port
+; cannot run without a real setjmp. Assembled to setjmp.mzo and linked into the RT
+; asm set beside crt0/syscall (scripts/cc-maize.sh).
+;
+; C ABI recap (CALLING-CONVENTION.md): first args in R0..R5, result in RV; callee-
+; saved = R6, R7, R8, R9, BP (RB); RS (SP) grows down in 8-byte slots; CALL pushes an
+; 8-byte return address onto SP and RET pops it into PC. These stubs run WITHOUT a
+; prologue so that, at entry, SP still points at the return address CALL pushed and
+; R6..R9/BP still hold the CALLER's callee-saved values, which is exactly the context
+; a later longjmp must reinstate.
+;
+; jmp_buf (unsigned long[16]) layout, a libc-internal contract shared only with
+; setjmp.h (the sigcontext precedent), NOT a cross-file ABI:
+;   [+00]=R6  [+08]=R7  [+16]=R8  [+24]=R9  [+32]=BP
+;   [+40]=caller SP  [+48]=return PC  [+56]=savemask flag  [+64]=saved sigset_t
+;
+; Signal mask (sigsetjmp/siglongjmp) rides SYS $0E rt_sigprocmask (guest, maize-174):
+; rt_sigprocmask(how, set, oldset) with SIG_BLOCK=0, SIG_SETMASK=2; a NULL set just
+; reads the current mask into oldset (quesos.c do_rt_sigprocmask).
+; ==================================================================================
+
+SECTION CODE
+
+GLOBAL setjmp
+GLOBAL sigsetjmp
+GLOBAL longjmp
+GLOBAL siglongjmp
+
+; ----------------------------------------------------------------------------------
+; int setjmp(jmp_buf env);            R0 = env
+; int sigsetjmp(sigjmp_buf env, int savemask);   R0 = env, R1 = savemask
+;
+; setjmp is sigsetjmp with savemask forced to 0, so it clears R1 and falls through.
+; Saves the caller's context into env and returns 0. On the longjmp path the same
+; env makes the call site "return" again with the longjmp value.
+; ----------------------------------------------------------------------------------
+setjmp:
+    CLR R1                  ; savemask = 0, then fall through into sigsetjmp
+sigsetjmp:
+    ST  R6 @R0              ; env[+00] = R6   (callee-saved, as held by the caller)
+    LEA $08 R0 R2
+    ST  R7 @R2             ; env[+08] = R7
+    LEA $10 R0 R2
+    ST  R8 @R2             ; env[+16] = R8
+    LEA $18 R0 R2
+    ST  R9 @R2             ; env[+24] = R9
+    LEA $20 R0 R2
+    ST  BP @R2             ; env[+32] = BP
+    LEA $28 R0 R2
+    LEA $08 SP R3          ; R3 = caller SP = entry SP + 8 (undo the CALL push)
+    ST  R3 @R2            ; env[+40] = caller SP
+    LEA $30 R0 R2
+    LD  @SP R3            ; R3 = return address = [SP] (pushed by CALL)
+    ST  R3 @R2            ; env[+48] = return PC
+    LEA $38 R0 R2
+    ST  R1 @R2           ; env[+56] = savemask flag
+    CMP $00 R1
+    JZ  setjmp_ret0       ; savemask == 0: no signal mask to save
+    LEA $40 R0 R2         ; R2 = &env[+64] (oldset)
+    CLR R1                ; set = NULL (read-only query)
+    CLR R0                ; how = SIG_BLOCK (0; ignored when set == NULL)
+    SYS $0E              ; rt_sigprocmask(0, NULL, &env->mask): save current mask
+setjmp_ret0:
+    CP  $00 RV            ; setjmp / sigsetjmp return 0 on the direct call
+    RET
+
+; ----------------------------------------------------------------------------------
+; void longjmp(jmp_buf env, int val);       R0 = env, R1 = val
+; void siglongjmp(sigjmp_buf env, int val); R0 = env, R1 = val
+;
+; longjmp and siglongjmp are identical: both honor the savemask flag setjmp/sigsetjmp
+; stored in env[+56] (setjmp stored 0, so no mask restore; sigsetjmp(.,1) stored 1).
+; Restores the saved context and resumes at the saved PC as if setjmp returned val.
+; ----------------------------------------------------------------------------------
+longjmp:
+siglongjmp:
+    LEA $38 R0 R2
+    LD  @R2 R3            ; R3 = saved savemask flag
+    CMP $00 R3
+    JZ  longjmp_noremask
+    PUSH R0               ; preserve env across the syscall
+    PUSH R1               ; preserve val across the syscall
+    LEA $40 R0 R1         ; R1 = &env[+64] (set = saved mask)
+    CP  $02 R0           ; how = SIG_SETMASK (2)
+    CLR R2               ; oldset = NULL
+    SYS $0E             ; rt_sigprocmask(2, &env->mask, NULL): restore mask
+    POP R1               ; restore val
+    POP R0               ; restore env
+longjmp_noremask:
+    CMP $00 R1
+    JZ  longjmp_one       ; force the return value to 1 when val == 0
+    JMP longjmp_haveval
+longjmp_one:
+    CP  $01 R1
+longjmp_haveval:
+    LD  @R0 R6            ; R6 = env[+00]
+    LEA $08 R0 R2
+    LD  @R2 R7           ; R7 = env[+08]
+    LEA $10 R0 R2
+    LD  @R2 R8           ; R8 = env[+16]
+    LEA $18 R0 R2
+    LD  @R2 R9           ; R9 = env[+24]
+    LEA $20 R0 R2
+    LD  @R2 BP           ; BP = env[+32]
+    LEA $30 R0 R2
+    LD  @R2 R3           ; R3 = return PC (env[+48])
+    LEA $28 R0 R2
+    LD  @R2 SP           ; SP = caller SP (env[+40]); stack now the setjmp caller's
+    PUSH R3              ; push the return PC onto the restored stack
+    CP  R1 RV            ; RV = return value (val, or 1 when val was 0)
+    RET                  ; pop return PC into PC; resume at the setjmp call site
