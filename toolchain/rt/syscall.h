@@ -146,6 +146,11 @@ long write(int fd, const void *buf, unsigned long count);
 int  open (const char *path, int flags, ...);   /* maize-94: variadic (POSIX 2-arg form) */
 int  close(int fd);
 long lseek(int fd, long offset, int whence);
-int  fstat(int fd, void *statbuf);
+/* fstat's PUBLIC prototype is typed (struct stat*), so every call site keeps compiler
+ * checking; the type erasure to void* lives ONLY inside the errno.c wrapper body, at the
+ * single sys_fstat boundary (the raw stub above is inherently type-erased). struct stat
+ * is forward-declared here so this private header need not pull in <sys/stat.h>. */
+struct stat;
+int  fstat(int fd, struct stat *statbuf);
 
 #endif /* MAIZE_SYSCALL_H */

@@ -15,4 +15,11 @@ typedef long          ptrdiff_t;
 
 #define NULL ((void *)0)
 
+/* offsetof (maize-94): standard <stddef.h> macro. Borrowed oksh's table.c uses it to
+ * lay out its hash-table entries. The &((T*)0)->m idiom is the classic freestanding
+ * definition (cproc folds it to a compile-time constant). */
+#ifndef offsetof
+#define offsetof(type, member) ((size_t)&(((type *)0)->member))
+#endif
+
 #endif /* MAIZE_STDDEF_H */

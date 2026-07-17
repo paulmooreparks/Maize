@@ -1,0 +1,52 @@
+# oksh.list (maize-94): the wave-1 oksh source set for scripts/cc-maize.sh --sources.
+# Mirrors oksh's own Makefile OBJS (configure:41-45) so the shell's feature set is the
+# upstream one, gated only by pconfig.h (EMACS-mode line editor in scope, decision 8945;
+# job control compiled but inert, decision 8947). vi.c is kept: its VI-mode bodies are
+# #ifdef VI (undefined here), but keeping it satisfies edit.c's mode-dispatch references
+# without a source edit. Paths are relative to the staged oksh scratch dir.
+#
+# Compat sources (asprintf/confstr/reallocarray/strlcat/strlcpy/strtonum/unvis/vis/
+# issetugid/siglist/signame) are oksh's own vendored BSD-ism implementations, compiled
+# because pconfig.h leaves every matching HAVE_* undefined (Maize RT defines none of
+# these symbols, so no duplicate-symbol collision at link).
+alloc.c
+asprintf.c
+c_ksh.c
+c_sh.c
+c_test.c
+c_ulimit.c
+edit.c
+emacs.c
+eval.c
+exec.c
+expr.c
+history.c
+io.c
+jobs.c
+lex.c
+mail.c
+main.c
+misc.c
+path.c
+shf.c
+syn.c
+table.c
+trap.c
+tree.c
+tty.c
+var.c
+version.c
+vi.c
+confstr.c
+reallocarray.c
+siglist.c
+signame.c
+strlcat.c
+strlcpy.c
+strtonum.c
+unvis.c
+vis.c
+issetugid.c
+# Maize-local overlay stub source (backs the shim headers; copied into the scratch by
+# build-userland.sh from patches/oksh/include).
+maize_stubs.c

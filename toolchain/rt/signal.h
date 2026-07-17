@@ -16,25 +16,53 @@
 typedef void (*__sighandler_t)(int);
 typedef unsigned long sigset_t;
 
+/* maize-94: sig_atomic_t is a standard <signal.h> type (C11 7.14); borrowed oksh
+ * uses `volatile sig_atomic_t` for its trap-set flags. int matches the Linux ABI. */
+typedef int sig_atomic_t;
+
 #define SIG_ERR ((__sighandler_t)-1)
 #define SIG_DFL ((__sighandler_t)0)
 #define SIG_IGN ((__sighandler_t)1)
 
-/* Signal numbers (Linux values). */
+/* Signal numbers (Linux values). maize-94 fills in the rest of the standard Linux
+ * table so borrowed userland (oksh's trap.c / siglist.c / signame.c) can name every
+ * signal it tabulates. quesOS only actually delivers the job-control / termination
+ * subset (maize-174); the others are honest constants a program may reference in a
+ * trap table without quesOS ever raising them. */
 #define SIGHUP   1
 #define SIGINT   2
 #define SIGQUIT  3
+#define SIGILL   4
+#define SIGTRAP  5
+#define SIGABRT  6
+#define SIGIOT   6
+#define SIGBUS   7
+#define SIGFPE   8
 #define SIGKILL  9
+#define SIGUSR1  10
+#define SIGSEGV  11
+#define SIGUSR2  12
+#define SIGPIPE  13
+#define SIGALRM  14
 #define SIGTERM  15
+#define SIGSTKFLT 16
 #define SIGCHLD  17
 #define SIGCONT  18
 #define SIGSTOP  19
 #define SIGTSTP  20
 #define SIGTTIN  21
 #define SIGTTOU  22
+#define SIGURG   23
+#define SIGXCPU  24
+#define SIGXFSZ  25
+#define SIGVTALRM 26
+#define SIGPROF  27
 /* Defined so an editor that installs a resize handler compiles; quesOS never raises it
  * (the console is a fixed grid). SIGWINCH delivery is maize-232's problem. */
 #define SIGWINCH 28
+#define SIGIO    29
+#define SIGPWR   30
+#define SIGSYS   31
 
 /* sigprocmask `how` values. */
 #define SIG_BLOCK   0
@@ -121,6 +149,19 @@ static inline int
 raise(int sig)
 {
     return (int)sys_kill(sys_getpid(), (long)sig);
+}
+
+/* sigsuspend (maize-94): borrowed oksh's trap.c pauses here waiting for a signal.
+ * Wave-1 quesOS delivers no asynchronous signals to a foreground shell (decision
+ * 8947: Ctrl-C is a literal byte, no SIGINT), so an honest sigsuspend would block
+ * forever with nothing to wake it. It instead returns -1 immediately (the POSIX
+ * "interrupted" contract) so oksh's wait loops make progress; the mask argument is
+ * accepted and ignored. Named deviation, not a fake. */
+static inline int
+sigsuspend(const sigset_t *mask)
+{
+    (void)mask;
+    return -1;
 }
 
 #endif /* MAIZE_SIGNAL_H */

@@ -15,6 +15,8 @@
 #ifndef MAIZE_UNISTD_H
 #define MAIZE_UNISTD_H
 
+#include "sys/types.h"   /* uid_t / gid_t / pid_t (maize-94) */
+
 int usleep(unsigned useconds);
 
 /* POSIX descriptor wrappers (bodies in errno.c). Signatures MUST match syscall.h. */
@@ -65,5 +67,77 @@ char *getcwd(char *buf, unsigned long size);
 /* unlink (maize-94): POSIX file removal, the name borrowed sbase (cp -f retry, the
  * wave-1 rm) uses; body in errno.c beside remove() (its ISO C twin). */
 int   unlink(const char *path);
+
+/* maize-94: the remaining POSIX <unistd.h> surface borrowed oksh reaches for. Bodies
+ * in unistd.c. quesOS is single-user with no permission/uid model and no symlinks, so
+ * several are honest, decision-noted stubs rather than fakes:
+ *   access: a real reachability test, composed over stat() (F_OK/R_OK succeed iff the
+ *           path stats; X_OK cannot be distinguished on hostfs, so it tracks F_OK).
+ *   getuid/getgid/geteuid/getegid: return 0 (quesOS runs everything as a single
+ *           unprivileged-yet-unrestricted principal; 0 is the honest "root-ish" answer).
+ *   readlink: hostfs has no symlinks, so returns -1/EINVAL (never a link).
+ *   alarm: no interval timer under wave 1 (SIGALRM is not delivered); returns 0.
+ *   nice: no scheduler priority; returns 0.
+ *   ttyname: no /dev name table; returns NULL.
+ *   killpg: kill(-pgrp, sig) over the guest kill syscall. */
+#define R_OK 4
+#define W_OK 2
+#define X_OK 1
+#define F_OK 0
+
+int   access(const char *path, int mode);
+uid_t getuid(void);
+uid_t geteuid(void);
+gid_t getgid(void);
+gid_t getegid(void);
+long  readlink(const char *path, char *buf, unsigned long bufsiz);
+unsigned int alarm(unsigned int seconds);
+int   nice(int inc);
+char *ttyname(int fd);
+int   killpg(pid_t pgrp, int sig);
+
+/* lseek (maize-94): reposition a descriptor. Body in errno.c over sys_lseek; declared in
+ * <fcntl.h>/<stdio.h>/syscall.h already, re-declared here (its POSIX home) so a TU that
+ * includes only <unistd.h> (oksh's shf.c) sees it. Identical prototype, cproc-tolerated. */
+long  lseek(int fd, long offset, int whence);
+
+/* getppid / getpgrp (maize-94): getppid returns 1 (quesOS has no parent-of-init concept;
+ * a shell reads $PPID but does not depend on its value under wave 1). getpgrp aliases
+ * getpgid(0) over the maize-174 pgroup syscall. */
+pid_t getppid(void);
+pid_t getpgrp(void);
+
+/* getsid (maize-94): session id. quesOS has no session model, so returns 0 (a shell
+ * reads it for job-control decisions that wave 1 does not exercise, decision 8947). */
+pid_t getsid(pid_t pid);
+
+/* gethostname (maize-94): quesOS has no configurable hostname, so this writes a fixed
+ * "maize" into the caller's buffer (oksh's \h prompt escape). Body in unistd.c. */
+int gethostname(char *name, unsigned long len);
+
+/* _POSIX_VDISABLE (maize-94): the c_cc value meaning "this control char is disabled",
+ * which oksh's tty.c compares against. The Linux value is 0. */
+#define _POSIX_VDISABLE 0
+
+/* getlogin (maize-94): quesOS has no login/user database, so returns NULL (oksh falls
+ * back to $USER / $LOGNAME). */
+char *getlogin(void);
+
+/* sleep (maize-94): oksh's jobs.c backs off with sleep(1) on a transient fork failure.
+ * Composed over usleep (which is itself a no-op stub under wave 1, so sleep also returns
+ * promptly); returns 0 (no unslept remainder). */
+unsigned int sleep(unsigned int seconds);
+
+/* set*id (maize-94): quesOS is single-user with no credential model, so these succeed
+ * as no-ops. oksh's misc.c reaches them through portable.h's setresgid/setresuid macros
+ * when it drops privileges for a set-id script; on Maize there is nothing to drop. */
+int setuid(uid_t uid);
+int seteuid(uid_t uid);
+int setgid(gid_t gid);
+int setegid(gid_t gid);
+
+/* _CS_PATH (maize-94): confstr() key for the default utility PATH. oksh's confstr.c
+ * compat answers it with _PATH_DEFPATH; main.c uses it to seed PATH. */
+#define _CS_PATH 1
 
 #endif /* MAIZE_UNISTD_H */

@@ -49,6 +49,21 @@ void *sbrk(long incr);
 int  atoi(const char *nptr);
 int  abs(int j);
 long labs(long j);
+
+/* rand/srand (maize-94): the ISO C pseudo-random pair, for borrowed oksh's $RANDOM
+ * (var.c). A classic POSIX LCG (body in stdlib.c); RAND_MAX is 0x7fff, matching the
+ * 15-bit value oksh's $RANDOM expects. Not cryptographic; $RANDOM never is. */
+#define RAND_MAX 0x7fff
+int  rand(void);
+void srand(unsigned seed);
+
+/* mkstemp (maize-94): borrowed oksh's io.c uses it for the shell's scratch files (the
+ * temp path behind here-docs / redirections it materializes). The trailing "XXXXXX" of
+ * the template is replaced with a unique-ish suffix and the file is created O_RDWR;
+ * returns the open fd, or -1 with errno. Body in stdlib.c. hostfs has no O_EXCL, so the
+ * uniqueness is best-effort (a monotonic counter seeded from the clock), which is an
+ * honest wave-1 deviation for a single-user shell. */
+int  mkstemp(char *template);
 long strtol(const char *nptr, char **endptr, int base);
 
 /* strtoll (maize-94): long long twin of strtol for borrowed sbase (strtonum ->

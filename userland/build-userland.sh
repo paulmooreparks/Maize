@@ -47,8 +47,11 @@ done
 [ -n "$OUT" ] || die "an output dir is required: --out <dir>"
 mkdir -p "$OUT"
 
-# Wave-1 default set (operator-confirmed, OQ 8949) when no programs are named.
-SBASE_WAVE1="true false echo printf pwd cat cp mv rm ls ed"
+# Wave-1 default set when no programs are named. ed is re-scoped out of wave 1 by
+# operator ruling (OQ 9081): it hard-requires POSIX regex (regcomp/regexec, filed as
+# maize-243), so the wave ships the other 10 sbase utils + oksh and AC 8935 lands at
+# 10/11 with ed explicitly deferred. The operator-confirmed list is OQ 8949.
+SBASE_WAVE1="true false echo printf pwd cat cp mv rm ls"
 if [ -z "$PROGS" ]; then PROGS="${SBASE_WAVE1} oksh"; fi
 
 # Stage a pristine submodule into a scratch dir and apply its patch series in order.
@@ -88,6 +91,51 @@ trap cleanup EXIT
 SBASE_STAGE=$(stage_project sbase)
 OKSH_STAGE=""
 
+# Build the vendored oksh shell. Like build_sbase_util, but oksh has a single source
+# list (sources/oksh/oksh.list) and carries a Maize-local overlay of hand-authored
+# shim headers plus one stub source (patches/oksh/include/ -> the scratch root),
+# replacing oksh's autoconf output: pconfig.h pins every HAVE_* to Maize's libc, and
+# grp/pwd/paths/sys shims + maize_stubs.c satisfy the borrowed sources. EMACS is
+# defined on the cpp line (mirroring upstream's -DEMACS cflag) so config.h's
+# "define EMACS or VI" guard passes with the emacs-mode line editor in scope
+# (decision 8945). Nothing is hand-edited in the submodule checkout (AC 8929).
+build_oksh() {
+    _list="${SCRIPT_DIR}/sources/oksh/oksh.list"
+    [ -f "$_list" ] || die "no sources list for oksh: ${_list}"
+    _overlay="${SCRIPT_DIR}/patches/oksh/include"
+    if [ -d "$_overlay" ]; then
+        # Recursive overlay copy preserves the sys/ subdir (sys/param.h et al) that the
+        # flat shim-header copy in stage_project cannot place.
+        cp -a "${_overlay}/." "${OKSH_STAGE}/"
+    fi
+    _srcs=""
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        _line=$(printf '%s' "$_line" | tr -d '\r')
+        case "$_line" in ''|\#*) continue ;; esac
+        _srcs="${_srcs} ${OKSH_STAGE}/${_line}"
+    done < "$_list"
+    [ -n "$_srcs" ] || die "empty sources list: ${_list}"
+    # -D EMACS: satisfy config.h's "define EMACS or VI" guard with the emacs-mode line
+    #   editor in scope (decision 8945), mirroring upstream's -DEMACS cflag.
+    # -D volatile=: neutralize the `volatile` keyword before cproc-qbe, which cannot yet
+    #   lower a volatile store (it rejects the `volatile sig_atomic_t` trap flags and the
+    #   setjmp-survival `volatile int` locals oksh uses pervasively). This mirrors
+    #   cc-maize.sh's own `-D '__attribute__(x)='` keyword-neutralizing idiom and is a
+    #   build-config choice, not a per-file source edit. It is SAFE on Maize: no RT source
+    #   relies on volatile (verified: zero `volatile` in toolchain/rt/*.c), wave-1 delivers
+    #   no asynchronous signals so the trap-flag volatiles are moot (decision 8947), and
+    #   qbe-maize spills locals to the stack (which longjmp does not clobber) rather than
+    #   caching them across the setjmp call. The exit-status ACs (8933) verify empirically
+    #   that command status survives oksh's longjmp-based error unwind. Recorded as a
+    #   decision on the card.
+    # shellcheck disable=SC2086
+    if ! "$CC_MAIZE" --preset "$PRESET" -D EMACS -D "volatile=" -o "${OUT}/oksh.mzx" $_srcs; then
+        echo "build-userland.sh: FAILED building oksh" >&2
+        return 1
+    fi
+    echo "built ${OUT}/oksh.mzx"
+}
+
 build_sbase_util() {
     _name="$1"
     _list="${SCRIPT_DIR}/sources/sbase/${_name}.list"
@@ -114,8 +162,7 @@ rc=0
 for prog in $PROGS; do
     if [ "$prog" = "oksh" ]; then
         [ -n "$OKSH_STAGE" ] || OKSH_STAGE=$(stage_project oksh)
-        echo "build-userland.sh: oksh build not yet wired (Phase e)" >&2
-        rc=1
+        build_oksh || rc=1
         continue
     fi
     build_sbase_util "$prog" || rc=1

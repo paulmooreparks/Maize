@@ -25,4 +25,8 @@ int isgraph(int c);
 int toupper(int c);
 int tolower(int c);
 
+/* isascii (maize-94): X/Open classifier borrowed oksh's vis.c uses. True for a 7-bit
+ * value. Body in ctype.c. */
+int isascii(int c);
+
 #endif /* MAIZE_CTYPE_H */

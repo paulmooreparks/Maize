@@ -1208,3 +1208,52 @@ perror(const char *s)
     else
         fprintf(stderr, "%s\n", strerror(errno));
 }
+
+/* fileno (maize-94): the descriptor backing a stream (oksh history.c / io.c). */
+int
+fileno(FILE *stream)
+{
+	if (stream == 0) {
+		return -1;
+	}
+	return stream->fd;
+}
+
+/* rewind (maize-94): fseek to the start, ignoring the return (ISO C). */
+void
+rewind(FILE *stream)
+{
+	if (stream != 0) {
+		(void)fseek(stream, 0L, 0 /* SEEK_SET */);
+	}
+}
+
+/* fgetc / getc / getchar (maize-94): single-byte reads. fgetc/getc go through the
+ * buffered fread path; getchar reads fd 0 directly (there is no stdin FILE* object in
+ * this slice). Return the byte (0..255) or EOF at end/error. */
+int
+fgetc(FILE *stream)
+{
+	unsigned char c;
+	if (fread(&c, 1, 1, stream) != 1) {
+		return EOF;
+	}
+	return (int)c;
+}
+
+int
+getc(FILE *stream)
+{
+	return fgetc(stream);
+}
+
+int
+getchar(void)
+{
+	unsigned char c;
+	long n = read(0, &c, 1);
+	if (n != 1) {
+		return EOF;
+	}
+	return (int)c;
+}

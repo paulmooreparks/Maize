@@ -21,6 +21,9 @@
 #include "errno.h"
 #include "syscall.h"
 #include "sys/wait.h"   /* maize-94: wait/waitpid bodies live here (over sys_wait4) */
+#include "sys/stat.h"   /* maize-94: stat() for access(); umask's mode_t */
+#include "fcntl.h"      /* maize-94: F_* commands for fcntl() */
+#include "stdarg.h"     /* maize-94: va_arg for fcntl's F_DUPFD argument */
 #include "stdlib.h"     /* maize-94: environ / getenv for execv / execvp */
 #include "string.h"     /* maize-94: strlen / memcpy for execvp's PATH search */
 
@@ -219,4 +222,156 @@ execvp(const char *file, char *const argv[])
     }
     errno = ENOENT;
     return -1;
+}
+
+/* -------------------------------------------------------------------------------
+ * maize-94: the remaining POSIX <unistd.h> surface for the borrowed wave-1 shell.
+ * quesOS is single-user with no uid/permission model, no symlinks, no interval timer
+ * and no per-fd flag store, so several of these are honest, decision-noted stubs
+ * rather than fakes. See unistd.h for the per-function rationale.
+ * ------------------------------------------------------------------------------- */
+
+/* access: a real reachability test, composed over stat() (like the stat()/lstat()
+ * composites in errno.c). F_OK / R_OK succeed iff the path stats; W_OK tracks the
+ * same (hostfs enforces no per-file write bit at this layer), and X_OK cannot be
+ * distinguished from F_OK on hostfs, so it also tracks reachability. errno is left
+ * as stat() set it on failure (ENOENT etc). */
+int
+access(const char *path, int mode)
+{
+    struct stat st;
+    (void)mode;
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+uid_t getuid(void)  { return 0; }
+uid_t geteuid(void) { return 0; }
+gid_t getgid(void)  { return 0; }
+gid_t getegid(void) { return 0; }
+
+/* readlink: hostfs models no symbolic links, so no path is ever a link. */
+long
+readlink(const char *path, char *buf, unsigned long bufsiz)
+{
+    (void)path;
+    (void)buf;
+    (void)bufsiz;
+    errno = EINVAL;
+    return -1;
+}
+
+/* umask: quesOS keeps no umask state and does not apply one to hostfs creates, but a
+ * shell reads and restores it, so track a process-global mask and return the prior
+ * value (POSIX semantics), defaulting to the conventional 022. */
+static mode_t g_umask = 022;
+
+mode_t
+umask(mode_t mask)
+{
+    mode_t prev = g_umask;
+    g_umask = mask & 0777;
+    return prev;
+}
+
+/* fcntl: only F_DUPFD carries real semantics under wave 1 (the shell lifts its own
+ * descriptors above the user range). It is composed over dup(): dup() hands back the
+ * lowest free descriptor, so we dup repeatedly, keeping the intermediates below the
+ * requested floor open until one lands at or above it, then release them. The other
+ * commands (F_GETFD/F_SETFD/F_GETFL/F_SETFL) have no backing state and succeed as
+ * no-ops. */
+int
+fcntl(int fd, int cmd, ...)
+{
+    if (cmd == F_DUPFD) {
+        va_list ap;
+        int minfd;
+        int held[64];
+        int nheld = 0;
+        int r = -1;
+
+        va_start(ap, cmd);
+        minfd = va_arg(ap, int);
+        va_end(ap);
+
+        for (;;) {
+            r = dup(fd);
+            if (r < 0) {
+                break;                      /* dup failed; errno already set */
+            }
+            if (r >= minfd) {
+                break;                      /* landed at/above the floor: keep it */
+            }
+            if (nheld >= (int)(sizeof(held) / sizeof(held[0]))) {
+                close(r);
+                errno = EMFILE;
+                r = -1;
+                break;
+            }
+            held[nheld++] = r;              /* below the floor: hold, try again */
+        }
+        while (nheld > 0) {
+            close(held[--nheld]);           /* release the intermediates */
+        }
+        return r;
+    }
+
+    /* No per-fd flag store; report success without doing anything. */
+    return 0;
+}
+
+/* killpg: signal a process group, i.e. kill(-pgrp, sig). */
+int
+killpg(pid_t pgrp, int sig)
+{
+    return kill((pid_t)(-pgrp), sig);
+}
+
+/* No interval timer, scheduler priority, or /dev name table under wave 1. */
+unsigned int alarm(unsigned int seconds) { (void)seconds; return 0; }
+int nice(int inc) { (void)inc; return 0; }
+char *ttyname(int fd) { (void)fd; return (char *)0; }
+
+/* sleep (maize-94): back-off helper. usleep is a no-op stub under wave 1, so this
+ * returns promptly with no unslept remainder; oksh's fork-retry loop still makes
+ * progress (the retry itself, not the delay, is what matters). */
+unsigned int
+sleep(unsigned int seconds)
+{
+    (void)seconds;
+    return 0;
+}
+
+/* Single-user quesOS: no credential model, so the set*id family succeeds as no-ops. */
+int setuid(uid_t uid)   { (void)uid; return 0; }
+int seteuid(uid_t uid)  { (void)uid; return 0; }
+int setgid(gid_t gid)   { (void)gid; return 0; }
+int setegid(gid_t gid)  { (void)gid; return 0; }
+
+/* getppid: quesOS has no parent-of-init lineage exposed; return 1 (a shell reads $PPID
+ * but does not depend on its value under wave 1). getpgrp aliases getpgid(0). */
+pid_t getppid(void) { return 1; }
+pid_t getpgrp(void) { return getpgid(0); }
+
+/* getsid: no session model under wave 1. getlogin: no user database. */
+pid_t getsid(pid_t pid) { (void)pid; return 0; }
+char *getlogin(void) { return (char *)0; }
+
+/* gethostname (maize-94): fixed "maize" (quesOS has no configurable hostname). */
+int
+gethostname(char *name, unsigned long len)
+{
+    const char *h = "maize";
+    unsigned long i = 0;
+    if (name == 0 || len == 0) {
+        return -1;
+    }
+    while (h[i] != '\0' && i + 1 < len) {
+        name[i] = h[i];
+        i++;
+    }
+    name[i] = '\0';
+    return 0;
 }

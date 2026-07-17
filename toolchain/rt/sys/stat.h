@@ -62,7 +62,35 @@ struct stat {
 #define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
 #define S_ISSOCK(m) (((m) & S_IFMT) == S_IFSOCK)
 
+/* maize-94: the POSIX mode permission / special bits (octal). Borrowed oksh tests
+ * S_ISUID/S_ISGID/S_ISVTX and the execute bits (c_test.c's -u/-g/-k/-x, main.c's
+ * secure-path check). hostfs does not persist a full permission set, but these are the
+ * honest constants for the tests, matching the st_mode bits a real stat would fill. */
+#define S_ISUID 04000
+#define S_ISGID 02000
+#define S_ISVTX 01000
+#define S_IRWXU 00700
+#define S_IRUSR 00400
+#define S_IWUSR 00200
+#define S_IXUSR 00100
+#define S_IRWXG 00070
+#define S_IRGRP 00040
+#define S_IWGRP 00020
+#define S_IXGRP 00010
+#define S_IRWXO 00007
+#define S_IROTH 00004
+#define S_IWOTH 00002
+#define S_IXOTH 00001
+
 int mkdir(const char *pathname, mode_t mode);
+
+/* fstat (maize-94): descriptor stat over the forwarded sys_fstat (quesOS decision
+ * 8941). Declared here (its POSIX home) so a TU that includes <sys/stat.h> sees the
+ * prototype; body in errno.c. umask: quesOS has no umask state, so the body keeps a
+ * process-global mask (default 022), returns the previous value, and does not affect
+ * hostfs create modes (honest deviation). */
+int fstat(int fd, struct stat *st);
+mode_t umask(mode_t mask);
 
 /* maize-94: path-based stat as a libc COMPOSITE over open + fstat + close (the native ABI
  * has no path-stat syscall; SYS $04 is out of scope). Fills *st for a path, returning 0 or

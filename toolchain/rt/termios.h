@@ -29,10 +29,27 @@ struct termios {
 };
 
 /* c_cc indices (Linux values; the console honors VERASE / VEOF / VMIN / VTIME). */
-#define VERASE 2
-#define VEOF   4
-#define VTIME  5
-#define VMIN   6
+/* maize-94: the full Linux c_cc index set, so borrowed oksh's tty.c (which reads the
+ * whole control-char array to map INTR/QUIT/ERASE/KILL bindings) resolves every name.
+ * The console honors only VERASE/VEOF/VMIN/VTIME; the rest are honest indices into the
+ * frozen 20-byte c_cc[] whose bytes the console does not act on under wave 1. */
+#define VINTR    0
+#define VQUIT    1
+#define VERASE   2
+#define VKILL    3
+#define VEOF     4
+#define VTIME    5
+#define VMIN     6
+#define VSWTC    7
+#define VSTART   8
+#define VSTOP    9
+#define VSUSP   10
+#define VEOL    11
+#define VREPRINT 12
+#define VDISCARD 13
+#define VWERASE 14
+#define VLNEXT  15
+#define VEOL2   16
 
 /* c_lflag bits (Linux values). */
 #define ISIG   0x0001
@@ -45,11 +62,30 @@ struct termios {
    line discipline; the extra input bits below have no host effect (there is no
    parity, break, or XON/XOFF layer), so clearing them is a defined no-op. They
    are defined here only so a Linux-written editor compiles without field surgery. */
-#define ICRNL  0x0100
+#define IGNBRK 0x0001
 #define BRKINT 0x0002
+#define IGNPAR 0x0004
+#define PARMRK 0x0008
 #define INPCK  0x0010
 #define ISTRIP 0x0020
+#define INLCR  0x0040
+#define IGNCR  0x0080
+#define ICRNL  0x0100
+#define IUCLC  0x0200
 #define IXON   0x0400
+#define IXANY  0x0800
+#define IXOFF  0x1000
+#define IMAXBEL 0x2000
+
+/* c_lflag bits borrowed oksh's tty raw-mode setup clears (Linux values). The console
+ * models ISIG/ICANON/ECHO; the rest are defined no-ops (no host layer). */
+#define ECHOE   0x0010
+#define ECHOK   0x0020
+#define ECHONL  0x0040
+#define NOFLSH  0x0080
+#define TOSTOP  0x0100
+#define FLUSHO  0x1000
+#define PENDIN  0x4000
 
 /* c_oflag bits (Linux values). */
 #define OPOST  0x0001

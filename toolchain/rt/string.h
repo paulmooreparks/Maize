@@ -49,4 +49,16 @@ char   *strndup(const char *s, size_t n);
  * string; the caller must not free or modify it. */
 char   *strerror(int errnum);
 
+/* strsignal (maize-94): a static message for a signal number, for borrowed oksh's
+ * trap.c diagnostics. Returns a fixed "Signal N"-style string (body in string.c); the
+ * pointer is static, the caller must not free or modify it. */
+char   *strsignal(int sig);
+
+/* strcasecmp / strncasecmp (maize-94): the case-insensitive compares live in <strings.h>
+ * (bodies in strings.c), but borrowed oksh reaches for them through <string.h> (trap.c).
+ * Re-declared here with identical prototypes (a duplicate typedef-free redeclaration is
+ * legal C, cproc-tolerated) so either include resolves the call. */
+int     strcasecmp(const char *s1, const char *s2);
+int     strncasecmp(const char *s1, const char *s2, size_t n);
+
 #endif /* MAIZE_STRING_H */

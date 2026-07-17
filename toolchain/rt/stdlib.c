@@ -31,8 +31,9 @@
 #include "stdlib.h"
 #include "ctype.h"    /* isspace, isdigit (maize-142 numeric conversions) */
 #include "errno.h"
-#include "string.h"   /* memcpy, memset */
-#include "syscall.h"  /* sys_brk, _exit */
+#include "string.h"   /* memcpy, memset, strlen */
+#include "syscall.h"  /* sys_brk, _exit, sys_clock_ms, open */
+#include "fcntl.h"    /* maize-94: O_* flags for mkstemp */
 
 /* --- termination -------------------------------------------------------------- */
 /* These are noreturn: _exit issues SYS $3C, which halts the VM, so control never
@@ -888,4 +889,74 @@ system(const char *command)
     if (command == NULL)
         return 0;   /* no command processor available */
     return -1;      /* cannot execute the command */
+}
+
+/* rand / srand (maize-94): the ISO C pseudo-random pair for borrowed oksh's $RANDOM.
+ * The classic POSIX example LCG (glibc's TYPE_0 documented reference), yielding a
+ * 15-bit value (RAND_MAX == 0x7fff), which is exactly the range oksh's $RANDOM expects.
+ * Not cryptographic; $RANDOM is not meant to be. */
+static unsigned long g_rand_next = 1;
+
+int
+rand(void)
+{
+	g_rand_next = g_rand_next * 1103515245UL + 12345UL;
+	return (int)((g_rand_next >> 16) & 0x7fffUL);
+}
+
+void
+srand(unsigned seed)
+{
+	g_rand_next = seed;
+}
+
+/* mkstemp (maize-94): create-and-open a uniquely-named temp file from a "...XXXXXX"
+ * template (in place). hostfs has no O_EXCL, so uniqueness is best-effort: the six X's
+ * are filled from a clock-seeded rolling counter and open() with O_CREAT|O_RDWR is
+ * retried on failure. Returns the open fd, or -1 with errno (EINVAL for a bad template,
+ * EEXIST if every attempt collided). Honest single-user wave-1 deviation. */
+int
+mkstemp(char *template)
+{
+	static const char cs[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+	static unsigned long ctr = 0;
+	size_t len;
+	char *x;
+	int i;
+	int tries;
+
+	if (template == 0) {
+		errno = EINVAL;
+		return -1;
+	}
+	len = strlen(template);
+	if (len < 6) {
+		errno = EINVAL;
+		return -1;
+	}
+	x = template + (len - 6);
+	for (i = 0; i < 6; i++) {
+		if (x[i] != 'X') {
+			errno = EINVAL;
+			return -1;
+		}
+	}
+
+	for (tries = 0; tries < 256; tries++) {
+		unsigned long v = sys_clock_ms() + (ctr++) + (unsigned long)tries;
+		int fd;
+		for (i = 0; i < 6; i++) {
+			x[i] = cs[v % 36];
+			v /= 36;
+			if (v == 0) {
+				v = ctr + (unsigned long)(i + 1);
+			}
+		}
+		fd = open(template, O_RDWR | O_CREAT | O_TRUNC, 0600);
+		if (fd >= 0) {
+			return fd;
+		}
+	}
+	errno = EEXIST;
+	return -1;
 }

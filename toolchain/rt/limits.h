@@ -37,4 +37,12 @@
  * smaller, so this is a comfortable userland buffer bound, not an on-disk limit. */
 #define PATH_MAX   4096
 
+/* maize-94: name-length bounds borrowed oksh sizes login/host buffers with. Linux
+ * values; quesOS has no user/host database, so these bound userland scratch buffers,
+ * not any on-disk record. */
+#define LOGIN_NAME_MAX 256
+#define HOST_NAME_MAX  255
+#define NAME_MAX       255
+#define MAXHOSTNAMELEN 256
+
 #endif /* MAIZE_LIMITS_H */

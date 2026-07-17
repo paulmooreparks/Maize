@@ -82,9 +82,12 @@ lseek(int fd, long offset, int whence)
 }
 
 int
-fstat(int fd, void *statbuf)
+fstat(int fd, struct stat *statbuf)
 {
-    return (int)__syscall_ret(sys_fstat(fd, statbuf));
+    /* Type erasure confined to the syscall boundary: the public prototype is typed
+     * (struct stat*), and only here, at the single raw-stub call, do we cast to the
+     * void* the type-erased sys_fstat stub takes. */
+    return (int)__syscall_ret(sys_fstat(fd, (void *)statbuf));
 }
 
 /* path-mutating wrappers over the raw stubs, mirroring the open/close pattern above.

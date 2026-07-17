@@ -15,9 +15,14 @@
 #define O_RDONLY    0x0
 #define O_WRONLY    0x1
 #define O_RDWR      0x2
+#define O_ACCMODE   0x3   /* maize-94: mask for the access-mode bits (oksh io.c/shf.c) */
 #define O_CREAT     0x40
+#define O_EXCL      0x80   /* maize-94: create-exclusive (oksh exec.c); hostfs has no
+                            * exclusive-create, so it is accepted but not enforced. */
 #define O_TRUNC     0x200
 #define O_APPEND    0x400
+#define O_NONBLOCK  0x800  /* maize-94: accepted, no-op (console/hostfs are blocking) */
+#define O_CLOEXEC   0x80000 /* maize-94: accepted, no-op (no per-fd cloexec store) */
 #define O_DIRECTORY 0x10000
 
 /* lseek() whence values. */
@@ -40,5 +45,23 @@ int open(const char *path, int flags, ...);
 /* creat (maize-94): the classic open-for-create shorthand borrowed sbase cp reaches
  * for; a pure libc composite over open (body in errno.c), no new syscall. */
 int creat(const char *path, mode_t mode);
+
+/* fcntl (maize-94): borrowed oksh's io.c uses fcntl(fd, F_DUPFD, FDBASE) to lift the
+ * shell's own descriptors clear of the user range, and F_SETFD/FD_CLOEXEC to mark
+ * them close-on-exec. quesOS has no per-fd flag store, so:
+ *   F_DUPFD  -> a real lowest->=arg duplicate (dup loop, closing the intermediates).
+ *   F_GETFD/F_SETFD/F_GETFL/F_SETFL -> no-op (returns 0). FD_CLOEXEC is not modeled;
+ *     wave-1 pipelines dup the intended ends onto 0/1 before exec, so an un-cleared
+ *     shell fd being inherited is benign (honest deviation, decision-noted).
+ * F_* values are the frozen Linux numbers. Body in unistd.c (variadic like open). */
+#define F_DUPFD 0
+#define F_GETFD 1
+#define F_SETFD 2
+#define F_GETFL 3
+#define F_SETFL 4
+
+#define FD_CLOEXEC 1
+
+int fcntl(int fd, int cmd, ...);
 
 #endif /* MAIZE_FCNTL_H */

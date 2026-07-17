@@ -20,6 +20,9 @@ extern int errno;
 #define EPERM   1
 #define ENOENT  2   /* open of a missing path (kilo, maize-172, checks errno != ENOENT) */
 #define ESRCH   3   /* kill/wait target names no process (maize-94 sbase/oksh) */
+#define EINTR   4   /* interrupted call (maize-94 oksh: sigsuspend / wait retry loops) */
+#define ENOEXEC 8   /* exec of a non-executable image (maize-94 oksh exec.c) */
+#define EMFILE 24   /* too many open fds (maize-94 fcntl F_DUPFD exhaustion) */
 #define ECHILD 10   /* wait4: no matching child (quesOS do_wait returns -10) */
 #define EAGAIN 11   /* fork: process table full (quesOS do_fork returns -11) */
 #define EACCES 13   /* permission denied (maize-94 sbase/oksh) */

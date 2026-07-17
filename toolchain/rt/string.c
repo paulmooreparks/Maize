@@ -480,3 +480,14 @@ strerror(int errnum)
     default:     return "Unknown error";
     }
 }
+
+/* strsignal (maize-94): a static message for a signal number, for borrowed oksh's
+ * trap.c diagnostics. quesOS delivers only a small signal subset, so rather than a full
+ * name table (oksh carries its own sys_siglist for that), this returns a fixed generic
+ * string. The returned pointer is static; the caller must not free or modify it. */
+char *
+strsignal(int sig)
+{
+	(void)sig;
+	return "Unknown signal";
+}

@@ -95,3 +95,10 @@ tolower(int c)
         return c + ('a' - 'A');
     return c;
 }
+
+/* isascii (maize-94): true for a 7-bit character value (0..127). */
+int
+isascii(int c)
+{
+	return (c >= 0 && c < 128);
+}

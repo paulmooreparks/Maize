@@ -34,6 +34,10 @@ pid_t waitpid(pid_t pid, int *status, int options);
 #define WIFSIGNALED(s)  (WTERMSIG(s) != 0 && WTERMSIG(s) != 0x7F)
 #define WIFSTOPPED(s)   (((s) & 0xFF) == 0x7F)   /* always false today (no job-control stop) */
 #define WSTOPSIG(s)     WEXITSTATUS(s)
+/* WCOREDUMP (maize-94): quesOS never sets a core-dump flag (no core files), so this is
+ * always false. Borrowed oksh's jobs.c reports it in a signal-death message. */
+#define WCOREDUMP(s)    0
+#define WIFCONTINUED(s) 0
 
 /* waitpid options (Linux values). quesOS's wait4 is a blocking reap; WNOHANG is accepted
  * for source compatibility (a non-blocking poll rides options straight to sys_wait4). */

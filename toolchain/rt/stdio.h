@@ -66,6 +66,18 @@ typedef struct _FILE FILE;
 extern FILE *stdout;
 extern FILE *stderr;
 
+/* fileno (maize-94): the underlying descriptor of a stream, for borrowed oksh's
+ * history.c / io.c. Body in stdio.c (returns stream->fd). */
+int fileno(FILE *stream);
+
+/* fgetc / getc / getchar (maize-94): single-byte stream reads borrowed oksh's
+ * history.c uses. Bodies in stdio.c over the buffered read path (fread). Return the
+ * byte as an unsigned char promoted to int, or EOF at end / on error. getc is the
+ * function form (not the macro), which is a conforming implementation. */
+int fgetc(FILE *stream);
+int getc(FILE *stream);
+int getchar(void);
+
 int putchar(int c);
 int putc(int c, FILE *stream);
 int fputc(int c, FILE *stream);
@@ -115,6 +127,10 @@ ssize_t getline(char **lineptr, size_t *n, FILE *stream);
 
 int    fseek(FILE *stream, long offset, int whence);
 long   ftell(FILE *stream);
+
+/* rewind (maize-94): fseek(stream, 0, SEEK_SET) discarding the return, the ISO C
+ * shorthand borrowed oksh's history.c uses. Body in stdio.c. */
+void   rewind(FILE *stream);
 int    fflush(FILE *stream);   /* NULL flushes every open buffered stream */
 int    feof(FILE *stream);
 int    ferror(FILE *stream);

@@ -1,0 +1,83 @@
+maize-94: cast char/unsigned-char pointer mismatches in the emacs-mode line editor's
+key-binding table so the strict cproc-qbe front end accepts them.
+
+Upstream file/function: emacs.c (kb_find_hist_func, kb_del, x_bind and the kb_decode
+call sites). Why: a key binding's `seq` and `args` are stored as `unsigned char *`
+(so 8-bit / meta-key bytes stay unsigned), but are compared and copied with the
+`char *`-typed strcmp / strlcpy and passed to kb_decode(const char *). The pinned
+cproc-qbe rejects the char/unsigned-char pointer mix that gcc only warns on
+(-Wpointer-sign), so each call site gets an explicit (char *) cast. Pure
+type-annotation: the stored bytes and the comparisons are unchanged; the casts only
+spell the standard-required conversions explicitly, without erasing any type.
+diff --git a/emacs.c b/emacs.c
+index af864a2..2521cb0 100644
+--- a/emacs.c
++++ b/emacs.c
+@@ -876,7 +876,7 @@ kb_find_hist_func(char c)
+ 	line[0] = c;
+ 	line[1] = '\0';
+ 	TAILQ_FOREACH(k, &kblist, entry)
+-		if (!strcmp(k->seq, line))
++		if (!strcmp((char *)k->seq, line))
+ 			return (k->ftab->xf_func);
+ 
+ 	return (x_insert);
+@@ -1350,7 +1350,7 @@ kb_add_string(kb_func func, void *args, char *str)
+ 	k->ftab = xf;
+ 	k->args = args ? strdup(args) : NULL;
+ 
+-	strlcpy(k->seq, str, count + 1);
++	strlcpy((char *)k->seq, str, count + 1);
+ 
+ 	TAILQ_INSERT_TAIL(&kblist, k, entry);
+ 
+@@ -1383,10 +1383,10 @@ kb_print(struct kb_entry *k)
+ {
+ 	if (!(k->ftab->xf_flags & XF_NOBIND))
+ 		shprintf("%s = %s\n",
+-		    kb_decode(k->seq), k->ftab->xf_name);
++		    kb_decode((char *)k->seq), k->ftab->xf_name);
+ 	else if (k->args) {
+-		shprintf("%s = ", kb_decode(k->seq));
+-		shprintf("'%s'\n", kb_decode(k->args));
++		shprintf("%s = ", kb_decode((char *)k->seq));
++		shprintf("'%s'\n", kb_decode((char *)k->args));
+ 	}
+ }
+ 
+@@ -1427,7 +1427,7 @@ x_bind(const char *a1, const char *a2,
+ 	if (a2 == NULL) {
+ 		/* print binding */
+ 		TAILQ_FOREACH(k, &kblist, entry)
+-			if (!strcmp(k->seq, in)) {
++			if (!strcmp((char *)k->seq, in)) {
+ 				kb_print(k);
+ 				return (0);
+ 			}
+@@ -1438,7 +1438,7 @@ x_bind(const char *a1, const char *a2,
+ 	if (strlen(a2) == 0) {
+ 		/* clear binding */
+ 		TAILQ_FOREACH_SAFE(k, &kblist, entry, kb)
+-			if (!strcmp(k->seq, in)) {
++			if (!strcmp((char *)k->seq, in)) {
+ 				kb_del(k);
+ 				break;
+ 			}
+@@ -1449,7 +1449,7 @@ x_bind(const char *a1, const char *a2,
+ 	if (macro) {
+ 		/* delete old mapping */
+ 		TAILQ_FOREACH_SAFE(k, &kblist, entry, kb)
+-			if (!strcmp(k->seq, in)) {
++			if (!strcmp((char *)k->seq, in)) {
+ 				kb_del(k);
+ 				break;
+ 			}
+@@ -1464,7 +1464,7 @@ x_bind(const char *a1, const char *a2,
+ 		if (!strcmp(x_ftab[i].xf_name, a2)) {
+ 			/* delete old mapping */
+ 			TAILQ_FOREACH_SAFE(k, &kblist, entry, kb)
+-				if (!strcmp(k->seq, in)) {
++				if (!strcmp((char *)k->seq, in)) {
+ 					kb_del(k);
+ 					break;
+ 				}
