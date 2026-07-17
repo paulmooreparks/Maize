@@ -16,4 +16,11 @@ typedef long          off_t;    /* 64-bit file offset (LP64) */
 typedef long          ssize_t;  /* signed size */
 typedef unsigned int  mode_t;   /* st_mode / mkdir perm bits */
 
+/* maize-94: dev_t / ino_t match struct stat's st_dev / st_ino widths (sys/stat.h,
+ * both unsigned long). Borrowed sbase (fs.h's struct history, the cp/mv/rm
+ * same-file guard) references them by name; they are ordinary POSIX aliases, not a
+ * new ABI. */
+typedef unsigned long dev_t;    /* device id (st_dev) */
+typedef unsigned long ino_t;    /* inode number (st_ino) */
+
 #endif /* MAIZE_SYS_TYPES_H */

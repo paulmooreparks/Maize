@@ -62,4 +62,8 @@ int   dup2(int oldfd, int newfd);
 int   chdir(const char *path);
 char *getcwd(char *buf, unsigned long size);
 
+/* unlink (maize-94): POSIX file removal, the name borrowed sbase (cp -f retry, the
+ * wave-1 rm) uses; body in errno.c beside remove() (its ISO C twin). */
+int   unlink(const char *path);
+
 #endif /* MAIZE_UNISTD_H */

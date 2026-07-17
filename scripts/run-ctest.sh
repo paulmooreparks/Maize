@@ -1880,9 +1880,10 @@ run_userland94_fixtures() {
     ubuild="${REPO_ROOT}/userland/build-userland.sh"
     progs="${WORK_DIR}/ul94-progs"
     bindir="${WORK_DIR}/ul94-bin"
+    rwdir="${WORK_DIR}/ul94-rw"
     quesos="${WORK_DIR}/ul94-quesos.mzx"
     log="${WORK_DIR}/ul94.log"
-    rm -rf "$progs" "$bindir"; mkdir -p "$progs" "$bindir"
+    rm -rf "$progs" "$bindir" "$rwdir"; mkdir -p "$progs" "$bindir" "$rwdir"
 
     # build-userland.sh stages a scratch checkout with cp -a + find; skip loudly on a host
     # lacking them rather than reporting a spurious failure (never silently pass, though:
@@ -1897,15 +1898,16 @@ run_userland94_fixtures() {
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
     # Build the shipped wave-1 /bin set through the userland harness (the vendored sbase).
-    if ! sh "$ubuild" --preset "$PRESET" --out "$bindir" true false echo cat pwd printf \
-            >>"$log" 2>&1; then
+    if ! sh "$ubuild" --preset "$PRESET" --out "$bindir" \
+            true false echo cat pwd printf cp mv rm >>"$log" 2>&1; then
         echo "[FAIL] userland94: build-userland.sh failed to build the wave-1 sbase set"
         cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
     # The launcher drivers are quesOS worklist entries (compiled like any fixture):
-    # sbase_launch (echo|cat pipeline) and printf_launch (the arg-taking printf).
-    for _drv in sbase_launch printf_launch; do
+    # sbase_launch (echo|cat pipeline), printf_launch, and the cp/mv/rm fs launchers
+    # (each seeds a file on the /rw mount, execve's its util, and verifies the result).
+    for _drv in sbase_launch printf_launch cp_launch mv_launch rm_launch; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${_drv}.mzx" \
                 "${REPO_ROOT}/os/quesos/${_drv}.c" >>"$log" 2>&1; then
             echo "[FAIL] userland94: ${_drv}.c compile failed"; cat "$log" >&2
@@ -1916,11 +1918,14 @@ run_userland94_fixtures() {
     cp "${bindir}/true.mzx" "${bindir}/false.mzx" "${bindir}/pwd.mzx" "$progs/"
     pnat=$(host_to_native "$progs")
     bnat=$(host_to_native "$bindir")
+    rnat=$(host_to_native "$rwdir")
 
-    # Helper: run one worklist program under quesOS with /progs + /bin mounted, echo stdout.
+    # Helper: run one worklist program under quesOS with /progs + /bin (ro) and a
+    # writable /rw scratch mounted (the cp/mv/rm launchers seed + verify files there).
     ul94_run() {
-        MSYS2_ARG_CONV_EXCL='/progs:/bin' timeout 90 "$MAIZE" --no-root \
+        MSYS2_ARG_CONV_EXCL='/progs:/bin:/rw' timeout 90 "$MAIZE" --no-root \
             --mount "${pnat}=/progs:ro" --mount "${bnat}=/bin:ro" \
+            --mount "${rnat}=/rw:rw" \
             "$quesos" "$1" 2>/dev/null
     }
 
@@ -1945,6 +1950,28 @@ run_userland94_fixtures() {
         echo "[FAIL] userland94_printf"; printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
+
+    # AC 8935 standalone (arg-taking, filesystem): cp / mv / rm, each via its launcher
+    # fixture (decision 9078) against the writable /rw mount. cp copies a seeded file
+    # and the content is verified; mv renames it (dst present, src gone); rm unlinks it
+    # (target gone). Each drives fork+execve+wait4 plus real hostfs open/creat/read/
+    # write/unlink/rename through the quesOS dispatcher.
+    ul94_fslaunch() {
+        _name="$1"; _prog="$2"; _needle="$3"
+        TOTAL=$((TOTAL + 1))
+        set +e; _out=$(ul94_run "$_prog"); set -e
+        if printf '%s\n' "$_out" | grep -qF "$_needle"; then
+            echo "[PASS] userland94_${_name}"
+        else
+            echo "[FAIL] userland94_${_name}"
+            echo "        expected marker: \"${_needle}\""
+            printf '%s\n' "$_out" | sed 's/^/          | /'
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+    }
+    ul94_fslaunch cp /progs/cp_launch.mzx "cp-launch: PASS"
+    ul94_fslaunch mv /progs/mv_launch.mzx "mv-launch: PASS"
+    ul94_fslaunch rm /progs/rm_launch.mzx "rm-launch: PASS"
 
     # AC 8935 standalone: true (status 0), false (status 1), pwd (prints "/" then status 0).
     ul94_standalone() {

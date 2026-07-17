@@ -9,6 +9,8 @@
 #ifndef MAIZE_FCNTL_H
 #define MAIZE_FCNTL_H
 
+#include "sys/types.h"   /* mode_t (creat) */
+
 /* open() flags (x86-64 fixed; docs/design/hostfs.md section 2). */
 #define O_RDONLY    0x0
 #define O_WRONLY    0x1
@@ -34,5 +36,9 @@
  * O_CREAT permission mode is the optional third argument, read via va_arg only when
  * O_CREAT is set and defaulting to 0 otherwise; a three-argument call keeps working. */
 int open(const char *path, int flags, ...);
+
+/* creat (maize-94): the classic open-for-create shorthand borrowed sbase cp reaches
+ * for; a pure libc composite over open (body in errno.c), no new syscall. */
+int creat(const char *path, mode_t mode);
 
 #endif /* MAIZE_FCNTL_H */

@@ -403,6 +403,61 @@ strndup(const char *s, size_t n)
     return p;
 }
 
+/* --- basename / dirname (maize-94) -------------------------------------------
+ * POSIX <libgen.h> path splitters, added WITH their consumer (sbase libutil/
+ * enmasse.c, cp/mv's destination-path builder). Both may modify the passed path
+ * (POSIX permits it) and return a pointer into it or to a static ".". Semantics
+ * per POSIX: trailing '/' are stripped (except a root of all-slashes, which is
+ * "/"); basename returns the final component, dirname the parent (or "." when the
+ * path has no '/'). A NULL or empty path yields ".". */
+static char *
+path_split(char *path, int want_dir)
+{
+    static char dot[] = ".";
+    static char slash[] = "/";
+    char *p, *last;
+
+    if (path == NULL || *path == '\0')
+        return dot;
+
+    /* Strip trailing slashes (but keep a single leading-root "/"). */
+    p = path + strlen(path) - 1;
+    while (p > path && *p == '/')
+        *p-- = '\0';
+    if (p == path && *p == '/')
+        return slash;                 /* path was all slashes -> root */
+
+    last = path;
+    for (p = path; *p != '\0'; p++)
+        if (*p == '/')
+            last = p;
+
+    if (!want_dir)
+        return (*last == '/') ? last + 1 : last;
+
+    /* dirname: everything up to (not including) the last '/'. */
+    if (last == path)
+        return (*last == '/') ? slash : dot;   /* "/foo" -> "/", "foo" -> "." */
+    *last = '\0';
+    /* Collapse any trailing slashes the truncation exposed. */
+    p = last - 1;
+    while (p > path && *p == '/')
+        *p-- = '\0';
+    return path;
+}
+
+char *
+basename(char *path)
+{
+    return path_split(path, 0);
+}
+
+char *
+dirname(char *path)
+{
+    return path_split(path, 1);
+}
+
 /* --- strerror (maize-172) ----------------------------------------------------
  * A static message per errno code the runtime names (errno.h). The set is small
  * and matched by switch rather than a sparse table; unknown codes get a fixed

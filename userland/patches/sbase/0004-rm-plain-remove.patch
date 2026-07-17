@@ -1,0 +1,91 @@
+maize-94: rm is plain-file removal (recursive/dir removal deferred).
+
+Upstream file/function: rm.c, main().
+Why: the upstream recurse() / unlinkat() / fdopendir() removal engine needs
+path-relative *at and fd-based directory enumeration that hostfs does not provide;
+that surface is deferred to maize-245. Wave-1 rm removes plain files (stat +
+unlink) and reports a directory target rather than descending it, so this overlay
+drops the dependency on libutil/recurse.c and libutil/rm.c entirely.
+diff --git a/rm.c b/rm.c
+index 8bebfcb..b341207 100644
+--- a/rm.c
++++ b/rm.c
+@@ -1,9 +1,14 @@
+ /* See LICENSE file for copyright and license details. */
+-#include <fcntl.h>
++#include <sys/stat.h>
++
++#include <errno.h>
++#include <unistd.h>
+ 
+ #include "fs.h"
+ #include "util.h"
+ 
++int rm_status = 0;
++
+ static void
+ usage(void)
+ {
+@@ -13,29 +18,53 @@ usage(void)
+ int
+ main(int argc, char *argv[])
+ {
+-	struct recursor r = { .fn = rm, .maxdepth = 1, .follow = 'P' };
++	struct stat st;
++	int fflag = 0, rflag = 0;
+ 
+ 	ARGBEGIN {
+ 	case 'f':
+-		r.flags |= SILENT;
++		fflag = 1;
+ 		break;
+ 	case 'R':
+ 	case 'r':
+-		r.maxdepth = 0;
++		rflag = 1;
+ 		break;
+ 	default:
+ 		usage();
+ 	} ARGEND
+ 
+ 	if (!argc) {
+-		if (!(r.flags & SILENT))
++		if (!fflag)
+ 			usage();
+-		else
+-			return 0;
++		return 0;
+ 	}
+ 
+-	for (; *argv; argc--, argv++)
+-		recurse(AT_FDCWD, *argv, NULL, &r);
++	/* maize-94: hostfs has no path-relative *at and no fd-based directory
++	 * enumeration (fdopendir), so the upstream recurse() / unlinkat() removal
++	 * engine is out of scope for wave 1; recursive and directory removal are
++	 * deferred to maize-245. Wave-1 rm removes plain files (stat + unlink); a
++	 * directory target is reported, not descended, even under -R/-r. */
++	(void)rflag;
++	for (; *argv; argv++) {
++		if (stat(*argv, &st) < 0) {
++			if (!fflag) {
++				weprintf("stat %s:", *argv);
++				rm_status = 1;
++			}
++			continue;
++		}
++		if (S_ISDIR(st.st_mode)) {
++			weprintf("%s: is a directory (recursive rm deferred to maize-245)\n", *argv);
++			rm_status = 1;
++			continue;
++		}
++		if (unlink(*argv) < 0) {
++			if (!fflag) {
++				weprintf("unlink %s:", *argv);
++				rm_status = 1;
++			}
++		}
++	}
+ 
+-	return rm_status || recurse_status;
++	return rm_status;
+ }

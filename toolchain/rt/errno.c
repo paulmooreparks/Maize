@@ -111,6 +111,25 @@ rename(const char *old, const char *new)
     return (int)__syscall_ret(sys_rename(old, new));
 }
 
+/* maize-94: unlink is the POSIX file-removal name (remove() above is its ISO C twin;
+ * both wrap sys_unlink). Borrowed sbase (cp's -f retry, the wave-1 rm) calls unlink()
+ * by name. On hostfs it removes a file on a writable mount, EROFS on a :ro mount. */
+int
+unlink(const char *path)
+{
+    return (int)__syscall_ret(sys_unlink(path));
+}
+
+/* maize-94: creat is the classic open-for-create shorthand, a pure libc composite
+ * (creat(p, m) == open(p, O_WRONLY|O_CREAT|O_TRUNC, m)); no new syscall. Borrowed
+ * sbase cp opens its destination with creat(). Errors surface through open()'s
+ * errno + -1 contract. */
+int
+creat(const char *path, mode_t mode)
+{
+    return open(path, O_WRONLY | O_CREAT | O_TRUNC, (int)mode);
+}
+
 /* maize-94: path-based stat as a composite over open + fstat + close. Maize's native ABI
  * has no path-stat syscall (SYS $04 is out of scope), and sbase (pwd, cp, ls) reaches for
  * stat(path, &st). Open the path, fstat the descriptor, close. A directory is not always

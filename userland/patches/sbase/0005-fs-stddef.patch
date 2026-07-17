@@ -1,0 +1,18 @@
+maize-94: fs.h includes <stddef.h> for size_t.
+
+Upstream file/function: fs.h (header).
+Why: struct recursor has a size_t field but fs.h never includes a size_t provider,
+relying on the includer having pulled one in first (upstream builds get it
+transitively). Under Maize's -nostdinc RT slice, cp.c/rm.c include fs.h before any
+stdio/stddef, so size_t is undefined at struct-parse time. Add the explicit
+<stddef.h> include fs.h always needed.
+diff --git a/fs.h b/fs.h
+index 00ecd3b..eceb9e5 100644
+--- a/fs.h
++++ b/fs.h
+@@ -1,4 +1,5 @@
+ /* See LICENSE file for copyright and license details. */
++#include <stddef.h>
+ #include <limits.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
