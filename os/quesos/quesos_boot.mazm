@@ -32,6 +32,13 @@ GLOBAL quesos_arm_timer
 GLOBAL quesos_idle
 GLOBAL quesos_con_status
 GLOBAL quesos_con_data
+GLOBAL quesos_fb_width
+GLOBAL quesos_fb_height
+GLOBAL quesos_fb_format
+GLOBAL quesos_fb_slot_select
+GLOBAL quesos_fb_base_read
+GLOBAL quesos_fb_base_write
+GLOBAL quesos_fb_status_read
 
 EXTERN quesos_main             ; quesos.c: init entry, runs the worklist (noreturn)
 EXTERN quesos_syscall          ; quesos.c: cause-7 dispatcher (reads g_current->saved_rs)
@@ -262,6 +269,48 @@ quesos_con_status:
 quesos_con_data:
     CLR RV
     IN  $00 RV.B0              ; RV = console data byte (clears input-available)
+    RET
+
+; ----------------------------------------------------------------------------------
+; maize-236: framebuffer registration-table metal helpers. Privileged IN/OUT over the
+; fb control ports, callable from the C dispatcher (supervisor mode). Geometry ports
+; ($50/$51/$52) are read-only host config; $56 selects the slot; $53 is the selected
+; slot's base (nonzero write claims, zero write releases; read returns the stored base);
+; $55 is the selected slot's status (bit2 = last claim rejected). The first C arg is in
+; R0, results in RV, per the Maize C ABI. IN/OUT are legal here because quesOS runs
+; supervisor; a user process can never reach these ports (cause-4 in user mode).
+; ----------------------------------------------------------------------------------
+quesos_fb_width:
+    CLR RV
+    IN  $50 RV.H0             ; RV = framebuffer width (pixels)
+    RET
+
+quesos_fb_height:
+    CLR RV
+    IN  $51 RV.H0             ; RV = framebuffer height (pixels)
+    RET
+
+quesos_fb_format:
+    CLR RV
+    IN  $52 RV.B0             ; RV = pixel format id (1 = XRGB8888)
+    RET
+
+quesos_fb_slot_select:
+    OUT R0.B0 $56             ; select slot R0 for the base/status ops below
+    RET
+
+quesos_fb_base_read:
+    CLR RV
+    IN  $53 RV.H0             ; RV = selected slot's stored base (0 = unclaimed)
+    RET
+
+quesos_fb_base_write:
+    OUT R0 $53               ; nonzero = claim the selected slot at R0; zero = release it
+    RET
+
+quesos_fb_status_read:
+    CLR RV
+    IN  $55 RV.B0            ; RV = selected slot's status (bit2 = register-rejected)
     RET
 
 ; ----------------------------------------------------------------------------------

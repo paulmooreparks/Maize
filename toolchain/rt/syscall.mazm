@@ -114,6 +114,15 @@ GLOBAL sys_pipe
 GLOBAL sys_dup2
 GLOBAL sys_dup
 
+; maize-236 framebuffer registration: quesOS-private guest-only calls that trap to the
+; cause-7 dispatcher. A private 8-bit HIGH block ($E0/$E1/$E2): the SYS instruction rides
+; only an 8-bit number into the trap frame, so the design's 0x1000-0x1002 range is realized
+; here without an ISA change (the contract is unchanged; see quesos.c). Only meaningful
+; under quesOS; a bare-VM program that calls these hits the native SYS table instead.
+GLOBAL sys_fb_geometry
+GLOBAL sys_fb_register
+GLOBAL sys_fb_release
+
 sys_read:
     SYS $00                 ; fd/buf/count already in R0/R1/R2 per the C ABI
     RET
@@ -216,6 +225,18 @@ sys_dup2:
 
 sys_dup:
     SYS $20                 ; R0=oldfd; RV = newfd or -errno
+    RET
+
+sys_fb_geometry:
+    SYS $E0                 ; R0=out_uva (u32 width,height,format); RV = 0
+    RET
+
+sys_fb_register:
+    SYS $E1                 ; R0=base_uva; RV = slot or -errno
+    RET
+
+sys_fb_release:
+    SYS $E2                 ; no args; RV = 0 or -errno
     RET
 
 _exit:

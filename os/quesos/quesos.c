@@ -49,6 +49,14 @@ void quesos_arm_timer(void);                 /* program the instruction-tick tim
 void quesos_idle(void);                      /* SETINT; spin so on_input_tick keeps running */
 u64  quesos_con_status(void);                /* IN $01: console status (bit0 input-avail)  */
 u64  quesos_con_data(void);                  /* IN $00: console data byte (clears avail)   */
+/* maize-236: framebuffer registration-table ports (privileged IN/OUT, supervisor only). */
+u64  quesos_fb_width(void);                  /* IN $50: framebuffer width (pixels)         */
+u64  quesos_fb_height(void);                 /* IN $51: framebuffer height (pixels)        */
+u64  quesos_fb_format(void);                 /* IN $52: pixel format id (1 = XRGB8888)     */
+void quesos_fb_slot_select(u64 slot);        /* OUT $56: select the slot for base/status   */
+u64  quesos_fb_base_read(void);              /* IN $53: selected slot's base (0=unclaimed) */
+void quesos_fb_base_write(u64 base);         /* OUT $53: nonzero claims, zero releases      */
+u64  quesos_fb_status_read(void);            /* IN $55: selected slot status (bit2=reject) */
 
 /* quesOS's private kernel stack (quesos_boot.mazm switches RS here at _start and on
  * every trap entry, so the C dispatcher never runs on a user stack). 64 KiB. */
@@ -102,6 +110,29 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define SYS_exit   0x3C
 #define SYS_wait4  0x3D
 
+/* maize-236: framebuffer registration syscalls (Decision D6). These are quesOS-private,
+ * guest-only, and Maize-specific display arbitration with no real Linux syscall-number
+ * analog (Linux does it via ioctl on /dev/fb0 or a VT ioctl). Decision D6 names the
+ * 0x1000-0x1002 range, but the SYS instruction rides only an 8-bit number into the
+ * cause-7 frame (src/cpu.cpp operand1.b0()), and widening it would be an ISA change this
+ * card excludes; so the range is realized as a private 8-bit HIGH block, distinct from
+ * both the Linux-mirrored process numbers and the native Maize-private $F0-$F6 block. The
+ * syscall CONTRACT (args, returns, errno) matches the spec exactly. See card comment. */
+#define SYS_fb_geometry 0xE0   /* (u64 out_uva)  -> long (0)                              */
+#define SYS_fb_register 0xE1   /* (u64 base_uva) -> long (slot, or -errno)                */
+#define SYS_fb_release  0xE2   /* (void)         -> long (0, or -errno)                   */
+
+/* maize-236 per-exec rejection errno magnitudes (Decision D7; real Linux values so a
+ * ported shell's strerror needs no Maize-specific table). */
+#define QOS_ENODEV 19          /* no display attached (claim rejected by the device)      */
+#define QOS_EBUSY  16          /* this process already holds a registration (Decision D3) */
+#define QOS_EINVAL 22          /* base_uva page unmapped / zero                           */
+#define QOS_ENOSPC 28          /* registration table full                                 */
+#define QOS_EBADF   9          /* release with nothing registered                         */
+
+/* maize-236: registration-table capacity, mirroring src/maize_cpu.h fb_max_slots. */
+#define QUESOS_FB_MAX_SLOTS 8
+
 /* ==================================================================================
  * Process table.
  * ================================================================================== */
@@ -135,6 +166,7 @@ struct pcb {
     u64  block_buf;              /* user buffer VA for a blocked pipe read/write      */
     long block_count;            /* requested byte count for a blocked pipe op        */
     int  fd[QUESOS_MAX_FD];      /* per-process fd table: open-file-description index  */
+    long fb_slot;                /* maize-236: held framebuffer slot, or -1 (none)     */
     char path[QUESOS_PATH_CAP];   /* argv[0] for the reap transcript                   */
 };
 
@@ -143,6 +175,7 @@ struct pcb *g_current;            /* the running process (read by the metal tram
 static long g_next_pid = 1;
 
 static void schedule(void);       /* round-robin scheduler; noreturn (defined below)    */
+static void fb_release_held(struct pcb *p);   /* maize-236: release a held fb slot (exit/exec) */
 
 /* Boot worklist: quesOS's own argv[1..] is the exec worklist (maize-24 decision D7). */
 static char g_pathbuf[QUESOS_MAX_PROC][QUESOS_PATH_CAP];
@@ -607,6 +640,7 @@ static struct pcb *spawn(const char *path, long parent) {
     p->parent = parent;
     p->exit_status = 0;
     p->block_kind = BLK_NONE;
+    p->fb_slot = -1;   /* maize-236: no framebuffer registration until SYS_fb_register */
     for (j = 0; j < QUESOS_PATH_CAP - 1 && path[j]; ++j) { p->path[j] = path[j]; }
     p->path[j] = 0;
     fdtable_init(p);
@@ -883,6 +917,10 @@ static long do_fork(void) {
     child->wait_for = 0;
     child->wait_status_uva = 0;
     child->block_kind = BLK_NONE;
+    /* maize-236 Decision D4: fork does NOT propagate the framebuffer registration. The
+     * registered base is a physical-frame snapshot belonging to the parent; copying fb_slot
+     * would let the child's later exit wrongly release the parent's still-live claim. */
+    child->fb_slot = -1;
     for (k = 0; k < QUESOS_PATH_CAP; ++k) { child->path[k] = parent->path[k]; }
     fdtable_copy(child, parent);   /* the child inherits the fd table (shared OFDs) */
 
@@ -950,6 +988,7 @@ static void do_exit(long status) {
     self->exit_status = status;
     self->state = P_ZOMBIE;
     fdtable_close_all(self);   /* closing a pipe write end wakes blocked readers (EOF) */
+    fb_release_held(self);     /* maize-236: free any framebuffer registration (switch-back) */
 
     parent = find_by_pid(self->parent);
     if (parent != 0 && parent->state == P_BLOCKED
@@ -1012,6 +1051,12 @@ static long do_execve(u64 path_uva, u64 argv_uva, u64 envp_uva) {
     g_arg_envc = nstr - g_arg_argc;
     g_arg_pack = pack;
 
+    /* maize-236 Decision D5: release any framebuffer registration before the old address
+     * space is torn down. The registered base is a frame of the OLD image about to be
+     * orphaned; leaving it claimed would show stale memory and wrongly block the new
+     * image's own SYS_fb_register with -EBUSY. */
+    fb_release_held(self);
+
     /* Build a fresh address space (the old one's frames leak; acceptable for the POC
      * pool) and load the new image. build_start_block lays out the marshalled argv. */
     build_address_space(self);
@@ -1022,6 +1067,78 @@ static long do_execve(u64 path_uva, u64 argv_uva, u64 envp_uva) {
     for (i = 0; i < QUESOS_PATH_CAP - 1 && kpath[i]; ++i) { self->path[i] = kpath[i]; }
     self->path[i] = 0;
     return 0;
+}
+
+/* ==================================================================================
+ * maize-236: framebuffer registration syscalls + exec/exit cleanup.
+ * The device holds the registration table; quesOS tracks which slot (if any) a process
+ * owns in pcb.fb_slot (Decision D1). IN/OUT are privileged, so only quesOS (supervisor)
+ * can reach the ports: a user process must ask via these syscalls.
+ * ================================================================================== */
+
+/* SYS_fb_geometry(out_uva): write {u32 width; u32 height; u32 format} to the caller's
+ * buffer. Reads the host-config ports directly (legal: quesOS runs supervisor). Always
+ * succeeds. Geometry is global and fixed per boot (Decision D2). */
+static long do_fb_geometry(u64 out_uva) {
+    struct pcb *self = g_current;
+    as_write32(self, out_uva,      (u32)quesos_fb_width());
+    as_write32(self, out_uva + 4u, (u32)quesos_fb_height());
+    as_write32(self, out_uva + 8u, (u32)quesos_fb_format());
+    return 0;
+}
+
+/* SYS_fb_register(base_uva): register the caller's pixel buffer and return its slot.
+ * -EBUSY if the caller already holds one (Decision D3), -EINVAL if base_uva is zero or its
+ * page is unmapped, -ENOSPC if the table is full, -ENODEV if the device rejects the claim
+ * (a display-less view; Decision D7, evolving maize-221). On success sets pcb.fb_slot. */
+static long do_fb_register(u64 base_uva) {
+    struct pcb *self = g_current;
+    u64 pte, pa;
+    long slot;
+
+    if (self->fb_slot >= 0) { return -(long)QOS_EBUSY; }
+    if (base_uva == 0) { return -(long)QOS_EINVAL; }
+    pte = pte_get(self->l0_pa, (base_uva >> 12) & 0x1FF);
+    if ((pte & PTE_V) == 0) { return -(long)QOS_EINVAL; }
+    pa = user_pa(self, base_uva);
+
+    /* Free-slot scan: select each slot and read its base back; a zero base is free. The
+     * dispatcher runs with interrupts masked, so no other process can race the claim
+     * between the scan and the write. */
+    for (slot = 0; slot < QUESOS_FB_MAX_SLOTS; ++slot) {
+        quesos_fb_slot_select((u64)slot);
+        if (quesos_fb_base_read() == 0) { break; }
+    }
+    if (slot >= QUESOS_FB_MAX_SLOTS) { return -(long)QOS_ENOSPC; }
+
+    quesos_fb_slot_select((u64)slot);
+    quesos_fb_base_write(pa);
+    /* Device rejected a display-less claim: STATUS bit2 set and the base stayed 0. */
+    if ((quesos_fb_status_read() & 0x4u) != 0 || quesos_fb_base_read() == 0) {
+        return -(long)QOS_ENODEV;
+    }
+    self->fb_slot = slot;
+    return slot;
+}
+
+/* SYS_fb_release(): release the caller's registration. -EBADF if it holds none. */
+static long do_fb_release(void) {
+    struct pcb *self = g_current;
+    if (self->fb_slot < 0) { return -(long)QOS_EBADF; }
+    quesos_fb_slot_select((u64)self->fb_slot);
+    quesos_fb_base_write(0);   /* zero base releases the slot (device switches scanout back) */
+    self->fb_slot = -1;
+    return 0;
+}
+
+/* Cleanup: release a held registration on exit / exec (Decision D5, the per-exec-lifetime
+ * scoping). A no-op when the process holds none. */
+static void fb_release_held(struct pcb *p) {
+    if (p->fb_slot >= 0) {
+        quesos_fb_slot_select((u64)p->fb_slot);
+        quesos_fb_base_write(0);
+        p->fb_slot = -1;
+    }
 }
 
 /* Timer IRQ (vector 32): the running process is preempted at an instruction boundary.
@@ -1075,6 +1192,9 @@ void quesos_syscall(void) {
                          if (result == 0) { return; }             /* new image entered */
                          break;
         case SYS_exit:   do_exit((long)a0); return;               /* noreturn */
+        case SYS_fb_geometry: result = do_fb_geometry(a0);        break;
+        case SYS_fb_register: result = do_fb_register(a0);        break;
+        case SYS_fb_release:  result = do_fb_release();           break;
         default:
             qos_puts("[quesos] unhandled syscall ");
             qos_put_u64(num);

@@ -1671,7 +1671,9 @@ run_quesos_ac_fixtures() {
     fi
     for src in fork_isolation fork_multi exec_launch exec_target pipe_roundtrip \
                pipe_bigwrite pipeline producer filter consumer stress20 preempt \
-               blocked console_echo; do
+               blocked console_echo \
+               fb_register fb_reject fb_fork_cleanup fb_exec_launch fb_exec_target \
+               fb_exit_cleanup; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
             echo "[FAIL] quesos_ac: ${src}.c compile failed"; cat "$log" >&2
@@ -1680,11 +1682,14 @@ run_quesos_ac_fixtures() {
     done
     nat=$(host_to_native "$progs")
 
+    # An optional 4th arg passes extra maize flags (used by the maize-236 fb_reject case,
+    # which needs --fb-no-display so the device rejects the claim per-exec instead of
+    # accepting it). Left empty, the invocation is byte-identical to before.
     quesos_ac_case() {
-        name="$1"; marker="$2"; launcher="$3"
+        name="$1"; marker="$2"; launcher="$3"; extra="${4:-}"
         TOTAL=$((TOTAL + 1))
         set +e
-        out=$(MSYS2_ARG_CONV_EXCL='/progs' timeout 90 "$MAIZE" --no-root \
+        out=$(MSYS2_ARG_CONV_EXCL='/progs' timeout 90 "$MAIZE" $extra --no-root \
             --mount "${nat}=/progs:ro" "$quesos" "/progs/${launcher}.mzx" 2>/dev/null \
             | grep -v '^$')
         set -e
@@ -1707,6 +1712,17 @@ run_quesos_ac_fixtures() {
     quesos_ac_case quesos_stress20       "stress20: PASS"        stress20
     quesos_ac_case quesos_preempt        "preempt: PASS"         preempt
     quesos_ac_case quesos_blocked        "blocked-noslice: PASS" blocked
+
+    # maize-236 framebuffer registration table (quesOS half). fb_register: geometry +
+    # slot 0 + -EBUSY + release/re-register. fb_reject: -ENODEV on a display-less view
+    # (--fb-no-display) with the VM still running. fb_fork/exec/exit: fork non-propagation
+    # (D4), exec-time release (D5), and exit-time release, each proven by a later
+    # registration reclaiming slot 0.
+    quesos_ac_case quesos_fb_register    "fb-register: PASS"     fb_register
+    quesos_ac_case quesos_fb_reject      "fb-reject: PASS"       fb_reject       --fb-no-display
+    quesos_ac_case quesos_fb_fork        "fb-fork: PASS"         fb_fork_cleanup
+    quesos_ac_case quesos_fb_exec        "fb-exec: PASS"         fb_exec_launch
+    quesos_ac_case quesos_fb_exit        "fb-exit: PASS"         fb_exit_cleanup
 
     # Console input rides the device IRQ/status path (vector 33), not a native blocking
     # read, so a parked fd-0 reader never freezes the VM (design doc 17). This case pipes
