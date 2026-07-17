@@ -151,16 +151,22 @@ raise(int sig)
     return (int)sys_kill(sys_getpid(), (long)sig);
 }
 
-/* sigsuspend (maize-94): borrowed oksh's trap.c pauses here waiting for a signal.
- * Wave-1 quesOS delivers no asynchronous signals to a foreground shell (decision
- * 8947: Ctrl-C is a literal byte, no SIGINT), so an honest sigsuspend would block
- * forever with nothing to wake it. It instead returns -1 immediately (the POSIX
- * "interrupted" contract) so oksh's wait loops make progress; the mask argument is
- * accepted and ignored. Named deviation, not a fake. */
+/* sigsuspend (maize-94): atomically install `mask` as the blocked set and wait for a
+ * signal, then restore the previous mask and return -1 (POSIX EINTR contract). oksh's
+ * foreground-wait loop (jobs.c) blocks SIGCHLD, then calls sigsuspend with a mask that
+ * unblocks it so a pending SIGCHLD (raised when its child exited) is delivered and its
+ * handler reaps the child. quesOS delivers a now-unblocked pending signal synchronously
+ * inside SYS_rt_sigprocmask, so the handler runs during the first sigprocmask below (on
+ * its syscall return) before the mask is restored: the wait loop then observes the reaped
+ * child and exits. With no signal pending it returns at once, which is a safe spurious
+ * wakeup for the caller's re-checking loop. */
 static inline int
 sigsuspend(const sigset_t *mask)
 {
-    (void)mask;
+    sigset_t save = 0;
+    sigset_t m = (mask != 0) ? *mask : 0;
+    sigprocmask(SIG_SETMASK, &m, &save);   /* unblock -> pending signal delivered here */
+    sigprocmask(SIG_SETMASK, &save, 0);    /* restore the caller's mask */
     return -1;
 }
 

@@ -183,10 +183,36 @@ path_has_slash(const char *s)
     return 0;
 }
 
+/* exec_forms (maize-94, decision 9084): PATHEXT-style executable-name resolution. Try the
+ * candidate at buf[0..baselen) EXACTLY, then with ".mzx" appended, then ".mzb", before the
+ * caller moves on. hostfs binaries keep their .mzx/.mzb extension (OQ 8950) but the user
+ * (and portable code) names them without one, so this is the userland half of the /bin
+ * convention. Returns only on failure with errno set (execve never returns on success);
+ * a candidate that does not exist leaves errno == ENOENT so the caller keeps looking. The
+ * kernel execve does NO name rewriting -- this policy lives entirely in libc. buf must have
+ * room for baselen + 4 + 1 bytes. */
+static void
+exec_forms(char *buf, unsigned long baselen, char *const argv[])
+{
+    static const char exts[2][5] = { ".mzx", ".mzb" };
+    int e;
+
+    buf[baselen] = '\0';
+    execve(buf, argv, (char *const *)environ);                 /* exact name */
+    if (errno != ENOENT) { return; }                           /* found-but-failed: stop */
+    for (e = 0; e < 2; e++) {
+        memcpy(buf + baselen, exts[e], 5);                     /* ".mzx\0" / ".mzb\0" */
+        execve(buf, argv, (char *const *)environ);
+        if (errno != ENOENT) { return; }
+    }
+}
+
 /* execvp: like execv, but a file with no '/' is searched along PATH (colon-separated;
  * default "/bin" when PATH is unset/empty, per the /bin convention, decision 8939). An
- * empty PATH entry means the current directory. execve only returns on failure; a
- * per-candidate ENOENT keeps searching, any other error stops. */
+ * empty PATH entry means the current directory. At each PATH entry the exact name, then
+ * name.mzx, then name.mzb is tried (decision 9084). A per-candidate ENOENT keeps searching;
+ * any other error stops. A name containing '/' skips the PATH walk but still gets the
+ * extension fallback. */
 int
 execvp(const char *file, char *const argv[])
 {
@@ -196,11 +222,20 @@ execvp(const char *file, char *const argv[])
     unsigned long flen;
 
     if (file == (const char *)0 || file[0] == '\0') { errno = ENOENT; return -1; }
-    if (path_has_slash(file)) { return execve(file, argv, (char *const *)environ); }
+    flen = strlen(file);
+
+    if (path_has_slash(file)) {
+        if (flen + 4 + 1 <= sizeof(buf)) {
+            memcpy(buf, file, flen);
+            exec_forms(buf, flen, argv);
+        } else {
+            execve(file, argv, (char *const *)environ);
+        }
+        return -1;
+    }
 
     path = getenv("PATH");
     if (path == (const char *)0 || path[0] == '\0') { path = "/bin"; }
-    flen = strlen(file);
 
     p = path;
     for (;;) {
@@ -209,12 +244,11 @@ execvp(const char *file, char *const argv[])
         while (*p != '\0' && *p != ':') { p++; }
         dlen = (unsigned long)(p - start);
         if (dlen == 0) { start = "."; dlen = 1; }             /* empty entry = cwd */
-        if (dlen + 1 + flen + 1 <= sizeof(buf)) {
+        if (dlen + 1 + flen + 4 + 1 <= sizeof(buf)) {
             memcpy(buf, start, dlen);
             buf[dlen] = '/';
             memcpy(buf + dlen + 1, file, flen);
-            buf[dlen + 1 + flen] = '\0';
-            execve(buf, argv, (char *const *)environ);        /* returns only on error */
+            exec_forms(buf, dlen + 1 + flen, argv);           /* exact -> .mzx -> .mzb */
             if (errno != ENOENT) { return -1; }               /* a real error: stop */
         }
         if (*p == '\0') { break; }

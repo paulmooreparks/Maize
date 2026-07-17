@@ -53,6 +53,7 @@ long sys_ftruncate(long fd, long length);
  * discipline. NO new syscall numbers: the existing native $F1/$F2 are reused. */
 long sys_tcgetattr(long fd, void *termios_p);
 long sys_tcsetattr(long fd, long optional_actions, void *termios_p);
+unsigned long sys_clock_ms(void);   /* maize-94: native $F0, forwarded to guests */
 
 /* --- The metal half (quesos_boot.mazm). ---------------------------------------------
  * quesos_switch_to(pcb) loads the process's saved GP context, MOVTCRs its page-table
@@ -156,6 +157,18 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define SYS_tcgetattr 0xF1
 #define SYS_tcsetattr 0xF2
 
+/* maize-94: the monotonic-clock and bulk-memory Maize-private numbers a borrowed guest
+ * reaches. SYS_clock_ms takes no pointer args, so quesOS forwards it straight to the
+ * native provider (quesOS runs on bare metal; its own sys_clock_ms() re-traps to $F0).
+ * SYS_bulk_copy/SYS_bulk_set take USER virtual addresses for src/dst, which are not valid
+ * in the native provider's flat physical view under per-process paging, so they cannot be
+ * forwarded as-is; quesOS returns -ENOSYS and the guest RT memcpy/memset fall back to
+ * their portable word loop (toolchain/rt/string.c). Handled explicitly (rather than via
+ * the default) so the fallback is silent instead of printing an alarming "unhandled". */
+#define SYS_clock_ms  0xF0
+#define SYS_bulk_copy 0xF4
+#define SYS_bulk_set  0xF5
+
 /* The 4-word + NCCS-byte termios wire image (toolchain/rt/termios.h, src/console_io.h). */
 #define TERMIOS_WIRE_SIZE 36
 /* c_lflag ISIG bit (Linux value; toolchain/rt/termios.h). */
@@ -209,6 +222,8 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define QOS_ENOSPC 28          /* registration table full                                 */
 #define QOS_EBADF   9          /* release with nothing registered                         */
 #define QOS_ESRCH   3          /* maize-174: kill target pid/pgid names no process        */
+#define QOS_ENOENT  2          /* maize-94: execve target path does not exist             */
+#define QOS_ENOEXEC 8          /* maize-94: execve target is not a loadable .mzx image    */
 
 /* maize-236: registration-table capacity, mirroring src/maize_cpu.h fb_max_slots. */
 #define QUESOS_FB_MAX_SLOTS 8
@@ -273,8 +288,14 @@ static void reap_tail(struct pcb *self);             /* maize-174: shared zombie
 static char g_pathbuf[QUESOS_MAX_PROC][QUESOS_PATH_CAP];
 static long g_worklist_count;
 
-/* Whole child image is slurped here before segment placement. */
-#define QUESOS_FILEBUF_CAP (256u * 1024u)
+/* Whole child image is slurped here before segment placement. maize-94: raised from
+ * 256 KiB to 640 KiB so the vendored oksh image (~458 KiB linked, the whole shell +
+ * the freestanding libc slice) fits; the earlier 256 KiB cap silently truncated it and
+ * load_segments then rejected it ("cannot start"). g_filebuf lives in quesOS's BSS
+ * inside the [0x100000, 0x200000) 1 MiB image region; at 640 KiB it plus quesOS's code
+ * (~32 KiB) and the rest of its static data (stack 64 KiB, pcbs, arg/io bounce buffers)
+ * still fits comfortably under 1 MiB, verified against the linked image size. */
+#define QUESOS_FILEBUF_CAP (640u * 1024u)
 static u8 g_filebuf[QUESOS_FILEBUF_CAP];
 
 /* Bounce buffer: user-pointer syscall args are copied through this identity-mapped
@@ -1413,6 +1434,22 @@ static long do_execve(u64 path_uva, u64 argv_uva, u64 envp_uva) {
     copy_user_path(path_uva, in);
     join_path(self->cwd, in, kpath);   /* maize-94: resolve a relative exec target against cwd */
 
+    /* maize-94 (decision 9084 enabler): pre-validate the target image BEFORE tearing down
+     * the caller's address space, so a missing or malformed path returns an error to
+     * execve() (as real Linux does) instead of destroying the caller with do_exit(127).
+     * This is what lets a userland PATH walk (libc execvp's exact -> .mzx -> .mzb fallback,
+     * or a shell's own retry) probe candidates: a miss returns ENOENT and the caller tries
+     * the next form. The kernel still does NO name rewriting itself (it stays dumb). */
+    {
+        long psize = quesos_slurp(kpath);
+        const u8 *pb = g_filebuf;
+        if (psize < 0) { return -(long)QOS_ENOENT; }
+        if (psize < (long)MZX_HEADER_SIZE
+            || pb[0] != 'M' || pb[1] != 'Z' || pb[2] != 'X' || pb[3] != 0x01) {
+            return -(long)QOS_ENOEXEC;
+        }
+    }
+
     marshal_vec(argv_uva, &nstr, &pack, QUESOS_MAX_ARG);
     g_arg_argc = nstr;
     marshal_vec(envp_uva, &nstr, &pack, QUESOS_MAX_ARG - nstr);
@@ -1690,6 +1727,16 @@ static long do_rt_sigprocmask(long how, u64 set_uva, u64 oldset_uva) {
         if (how == 0) { self->blocked |= set; }
         else if (how == 1) { self->blocked &= ~set; }
         else if (how == 2) { self->blocked = set; }
+        /* maize-94: POSIX -- unblocking a signal that is already pending delivers it
+         * immediately. Without this, a shell (oksh) that blocks SIGCHLD around its job
+         * bookkeeping and then unblocks it inside sigsuspend() to wait for a child would
+         * never see the pending SIGCHLD (quesOS otherwise only delivers on scheduler
+         * resume), so its foreground-wait loop would spin forever. deliver_pending_signal
+         * is a no-op unless the new mask makes a pending signal ready; when it dispatches
+         * a handler it repoints saved_rs, and the r[11]=result write in quesos_syscall
+         * still lands on the saved (post-handler resume) frame, so the sigprocmask return
+         * value is preserved. */
+        deliver_pending_signal(self);
     }
     return 0;
 }
@@ -1756,6 +1803,13 @@ void quesos_syscall(void) {
         case SYS_getpgid:        result = do_getpgid((long)a0);                break;
         case SYS_tcgetpgrp:      result = g_fg_pgid;                           break;
         case SYS_tcsetpgrp:      g_fg_pgid = (long)a0; result = 0;             break;
+        /* maize-94: forward the pointer-free monotonic clock to the native provider. */
+        case SYS_clock_ms:       result = (long)sys_clock_ms();                break;
+        /* maize-94: the bulk-memory accelerators cannot be forwarded under paging (user
+         * VAs are not native-physical); return -ENOSYS silently so the guest RT copy
+         * loop takes over. See the SYS_bulk_* note above. */
+        case SYS_bulk_copy:
+        case SYS_bulk_set:       result = -38;                                 break;
         default:
             qos_puts("[quesos] unhandled syscall ");
             qos_put_u64(num);

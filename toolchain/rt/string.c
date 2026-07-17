@@ -36,8 +36,14 @@ memcpy(void *dst, const void *src, size_t n)
     unsigned char *d = (unsigned char *)dst;
     const unsigned char *s = (const unsigned char *)src;
     if (n >= BULK_SYSCALL_THRESHOLD) {   /* maize-216: hoist large copies to the host */
-        sys_bulk_copy(dst, src, n);
-        return dst;
+        /* maize-94: check the result and fall back to the portable loop if the
+         * accelerator is unavailable. sys_bulk_copy returns n on success or a -errno;
+         * under quesOS the $F4 number is not forwarded (returns -ENOSYS), and blindly
+         * assuming success silently skipped the copy, corrupting any large copy in a
+         * guest running under quesOS. The fallback keeps the fast path on the bare VM. */
+        if (sys_bulk_copy(dst, src, n) == (long)n) {
+            return dst;
+        }
     }
     while (n >= 8) {
         *(uint64_t *)d = *(uint64_t *)s;
@@ -58,8 +64,11 @@ memmove(void *dst, const void *src, size_t n)
     if (d == s || n == 0)
         return dst;
     if (n >= BULK_SYSCALL_THRESHOLD) {   /* maize-216: sys_bulk_copy is overlap-safe */
-        sys_bulk_copy(dst, src, n);
-        return dst;
+        /* maize-94: fall back to the portable loop when the accelerator is unavailable
+         * (e.g. no $F4 forwarding under quesOS); see memcpy for the full rationale. */
+        if (sys_bulk_copy(dst, src, n) == (long)n) {
+            return dst;
+        }
     }
     if (d < s) {
         while (n >= 8) {
@@ -90,8 +99,11 @@ memset(void *dst, int c, size_t n)
     unsigned char v = (unsigned char)c;
     uint64_t vv;
     if (n >= BULK_SYSCALL_THRESHOLD) {   /* maize-216: hoist large fills to the host */
-        sys_bulk_set(dst, c, n);
-        return dst;
+        /* maize-94: fall back to the portable loop when the accelerator is unavailable
+         * (e.g. no $F5 forwarding under quesOS); see memcpy for the full rationale. */
+        if (sys_bulk_set(dst, c, n) == (long)n) {
+            return dst;
+        }
     }
     vv = (uint64_t)v * 0x0101010101010101UL;
     while (n >= 8) {

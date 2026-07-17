@@ -1,0 +1,65 @@
+maize-94: adapt oksh command lookup to hostfs (no execute-permission bits) and add the
+PATHEXT-style .mzx/.mzb name-extension fallback (decision 9084).
+
+Upstream file/function: exec.c (search_access, search). Two Maize-local adaptations:
+
+1. search_access: hostfs synthesizes regular-file st_mode as 0644/0444 (no S_IXUSR/
+   S_IXGRP/S_IXOTH), so the upstream execute-bit test would reject every /bin binary as
+   "cannot execute". Under Maize any regular file found on PATH is executable (the
+   .mzx/.mzb loader decides by magic, not a permission bit), so the test is reduced to
+   "must be a regular file" (a directory still yields EISDIR). Honest wave-1 deviation.
+
+2. search: after the exact "<dir>/<name>" candidate misses, retry the SAME PATH entry
+   with ".mzx" then ".mzb" appended before advancing (decision 9084), so a bare command
+   name typed at the prompt resolves to /bin/<name>.mzx. This mirrors the libc execvp
+   fallback; oksh does its own PATH walk + execve, so the same order is applied here. The
+   kernel execve stays free of name rewriting.
+diff --git a/exec.c b/exec.c
+index 4812e3e..103077f 100644
+--- a/exec.c
++++ b/exec.c
+@@ -963,9 +963,12 @@ search_access(const char *path, int mode,
+ 	ret = access(path, mode);
+ 	if (ret == -1)
+ 		err = errno; /* File exists, but we can't access it */
+-	else if (mode == X_OK && (!S_ISREG(statb.st_mode) ||
+-	    !(statb.st_mode & (S_IXUSR|S_IXGRP|S_IXOTH)))) {
+-	    /* This 'cause access() says root can execute everything */
++	else if (mode == X_OK && !S_ISREG(statb.st_mode)) {
++		/* maize-94: hostfs models no Unix execute-permission bits (regular files
++		 * report mode 0644/0444), so the usual S_IXUSR|S_IXGRP|S_IXOTH test would
++		 * reject every /bin binary. Under Maize any regular file found on PATH is
++		 * executable (the .mzx/.mzb loader decides via magic, not a perm bit); only a
++		 * non-regular target (e.g. a directory) is rejected. Honest wave-1 deviation. */
+ 		ret = -1;
+ 		err = S_ISDIR(statb.st_mode) ? EISDIR : EACCES;
+ 	}
+@@ -1010,10 +1013,27 @@ search(const char *name, const char *path,
+ 			*xp++ = '/';
+ 		}
+ 		sp = p;
+-		XcheckN(xs, xp, namelen);
++		XcheckN(xs, xp, namelen + 4);   /* maize-94: room for a ".mzx"/".mzb" suffix */
+ 		memcpy(xp, name, namelen);
+ 		if (search_access(Xstring(xs, xp), mode, errnop) == 0)
+ 			return Xclose(xs, xp + namelen);
++		/* maize-94 (decision 9084): PATHEXT-style fallback. hostfs binaries keep their
++		 * .mzx/.mzb extension (OQ 8950), but the user types a bare command name, so after
++		 * the exact name misses, retry the SAME PATH entry with .mzx then .mzb appended,
++		 * before moving to the next entry. The kernel execve stays free of name rewriting
++		 * (it stays dumb, like real Linux); this is pure userland command-lookup policy. */
++		{
++			static const char mz_exts[2][5] = { ".mzx", ".mzb" };
++			int _e;
++			for (_e = 0; _e < 2; _e++) {
++				if (errnop)
++					*errnop = 0;
++				/* overwrite the terminating NUL with ".mzx\0" / ".mzb\0" (5 bytes) */
++				memcpy(xp + namelen - 1, mz_exts[_e], 5);
++				if (search_access(Xstring(xs, xp), mode, errnop) == 0)
++					return Xclose(xs, xp + namelen - 1 + 5);
++			}
++		}
+ 		if (*sp++ == '\0')
+ 			sp = NULL;
+ 	}

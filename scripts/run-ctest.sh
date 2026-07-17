@@ -1914,17 +1914,25 @@ run_userland94_fixtures() {
         echo "[FAIL] userland94: quesOS link failed"; cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
-    # Build the shipped wave-1 /bin set through the userland harness (the vendored sbase).
+    # Build the shipped wave-1 /bin set through the userland harness (the vendored sbase
+    # plus the oksh shell). oksh is the wave's central deliverable (ACs 8929-8934).
     if ! sh "$ubuild" --preset "$PRESET" --out "$bindir" \
-            true false echo cat pwd printf cp mv rm ls >>"$log" 2>&1; then
-        echo "[FAIL] userland94: build-userland.sh failed to build the wave-1 sbase set"
+            true false echo cat pwd printf cp mv rm ls oksh >>"$log" 2>&1; then
+        echo "[FAIL] userland94: build-userland.sh failed to build the wave-1 sbase + oksh set"
         cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    # bin_echoer is the execvp-fallback resolution target (decision 9084), placed in /bin.
+    if ! "$CC_MAIZE" --preset "$PRESET" -o "${bindir}/bin_echoer.mzx" \
+            "${REPO_ROOT}/os/quesos/bin_echoer.c" >>"$log" 2>&1; then
+        echo "[FAIL] userland94: bin_echoer.c compile failed"; cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
     # The launcher drivers are quesOS worklist entries (compiled like any fixture):
     # sbase_launch (echo|cat pipeline), printf_launch, and the cp/mv/rm fs launchers
     # (each seeds a file on the /rw mount, execve's its util, and verifies the result).
-    for _drv in sbase_launch printf_launch cp_launch mv_launch rm_launch ls_launch; do
+    for _drv in sbase_launch printf_launch cp_launch mv_launch rm_launch ls_launch \
+                oksh_shell execvp_ext; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${_drv}.mzx" \
                 "${REPO_ROOT}/os/quesos/${_drv}.c" >>"$log" 2>&1; then
             echo "[FAIL] userland94: ${_drv}.c compile failed"; cat "$log" >&2
@@ -2007,6 +2015,35 @@ run_userland94_fixtures() {
     }
     ul94_standalone true  /progs/true.mzx  "reaped /progs/true.mzx status=0"
     ul94_standalone false /progs/false.mzx "reaped /progs/false.mzx status=1"
+
+    # ACs 8930-8934 (the shell story, FROM oksh): oksh_shell forks `oksh -c <script>`
+    # non-interactively with PATH=/bin and drives, through oksh's own fork/pipe/dup2/
+    # execve/wait4, a two-stage vendored pipeline (echo.mzx | cat), > / >> redirection
+    # into /rw read back with cat, $? after false.mzx (1) and true.mzx (0), cd + pwd,
+    # export made visible to a child's getenv (nested oksh -c), and the shell's own
+    # `exit 7` observed via WEXITSTATUS. Extensionless `cat` / `oksh` also exercise the
+    # decision-9084 name fallback in oksh's command lookup. Self-checked PASS marker.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul94_run /progs/oksh_shell.mzx); set -e
+    if printf '%s\n' "$out" | grep -qF "oksh-shell: PASS"; then
+        echo "[PASS] userland94_oksh_shell (pipeline/redirect/exit-status/builtins)"
+    else
+        echo "[FAIL] userland94_oksh_shell"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # Decision 9084: libc execvp's exact -> .mzx -> .mzb name fallback. execvp_ext resolves
+    # the BARE name "bin_echoer" to /bin/bin_echoer.mzx (positive) and confirms a name with
+    # no existing form returns ENOENT so the child reaches its own _exit (negative), which
+    # also exercises quesOS execve returning -ENOENT instead of destroying the caller.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul94_run /progs/execvp_ext.mzx); set -e
+    if printf '%s\n' "$out" | grep -qF "execvp-ext: PASS"; then
+        echo "[PASS] userland94_execvp_ext (name .mzx/.mzb fallback + ENOENT)"
+    else
+        echo "[FAIL] userland94_execvp_ext"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
     # pwd: the "/" line proves getcwd returned the per-PCB default; status 0 proves it exited
     # clean. Grep both, so a util that printed nothing but exited 0 cannot pass.
     TOTAL=$((TOTAL + 1))
