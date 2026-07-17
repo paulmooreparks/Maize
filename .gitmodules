@@ -7,3 +7,9 @@
 [submodule "demos/doom/doomgeneric"]
 	path = demos/doom/doomgeneric
 	url = https://github.com/ozkl/doomgeneric
+[submodule "userland/oksh"]
+	path = userland/oksh
+	url = https://github.com/ibara/oksh
+[submodule "userland/sbase"]
+	path = userland/sbase
+	url = https://github.com/michaelforney/sbase
