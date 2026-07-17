@@ -92,6 +92,7 @@ $Tests = @(
     [pscustomobject]@{ Name = 'test_portio';         File = 'test_portio.mazm';         Expected = 'portio: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_timer';          File = 'test_timer.mazm';          Expected = 'timer: PASS';                   Golden = $false }
     [pscustomobject]@{ Name = 'test_framebuffer';    File = 'test_framebuffer.mazm';    Expected = 'framebuffer: PASS';             Golden = $false }
+    [pscustomobject]@{ Name = 'fb_registration';     File = 'test_fb_registration.mazm'; Expected = 'fbreg: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_sysbrk';        File = 'test_sysbrk.mazm';        Expected = 'sysbrk: PASS';                  Golden = $false }
     [pscustomobject]@{ Name = 'test_syserrno';      File = 'test_syserrno.mazm';      Expected = 'syserrno: PASS';                Golden = $false }
     [pscustomobject]@{ Name = 'test_tstind';        File = 'test_tstind.mazm';        Expected = 'tstind: PASS';                  Golden = $false }
@@ -511,6 +512,53 @@ function Invoke-KeyboardTest {
     return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = $expected; Actual = $actual }
 }
 
+# --- maize-236: framebuffer registration table, the two display-less branches ---------
+# The same test_fb_registration fixture self-adapts to the host display policy. Under
+# --fb-no-display the device rejects the claim (STATUS bit2) and the fixture takes its
+# per-exec-rejection branch, still printing "fbreg: PASS" (AC6: VM keeps running). Under
+# --fb-no-display --fb-stop-on-claim the claim powers the VM off (the maize-221 bare
+# diagnostic path, AC7): the fixture never reaches its print, so stdout carries neither
+# PASS nor FAIL. Both assemble their own copy, mirroring Invoke-KeyboardTest.
+function Invoke-FbRejectTest {
+    $name = 'fb_reject'
+    $expected = 'fbreg: PASS'
+    $srcPath = Join-Path $AsmDir 'test_fb_registration.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_fb_registration.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'mazm failed to assemble' }
+    }
+
+    $out = & $MaizeExe --fb-no-display $binPath 2>$null
+    $me = $LASTEXITCODE
+    $actual = Trim-TrailingNewlines ($out -join "`n")
+    $pass = ($me -eq 0) -and ($actual -eq $expected)
+    return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = $expected; Actual = $actual }
+}
+
+function Invoke-FbStopTest {
+    $name = 'fb_stop_on_claim'
+    $expected = 'no PASS/FAIL (VM powers off on the claim)'
+    $srcPath = Join-Path $AsmDir 'test_fb_registration.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_fb_registration.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'mazm failed to assemble' }
+    }
+
+    $out = & $MaizeExe --fb-no-display --fb-stop-on-claim $binPath 2>$null
+    $me = $LASTEXITCODE
+    $actual = Trim-TrailingNewlines ($out -join "`n")
+    $pass = ($me -eq 0) -and ($actual -notmatch 'PASS') -and ($actual -notmatch 'FAIL')
+    return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = $expected; Actual = $actual }
+}
+
 $results += Invoke-UndefMultirefTest
 $results += Invoke-TrapTest 'brk_trap'        'test_brk.mazm'        'breakpoint'
 $results += Invoke-TrapTest 'priv_fault_trap' 'test_priv_fault.mazm' 'privileg'
@@ -526,6 +574,8 @@ $results += Invoke-TrapTest 'mmu_priv_rf_write'      'test_mmu_priv_rf_write.maz
 $results += Invoke-TimerPeriod1Test
 $results += Invoke-SysreadTest
 $results += Invoke-KeyboardTest
+$results += Invoke-FbRejectTest
+$results += Invoke-FbStopTest
 
 # --- maize-12: multi-TU assemble -> link -> run -----------------------------------
 # Assemble two objects with `mazm -c`, link them with mzld into one .mzx, and run

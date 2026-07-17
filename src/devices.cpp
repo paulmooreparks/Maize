@@ -195,79 +195,198 @@ namespace maize {
 		framebuffer_device::framebuffer_device(u_hword width, u_hword height)
 			: width_(width), height_(height),
 			  pixel_count_(static_cast<u_word>(width) * static_cast<u_word>(height)),
-			  frame_(static_cast<size_t>(pixel_count_), 0u) {
+			  slots_(static_cast<size_t>(cpu::fb_max_slots)) {
+			/* Every slot's capture frame is sized to the host-fixed resolution (Decision D2:
+			   one geometry for all slots), so a present or a switch-in never reallocates. */
+			for (slot_state& s : slots_) {
+				s.frame.assign(static_cast<size_t>(pixel_count_), 0u);
+			}
 		}
 
 		void framebuffer_device::attach() {
-			width_port_.owner = this;   width_port_.role = ROLE_WIDTH;
-			height_port_.owner = this;  height_port_.role = ROLE_HEIGHT;
-			format_port_.owner = this;  format_port_.role = ROLE_FORMAT;
-			base_port_.owner = this;    base_port_.role = ROLE_BASE;
-			present_port_.owner = this; present_port_.role = ROLE_PRESENT;
-			status_port_.owner = this;  status_port_.role = ROLE_STATUS;
+			width_port_.owner = this;    width_port_.role = ROLE_WIDTH;
+			height_port_.owner = this;   height_port_.role = ROLE_HEIGHT;
+			format_port_.owner = this;   format_port_.role = ROLE_FORMAT;
+			base_port_.owner = this;     base_port_.role = ROLE_BASE;
+			present_port_.owner = this;  present_port_.role = ROLE_PRESENT;
+			status_port_.owner = this;   status_port_.role = ROLE_STATUS;
+			slot_port_.owner = this;     slot_port_.role = ROLE_SLOT;
+			activate_port_.owner = this; activate_port_.role = ROLE_ACTIVATE;
 			cpu::add_device(cpu::fb_port_width, width_port_);
 			cpu::add_device(cpu::fb_port_height, height_port_);
 			cpu::add_device(cpu::fb_port_format, format_port_);
 			cpu::add_device(cpu::fb_port_base, base_port_);
 			cpu::add_device(cpu::fb_port_present, present_port_);
 			cpu::add_device(cpu::fb_port_status, status_port_);
+			cpu::add_device(cpu::fb_port_slot, slot_port_);
+			cpu::add_device(cpu::fb_port_activate, activate_port_);
 		}
 
-		/* Read the guest pixel buffer [base, base + width*height*4) into the host capture
-		   frame and return whether the present was valid. Only guest memory is read (the
-		   sparse array, every address defined), and the byte count is the host-fixed
-		   resolution, so there is no host OOB read and no guest-controlled allocation. A
-		   base of 0 (unset) or a base+size that would wrap the 64-bit address space is an
-		   invalid present (defined, non-crashing). */
-		bool framebuffer_device::present_frame() {
+		/* Read the selected slot's guest pixel buffer [base, base + width*height*4) into that
+		   slot's host capture frame and return whether it was valid. Only guest memory is read
+		   (the sparse array, every address defined), and the byte count is the host-fixed
+		   resolution, so there is no host OOB read and no guest-controlled allocation. A base
+		   of 0 (unset) or a base+size that would wrap the 64-bit address space is invalid
+		   (defined, non-crashing). `bump` counts the read as a guest-produced frame (a real
+		   PRESENT); a switch-in refresh passes false so it does not inflate the frame rate. */
+		bool framebuffer_device::present_into(int slot, bool bump) {
+			slot_state& s = slots_[static_cast<size_t>(slot)];
 			u_word size = static_cast<u_word>(pixel_count_) * 4u;
-			if (base_ == 0 || (base_ + size) < base_) {
-				present_valid_ = false;
+			if (s.base == 0 || (s.base + size) < s.base) {
+				s.present_valid = false;
 				return false;
 			}
-			/* The guest framebuffer is XRGB8888 little-endian, byte-identical to frame_'s
-			   uint32 layout on a little-endian host, so one bulk copy into frame_ needs no
-			   intermediate vector and no per-pixel repack (was: a 256 KB alloc + byte-loop
-			   read + a second repack pass, every present). */
-			cpu::mm.read_into(base_, reinterpret_cast<u_byte*>(frame_.data()),
+			/* The guest framebuffer is XRGB8888 little-endian, byte-identical to the frame's
+			   uint32 layout on a little-endian host, so one bulk copy needs no intermediate
+			   vector and no per-pixel repack. */
+			cpu::mm.read_into(s.base, reinterpret_cast<u_byte*>(s.frame.data()),
 				static_cast<size_t>(size));
-			present_valid_ = true;
-			present_count_.fetch_add(1, std::memory_order_relaxed);
+			s.present_valid = true;
+			if (bump) {
+				s.present_count++;
+				present_count_.fetch_add(1, std::memory_order_relaxed);
+			}
 			return true;
+		}
+
+		/* Switch the active surface to `new_slot` (-1 = console). Caller holds activate_mutex_.
+		   Pushes the outgoing surface onto the activation history and refreshes the incoming
+		   slot's frame so the switch shows current content without waiting for a fresh guest
+		   PRESENT (mirrors the display's force-present-on-swap idiom). */
+		void framebuffer_device::activate_locked(int new_slot) {
+			int cur = active_slot_.load(std::memory_order_relaxed);
+			if (new_slot == cur) { return; }
+			activation_history_.push_back(cur);
+			active_slot_.store(new_slot, std::memory_order_release);
+			if (new_slot >= 0) { present_into(new_slot, false); }
+		}
+
+		/* Claim the selected slot at `base` (nonzero). Caller holds activate_mutex_. The first
+		   claim from a cold console session (active_slot_ still -1) auto-activates, matching
+		   today's zero-friction "the graphics program just appears" migration path. */
+		void framebuffer_device::claim_locked(int slot, u_word base) {
+			slot_state& s = slots_[static_cast<size_t>(slot)];
+			s.base = base;
+			s.claimed = true;
+			s.rejected = false;
+			claimed_count_.fetch_add(1, std::memory_order_acq_rel);
+			if (active_slot_.load(std::memory_order_relaxed) == -1) { activate_locked(slot); }
+		}
+
+		/* Release the selected slot (zero base write on a claimed slot). Caller holds
+		   activate_mutex_. If the released slot was active, pop the activation history until a
+		   still-valid entry is found (a slot since released is discarded; the console is always
+		   valid), so scanout reverts to the previous surface (VT-style switch-back); an empty
+		   history falls back to the console. */
+		void framebuffer_device::release_locked(int slot) {
+			slot_state& s = slots_[static_cast<size_t>(slot)];
+			s.base = 0;
+			s.claimed = false;
+			s.present_valid = false;
+			claimed_count_.fetch_sub(1, std::memory_order_acq_rel);
+			if (active_slot_.load(std::memory_order_relaxed) != slot) { return; }
+			int next = -1;
+			while (!activation_history_.empty()) {
+				int cand = activation_history_.back();
+				activation_history_.pop_back();
+				if (cand == -1) { next = -1; break; }
+				if (cand >= 0 && cand < static_cast<int>(slots_.size())
+					&& cand != slot && slots_[static_cast<size_t>(cand)].claimed) {
+					next = cand;
+					break;
+				}
+			}
+			active_slot_.store(next, std::memory_order_release);
+			if (next >= 0) { present_into(next, false); }
+		}
+
+		void framebuffer_device::request_activate(u_word target) {
+			int new_slot;
+			if (target == cpu::fb_console_sentinel) {
+				new_slot = -1;
+			} else if (target < static_cast<u_word>(slots_.size())) {
+				new_slot = static_cast<int>(target);
+			} else {
+				return;   // out of range: defined no-op
+			}
+			std::lock_guard<std::mutex> lk(activate_mutex_);
+			/* Activating a slot that is not currently claimed is a defined no-op. */
+			if (new_slot >= 0 && !slots_[static_cast<size_t>(new_slot)].claimed) { return; }
+			activate_locked(new_slot);
+		}
+
+		const std::vector<std::uint32_t>& framebuffer_device::frame() const {
+			int a = active_slot_.load(std::memory_order_acquire);
+			if (a < 0 || a >= static_cast<int>(slots_.size())) { return empty_frame_; }
+			return slots_[static_cast<size_t>(a)].frame;
+		}
+
+		bool framebuffer_device::last_present_valid() const {
+			return slots_[static_cast<size_t>(selected_slot_)].present_valid;
 		}
 
 		void framebuffer_device::port_write(int role, reg_value const& value, subreg_enum value_subreg) {
 			u_word bits = cpu::port_value_bits(value, value_subreg);
 			switch (role) {
-				case ROLE_BASE:
-					base_ = bits;
-					/* maize-140: a nonzero base is the explicit raw-framebuffer takeover
-					   signal (D3). Programming the framebuffer's pixel-buffer address is a
-					   deliberate guest action a graphics program (DOOM's DG_Init) takes and
-					   a text-console program never does, so it latches graphics mode for the
-					   display's text/graphics arbitration. */
-					if (bits != 0) {
-						bool was = claimed_.exchange(true, std::memory_order_acq_rel);
-						/* maize-221: on a console-only VM there is no window for the framebuffer.
-						   The first takeover is where a graphical guest declares itself, so stop
-						   the VM here (once) and let main print a use-the-graphical-binary
-						   diagnostic instead of running invisibly. cpu::power_off() from the CPU
-						   thread mirrors the console read_in park/unpark (set_running) pattern. */
-						if (!was && stop_on_claim_.load(std::memory_order_relaxed)) {
-							cpu::power_off();
-						}
+				case ROLE_SLOT:
+					/* Select the slot for subsequent 0x53/0x54/0x55 ops. Out-of-range is a
+					   defined no-op (the selection is unchanged); reset value is 0. */
+					if (bits < static_cast<u_word>(slots_.size())) {
+						selected_slot_ = static_cast<int>(bits);
 					}
 					break;
+				case ROLE_ACTIVATE:
+					request_activate(bits);
+					break;
+				case ROLE_BASE: {
+					int sel = selected_slot_;
+					slot_state& s = slots_[static_cast<size_t>(sel)];
+					std::lock_guard<std::mutex> lk(activate_mutex_);
+					if (bits != 0) {
+						if (!s.claimed) {
+							/* A nonzero base on an unclaimed slot is the explicit takeover
+							   signal (a graphics program declaring itself), generalizing the
+							   maize-140 latch per-slot. Record the attempt for the maize-221
+							   console diagnostic even if the claim is rejected below. */
+							claim_attempted_.store(true, std::memory_order_release);
+							if (!display_available_.load(std::memory_order_relaxed)) {
+								/* maize-236/221: no window for this view. Reject the claim: the
+								   slot stays unclaimed and STATUS bit2 records it, so the syscall
+								   layer returns -ENODEV to just this caller. If stop_on_claim_ is
+								   also set (the bare single-tasking console path) the whole VM
+								   stops here exactly as maize-221 does, so main can print the
+								   use-the-graphical-binary diagnostic. */
+								s.rejected = true;
+								if (stop_on_claim_.load(std::memory_order_relaxed)) {
+									cpu::power_off();
+								}
+							} else {
+								claim_locked(sel, bits);
+							}
+						} else {
+							/* Already claimed: re-program the base pointer in place (no
+							   claim/activation transition). */
+							s.base = bits;
+						}
+					} else if (s.claimed) {
+						/* Zero base on a claimed slot releases it (and switches scanout back
+						   if it was the active surface). */
+						release_locked(sel);
+					}
+					break;
+				}
 				case ROLE_PRESENT:
-					/* Pure frame copy. The vsync IRQ is driven by the display refresh
-					   (on_display_refresh), not by the guest's present, so a guest parked in
-					   HALT still wakes at the refresh rate. */
-					present_frame();
+					/* Pure frame copy into the selected slot's own capture buffer. The vsync
+					   IRQ is driven by the display refresh (on_display_refresh), not by the
+					   guest's present, so a guest parked in HALT still wakes at the refresh
+					   rate. A backgrounded slot keeps capturing into its own frame; only the
+					   active slot is blitted (the display skips the upload for inactive slots). */
+					present_into(selected_slot_, true);
 					break;
 				case ROLE_STATUS:
 					/* bit1 = vsync-IRQ-enable (guest opt-in; default off, so the deterministic
-					   headless suite, which has no display thread, never fires it). Writing the
-					   register also acks: clear vsync-pending. */
+					   headless suite, which has no display thread, never fires it). Vsync stays
+					   global (one monitor). Writing the register also acks: clear vsync-pending. */
 					control_.store(bits & 0x2, std::memory_order_release);
 					status_.fetch_and(~static_cast<u_word>(0x1), std::memory_order_acq_rel);
 					break;
@@ -284,9 +403,25 @@ namespace maize {
 				case ROLE_WIDTH:   out.w0 = width_; break;
 				case ROLE_HEIGHT:  out.w0 = height_; break;
 				case ROLE_FORMAT:  out.w0 = cpu::fb_format_xrgb8888; break;
-				case ROLE_BASE:    out.w0 = base_; break;
-				case ROLE_PRESENT: out.w0 = present_valid_ ? 0x1 : 0x0; break;
-				case ROLE_STATUS:  out.w0 = status_.load(std::memory_order_acquire) & 0x1; break;
+				case ROLE_BASE:    out.w0 = slots_[static_cast<size_t>(selected_slot_)].base; break;
+				case ROLE_PRESENT:
+					out.w0 = slots_[static_cast<size_t>(selected_slot_)].present_valid ? 0x1 : 0x0;
+					break;
+				case ROLE_STATUS: {
+					/* bit0 = global vsync-pending; bit2 = this slot's register-rejected flag. */
+					u_word v = status_.load(std::memory_order_acquire) & 0x1;
+					if (slots_[static_cast<size_t>(selected_slot_)].rejected) { v |= 0x4; }
+					out.w0 = v;
+					break;
+				}
+				case ROLE_SLOT:
+					out.w0 = static_cast<u_word>(selected_slot_);
+					break;
+				case ROLE_ACTIVATE: {
+					int a = active_slot_.load(std::memory_order_acquire);
+					out.w0 = (a < 0) ? cpu::fb_console_sentinel : static_cast<u_word>(a);
+					break;
+				}
 				default:           out.w0 = 0; break;
 			}
 			return out;
@@ -969,7 +1104,13 @@ namespace maize {
 					SDL_TEXTUREACCESS_STREAMING, cw, ch);
 				SDL_Texture* fb_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
 					SDL_TEXTUREACCESS_STREAMING, fbw, fbh);
-				bool graphics_mode = false;   // false = console surface; true = framebuffer
+				/* maize-236: the active surface is chosen by the device's registration table
+				   (fb.active_slot(): -1 = console, else a slot index), driven by the ACTIVATE
+				   port and the VT hotkey below. graphics_mode is recomputed from it each loop;
+				   last_active_slot detects a switch (first claim, VT switch, or switch-back on
+				   release) to force one present and rebaseline the perf counter. */
+				bool graphics_mode = false;   // false = console surface; true = a framebuffer slot
+				int last_active_slot = -1;
 
 				/* maize-218: the framebuffer presents into the FIXED console canvas (cw x ch),
 				   aspect-preserving and integer-scaled when it divides evenly (DOOM 320x200 ->
@@ -1066,20 +1207,21 @@ namespace maize {
 
 				bool running = true;
 				while (running && !guest_done.load(std::memory_order_acquire)) {
-					/* Switch to the framebuffer surface the first time a graphics program claims
-					   it (DOOM's DG_Init, essentially at startup). maize-218: the window and the
-					   render logical size stay at the console canvas; the framebuffer is fit into
-					   that canvas at present time (fb_dst), so there is no mid-run window resize. */
-					if (!graphics_mode && fb.graphics_claimed()) {
-						graphics_mode = true;
-						/* The FPS source switches from the console counter to the framebuffer
-						   present counter here; rebaseline so the swap does not register a
-						   bogus one-sample spike from the counters' differing magnitudes. */
+					/* maize-236: recompute the active surface from the registration table each
+					   loop. A change (first claim -> auto-activate, a VT switch via hotkey or the
+					   ACTIVATE port, or switch-back when the active slot is released) forces one
+					   present so the swap is not swallowed by the dirty gate, and rebaselines the
+					   FPS counter so the console<->framebuffer swap does not register a bogus
+					   one-sample spike from the counters' differing magnitudes. maize-218: the
+					   window and render logical size stay at the console canvas; the framebuffer
+					   is fit into that canvas at present time (fb_dst), so no mid-run resize. */
+					int active_slot = fb.active_slot();
+					graphics_mode = (active_slot >= 0);
+					if (active_slot != last_active_slot) {
 						perf_last_present = fb.present_count();
 						perf_last_ticks = SDL_GetTicks();
-						/* The presented surface just changed; force one present so the swap is
-						   not swallowed by the dirty gate. */
 						force_present = true;
+						last_active_slot = active_slot;
 					}
 
 					/* maize-176: block until an event arrives OR the soonest scheduled tick is
@@ -1118,6 +1260,24 @@ namespace maize {
 								running = false;
 							}
 							else if (e.type == SDL_KEYDOWN) {
+								/* maize-236 VT hotkey (Decision D8): Left-Ctrl+Left-Alt+F1 = the
+								   text console, +F2..+F9 = registration slots 0..7. Intercepted
+								   here BEFORE the scancode dispatch and CONSUMED (never forwarded
+								   to kbd/con as a keystroke). It funnels through the same
+								   request_activate() the ACTIVATE port uses (Decision D9), so the
+								   switch mechanism is exercisable headlessly via the port without
+								   SDL. Both apps keep running; only scanout + input routing move. */
+								SDL_Scancode sc_k = e.key.keysym.scancode;
+								bool vt_mods = (e.key.keysym.mod & KMOD_LCTRL)
+									&& (e.key.keysym.mod & KMOD_LALT);
+								if (vt_mods && sc_k >= SDL_SCANCODE_F1 && sc_k <= SDL_SCANCODE_F9) {
+									if (sc_k == SDL_SCANCODE_F1) {
+										fb.request_activate(cpu::fb_console_sentinel);
+									} else {
+										fb.request_activate(static_cast<maize::u_word>(sc_k - SDL_SCANCODE_F2));
+									}
+									continue;   // consumed: do not forward to the guest
+								}
 								if (graphics_mode) {
 									/* Graphics (DOOM): one make per physical press. DOOM tracks held
 									   keys via make/break, so injected key-repeat makes would confuse
@@ -1141,6 +1301,14 @@ namespace maize {
 								}
 							}
 							else if (e.type == SDL_KEYUP) {
+								/* maize-236: swallow the VT-hotkey F-keys' release too, so a
+								   consumed Ctrl+Alt+Fn make never leaves a dangling break code
+								   for the guest. */
+								SDL_Scancode sc_k = e.key.keysym.scancode;
+								if ((e.key.keysym.mod & KMOD_LCTRL) && (e.key.keysym.mod & KMOD_LALT)
+									&& sc_k >= SDL_SCANCODE_F1 && sc_k <= SDL_SCANCODE_F9) {
+									continue;
+								}
 								u_byte sc = map_scancode(e.key.keysym.scancode);
 								if (sc) {
 									u_byte brk = static_cast<u_byte>(sc | 0x80);   // break code

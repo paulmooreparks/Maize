@@ -110,7 +110,7 @@ namespace maize {
 			std::atomic<size_t> queue_size_ {0};
 		};
 
-		/* Memory-backed framebuffer (0x50-0x55 control ports). Pixels live in ordinary
+		/* Memory-backed framebuffer (0x50-0x57 control ports). Pixels live in ordinary
 		   guest RAM: the guest writes them with normal ST/CP stores at full speed, with no
 		   per-pixel device dispatch and NO MMIO (the pixel memory has no device side
 		   effects). The control plane is ports:
@@ -118,19 +118,33 @@ namespace maize {
 		     0x50 width      R   host config (pixels)
 		     0x51 height     R   host config (pixels)
 		     0x52 format     R   host config (1 = XRGB8888, 0x00RRGGBB)
-		     0x53 base       R/W guest address of the pixel buffer
-		     0x54 present    W   present a frame; R bit0 = last present valid
-		     0x55 status     R   bit0 vsync-pending; W bit1 vsync-IRQ-enable / ack
+		     0x53 base       R/W guest address of the SELECTED slot's pixel buffer
+		     0x54 present    W   present the selected slot's frame; R bit0 = last present valid
+		     0x55 status     R   bit0 vsync-pending, bit2 register-rejected; W bit1 vsync-IRQ-enable / ack
+		     0x56 slot       R/W select the target slot (0..fb_max_slots-1) for 0x53/0x54/0x55
+		     0x57 activate   R/W W switch the active surface; R the active slot / console sentinel
 
-		   On a present write the device reads [base, base + width*height*4) from guest
-		   memory (the sparse array; every address is defined, so no host OOB) and presents
-		   it (headless: capture only; SDL2 windowed: blit). The buffer size is bounded by
-		   the host-fixed resolution, never guest-controlled, so there is no unbounded
-		   allocation. A base of 0 (unset) or a base+size that would wrap the address space
-		   is an invalid present (defined, non-crashing; last-present-valid reads 0). */
+		   maize-236: the device holds a fixed-size REGISTRATION TABLE (fb_max_slots slots),
+		   generalizing the maize-140 one-shot takeover latch. Each slot owns its own pixel
+		   base + capture frame; N guest processes register N slots with zero new copies
+		   (each app brings its own guest-RAM buffer). Ports 0x53/0x54/0x55 are slot-relative
+		   on whichever slot 0x56 selects. A nonzero base write claims the selected slot; a
+		   zero base write releases it. 0x57 chooses which claimed slot (or the text console)
+		   is scanned out; a small activation history reverts scanout when the active slot is
+		   released (VT-style switch-back). The device stays process-agnostic: it knows slots,
+		   not PIDs; process ownership lives entirely in quesOS (workbench doc 18).
+
+		   On a present the device reads [base, base + width*height*4) from guest memory (the
+		   sparse array; every address is defined, so no host OOB) into the selected slot's
+		   frame. The buffer size is bounded by the host-fixed resolution, never
+		   guest-controlled, so there is no unbounded allocation. A base of 0 (unset) or a
+		   base+size that would wrap the address space is an invalid present (defined,
+		   non-crashing; last-present-valid reads 0). WIDTH/HEIGHT/FORMAT are global and apply
+		   to every slot identically (Decision D2, no per-slot resolution). */
 		class framebuffer_device : public port_host {
 		public:
-			enum role { ROLE_WIDTH, ROLE_HEIGHT, ROLE_FORMAT, ROLE_BASE, ROLE_PRESENT, ROLE_STATUS };
+			enum role { ROLE_WIDTH, ROLE_HEIGHT, ROLE_FORMAT, ROLE_BASE, ROLE_PRESENT,
+				ROLE_STATUS, ROLE_SLOT, ROLE_ACTIVATE };
 
 			framebuffer_device(u_hword width, u_hword height);
 			void attach();
@@ -140,41 +154,85 @@ namespace maize {
 
 			u_hword width() const { return width_; }
 			u_hword height() const { return height_; }
-			/* Host-side captured frame (XRGB8888), width*height entries. Filled on a valid
-			   present; the SDL2 backend blits from here. */
-			const std::vector<std::uint32_t>& frame() const { return frame_; }
-			bool last_present_valid() const { return present_valid_; }
-			/* Monotonic count of valid presents (guest frames produced). The SDL backend
-			   samples the delta over time to show the guest frame rate. */
+			/* Host-side captured frame (XRGB8888), width*height entries, of the ACTIVE slot
+			   (the scanned-out surface); the SDL2 backend blits from here. Empty when the
+			   console is active (active_slot() < 0), which the caller checks before blitting. */
+			const std::vector<std::uint32_t>& frame() const;
+			bool last_present_valid() const;
+			/* Monotonic count of valid presents (guest frames produced), summed across all
+			   slots. The SDL backend samples the delta over time to show the guest frame rate;
+			   for a single-app run (one slot) this is exactly that slot's present count. */
 			std::uint64_t present_count() const { return present_count_.load(std::memory_order_relaxed); }
 
-			/* maize-140: the raw-framebuffer takeover signal (text/graphics arbitration, D3).
-			   A guest graphics program (DOOM) opts into owning the window by explicitly
-			   programming the framebuffer base port (writing a nonzero guest pixel-buffer
-			   address to port 0x53); that deliberate device programming latches this flag.
-			   The text console owns the window by default; once a program claims the
-			   framebuffer this reads true and the display switches to blitting the fb frame
-			   for the rest of the run (mutually exclusive per run). This is an explicit guest
-			   action, NOT host-side auto-detection of the output byte stream. */
-			bool graphics_claimed() const { return claimed_.load(std::memory_order_acquire); }
+			/* maize-140/236: the raw-framebuffer takeover signal (text/graphics arbitration).
+			   A guest graphics program opts into owning a surface by programming a nonzero
+			   pixel-buffer base into port 0x53 (on the selected slot); that deliberate device
+			   programming claims the slot. This reads true once ANY slot is claimed, so the
+			   maize-221 console diagnostic call site (maize.cpp) needs no change. This is an
+			   explicit guest action, NOT host-side auto-detection of the output byte stream. */
+			bool graphics_claimed() const { return claimed_count_.load(std::memory_order_acquire) > 0; }
+
+			/* maize-236: whether a guest ever ATTEMPTED to claim a slot (a nonzero base write
+			   on an unclaimed slot), whether it succeeded or was rejected. The maize-221
+			   console diagnostic keys on this: on a display-less console view a claim is
+			   rejected (never claimed), so graphics_claimed() stays false, but the guest still
+			   declared itself graphical and the operator still needs the use-the-graphical-
+			   binary message. */
+			bool graphics_claim_attempted() const { return claim_attempted_.load(std::memory_order_acquire); }
+
+			/* maize-236: the currently scanned-out surface: a slot index (>=0), or -1 for the
+			   text console. The display thread reads this each frame to pick which surface to
+			   present and where to route input; the ACTIVATE port ($57) and the host VT hotkey
+			   both drive it through request_activate(). */
+			int active_slot() const { return active_slot_.load(std::memory_order_acquire); }
+
+			/* maize-236: switch the active (scanned-out) surface. `target` is a slot index
+			   (0..fb_max_slots-1) or fb_console_sentinel for the text console. A no-op when
+			   the target is already active, or is a slot that is not currently claimed, or is
+			   out of range (defined, non-crashing). Called by the ACTIVATE port write (guest
+			   or quesOS) and by the SDL VT hotkey (Decision D9: one funnel for both). */
+			void request_activate(u_word target);
 
 			/* maize-221: a console-only VM (no display backend) has no window to show the
-			   framebuffer. When set, the first framebuffer takeover stops the VM (cpu::power_off)
-			   so main can print a "run this with the graphical binary" diagnostic instead of
-			   letting a graphical guest run invisibly (and, for a render loop, forever). */
+			   framebuffer. When set, a rejected claim (display unavailable) stops the VM
+			   (cpu::power_off) so main can print a "run this with the graphical binary"
+			   diagnostic instead of letting a graphical guest run invisibly. This is the bare
+			   single-tasking path; a multi-process quesOS boot leaves it clear and takes the
+			   per-exec rejection path (set_display_available) instead. */
 			void set_stop_on_claim(bool on) { stop_on_claim_.store(on, std::memory_order_relaxed); }
+
+			/* maize-236: whether a claim can be honored on this view. Default true (a window
+			   is present, or a headless run where claims are pure bookkeeping). Set false for
+			   a console-only view with no window: a claim is then rejected (slot stays
+			   unclaimed, STATUS bit2 set) so the syscall layer can return -ENODEV to just that
+			   caller, evolving maize-221 from whole-VM power-off to per-exec rejection. */
+			void set_display_available(bool on) { display_available_.store(on, std::memory_order_relaxed); }
 
 			/* Called by the display thread once per refresh (vblank). If the guest has enabled
 			   the vsync IRQ (port $55 bit1), set vsync-pending and raise the framebuffer IRQ so
 			   a guest parked in HALT wakes at the refresh rate. This is the periodic "monitor"
-			   vblank, distinct from a guest present; it is the backstop that makes HALT-idle
-			   race-free (a keypress that slips past the wait's status check is still picked up
-			   at the next vblank). Only the SDL backend calls it, so the headless deterministic
-			   suite never fires it. */
+			   vblank, distinct from a guest present, and stays a single GLOBAL tick (not
+			   per-slot); it is the backstop that makes HALT-idle race-free. Only the SDL
+			   backend calls it, so the headless deterministic suite never fires it. */
 			void on_display_refresh();
 
 		private:
-			bool present_frame();   // read the guest buffer into frame_; returns validity
+			/* One registration-table entry. Each slot owns its own pixel base and capture
+			   frame, so switching to a backgrounded slot later shows its own current content. */
+			struct slot_state {
+				u_word base {0};
+				bool claimed {false};
+				bool present_valid {false};
+				bool rejected {false};   // STATUS bit2: last claim on this slot was rejected
+				std::uint64_t present_count {0};
+				std::vector<std::uint32_t> frame;
+			};
+
+			bool present_into(int slot, bool bump);   // read the slot's guest buffer into its frame
+			/* Switch-back / activation core. All three assume activate_mutex_ is held. */
+			void activate_locked(int new_slot);
+			void claim_locked(int slot, u_word base);
+			void release_locked(int slot);
 
 			device_port width_port_;
 			device_port height_port_;
@@ -182,22 +240,34 @@ namespace maize {
 			device_port base_port_;
 			device_port present_port_;
 			device_port status_port_;
+			device_port slot_port_;
+			device_port activate_port_;
 
 			u_hword width_;
 			u_hword height_;
 			u_word pixel_count_;
-			u_word base_ {0};
-			/* control_/status_ are touched by both the guest thread (port_write/port_read) and
-			   the display thread (on_display_refresh), so they are atomic. */
+
+			std::vector<slot_state> slots_;   // fixed fb_max_slots entries, built in the ctor
+			int selected_slot_ {0};           // $56: CPU-thread-only (port ops are supervisor)
+			/* active_slot_ is read lock-free by the display thread every frame; the compound
+			   activate / claim / release transitions that write it (and touch the history and
+			   the claimed flags the hotkey reads) are serialized by activate_mutex_, since the
+			   CPU thread (port writes) and the SDL thread (VT hotkey) both drive activation. */
+			std::atomic<int> active_slot_ {-1};   // -1 = text console
+			std::vector<int> activation_history_; // most-recent-last; -1 or a slot index
+			std::mutex activate_mutex_;
+			std::atomic<int> claimed_count_ {0};
+			std::atomic<bool> claim_attempted_ {false};   // any nonzero-base write on an unclaimed slot
+
+			/* control_/status_ are the GLOBAL vsync registers, touched by both the guest
+			   thread (port_write/port_read) and the display thread (on_display_refresh), so
+			   they are atomic. Vsync stays global (one monitor), not per-slot (Section 6). */
 			std::atomic<u_word> control_ {0};   // bit1 = vsync-IRQ-enable
 			std::atomic<u_word> status_ {0};    // bit0 = vsync-pending
-			bool present_valid_ {false};
-			std::atomic<std::uint64_t> present_count_ {0};   // valid presents (guest frames)
-			/* maize-140: latched true when a guest programs a nonzero framebuffer base (the
-			   explicit raw-framebuffer takeover signal). Read by the display thread. */
-			std::atomic<bool> claimed_ {false};
-			std::atomic<bool> stop_on_claim_ {false};   // maize-221: console build stops the VM on takeover
-			std::vector<std::uint32_t> frame_;
+			std::atomic<std::uint64_t> present_count_ {0};   // valid presents across all slots
+			std::atomic<bool> stop_on_claim_ {false};        // maize-221: console build stops the VM on a rejected claim
+			std::atomic<bool> display_available_ {true};     // maize-236: false rejects claims (per-exec)
+			std::vector<std::uint32_t> empty_frame_;         // returned by frame() when the console is active
 		};
 
 		/* maize-140: host/VM text console (approach (i)). The window becomes a first-class

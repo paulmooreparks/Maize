@@ -280,6 +280,10 @@ run_test "test_unpop_port"   "test_unpop_port.mazm"   "unpop: PASS"             
 run_test "test_portio"       "test_portio.mazm"       "portio: PASS"                  0
 run_test "test_timer"        "test_timer.mazm"        "timer: PASS"                   0
 run_test "test_framebuffer"  "test_framebuffer.mazm"  "framebuffer: PASS"             0
+# maize-236: the framebuffer registration table, default (display-available) branch:
+# slot select + claim + per-slot independence + ACTIVATE + switch-back + console fallback.
+# The same fixture also drives two display-less branches below (fb_reject / fb_stop).
+run_test "fb_registration"   "test_fb_registration.mazm" "fbreg: PASS"                0
 run_test "test_sysbrk"       "test_sysbrk.mazm"       "sysbrk: PASS"                  0
 run_test "test_syserrno"     "test_syserrno.mazm"     "syserrno: PASS"                0
 run_test "test_sysroute"     "test_sysroute.mazm"     "sysroute: PASS"                0
@@ -650,6 +654,81 @@ run_keyboard_test() {
 }
 
 run_keyboard_test
+
+# --- maize-236: framebuffer registration table, the two display-less branches ---------
+# The same test_fb_registration fixture self-adapts to the host display policy. run under
+# --fb-no-display the device rejects the claim (STATUS bit2) and the fixture takes its
+# per-exec-rejection branch, still printing "fbreg: PASS" (AC6: the VM keeps running, the
+# slot stays unclaimed, the active surface is unchanged). Assembles its own copy so it
+# does not depend on the generic run_test above having produced the binary.
+run_fb_reject_test() {
+    name="fb_reject"
+    expected="fbreg: PASS"
+    TOTAL=$((TOTAL + 1))
+    src="test_fb_registration.mazm"
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+    out_file=$(mktemp)
+    if "$MAIZE_EXE" --fb-no-display "$bin_path" >"$out_file" 2>/dev/null; then
+        me=0
+    else
+        me=$?
+    fi
+    actual=$(cat "$out_file")
+    rm -f "$out_file"
+    if [ "$me" -eq 0 ] && [ "$actual" = "$expected" ]; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: \"${expected}\" (claim rejected, VM keeps running)"
+        echo "        actual:   \"${actual}\" (exit ${me})"
+    fi
+}
+
+# Under --fb-no-display --fb-stop-on-claim the claim powers the whole VM off (the bare
+# single-tasking maize-221 diagnostic path, byte-identical): the fixture never reaches its
+# print, so stdout carries neither PASS nor FAIL and the VM exits cleanly (AC7). Wrapped in
+# `timeout` so a regression that fails to stop is reported rather than hanging the suite.
+run_fb_stop_test() {
+    name="fb_stop_on_claim"
+    TOTAL=$((TOTAL + 1))
+    src="test_fb_registration.mazm"
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+    out_file=$(mktemp)
+    if timeout 10 "$MAIZE_EXE" --fb-no-display --fb-stop-on-claim "$bin_path" >"$out_file" 2>/dev/null; then
+        me=0
+    else
+        me=$?
+    fi
+    actual=$(cat "$out_file")
+    rm -f "$out_file"
+    if [ "$me" -eq 0 ] && ! printf '%s' "$actual" | grep -qF "PASS" \
+        && ! printf '%s' "$actual" | grep -qF "FAIL"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: VM powers off on the claim, no PASS/FAIL on stdout (exit 0)"
+        echo "        actual:   \"${actual}\" (exit ${me})"
+    fi
+}
+
+run_fb_reject_test
+run_fb_stop_test
 
 # --- maize-12: multi-TU assemble -> link -> run --------------------------------------
 # Two separately-assembled objects (link_a defines _start and imports from link_b)

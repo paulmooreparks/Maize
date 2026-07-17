@@ -593,9 +593,22 @@ namespace maize {
 		const u_qword fb_port_format			{0x0052};   // R: format id (1 = XRGB8888)
 		const u_qword fb_port_base				{0x0053};   // R/W: guest address of the pixel buffer
 		const u_qword fb_port_present			{0x0054};   // W: present a frame; R: bit0 last-present-valid
-		const u_qword fb_port_status			{0x0055};   // R: bit0 vsync-pending; W bit1 vsync-IRQ-enable / ack
+		const u_qword fb_port_status			{0x0055};   // R: bit0 vsync-pending, bit2 register-rejected; W bit1 vsync-IRQ-enable / ack
+		/* maize-236: the registration table control ports. $53/$54/$55 above are
+		   slot-relative on whichever slot $56 selects; $57 switches the scanned-out
+		   surface. Both sit in the free range immediately after the fb block. */
+		const u_qword fb_port_slot				{0x0056};   // R/W: select the target slot (0..fb_max_slots-1) for $53/$54/$55
+		const u_qword fb_port_activate			{0x0057};   // R/W: W switch active surface (slot or fb_console_sentinel); R the active slot
 		const u_byte  fb_irq_vector				{36};
 		const u_hword fb_format_xrgb8888		{1};
+		/* maize-236: fixed registration-table capacity (Decision Q3). A fixed constant
+		   leaks into no ABI: the $56 slot-select range and the syscall contract are
+		   identical whether this is a compile-time constant or a boot flag. */
+		const int     fb_max_slots				{8};
+		/* maize-236: the $57 ACTIVATE sentinel selecting the text console (no framebuffer
+		   slot). A guest slot index is 0..fb_max_slots-1, so this out-of-range value can
+		   never collide with a real slot. */
+		const u_word  fb_console_sentinel		{0xFFFFFFFFu};
 
 
 		namespace instr {

@@ -697,6 +697,15 @@ int main(int argc, char *argv[]) {
 	bool show_perf = false;          // --show-perf: draw guest MIPS + FPS in the window corner
 	bool pause_on_halt = false;      // --pause-on-halt: hold the window open after the guest halts
 	bool vsync = true;               // --vsync/--no-vsync: sync graphics presents to the monitor vblank (maize-227)
+	/* maize-236: framebuffer registration-table host policy knobs (device supports both;
+	   this is the per-invocation wiring). --fb-no-display marks the view display-less so a
+	   claim is rejected per-exec (STATUS bit2 / syscall -ENODEV) rather than shown; used
+	   when quesOS drives multiple processes on the console binary. --fb-stop-on-claim is the
+	   bare single-tasking maize-221 knob: a rejected claim stops the whole VM for the
+	   use-the-graphical-binary diagnostic. The interactive console path (below) sets these
+	   automatically; the flags let the headless suites exercise both explicitly. */
+	bool fb_no_display = false;
+	bool fb_stop_on_claim = false;
 #ifdef MAIZE_DISPLAY
 	bool help_requested = false;     // maize-226: -h/--help on the graphical binary pages help in the window
 #endif
@@ -923,6 +932,24 @@ int main(int argc, char *argv[]) {
 			   peak MIPS/FPS on exit. Enables the per-instruction counter. */
 			show_perf = true;
 			cpu::enable_perf_counter();
+			++idx;
+			continue;
+		}
+		if (arg == "--fb-no-display") {
+			/* maize-236: mark the framebuffer view display-less. A guest claim (nonzero base
+			   on port $53) is then rejected: the slot stays unclaimed and STATUS bit2 is set,
+			   so quesOS returns -ENODEV to just that caller instead of the VM showing nothing.
+			   Used when quesOS runs on the windowless console binary; the headless AC fixtures
+			   pass it to exercise per-exec rejection. */
+			fb_no_display = true;
+			++idx;
+			continue;
+		}
+		if (arg == "--fb-stop-on-claim") {
+			/* maize-236/221: on a rejected claim, stop the whole VM (for the bare
+			   single-tasking use-the-graphical-binary diagnostic) rather than returning an
+			   error to the caller. Paired with --fb-no-display; exposed for the headless AC. */
+			fb_stop_on_claim = true;
 			++idx;
 			continue;
 		}
@@ -1256,6 +1283,11 @@ int main(int argc, char *argv[]) {
 
 	devices::framebuffer_device framebuffer(fb_width, fb_height);
 	framebuffer.attach();
+	/* maize-236: apply the framebuffer registration-table host policy from the CLI. These
+	   are per-invocation knobs the device supports independently; the interactive console
+	   path below layers its own default on top for the bare single-tasking diagnostic. */
+	if (fb_no_display) { framebuffer.set_display_available(false); }
+	if (fb_stop_on_claim) { framebuffer.set_stop_on_claim(true); }
 
 	/* maize-140: the host/VM text console (approach (i)). It owns its own pixel buffer at
 	   the console default resolution (640x400 -> 80x50 cells), separate from the
@@ -1354,6 +1386,12 @@ int main(int argc, char *argv[]) {
 	   terms. */
 	const bool fb_trap_interactive = stdin_is_interactive();
 	if (fb_trap_interactive) {
+		/* maize-236: the console binary has no window, so mark the view display-less AND
+		   stop-on-claim. A bare single-tasking graphics program's claim is then rejected and
+		   halts the VM (the maize-221 use-the-graphical-binary diagnostic, byte-identical).
+		   A multi-process quesOS boot that wants per-exec rejection instead (keep running,
+		   return -ENODEV) passes --fb-no-display without --fb-stop-on-claim. */
+		framebuffer.set_display_available(false);
 		framebuffer.set_stop_on_claim(true);
 	}
 #endif
@@ -1420,7 +1458,7 @@ int main(int argc, char *argv[]) {
 	/* maize-221: the guest claimed the framebuffer under the console build (the takeover
 	   trap above stopped the VM). Tell the operator to use the graphical binary rather than
 	   exiting silently as if the program had simply run. Distinct exit code (3). */
-	if (fb_trap_interactive && framebuffer.graphics_claimed()) {
+	if (fb_trap_interactive && framebuffer.graphics_claim_attempted()) {
 		std::cerr << "maize: '" << file_path << "' drives the graphical framebuffer, which this "
 			"console build cannot display." << std::endl
 			<< "maize: run it with the graphical Maize binary (the build that opens a window)."
