@@ -1672,6 +1672,7 @@ run_quesos_ac_fixtures() {
     for src in fork_isolation fork_multi exec_launch exec_target pipe_roundtrip \
                pipe_bigwrite pipeline producer filter consumer stress20 preempt \
                blocked console_echo \
+               sig_handler sig_default sig_chld sig_pgroup \
                fb_register fb_reject fb_fork_cleanup fb_exec_launch fb_exec_target \
                fb_exit_cleanup; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
