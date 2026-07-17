@@ -110,3 +110,33 @@ rename(const char *old, const char *new)
 {
     return (int)__syscall_ret(sys_rename(old, new));
 }
+
+/* maize-94: path-based stat as a composite over open + fstat + close. Maize's native ABI
+ * has no path-stat syscall (SYS $04 is out of scope), and sbase (pwd, cp, ls) reaches for
+ * stat(path, &st). Open the path, fstat the descriptor, close. A directory is not always
+ * O_RDONLY-openable through the hostfs backend, so fall back to O_DIRECTORY; that pair
+ * covers regular files and directories, which is the wave-1 need. A native path-stat is
+ * deferred to the filesystem card (maize-22). */
+int
+stat(const char *path, struct stat *st)
+{
+    int fd = open(path, O_RDONLY, 0);
+    int r;
+    if (fd < 0) {
+        fd = open(path, O_DIRECTORY, 0);   /* a directory may reject O_RDONLY */
+        if (fd < 0) {
+            return -1;                     /* errno set by open */
+        }
+    }
+    r = fstat(fd, st);
+    close(fd);
+    return r;
+}
+
+/* lstat aliases stat: hostfs models no symbolic links, so there is no link-vs-target
+ * distinction to preserve. Declared for source compatibility with sbase's cp/ls. */
+int
+lstat(const char *path, struct stat *st)
+{
+    return stat(path, st);
+}

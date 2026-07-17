@@ -32,4 +32,9 @@
 #define ULLONG_MAX 18446744073709551615ULL
 #define MB_LEN_MAX 1
 
+/* maize-94: PATH_MAX, for the borrowed userland (sbase/oksh) that sizes path buffers
+ * with it (pwd's `char cwd[PATH_MAX]`). The 4096 Linux value; the hostfs path surface is
+ * smaller, so this is a comfortable userland buffer bound, not an on-disk limit. */
+#define PATH_MAX   4096
+
 #endif /* MAIZE_LIMITS_H */

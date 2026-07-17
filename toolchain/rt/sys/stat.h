@@ -54,4 +54,13 @@ struct stat {
 
 int mkdir(const char *pathname, mode_t mode);
 
+/* maize-94: path-based stat as a libc COMPOSITE over open + fstat + close (the native ABI
+ * has no path-stat syscall; SYS $04 is out of scope). Fills *st for a path, returning 0 or
+ * -1 with errno. Limitation (recorded in the card decision): the path must be openable
+ * (O_RDONLY, with an O_DIRECTORY fallback for directories); a real native path-stat is
+ * deferred to the filesystem card (maize-22). lstat aliases stat: hostfs models no
+ * symlinks, so there is no link-vs-target distinction to preserve (honest deviation). */
+int stat(const char *path, struct stat *st);
+int lstat(const char *path, struct stat *st);
+
 #endif /* MAIZE_SYS_STAT_H */
