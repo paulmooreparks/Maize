@@ -300,8 +300,7 @@ quesos_fb_slot_select:
     RET
 
 quesos_fb_base_read:
-    CLR RV
-    IN  $53 RV.H0             ; RV = selected slot's stored base (0 = unclaimed)
+    IN  $53 RV               ; RV = selected slot's stored base, full 64-bit (0 = unclaimed)
     RET
 
 quesos_fb_base_write:

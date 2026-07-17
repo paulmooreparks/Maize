@@ -113,14 +113,19 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 /* maize-236: framebuffer registration syscalls (Decision D6). These are quesOS-private,
  * guest-only, and Maize-specific display arbitration with no real Linux syscall-number
  * analog (Linux does it via ioctl on /dev/fb0 or a VT ioctl). Decision D6 names the
- * 0x1000-0x1002 range, but the SYS instruction rides only an 8-bit number into the
- * cause-7 frame (src/cpu.cpp operand1.b0()), and widening it would be an ISA change this
- * card excludes; so the range is realized as a private 8-bit HIGH block, distinct from
- * both the Linux-mirrored process numbers and the native Maize-private $F0-$F6 block. The
- * syscall CONTRACT (args, returns, errno) matches the spec exactly. See card comment. */
-#define SYS_fb_geometry 0xE0   /* (u64 out_uva)  -> long (0)                              */
-#define SYS_fb_register 0xE1   /* (u64 base_uva) -> long (slot, or -errno)                */
-#define SYS_fb_release  0xE2   /* (void)         -> long (0, or -errno)                   */
+ * 0x1000-0x1002 range, but the SYS instruction rides only an 8-bit number into the cause-7
+ * frame (src/cpu.cpp operand1.b0()), and widening it would be an ISA change this card
+ * excludes. The frozen numbering policy (toolchain/rt/SYSCALL-ABI.md) puts every
+ * no-Linux-equivalent call in the reserved Maize-private high block $F0-$FF; the low bytes
+ * $F0-$F6 are already taken (sys_clock_ms $F0, termios $F1/$F2, palette_blit $F3,
+ * bulk_copy $F4, bulk_set $F5, ttysize $F6), so the next genuinely-free numbers are
+ * $F7-$F9. (Review cycle 1 rejected the earlier $E0-$E2 because those are real Linux
+ * numbers, 224/225/226 timer_gettime family; Convention counterexamples Entry 5. It named
+ * "$F3+" as free, but $F3-$F6 are occupied by the native private calls above, so the
+ * genuinely-next-free numbers are $F7-$F9.) The syscall CONTRACT is unchanged. */
+#define SYS_fb_geometry 0xF7   /* (u64 out_uva)  -> long (0)                              */
+#define SYS_fb_register 0xF8   /* (u64 base_uva) -> long (slot, or -errno)                */
+#define SYS_fb_release  0xF9   /* (void)         -> long (0, or -errno)                   */
 
 /* maize-236 per-exec rejection errno magnitudes (Decision D7; real Linux values so a
  * ported shell's strerror needs no Maize-specific table). */

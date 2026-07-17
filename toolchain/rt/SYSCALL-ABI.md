@@ -197,6 +197,14 @@ its result to memory. Reusing that number with a different shape would violate t
 "mirror the Linux number ⇒ mirror the Linux semantics" contract, so the clock lives in
 the private block instead.
 
+Current `$F0`-`$FF` block map (so a later assigner takes a genuinely-free number, not one
+that merely looks free in a partial dispatch switch): `$F0` `sys_clock_ms`; `$F1`/`$F2`
+termios (`sys_tcgetattr`/`sys_tcsetattr`); `$F3` `sys_palette_blit` (maize-213); `$F4`/`$F5`
+bulk memory (`sys_bulk_copy`/`sys_bulk_set`, maize-216); `$F6` `sys_ttysize` (maize-228);
+`$F7`/`$F8`/`$F9` the quesOS-guest framebuffer registration calls (maize-236, documented in
+the guest section below); `$FA`-`$FF` free. `$F3`-`$F9` are native or guest calls that this
+doc had not previously enumerated here; they are listed now so the block map is complete.
+
 Once C compiles against these stubs, the numbers are ABI. The convention frozen here
 (RV result, the `[-4095, -1]` errno range, the raw/wrapper split, Linux-mirrored
 numbers) is binding for everything built on top.
@@ -237,3 +245,29 @@ IRQ/status path (vector 33, ports `$00`/`$01`), NOT a native blocking read: when
 is available the reading PROCESS parks and the console IRQ delivers each byte and wakes
 it, so a waiting reader never parks the whole CPU thread (design doc 17). Job control,
 signals (`kill`), and the `INT $80` naming are Phase 2, out of scope here.
+
+### Framebuffer registration calls (maize-236)
+
+quesOS-private, guest-only display-arbitration calls with **no Linux equivalent** (Linux
+does this through `ioctl` on `/dev/fb0` or a VT `ioctl`, so there is no Linux number to
+mirror). Per the numbering policy they take numbers in the reserved Maize-private high block
+`$F0`-`$FF`; the next free bytes after the block map above are `$F7`-`$F9`. (Decision D6
+named `0x1000`-`0x1002`, which cannot encode: the `SYS` immediate rides only its low 8 bits
+into the cause-7 frame, and widening it would be an ISA change out of scope for that card.
+Review cycle 1 rejected an earlier `$E0`-`$E2` because those are real Linux numbers, 224/225/226
+`timer_gettime` family; Convention counterexamples Entry 5.) They are dispatched by quesOS's
+cause-7 handler, never `sys::call`; a bare-VM program's `SYS $F7` hits the native table
+instead. The device holds the registration table; quesOS tracks per-process ownership.
+
+| Number | Symbol | Args | Result |
+|--------|--------|------|--------|
+| `$F7` | `sys_fb_geometry` | `R0`=`u32 out[3]` (width, height, format) | `RV`=0 |
+| `$F8` | `sys_fb_register` | `R0`=base VA of a mapped pixel buffer | `RV`=slot index, or `-errno` |
+| `$F9` | `sys_fb_release` | none | `RV`=0, or `-errno` |
+
+`sys_fb_register` errno set: `-ENODEV` (19, no display attached / the device rejected the
+claim), `-EBUSY` (16, the caller already holds a registration), `-EINVAL` (22, the base VA
+is zero or its page is unmapped), `-ENOSPC` (28, the table is full). `sys_fb_release`
+returns `-EBADF` (9) when the caller holds no registration. A registration is scoped to one
+exec-lifetime: `fork` does not propagate it to the child, and both `execve` and process exit
+release a held slot.

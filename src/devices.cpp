@@ -256,6 +256,15 @@ namespace maize {
 		void framebuffer_device::activate_locked(int new_slot) {
 			int cur = active_slot_.load(std::memory_order_relaxed);
 			if (new_slot == cur) { return; }
+			/* Push the outgoing surface as the most-recent history entry, deduped: drop any
+			   prior occurrence of it first so the stack stays a bounded MRU list (at most one
+			   entry per distinct surface: the console plus fb_max_slots slots), rather than
+			   growing without limit across repeated VT switches. Switch-back semantics are
+			   unchanged: the nearest still-valid entry is what release pops back to. */
+			for (auto it = activation_history_.begin(); it != activation_history_.end(); ) {
+				if (*it == cur) { it = activation_history_.erase(it); }
+				else { ++it; }
+			}
 			activation_history_.push_back(cur);
 			active_slot_.store(new_slot, std::memory_order_release);
 			if (new_slot >= 0) { present_into(new_slot, false); }
@@ -380,7 +389,17 @@ namespace maize {
 					   IRQ is driven by the display refresh (on_display_refresh), not by the
 					   guest's present, so a guest parked in HALT still wakes at the refresh
 					   rate. A backgrounded slot keeps capturing into its own frame; only the
-					   active slot is blitted (the display skips the upload for inactive slots). */
+					   active slot is blitted (the display skips the upload for inactive slots).
+
+					   Deliberately OUTSIDE activate_mutex_: a present touches only the selected
+					   slot's own frame + present_valid (selected_slot_ is CPU-thread-owned; the
+					   ports are supervisor-only), never active_slot_ or the activation history,
+					   so it cannot race the claim/release/activate transitions the mutex guards.
+					   The remaining overlap (this write to slots_[active].frame vs the display
+					   thread reading it to blit) is the same lock-free capture-buffer tolerance
+					   the single-slot path always had: a torn read only shows one half-updated
+					   frame for a single refresh and self-corrects. Taking the mutex here would
+					   put a lock on DOOM's hot present path for no correctness gain. */
 					present_into(selected_slot_, true);
 					break;
 				case ROLE_STATUS:
