@@ -72,12 +72,42 @@ try:
     os.close(fd)
 except OSError:
     pass
-try:
-    _, status = os.waitpid(pid, 0)
-except OSError:
-    status = -1
+
+# Reap with a deadline: never block forever on waitpid. If the shell did not exit after
+# the typed `exit` (a regression that would otherwise hang the whole suite), kill it and
+# fail loudly.
+status = None
+reap_deadline = time.time() + 8
+while time.time() < reap_deadline:
+    try:
+        wpid, wstatus = os.waitpid(pid, os.WNOHANG)
+    except OSError:
+        wpid, wstatus = pid, -1
+    if wpid == pid:
+        status = wstatus
+        break
+    time.sleep(0.1)
+reaped_cleanly = status is not None
+if not reaped_cleanly:
+    for sig in (15, 9):   # SIGTERM then SIGKILL
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            break
+        try:
+            wpid, _ = os.waitpid(pid, os.WNOHANG)
+            if wpid == pid:
+                break
+        except OSError:
+            break
+        time.sleep(0.3)
 
 text = bytes(captured).decode("utf-8", "replace")
+
+if not reaped_cleanly:
+    sys.stdout.write("pty-oksh: FAIL shell-did-not-exit-after-exit (killed)\n")
+    sys.stdout.write("---captured---\n" + text + "\n---end---\n")
+    sys.exit(1)
 
 # Acceptance: the prompt was reached, both typed commands executed, shell reaped clean.
 fail = None

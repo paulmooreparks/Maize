@@ -56,9 +56,13 @@ namespace maize {
 					available_ = false;
 				}
 				else {
-					/* On-demand read when the console is not the active injector. */
+					/* On-demand read when the console is not the active injector. A host
+					   stdin read of 0 is real EOF (stdin closed / piped script drained):
+					   latch eof_ so the status port exposes bit2 and the guest's read
+					   returns 0 (EOF) rather than a synthesized NUL byte (maize-94). */
 					u_word n = maize::syscall::read(0, &b, 1);
 					if (n != 1) {
+						eof_ = true;
 						b = 0;
 					}
 				}
@@ -74,6 +78,12 @@ namespace maize {
 				   invocation). */
 				if (available_ || !active_injector_) {
 					s |= 0x1;
+				}
+				/* bit2 EOF: host stdin is exhausted (the eager injector hit EOF, or an
+				   on-demand read returned 0). The guest reads this to return a real 0/EOF
+				   from its fd0 read so a shell exits normally instead of looping on NUL. */
+				if (exhausted_ || eof_) {
+					s |= 0x4;
 				}
 				out.w0 = s;
 			}

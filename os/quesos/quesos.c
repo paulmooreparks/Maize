@@ -963,17 +963,29 @@ static void signal_fg_group(int sig) { raise_on_pgid(g_fg_pgid, sig); }
  * a native read(0) would park the whole CPU thread and freeze every process (doc 17).
  * Poll the console status port; if a byte is latched, take it; otherwise park the
  * PROCESS on the console IRQ, which delivers the byte and wakes it. */
+/* console status bits (src/devices.cpp console_device::port_read). */
+#define CON_STAT_INPUT 0x1ul   /* bit0: a data byte is available to read                 */
+#define CON_STAT_EOF   0x4ul   /* bit2: host stdin is exhausted (real end-of-input)      */
+
 static long console_read(struct pcb *self, u64 uva, long count) {
     u8 b;
     if (count <= 0) { return 0; }
     if (con_ring_pop(&b)) { as_write8(self, uva, b); return 1; }   /* queued data byte */
-    if (quesos_con_status() & 1ul) {
+    if (quesos_con_status() & CON_STAT_INPUT) {
         b = (u8)quesos_con_data();
+        /* maize-94: the on-demand data-port read latches EOF when host stdin returns 0, so
+         * re-check status AFTER the read: a real end-of-input returns 0 (EOF) from this fd0
+         * read so a shell exits normally instead of looping on a synthesized NUL byte (this
+         * is what makes a piped script WITHOUT an explicit `exit` terminate). */
+        if (quesos_con_status() & CON_STAT_EOF) { return 0; }
         if (g_tty_isig && b == 0x03) { signal_fg_group(SIGINT); }        /* INTR: no data */
         else if (g_tty_isig && b == 0x1C) { signal_fg_group(SIGQUIT); }  /* QUIT: no data */
         else { as_write8(self, uva, b); return 1; }   /* raw mode delivers 0x03/0x1C as data */
         /* a control byte was consumed; fall through and park (the raised signal is
          * delivered the next time a targeted process is runnable). */
+    }
+    else if (quesos_con_status() & CON_STAT_EOF) {
+        return 0;   /* the eager injector hit EOF with no byte pending: end-of-input */
     }
     self->block_kind = BLK_CONSOLE;
     self->block_buf = uva;

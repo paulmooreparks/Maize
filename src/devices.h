@@ -73,7 +73,8 @@ namespace maize {
 			device_port status_port_;
 			u_word data_byte_ {0};
 			bool available_ {false};
-			bool exhausted_ {false};
+			bool exhausted_ {false};   // eager injector reached host-stdin EOF
+			bool eof_ {false};         // maize-94: on-demand data-port read reached EOF
 			bool active_injector_ {false};
 		};
 
