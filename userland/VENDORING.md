@@ -48,6 +48,24 @@ external commands via PATH, pipelines, redirection (`<`, `>`, `>>`), builtins
 (`cd`, `exit`, `export`, `pwd`), `$?`. Binaries keep the `.mzx` extension (OQ 8950) and
 live at `/bin/<name>.mzx` inside the `--mount` grant (decision 8939).
 
+## Running the shell (interactive vs scripted)
+
+Interactive use is the DEFAULT input path on the console binary, driven from a real
+terminal:
+
+```
+maize --mount <bin-dir>=/bin:ro quesos.mzx /bin/oksh.mzx
+```
+
+On a real console oksh sets raw mode and drives its emacs-mode line editor over the
+console's raw/VT passthrough (maize-228); it queries the terminal size via `$F6`
+`sys_ttysize` at startup, which quesOS forwards. `--input=console` is for device-routed /
+scripted scenarios (bytes injected through the console device IRQ path); a cooked-mode
+interactive shell on `--input=console` renders NOTHING visible on the console build (device
+output only mirrors through the raw-mode VT passthrough), so it is NOT the interactive
+invocation. Scripted, non-interactive runs (`printf '...' | maize ... /bin/oksh.mzx`, or
+`oksh -c '<script>'`) work on either path.
+
 ## Building
 
 `userland/build-userland.sh` stages a scratch checkout of each submodule, applies the

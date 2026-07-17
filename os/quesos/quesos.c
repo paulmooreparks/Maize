@@ -53,6 +53,7 @@ long sys_ftruncate(long fd, long length);
  * discipline. NO new syscall numbers: the existing native $F1/$F2 are reused. */
 long sys_tcgetattr(long fd, void *termios_p);
 long sys_tcsetattr(long fd, long optional_actions, void *termios_p);
+long sys_ttysize(long fd, void *winsize_p);   /* maize-94: native $F6, forwarded to guests */
 unsigned long sys_clock_ms(void);   /* maize-94: native $F0, forwarded to guests */
 
 /* --- The metal half (quesos_boot.mazm). ---------------------------------------------
@@ -157,6 +158,14 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define SYS_tcgetattr 0xF1
 #define SYS_tcsetattr 0xF2
 
+/* maize-94: sys_ttysize (native $F6, maize-228). An interactive oksh queries the terminal
+ * size (ioctl TIOCGWINSZ) during line-editor init; forwarding it (same fd-mapped, bounce-
+ * through-g_iobuf pattern as $F1/$F2) lets the shell get the real console dimensions and
+ * reach its prompt instead of stranding on an unhandled syscall on the DEFAULT input path.
+ * A non-native (pipe) fd is -ENOTTY, so the no-tty interactive path (oksh -i) degrades
+ * gracefully to its default size. */
+#define SYS_ttysize   0xF6
+
 /* maize-94: the monotonic-clock and bulk-memory Maize-private numbers a borrowed guest
  * reaches. SYS_clock_ms takes no pointer args, so quesOS forwards it straight to the
  * native provider (quesOS runs on bare metal; its own sys_clock_ms() re-traps to $F0).
@@ -171,6 +180,8 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 
 /* The 4-word + NCCS-byte termios wire image (toolchain/rt/termios.h, src/console_io.h). */
 #define TERMIOS_WIRE_SIZE 36
+/* struct winsize wire image: ws_row, ws_col, ws_xpixel, ws_ypixel (four u16 LE, src/sys.cpp $F6). */
+#define WINSIZE_WIRE_SIZE 8
 /* c_lflag ISIG bit (Linux value; toolchain/rt/termios.h). */
 #define TIO_ISIG 0x0001u
 /* struct stat wire size (toolchain/rt/sys/stat.h: 144 bytes, hostfs.md section 2). */
@@ -1237,6 +1248,23 @@ static long do_tcsetattr(u64 fd_num, long optional_actions, u64 t_uva) {
     return r;
 }
 
+/* maize-94: sys_ttysize forwarder ($F6). Mirrors do_tcgetattr: map the guest fd to its
+ * native fd, ask the native provider for the terminal size, and bounce the 8-byte struct
+ * winsize back through g_iobuf. A non-native (pipe) fd is -ENOTTY, and the native provider
+ * itself returns -ENOTTY on a windowed console or non-tty host stdio, so the caller (oksh)
+ * degrades to its default size on either. This is what an interactive oksh needs to reach
+ * its prompt on the DEFAULT input path (a real console) rather than stranding. */
+static long do_ttysize(u64 fd_num, u64 ws_uva) {
+    struct pcb *self = g_current;
+    struct ofd *o = fd_ofd(self, fd_num);
+    long r; int i;
+    if (o == 0) { return -9; }                     /* -EBADF */
+    if (o->kind != OFD_NATIVE) { return -25; }     /* -ENOTTY: a pipe is not a terminal */
+    r = sys_ttysize(o->native_fd, g_iobuf);
+    if (r == 0) { for (i = 0; i < WINSIZE_WIRE_SIZE; ++i) { as_write8(self, ws_uva + (u64)i, g_iobuf[i]); } }
+    return r;
+}
+
 static long do_close(u64 fd_num) {
     struct pcb *self = g_current;
     if (fd_num >= QUESOS_MAX_FD || self->fd[fd_num] < 0) { return -9; }
@@ -1784,6 +1812,9 @@ void quesos_syscall(void) {
         /* maize-94 (OQ 8951 ruling): forwarded console termios. */
         case SYS_tcgetattr:  result = do_tcgetattr(a0, a1);               break;
         case SYS_tcsetattr:  result = do_tcsetattr(a0, (long)a1, a2);     break;
+        /* maize-94 (operator reopen): forwarded terminal-size query so an interactive oksh
+         * on the default input path reaches its prompt instead of stranding on $F6. */
+        case SYS_ttysize:    result = do_ttysize(a0, a1);                 break;
         case SYS_pipe:   result = do_pipe(a0);                     break;
         case SYS_dup:    result = do_dup(a0);                      break;
         case SYS_dup2:   result = do_dup2(a0, a1);                 break;
@@ -1816,6 +1847,13 @@ void quesos_syscall(void) {
         case SYS_bulk_copy:
         case SYS_bulk_set:       result = -38;                                 break;
         default:
+            /* maize-94 (operator reopen) unhandled-syscall POLICY: return -ENOSYS to the
+             * caller (never strand the process) so a Linux-shaped userland degrades on an
+             * unforwarded call the way it would on a real kernel that lacks the syscall,
+             * and keep the one-line diagnostic so an operator can see which number to
+             * forward next. This is what lets a shell survive a call quesOS has not wired
+             * yet (e.g. before $F6 ttysize was forwarded, oksh got -ENOSYS here and would
+             * fall back rather than crash). */
             qos_puts("[quesos] unhandled syscall ");
             qos_put_u64(num);
             qos_puts("\n");

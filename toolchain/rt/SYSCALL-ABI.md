@@ -253,6 +253,14 @@ is available the reading PROCESS parks and the console IRQ delivers each byte an
 it, so a waiting reader never parks the whole CPU thread (design doc 17). The `INT $80`
 naming remains a later concern; job control and signals (`kill`) land in maize-174 below.
 
+quesOS also FORWARDS the Maize-private console calls a process makes so an interactive
+shell works under it (maize-94): `$F1`/`$F2` (`sys_tcgetattr`/`sys_tcsetattr`, raw mode)
+and `$F6` (`sys_ttysize`, the `TIOCGWINSZ` terminal-size query the line editor runs at
+startup). Each maps the guest fd to its native fd and bounces the wire image through the
+kernel `g_iobuf`; a pipe (non-native) fd returns `-ENOTTY`, and any Maize-private number
+quesOS does NOT forward returns `-ENOSYS` to the caller (never strands the process), with a
+one-line `[quesos] unhandled syscall N` diagnostic naming the number to wire next.
+
 ### Guest signal subsystem (maize-174)
 
 quesOS Phase-2 process-model signals, dispatched by quesOS's cause-7 handler in GUEST

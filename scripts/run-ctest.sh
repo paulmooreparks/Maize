@@ -1938,7 +1938,7 @@ run_userland94_fixtures() {
     # sbase_launch (echo|cat pipeline), printf_launch, and the cp/mv/rm fs launchers
     # (each seeds a file on the /rw mount, execve's its util, and verifies the result).
     for _drv in sbase_launch printf_launch cp_launch mv_launch rm_launch ls_launch \
-                oksh_shell execvp_ext; do
+                oksh_shell execvp_ext oksh_interactive; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${_drv}.mzx" \
                 "${REPO_ROOT}/os/quesos/${_drv}.c" >>"$log" 2>&1; then
             echo "[FAIL] userland94: ${_drv}.c compile failed"; cat "$log" >&2
@@ -2038,6 +2038,22 @@ run_userland94_fixtures() {
         echo "[PASS] userland94_oksh_shell (pipeline/redirect/exit-status/builtins)"
     else
         echo "[FAIL] userland94_oksh_shell"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # AC 8930 INTERACTIVE path (operator reopen): oksh_interactive forks `oksh -i` (forces
+    # interactive init even without a controlling tty), so it runs the line-editor startup
+    # that queries the terminal size via $F6 sys_ttysize and opens /dev/tty. Before $F6 was
+    # forwarded this stranded the shell on an unhandled syscall with no prompt; now quesOS
+    # forwards it (a pipe fd returns -ENOTTY, so oksh degrades to its default size), the
+    # shell emits its prompt and executes the piped command. Asserts BOTH a prompt marker
+    # and the pwd output are present.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul94_run /progs/oksh_interactive.mzx); set -e
+    if printf '%s\n' "$out" | grep -qF "oksh-interactive: PASS"; then
+        echo "[PASS] userland94_oksh_interactive (interactive prompt + ttysize + command)"
+    else
+        echo "[FAIL] userland94_oksh_interactive"; printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 
