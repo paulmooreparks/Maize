@@ -114,6 +114,13 @@ GLOBAL sys_pipe
 GLOBAL sys_dup2
 GLOBAL sys_dup
 
+; maize-94 per-process working directory: two NEW quesOS-guest-only calls (chdir=$50 /
+; getcwd=$4F, the Linux x86-64 numbers). Guest-only: a user process's SYS $50/$4F traps
+; to quesOS's cause-7 dispatcher (which owns the per-PCB cwd); a bare-VM caller would hit
+; the native table (no such native call, harmless -ENOSYS). chdir(path); getcwd(buf, size).
+GLOBAL sys_chdir
+GLOBAL sys_getcwd
+
 ; maize-236 framebuffer registration: quesOS-private guest-only calls that trap to the
 ; cause-7 dispatcher. The SYS instruction rides only an 8-bit number into the trap frame, so
 ; the design's 0x1000-0x1002 range is realized in the reserved Maize-private high block
@@ -240,6 +247,14 @@ sys_dup2:
 
 sys_dup:
     SYS $20                 ; R0=oldfd; RV = newfd or -errno
+    RET
+
+sys_chdir:
+    SYS $50                 ; R0=path; RV = 0 or -errno (guest-only: quesOS per-PCB cwd)
+    RET
+
+sys_getcwd:
+    SYS $4F                 ; R0=buf, R1=size; RV = length incl. NUL, or -ERANGE
     RET
 
 sys_fb_geometry:

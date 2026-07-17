@@ -38,6 +38,21 @@ long sys_open(const char *path, long flags, long mode);
 long sys_read(long fd, void *buf, long count);
 long sys_close(long fd);
 long sys_write(long fd, const void *buf, long count);
+/* maize-94 decision 8941: the remaining native hostfs subset a quesOS process forwards
+ * through this dispatcher (each mirrors the frozen native number, SYSCALL-ABI.md). */
+long sys_fstat(long fd, void *statbuf);
+long sys_lseek(long fd, long offset, long whence);
+long sys_getdents64(long fd, void *dirp, long count);
+long sys_unlink(const char *path);
+long sys_mkdir(const char *path, long mode);
+long sys_rename(const char *oldp, const char *newp);
+long sys_ftruncate(long fd, long length);
+/* maize-94 (OQ 8951 operator ruling): the native console termios calls ($F1/$F2). A
+ * quesOS process's SYS $F1/$F2 traps here and is forwarded to these native stubs, so a
+ * raw-mode shell (oksh emacs line editing) can drive the window console's line
+ * discipline. NO new syscall numbers: the existing native $F1/$F2 are reused. */
+long sys_tcgetattr(long fd, void *termios_p);
+long sys_tcsetattr(long fd, long optional_actions, void *termios_p);
 
 /* --- The metal half (quesos_boot.mazm). ---------------------------------------------
  * quesos_switch_to(pcb) loads the process's saved GP context, MOVTCRs its page-table
@@ -113,6 +128,40 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define SYS_execve 0x3B
 #define SYS_exit   0x3C
 #define SYS_wait4  0x3D
+
+/* maize-94 decision 8941: native hostfs file/dir syscalls forwarded to a quesOS process.
+ * Each mirrors its frozen native number (SYSCALL-ABI.md); the handlers below bounce the
+ * user buffer through g_iobuf exactly as do_read/do_write do. */
+#define SYS_fstat      0x05
+#define SYS_lseek      0x08
+#define SYS_ftruncate  0x4D
+#define SYS_rename     0x52
+#define SYS_mkdir      0x53
+#define SYS_unlink     0x57
+#define SYS_getdents64 0xD9
+
+/* maize-94 decision 8940 (numbering ruled by this card): per-process working directory.
+ * SYS_chdir/SYS_getcwd are NEW quesOS-guest-only calls (no native VM/ISA change, the same
+ * class as fork/execve/pipe from maize-93). They mirror the Linux x86-64 numbers
+ * (chdir=80=$50, getcwd=79=$4F) per the SYSCALL-ABI.md numbering policy; neither collides
+ * with a number this guest dispatcher already handles. */
+#define SYS_getcwd 0x4F
+#define SYS_chdir  0x50
+
+/* maize-94 (OQ 8951 operator ruling): the native console termios calls, forwarded to a
+ * quesOS process so oksh can enter raw mode. These reuse the existing native numbers; no
+ * new number is minted. */
+#define SYS_tcgetattr 0xF1
+#define SYS_tcsetattr 0xF2
+
+/* The 4-word + NCCS-byte termios wire image (toolchain/rt/termios.h, src/console_io.h). */
+#define TERMIOS_WIRE_SIZE 36
+/* c_lflag ISIG bit (Linux value; toolchain/rt/termios.h). */
+#define TIO_ISIG 0x0001u
+/* struct stat wire size (toolchain/rt/sys/stat.h: 144 bytes, hostfs.md section 2). */
+#define STAT_WIRE_SIZE 144
+/* O_DIRECTORY (toolchain/rt/fcntl.h) for chdir's existence/is-a-directory validation. */
+#define QOS_O_DIRECTORY 0x10000
 
 /* maize-174: guest signal subsystem. The six Linux-mirror numbers plus two Maize-private
  * job-control numbers ($FA/$FB) drawn from the SYSCALL-ABI.md $F0-$FF ledger. */
@@ -204,6 +253,7 @@ struct pcb {
     u64  sig_saved_rs;           /* maize-174: saved_rs to restore on rt_sigreturn     */
     int  in_handler;             /* maize-174: a signal handler is in progress          */
     char path[QUESOS_PATH_CAP];   /* argv[0] for the reap transcript                   */
+    char cwd[QUESOS_PATH_CAP];    /* maize-94 decision 8940: per-process cwd (def "/") */
 };
 
 static struct pcb g_proc[QUESOS_MAX_PROC];
@@ -685,6 +735,7 @@ static struct pcb *spawn(const char *path, long parent) {
     { int _s; for (_s = 0; _s < 32; ++_s) { p->handler[_s] = 0; } }
     for (j = 0; j < QUESOS_PATH_CAP - 1 && path[j]; ++j) { p->path[j] = path[j]; }
     p->path[j] = 0;
+    p->cwd[0] = '/'; p->cwd[1] = 0;   /* maize-94: a top-level process starts at root */
     fdtable_init(p);
     if (build_address_space(p) != 0 || load_segments(p, path, &entry) != 0) {
         fdtable_close_all(p);
@@ -842,6 +893,13 @@ static int con_ring_pop(u8 *b) {
  * worklist job's pgid, changed only by SYS_tcsetpgrp. */
 static long g_fg_pgid;
 
+/* maize-94 (OQ 8951): the console's line-discipline ISIG state, mirroring the one window
+ * console's termios c_lflag & ISIG. Default 1 (canonical: 0x03/0x1C intercepted as
+ * SIGINT/SIGQUIT, the maize-174 behavior). do_tcsetattr updates it from the forwarded
+ * termios, so a raw-mode shell (oksh, ISIG cleared) receives 0x03/0x1C as literal data
+ * bytes (decision 8947: Ctrl-C is a literal byte in wave 1). One console => one flag. */
+static int g_tty_isig = 1;
+
 /* Record a pending signal. Signals are always recorded regardless of the block mask;
  * `blocked` only gates DELIVERY (deliver_pending_signal), per POSIX. A signal raised on
  * a process blocked in a syscall is delivered when it next becomes runnable; in-flight
@@ -871,9 +929,9 @@ static long console_read(struct pcb *self, u64 uva, long count) {
     if (con_ring_pop(&b)) { as_write8(self, uva, b); return 1; }   /* queued data byte */
     if (quesos_con_status() & 1ul) {
         b = (u8)quesos_con_data();
-        if (b == 0x03) { signal_fg_group(SIGINT); }        /* INTR: no data delivered */
-        else if (b == 0x1C) { signal_fg_group(SIGQUIT); }  /* QUIT: no data delivered */
-        else { as_write8(self, uva, b); return 1; }
+        if (g_tty_isig && b == 0x03) { signal_fg_group(SIGINT); }        /* INTR: no data */
+        else if (g_tty_isig && b == 0x1C) { signal_fg_group(SIGQUIT); }  /* QUIT: no data */
+        else { as_write8(self, uva, b); return 1; }   /* raw mode delivers 0x03/0x1C as data */
         /* a control byte was consumed; fall through and park (the raised signal is
          * delivered the next time a targeted process is runnable). */
     }
@@ -910,15 +968,83 @@ static long do_read(u64 fd_num, u64 uva, long count) {
     return -9;
 }
 
+/* ==================================================================================
+ * maize-94: per-process cwd + path resolution (decision 8940).
+ *
+ * Native hostfs has a fixed cwd of "/" (docs/design/hostfs.md), so a shell-local cd
+ * string would not follow into a child's relative opens. Instead every quesOS process
+ * carries pcb->cwd, and do_open / do_execve / the path-mutating forwarders join a
+ * non-absolute incoming path onto pcb->cwd before handing an ABSOLUTE path to the
+ * native stub. cwd defaults to "/", is inherited across fork, and survives execve.
+ * ================================================================================== */
+
+/* Copy a user-space NUL-terminated path into a kernel buffer (bounded, direct deref
+ * through the live translation: CR0 = the calling process, supervisor). */
+static void copy_user_path(u64 uva, char *dst) {
+    int i;
+    for (i = 0; i < QUESOS_PATH_CAP - 1 && *(char *)(uva + (u64)i); ++i) {
+        dst[i] = *(char *)(uva + (u64)i);
+    }
+    dst[i] = 0;
+}
+
+/* Join a possibly-relative path onto base (an already-absolute cwd) into out. An
+ * absolute `in` passes through unchanged; otherwise out = base + "/" + in (no double
+ * slash when base is "/"). No "."/".." collapsing here: the native hostfs layer resolves
+ * interior ".." within the mount (RESOLVE_BENEATH), so an unnormalized join is correct
+ * for open/unlink/exec. cwd itself is kept normalized by do_chdir. */
+static void join_path(const char *base, const char *in, char *out) {
+    int n = 0, i;
+    if (in[0] == '/') {
+        for (i = 0; in[i] && n < QUESOS_PATH_CAP - 1; ++i) { out[n++] = in[i]; }
+        out[n] = 0;
+        return;
+    }
+    for (i = 0; base[i] && n < QUESOS_PATH_CAP - 1; ++i) { out[n++] = base[i]; }
+    if (n == 0 || out[n - 1] != '/') { if (n < QUESOS_PATH_CAP - 1) { out[n++] = '/'; } }
+    for (i = 0; in[i] && n < QUESOS_PATH_CAP - 1; ++i) { out[n++] = in[i]; }
+    out[n] = 0;
+}
+
+/* Canonicalize an absolute path in place-free form: collapse "//", drop ".", and pop a
+ * component on "..". Used by do_chdir so pcb->cwd (and getcwd's answer) stays clean even
+ * after `cd ../x`. Single forward pass building an offset stack of component starts. */
+static void normalize_path(const char *raw, char *out) {
+    int comp_start[QUESOS_MAX_ARG];   /* out[] offset where each kept component's '/' sits */
+    int ncomp = 0;
+    int n = 0;                        /* length written to out so far                      */
+    int i = 0;
+    out[0] = 0;
+    while (raw[i]) {
+        int seg_len = 0;
+        char seg[QUESOS_PATH_CAP];
+        while (raw[i] == '/') { ++i; }                 /* skip separators */
+        while (raw[i] && raw[i] != '/') {              /* gather one component */
+            if (seg_len < QUESOS_PATH_CAP - 1) { seg[seg_len++] = raw[i]; }
+            ++i;
+        }
+        if (seg_len == 0) { continue; }
+        seg[seg_len] = 0;
+        if (seg[0] == '.' && seg[1] == 0) { continue; }              /* "." */
+        if (seg[0] == '.' && seg[1] == '.' && seg[2] == 0) {         /* ".." */
+            if (ncomp > 0) { n = comp_start[--ncomp]; out[n] = 0; }
+            continue;
+        }
+        if (ncomp < QUESOS_MAX_ARG) { comp_start[ncomp++] = n; }
+        if (n < QUESOS_PATH_CAP - 1) { out[n++] = '/'; }
+        { int k; for (k = 0; k < seg_len && n < QUESOS_PATH_CAP - 1; ++k) { out[n++] = seg[k]; } }
+        out[n] = 0;
+    }
+    if (n == 0) { out[0] = '/'; out[1] = 0; }          /* root, or all-".." above root */
+}
+
 /* open/close/dup/dup2/pipe: manage the fd table + open-file descriptions. */
 static long do_open(u64 path_uva, long flags, long mode) {
-    char kpath[QUESOS_PATH_CAP];
-    int i, slot, o;
+    char in[QUESOS_PATH_CAP], kpath[QUESOS_PATH_CAP];
+    int slot, o;
     long nfd;
-    for (i = 0; i < QUESOS_PATH_CAP - 1 && *(char *)(path_uva + (u64)i); ++i) {
-        kpath[i] = *(char *)(path_uva + (u64)i);
-    }
-    kpath[i] = 0;
+    copy_user_path(path_uva, in);
+    join_path(g_current->cwd, in, kpath);              /* resolve against the process cwd */
     nfd = sys_open(kpath, flags, mode);
     if (nfd < 0) { return nfd; }
     slot = fd_alloc_slot(g_current);
@@ -927,6 +1053,132 @@ static long do_open(u64 path_uva, long flags, long mode) {
     g_ofd[o].kind = OFD_NATIVE; g_ofd[o].native_fd = nfd; g_ofd[o].refcount = 1;
     g_current->fd[slot] = o;
     return slot;
+}
+
+/* maize-94 decision 8941: native hostfs file/dir forwarders. Each resolves a process fd
+ * to its native fd (or a path against cwd) and bounces the fixed-size struct / dir-record
+ * buffer through g_iobuf, mirroring do_write. A non-native (pipe) fd is rejected the way
+ * Linux rejects the op on a pipe. */
+static long do_fstat(u64 fd_num, u64 statbuf_uva) {
+    struct pcb *self = g_current;
+    struct ofd *o = fd_ofd(self, fd_num);
+    long r; int i;
+    if (o == 0) { return -9; }                     /* -EBADF */
+    if (o->kind != OFD_NATIVE) { return -9; }      /* fstat of a pipe end: -EBADF (no stat) */
+    r = sys_fstat(o->native_fd, g_iobuf);
+    if (r == 0) { for (i = 0; i < STAT_WIRE_SIZE; ++i) { as_write8(self, statbuf_uva + (u64)i, g_iobuf[i]); } }
+    return r;
+}
+
+static long do_lseek(u64 fd_num, long offset, long whence) {
+    struct ofd *o = fd_ofd(g_current, fd_num);
+    if (o == 0) { return -9; }                     /* -EBADF */
+    if (o->kind != OFD_NATIVE) { return -29; }     /* -ESPIPE: cannot seek a pipe */
+    return sys_lseek(o->native_fd, offset, whence);
+}
+
+static long do_getdents64(u64 fd_num, u64 dirp_uva, long count) {
+    struct pcb *self = g_current;
+    struct ofd *o = fd_ofd(self, fd_num);
+    long n, i;
+    if (o == 0) { return -9; }                     /* -EBADF */
+    if (o->kind != OFD_NATIVE) { return -20; }     /* -ENOTDIR: a pipe is not a directory */
+    if (count > (long)QUESOS_IOBUF_CAP) { count = (long)QUESOS_IOBUF_CAP; }
+    n = sys_getdents64(o->native_fd, g_iobuf, count);
+    if (n > 0) { for (i = 0; i < n; ++i) { as_write8(self, dirp_uva + (u64)i, g_iobuf[i]); } }
+    return n;
+}
+
+static long do_unlink(u64 path_uva) {
+    char in[QUESOS_PATH_CAP], kpath[QUESOS_PATH_CAP];
+    copy_user_path(path_uva, in);
+    join_path(g_current->cwd, in, kpath);
+    return sys_unlink(kpath);
+}
+
+static long do_mkdir(u64 path_uva, long mode) {
+    char in[QUESOS_PATH_CAP], kpath[QUESOS_PATH_CAP];
+    copy_user_path(path_uva, in);
+    join_path(g_current->cwd, in, kpath);
+    return sys_mkdir(kpath, mode);
+}
+
+static long do_rename(u64 old_uva, u64 new_uva) {
+    char oin[QUESOS_PATH_CAP], nin[QUESOS_PATH_CAP];
+    char okpath[QUESOS_PATH_CAP], nkpath[QUESOS_PATH_CAP];
+    copy_user_path(old_uva, oin);
+    copy_user_path(new_uva, nin);
+    join_path(g_current->cwd, oin, okpath);
+    join_path(g_current->cwd, nin, nkpath);
+    return sys_rename(okpath, nkpath);
+}
+
+static long do_ftruncate(u64 fd_num, long length) {
+    struct ofd *o = fd_ofd(g_current, fd_num);
+    if (o == 0) { return -9; }                     /* -EBADF */
+    if (o->kind != OFD_NATIVE) { return -22; }     /* -EINVAL: not a regular file */
+    return sys_ftruncate(o->native_fd, length);
+}
+
+/* maize-94 decision 8940: chdir/getcwd. chdir joins + normalizes against the current cwd,
+ * validates the target is an existing directory (O_DIRECTORY open), and only then commits
+ * pcb->cwd. getcwd copies pcb->cwd out (Linux semantics: returns strlen+1, -ERANGE when
+ * the caller's buffer is too small). */
+static long do_chdir(u64 path_uva) {
+    struct pcb *self = g_current;
+    char in[QUESOS_PATH_CAP], joined[QUESOS_PATH_CAP], norm[QUESOS_PATH_CAP];
+    long fd; int i;
+    copy_user_path(path_uva, in);
+    join_path(self->cwd, in, joined);
+    normalize_path(joined, norm);
+    fd = sys_open(norm, QOS_O_DIRECTORY, 0);       /* validate existence + directory-ness */
+    if (fd < 0) { return fd; }                     /* -ENOENT / -ENOTDIR from the backend */
+    sys_close(fd);
+    for (i = 0; i < QUESOS_PATH_CAP - 1 && norm[i]; ++i) { self->cwd[i] = norm[i]; }
+    self->cwd[i] = 0;
+    return 0;
+}
+
+static long do_getcwd(u64 buf_uva, long size) {
+    struct pcb *self = g_current;
+    long len = (long)qos_strlen(self->cwd);
+    long i;
+    if (size < len + 1) { return -34; }            /* -ERANGE */
+    for (i = 0; i <= len; ++i) { as_write8(self, buf_uva + (u64)i, (u8)self->cwd[i]); }
+    return len + 1;                                /* Linux getcwd: bytes incl. the NUL */
+}
+
+/* maize-94 (OQ 8951 ruling): termios forwarders. A quesOS process's SYS $F1/$F2 bounces
+ * the 36-byte termios wire image through g_iobuf to/from the native window console. A
+ * non-native (pipe) fd is -ENOTTY. do_tcsetattr also mirrors the ISIG lflag into
+ * g_tty_isig so the console signal interception tracks the shell's raw-mode setting. */
+static long do_tcgetattr(u64 fd_num, u64 t_uva) {
+    struct pcb *self = g_current;
+    struct ofd *o = fd_ofd(self, fd_num);
+    long r; int i;
+    if (o == 0) { return -9; }                     /* -EBADF */
+    if (o->kind != OFD_NATIVE) { return -25; }     /* -ENOTTY: a pipe is not a terminal */
+    r = sys_tcgetattr(o->native_fd, g_iobuf);
+    if (r == 0) { for (i = 0; i < TERMIOS_WIRE_SIZE; ++i) { as_write8(self, t_uva + (u64)i, g_iobuf[i]); } }
+    return r;
+}
+
+static long do_tcsetattr(u64 fd_num, long optional_actions, u64 t_uva) {
+    struct pcb *self = g_current;
+    struct ofd *o = fd_ofd(self, fd_num);
+    long r; int i; u32 lflag;
+    if (o == 0) { return -9; }                     /* -EBADF */
+    if (o->kind != OFD_NATIVE) { return -25; }     /* -ENOTTY */
+    for (i = 0; i < TERMIOS_WIRE_SIZE; ++i) { g_iobuf[i] = *(u8 *)(t_uva + (u64)i); }
+    r = sys_tcsetattr(o->native_fd, optional_actions, g_iobuf);
+    if (r == 0) {
+        /* c_lflag is the 4th 32-bit LE word (byte offset 12). Track ISIG so console_read /
+         * quesos_console_irq stop intercepting 0x03/0x1C once the shell clears it. */
+        lflag = (u32)g_iobuf[12] | ((u32)g_iobuf[13] << 8)
+              | ((u32)g_iobuf[14] << 16) | ((u32)g_iobuf[15] << 24);
+        g_tty_isig = (lflag & TIO_ISIG) ? 1 : 0;
+    }
+    return r;
 }
 
 static long do_close(u64 fd_num) {
@@ -1025,6 +1277,7 @@ static long do_fork(void) {
     child->term_signal = 0; child->in_handler = 0;
     { unsigned long _s; for (_s = 0; _s < 32; ++_s) { child->handler[_s] = parent->handler[_s]; } }
     for (k = 0; k < QUESOS_PATH_CAP; ++k) { child->path[k] = parent->path[k]; }
+    for (k = 0; k < QUESOS_PATH_CAP; ++k) { child->cwd[k] = parent->cwd[k]; }   /* maize-94: cwd inherited */
     fdtable_copy(child, parent);   /* the child inherits the fd table (shared OFDs) */
 
     build_address_space(child);
@@ -1122,14 +1375,12 @@ static int marshal_vec(u64 vec_uva, int *nstr, u64 *pack, int max_more) {
  * on success (the process now runs the new image); a load failure kills the process. */
 static long do_execve(u64 path_uva, u64 argv_uva, u64 envp_uva) {
     struct pcb *self = g_current;
-    char kpath[QUESOS_PATH_CAP];
+    char in[QUESOS_PATH_CAP], kpath[QUESOS_PATH_CAP];
     int i, nstr = 0;
     u64 pack = 0, entry;
 
-    for (i = 0; i < QUESOS_PATH_CAP - 1 && *(char *)(path_uva + (u64)i); ++i) {
-        kpath[i] = *(char *)(path_uva + (u64)i);
-    }
-    kpath[i] = 0;
+    copy_user_path(path_uva, in);
+    join_path(self->cwd, in, kpath);   /* maize-94: resolve a relative exec target against cwd */
 
     marshal_vec(argv_uva, &nstr, &pack, QUESOS_MAX_ARG);
     g_arg_argc = nstr;
@@ -1255,9 +1506,9 @@ void quesos_console_irq(void) {
      * the foreground group and never delivered as data; any other byte is queued. */
     if (quesos_con_status() & 1ul) {
         u8 b = (u8)quesos_con_data();
-        if (b == 0x03) { signal_fg_group(SIGINT); }
-        else if (b == 0x1C) { signal_fg_group(SIGQUIT); }
-        else { con_ring_push(b); }
+        if (g_tty_isig && b == 0x03) { signal_fg_group(SIGINT); }
+        else if (g_tty_isig && b == 0x1C) { signal_fg_group(SIGQUIT); }
+        else { con_ring_push(b); }   /* raw mode queues 0x03/0x1C as data */
     }
     /* Hand one queued byte to a parked reader, if any. */
     if (g_con_count > 0) {
@@ -1435,6 +1686,20 @@ void quesos_syscall(void) {
         case SYS_read:   result = do_read(a0, a1, (long)a2);       break;
         case SYS_open:   result = do_open(a0, (long)a1, (long)a2); break;
         case SYS_close:  result = do_close(a0);                    break;
+        /* maize-94 decision 8941: native hostfs file/dir forwarders. */
+        case SYS_fstat:      result = do_fstat(a0, a1);                    break;
+        case SYS_lseek:      result = do_lseek(a0, (long)a1, (long)a2);    break;
+        case SYS_getdents64: result = do_getdents64(a0, a1, (long)a2);     break;
+        case SYS_unlink:     result = do_unlink(a0);                       break;
+        case SYS_mkdir:      result = do_mkdir(a0, (long)a1);              break;
+        case SYS_rename:     result = do_rename(a0, a1);                   break;
+        case SYS_ftruncate:  result = do_ftruncate(a0, (long)a1);         break;
+        /* maize-94 decision 8940: per-process working directory. */
+        case SYS_chdir:      result = do_chdir(a0);                        break;
+        case SYS_getcwd:     result = do_getcwd(a0, (long)a1);            break;
+        /* maize-94 (OQ 8951 ruling): forwarded console termios. */
+        case SYS_tcgetattr:  result = do_tcgetattr(a0, a1);               break;
+        case SYS_tcsetattr:  result = do_tcsetattr(a0, (long)a1, a2);     break;
         case SYS_pipe:   result = do_pipe(a0);                     break;
         case SYS_dup:    result = do_dup(a0);                      break;
         case SYS_dup2:   result = do_dup2(a0, a1);                 break;

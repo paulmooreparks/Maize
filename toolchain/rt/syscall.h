@@ -108,6 +108,26 @@ long sys_getpgid(long pid);
 long sys_tcgetpgrp(void);
 long sys_tcsetpgrp(long pgid);
 
+/* maize-93 process-control raw stubs (SYS $39/$3D/$27/$3B/$16/$21/$20). These have bodies
+ * in syscall.mazm but were previously undeclared; maize-94 declares them (decision 8943)
+ * so the unistd.c POSIX wrappers (fork/execve/execvp/wait/waitpid/pipe/dup/dup2/getpid)
+ * compile against them. Guest-only: dispatched by quesOS, never the native table. Each
+ * returns RV verbatim (a [-4095,-1] result is -errno). */
+long sys_fork(void);
+long sys_wait4(long pid, void *status, long options, void *rusage);
+long sys_getpid(void);
+long sys_execve(const char *path, char *const argv[], char *const envp[]);
+long sys_pipe(int fds[2]);
+long sys_dup2(long oldfd, long newfd);
+long sys_dup(long oldfd);
+
+/* maize-94 per-process working directory raw stubs (SYS $50 chdir / $4F getcwd). NEW
+ * quesOS-guest-only calls (decision 8940): a user process's SYS traps to quesOS, which
+ * owns the per-PCB cwd. chdir returns 0 or -errno; getcwd returns the byte length
+ * (including the NUL) written to buf, or -ERANGE when size is too small. */
+long sys_chdir(const char *path);
+long sys_getcwd(char *buf, unsigned long size);
+
 /* --- errno + wrappers (errno.c) -------------------------------------------- */
 
 /* The musl error translator: a pure function of its input. A raw result in

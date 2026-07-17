@@ -1758,6 +1758,73 @@ run_quesos_ac_fixtures() {
 
 run_quesos_ac_fixtures
 
+# maize-94 wave-1 kernel plumbing: quesOS forwards the native hostfs file/dir subset
+# (decision 8941), owns a per-process cwd + relative-path resolution (decision 8940), and
+# forwards the console termios calls (OQ 8951 operator ruling) so oksh can enter raw mode.
+# fs_forward + cwd_resolve run under a writable /rw mount (alongside :ro /progs for the
+# binary); termios_raw runs under --console-dump (which binds the grid console's termios).
+# Each is a self-checked PASS marker; `timeout` guards a blocking-semantics regression.
+run_quesos94_fixtures() {
+    builder="${REPO_ROOT}/os/quesos/build-quesos.sh"
+    progs="${WORK_DIR}/quesos94"
+    rw="${WORK_DIR}/quesos94-rw"
+    quesos="${WORK_DIR}/quesos94.mzx"
+    log="${WORK_DIR}/quesos94.log"
+    rm -rf "$progs" "$rw"; mkdir -p "$progs" "$rw"
+
+    if ! sh "$builder" --preset "$PRESET" -o "$quesos" >"$log" 2>&1 || [ ! -f "$quesos" ]; then
+        echo "[FAIL] quesos94: quesOS link failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    for src in fs_forward cwd_resolve termios_raw; do
+        if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
+                "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
+            echo "[FAIL] quesos94: ${src}.c compile failed"; cat "$log" >&2
+            TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+        fi
+    done
+    pnat=$(host_to_native "$progs")
+    rnat=$(host_to_native "$rw")
+
+    # File/dir forwarding + cwd resolution: :ro /progs (binaries) + :rw /rw (scratch).
+    for case in fs_forward:fs-forward cwd_resolve:cwd-resolve; do
+        launcher="${case%%:*}"; marker="${case#*:}: PASS"
+        TOTAL=$((TOTAL + 1))
+        rm -rf "${rw:?}/"* 2>/dev/null || true
+        set +e
+        out=$(MSYS2_ARG_CONV_EXCL='/progs:/rw' timeout 60 "$MAIZE" --no-root \
+            --mount "${pnat}=/progs:ro" --mount "${rnat}=/rw:rw" \
+            "$quesos" "/progs/${launcher}.mzx" 2>/dev/null | grep -v '^$')
+        set -e
+        if printf '%s\n' "$out" | grep -qF "$marker"; then
+            echo "[PASS] quesos94_${launcher}"
+        else
+            echo "[FAIL] quesos94_${launcher}"
+            echo "        expected marker: \"${marker}\""
+            printf '%s\n' "$out" | sed 's/^/          | /'
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+    done
+
+    # Console termios forwarding (OQ 8951): --console-dump binds the grid console's termios
+    # so tcgetattr/tcsetattr return 0; the fixture's get/set/get round trip proves the
+    # forwarding + bounce path. The PASS marker rides the grid dump.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(printf '' | MSYS2_ARG_CONV_EXCL='/progs' timeout 60 "$MAIZE" --console-dump \
+        --no-root --mount "${pnat}=/progs:ro" "$quesos" /progs/termios_raw.mzx 2>/dev/null)
+    set -e
+    if printf '%s\n' "$out" | grep -qF "termios-raw: PASS"; then
+        echo "[PASS] quesos94_termios_raw"
+    else
+        echo "[FAIL] quesos94_termios_raw"
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_quesos94_fixtures
+
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then
     echo "C toolchain: ${TOTAL} passed, 0 failed."
