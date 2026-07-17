@@ -367,9 +367,11 @@ pinout:
     $50          framebuffer width           R: pixels (host config)
     $51          framebuffer height          R: pixels (host config)
     $52          framebuffer format          R: format id (1 = XRGB8888)
-    $53          framebuffer base            R/W: guest address of the pixel buffer
-    $54          framebuffer present         W: present a frame;  R: bit0 last-present-valid
-    $55          framebuffer status          R: bit0 vsync-pending;  W: vsync-IRQ-enable / ack
+    $53          framebuffer base            R/W: guest address of the SELECTED slot's pixel buffer
+    $54          framebuffer present         W: present the selected slot's frame;  R: bit0 last-present-valid
+    $55          framebuffer status          R: bit0 vsync-pending, bit2 register-rejected;  W: vsync-IRQ-enable / ack
+    $56          framebuffer slot            R/W: select the target slot (0..7) for $53/$54/$55; reset 0
+    $57          framebuffer activate        R/W: W switch the active (scanned-out) surface;  R the active slot / console sentinel
 
     IRQ vectors: timer 32, console input-available 33, keyboard key-available 34,
                  block transfer-complete 35 (reserved), framebuffer vsync/refresh 36.
@@ -400,6 +402,24 @@ to present a completed frame; on present the device reads `[base, base + width *
 4)` from guest memory. Reading `$54` returns whether the last present was valid (bit0). The
 resolution is host configuration for the run; the vsync/refresh IRQ (vector 36) exists at
 `$55` but generation is disabled by default.
+
+**Framebuffer registration table.** The framebuffer holds a fixed-size registration table
+(8 slots), generalizing a single takeover latch so several guest processes can each register
+their own pixel buffer at once (each brings its own guest-RAM buffer; there is no added copy).
+Ports `$53`/`$54`/`$55` are *slot-relative*: they act on whichever slot `$56` currently
+selects (reset 0, so a program that never touches `$56` sees the single-slot behavior
+unchanged). A nonzero base written to `$53` **claims** the selected slot; a zero base
+**releases** it. Only one surface is scanned out at a time; `$57` chooses it: writing a
+claimed slot's index makes that slot active, and writing the console sentinel (`$FFFFFFFF`)
+returns to the text console. Reading `$57` returns the active slot index, or the sentinel
+when the console is active. Activation keeps a small history, so releasing the active slot
+reverts scanout to the previous surface (a virtual-terminal-style switch-back) rather than
+going blank. Width, height, and format are global and apply to every slot identically (no
+per-slot resolution). On a display-less view a claim is **rejected**: the slot stays
+unclaimed and `$55` bit2 (register-rejected) is set, which lets an operating system return a
+per-process error to just that caller instead of the whole machine stopping. Which slot maps
+to which host window, and which registration receives input, is host presentation policy
+above the device; the device itself knows only slots, never processes.
 
 ## Explicitly out of scope
 

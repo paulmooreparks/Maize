@@ -1131,9 +1131,11 @@ the low-16-bit port id into the high range. The ratified pinout:
     $50          framebuffer width           R: pixels (host config)
     $51          framebuffer height          R: pixels (host config)
     $52          framebuffer format          R: format id (1 = XRGB8888)
-    $53          framebuffer base            R/W: guest address of the pixel buffer
-    $54          framebuffer present         W: present a frame;  R: bit0 last-present-valid
-    $55          framebuffer status          R: bit0 vsync-pending;  W: vsync-IRQ-enable / ack
+    $53          framebuffer base            R/W: guest address of the SELECTED slot's pixel buffer
+    $54          framebuffer present         W: present the selected slot's frame;  R: bit0 last-present-valid
+    $55          framebuffer status          R: bit0 vsync-pending, bit2 register-rejected;  W: vsync-IRQ-enable / ack
+    $56          framebuffer slot            R/W: select the target slot (0..7) for $53/$54/$55; reset 0
+    $57          framebuffer activate        R/W: W switch the active surface;  R the active slot / console sentinel
 
     IRQ vectors: timer 32, console input-available 33, keyboard key-available 34,
                  block transfer-complete 35 (reserved), framebuffer vsync/refresh 36.
@@ -1157,6 +1159,13 @@ the low-16-bit port id into the high range. The ratified pinout:
   `[base, base + width*height*4)` from guest memory and displays it. The resolution is
   host-configurable with `--resolution WxH` (default 320x200); the format is XRGB8888
   (`0x00RRGGBB`, id 1). A vsync/refresh IRQ (vector 36) exists but is disabled by default.
+  The framebuffer holds a fixed 8-slot **registration table**: `$53`/`$54`/`$55` act on
+  whichever slot `$56` selects (reset 0, so a single-surface program is unchanged), a nonzero
+  base claims the selected slot and a zero base releases it, and `$57` chooses which claimed
+  slot (or the console, via the `$FFFFFFFF` sentinel) is scanned out, with switch-back to the
+  previous surface when the active slot is released. On a display-less view a claim is
+  rejected (`$55` bit2), so an OS can fail one process's request instead of stopping the
+  machine. Which slot maps to which host window is host policy above the device.
 - **Host window.** The framebuffer and keyboard drive a real host window only under the
   opt-in `--display` flag of a build compiled with the SDL2 backend enabled; the default
   build runs headless with no display dependency.
