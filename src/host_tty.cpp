@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <csignal>
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
@@ -29,6 +30,9 @@ namespace maize {
 			bool g_raw = false;         // guest currently in raw mode (last termios_set)
 			int g_esc_count = 0;        // consecutive Ctrl-] seen (host kill escape)
 			unsigned char g_image[TERMIOS_SIZE];   // current termios image (get returns this)
+			// maize-174: pending synthetic INTR/QUIT byte set by the POSIX SIGINT/SIGQUIT
+			// handler (0 = none). Only a flag write happens in the handler (async-signal-safe).
+			volatile sig_atomic_t g_synth_byte = 0;
 
 			void put_u32(unsigned char* p, unsigned v) {
 				p[0] = static_cast<unsigned char>(v & 0xFF);
@@ -119,6 +123,15 @@ namespace maize {
 				::signal(sig, SIG_DFL);
 				::raise(sig);
 			}
+
+			// maize-174: convert a cooked-mode Ctrl-C / Ctrl-backslash into a synthetic input
+			// byte instead of killing the maize(c) process. Async-signal-safe: a flag write
+			// only, no restore()/raise(). The fd-0 read path (interrupted with EINTR because
+			// this handler carries no SA_RESTART) delivers the byte via take_synthetic_byte().
+			void synth_signal(int sig) {
+				if (sig == SIGINT) { g_synth_byte = 0x03; }
+				else if (sig == SIGQUIT) { g_synth_byte = 0x1C; }
+			}
 #endif
 
 			void register_handlers() {
@@ -129,9 +142,18 @@ namespace maize {
 				SetConsoleCtrlHandler(ctrl_handler, TRUE);
 				SetUnhandledExceptionFilter(seh_filter);
 #else
-				::signal(SIGINT, signal_restore);
+				// maize-174: SIGINT/SIGQUIT become a synthetic input byte (guest ISIG), NOT a
+				// process kill. Installed via sigaction with sa_flags = 0 (NOT signal(), whose
+				// glibc SA_RESTART would auto-restart the blocked fd-0 read and defeat the
+				// synthetic-byte hand-off). SIGTERM/SIGHUP/SIGSEGV/SIGABRT keep the
+				// restore-and-die behavior: those mean the process is actually going down.
+				struct sigaction sa;
+				sa.sa_handler = synth_signal;
+				sigemptyset(&sa.sa_mask);
+				sa.sa_flags = 0;
+				sigaction(SIGINT, &sa, nullptr);
+				sigaction(SIGQUIT, &sa, nullptr);
 				::signal(SIGTERM, signal_restore);
-				::signal(SIGQUIT, signal_restore);
 				::signal(SIGHUP, signal_restore);
 				::signal(SIGSEGV, signal_restore);
 				::signal(SIGABRT, signal_restore);
@@ -188,6 +210,13 @@ namespace maize {
 
 		bool active() {
 			return g_active;
+		}
+
+		int take_synthetic_byte() {
+			int b = g_synth_byte;
+			if (b == 0) { return -1; }
+			g_synth_byte = 0;
+			return b;
 		}
 
 		void termios_get(unsigned char* image) {

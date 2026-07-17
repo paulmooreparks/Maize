@@ -45,12 +45,27 @@ namespace maize {
             if (fd >= 3) {
                 return neg_errno(abi_ebadf);   // real file I/O is out of scope (M4)
             }
-            long r = ::read(static_cast<int>(fd), buf, count);
-            if (r < 0) {
-                // Host Linux errno is numerically identical to the Maize ABI.
-                return neg_errno(errno);
+            for (;;) {
+                long r = ::read(static_cast<int>(fd), buf, count);
+                if (r < 0) {
+                    // maize-174: a cooked-mode Ctrl-C / Ctrl-backslash on the real terminal
+                    // interrupts this read (EINTR, because host_tty installs the handler
+                    // without SA_RESTART) after converting the host signal into a synthetic
+                    // INTR/QUIT byte. Deliver that one byte as ordinary input so the guest's
+                    // own ISIG layer sees it; any other EINTR just restarts the read.
+                    if (errno == EINTR) {
+                        int sb = (fd == 0) ? host_tty::take_synthetic_byte() : -1;
+                        if (sb >= 0 && count > 0) {
+                            *reinterpret_cast<u_byte*>(buf) = static_cast<u_byte>(sb);
+                            return 1;
+                        }
+                        continue;
+                    }
+                    // Host Linux errno is numerically identical to the Maize ABI.
+                    return neg_errno(errno);
+                }
+                return static_cast<u_word>(r);
             }
-            return static_cast<u_word>(r);
         }
 
         u_word write(u_word fd, const void* buf, u_word count) {

@@ -47,5 +47,13 @@ namespace maize {
 		   still delivered to the guest; the escape only ARMS the kill. */
 		bool check_kill_escape(const unsigned char* buf, unsigned long n);
 
+		/* maize-174: on the real terminal (POSIX), a host SIGINT/SIGQUIT in cooked mode is
+		   converted by the installed handler into a pending synthetic INTR (0x03) / QUIT
+		   (0x1C) byte instead of killing the VM. take_synthetic_byte() returns that byte
+		   (and clears it) or -1 if none, so the fd-0 read path can deliver it as ordinary
+		   input on EINTR; the guest's own ISIG layer (quesOS) then raises the signal. Always
+		   returns -1 on Windows (which uses the console-control handler instead). */
+		int take_synthetic_byte();
+
 	} // namespace host_tty
 } // namespace maize
