@@ -143,7 +143,7 @@ long write(int fd, const void *buf, unsigned long count);
  * through __syscall_ret exactly as read/write do. `mode` is open()'s O_CREAT
  * permission arg (ignored unless O_CREAT). Directory enumeration lives in the
  * dirent.c wrappers (opendir/readdir/closedir) over sys_getdents64. */
-int  open (const char *path, int flags, int mode);
+int  open (const char *path, int flags, ...);   /* maize-94: variadic (POSIX 2-arg form) */
 int  close(int fd);
 long lseek(int fd, long offset, int whence);
 int  fstat(int fd, void *statbuf);

@@ -21,6 +21,8 @@
 #include "syscall.h"
 #include "stdio.h"      /* remove() prototype (maize-148) */
 #include "sys/stat.h"   /* mkdir() prototype + mode_t (maize-147/148) */
+#include "fcntl.h"      /* O_CREAT (maize-94: variadic open reads mode only when set) */
+#include "stdarg.h"     /* va_list for the variadic open (maize-94) */
 
 /* Single source of truth for errno (single-threaded VM; TLS reserved). */
 int errno = 0;
@@ -52,8 +54,18 @@ write(int fd, const void *buf, unsigned long count)
  * __syscall_ret like read/write. These sit beside read/write because errno.c is
  * the errno-translating wrapper TU; the FILE* layer (stdio.c) builds on them. */
 int
-open(const char *path, int flags, int mode)
+open(const char *path, int flags, ...)
 {
+    int mode = 0;
+    /* maize-94: the POSIX variadic open. The permission mode is meaningful only on a
+       create, so read the optional third argument via va_arg only when O_CREAT is set;
+       a two-argument open(path, flags) then passes mode 0 harmlessly. */
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = va_arg(ap, int);
+        va_end(ap);
+    }
     return (int)__syscall_ret(sys_open(path, flags, mode));
 }
 
