@@ -184,6 +184,10 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define WINSIZE_WIRE_SIZE 8
 /* c_lflag ISIG bit (Linux value; toolchain/rt/termios.h). */
 #define TIO_ISIG 0x0001u
+/* c_lflag ICANON bit (Linux value; toolchain/rt/termios.h). A raw-mode process clears it. */
+#define TIO_ICANON 0x0002u
+/* Byte offset of c_lflag (the 4th 32-bit LE word) within the 36-byte termios wire image. */
+#define TERMIOS_OFF_LFLAG 12
 /* struct stat wire size (toolchain/rt/sys/stat.h: 144 bytes, hostfs.md section 2). */
 #define STAT_WIRE_SIZE 144
 /* O_DIRECTORY (toolchain/rt/fcntl.h) for chdir's existence/is-a-directory validation. */
@@ -283,6 +287,8 @@ struct pcb {
     char path[QUESOS_PATH_CAP];   /* argv[0] for the reap transcript                   */
     char cwd[QUESOS_PATH_CAP];    /* maize-94 decision 8940: per-process cwd (def "/") */
     u64  brk_cur;                 /* maize-94: current heap break (grows via SYS_brk)  */
+    unsigned char termios_img[TERMIOS_WIRE_SIZE];  /* maize-250: last termios this proc set */
+    int  termios_valid;           /* maize-250: 0 until this proc's first tcsetattr     */
 };
 
 static struct pcb g_proc[QUESOS_MAX_PROC];
@@ -772,6 +778,7 @@ static struct pcb *spawn(const char *path, long parent) {
     p->fb_slot = -1;   /* maize-236: no framebuffer registration until SYS_fb_register */
     p->pgid = p->pid;  /* maize-174: a top-level spawn starts its own process group */
     p->pending = 0; p->blocked = 0; p->term_signal = 0; p->in_handler = 0;
+    p->termios_valid = 0;   /* maize-250: no console termios set until this proc tcsetattr's */
     { int _s; for (_s = 0; _s < 32; ++_s) { p->handler[_s] = 0; } }
     for (j = 0; j < QUESOS_PATH_CAP - 1 && path[j]; ++j) { p->path[j] = path[j]; }
     p->path[j] = 0;
@@ -861,10 +868,25 @@ static long bounce_out(u64 uva, long count) {
 }
 
 /* Native passthrough (fd 0/1/2 or a hostfs fd): bounce the user buffer through the
- * identity-mapped kernel staging area, then issue the native SYS. */
+ * identity-mapped kernel staging area, then issue the native SYS. g_iobuf is only
+ * QUESOS_IOBUF_CAP (4096) bytes, so a single write larger than that is delivered in a
+ * loop of capped chunks (maize-250). A full-screen TUI frame (kilo's editorRefreshScreen
+ * paints the whole screen in one write()) routinely exceeds 4096 bytes; without the loop
+ * the tail was silently dropped mid-escape-sequence, garbling the paint. A genuine short
+ * or negative return from the host stops the loop and is surfaced (POSIX-legal). */
 static long native_write(long nfd, u64 uva, long count) {
-    long n = bounce_out(uva, count);
-    return sys_write(nfd, g_iobuf, n);
+    long remaining = count < 0 ? 0 : count;
+    long total = 0;
+    while (remaining > 0) {
+        long chunk = remaining > (long)QUESOS_IOBUF_CAP ? (long)QUESOS_IOBUF_CAP : remaining;
+        long n = bounce_out(uva + (u64)total, chunk);
+        long w = sys_write(nfd, g_iobuf, n);
+        if (w <= 0) { return total > 0 ? total : w; }   /* propagate error/EOF if nothing sent yet */
+        total += w;
+        remaining -= w;
+        if (w < n) { break; }   /* genuine short write from the host: return the partial total */
+    }
+    return total;
 }
 static long native_read(long nfd, u64 uva, long count) {
     long n = count;
@@ -1231,6 +1253,15 @@ static long do_brk(u64 newbrk) {
  * the 36-byte termios wire image through g_iobuf to/from the native window console. A
  * non-native (pipe) fd is -ENOTTY. do_tcsetattr also mirrors the ISIG lflag into
  * g_tty_isig so the console signal interception tracks the shell's raw-mode setting. */
+/* Decode c_lflag (the 4th 32-bit LE word, byte offset TERMIOS_OFF_LFLAG) out of a 36-byte
+ * termios wire image. Shared by do_tcsetattr and restore_console_on_death (maize-250). */
+static u32 termios_lflag(const unsigned char *img) {
+    return (u32)img[TERMIOS_OFF_LFLAG]
+         | ((u32)img[TERMIOS_OFF_LFLAG + 1] << 8)
+         | ((u32)img[TERMIOS_OFF_LFLAG + 2] << 16)
+         | ((u32)img[TERMIOS_OFF_LFLAG + 3] << 24);
+}
+
 static long do_tcgetattr(u64 fd_num, u64 t_uva) {
     struct pcb *self = g_current;
     struct ofd *o = fd_ofd(self, fd_num);
@@ -1253,9 +1284,13 @@ static long do_tcsetattr(u64 fd_num, long optional_actions, u64 t_uva) {
     if (r == 0) {
         /* c_lflag is the 4th 32-bit LE word (byte offset 12). Track ISIG so console_read /
          * quesos_console_irq stop intercepting 0x03/0x1C once the shell clears it. */
-        lflag = (u32)g_iobuf[12] | ((u32)g_iobuf[13] << 8)
-              | ((u32)g_iobuf[14] << 16) | ((u32)g_iobuf[15] << 24);
+        lflag = termios_lflag((const unsigned char *)g_iobuf);
         g_tty_isig = (lflag & TIO_ISIG) ? 1 : 0;
+        /* maize-250: remember this process's own last-set termios image so reap_tail can
+         * re-apply the parent's console state if this process dies before its own
+         * userspace cleanup (kilo's atexit -> disableRawMode) runs. */
+        for (i = 0; i < TERMIOS_WIRE_SIZE; ++i) { self->termios_img[i] = (unsigned char)g_iobuf[i]; }
+        self->termios_valid = 1;
     }
     return r;
 }
@@ -1371,6 +1406,7 @@ static long do_fork(void) {
     child->pgid = parent->pgid;
     child->pending = 0; child->blocked = parent->blocked;
     child->term_signal = 0; child->in_handler = 0;
+    child->termios_valid = 0;   /* maize-250: the child has not itself set console termios yet */
     { unsigned long _s; for (_s = 0; _s < 32; ++_s) { child->handler[_s] = parent->handler[_s]; } }
     for (k = 0; k < QUESOS_PATH_CAP; ++k) { child->path[k] = parent->path[k]; }
     for (k = 0; k < QUESOS_PATH_CAP; ++k) { child->cwd[k] = parent->cwd[k]; }   /* maize-94: cwd inherited */
@@ -1649,10 +1685,38 @@ static int lowest_set_bit(unsigned long m) {
     return b + 1;   /* signal number (1-based) */
 }
 
+/* maize-250: restore the console when a process that owned console termios dies. Runs in
+ * quesOS's own C dispatcher context (CLRSYSG), so it can issue raw sys_write/sys_tcsetattr
+ * calls that reach the native provider directly, exactly as do_tcsetattr does.
+ *
+ * A clean exit (term_signal == 0) has already restored the parent's termios via the dying
+ * process's own userspace cleanup (kilo's atexit -> disableRawMode -> tcsetattr) before it
+ * called _exit, so the parent-side re-apply below just idempotently reconfirms that state.
+ * An abnormal death (term_signal != 0) never ran that cleanup: if the process was in raw
+ * mode it may have left the alternate screen buffer active, so emit the alt-screen-exit
+ * sequence (mirroring kilo's own clean-exit sequence, demos/kilo/kilo.c) to un-strand the
+ * visible terminal, then re-apply the parent's (the resuming foreground shell's) termios so
+ * its prompt, line editing, and ISIG interception work again. */
+static void restore_console_on_death(struct pcb *self) {
+    struct pcb *parent;
+    if (!self->termios_valid) { return; }   /* never touched console termios (e.g. a pipe filter) */
+    if (self->term_signal != 0) {           /* abnormal/signaled death: userspace cleanup did not run */
+        if ((termios_lflag(self->termios_img) & TIO_ICANON) == 0) {   /* was raw */
+            sys_write(1, "\x1b[?1049l", 8);  /* leave the alt screen buffer, if it was entered */
+        }
+    }
+    parent = find_by_pid(self->parent);
+    if (parent != 0 && parent->termios_valid) {
+        sys_tcsetattr(0, 0 /* TCSANOW */, parent->termios_img);
+        g_tty_isig = (termios_lflag(parent->termios_img) & TIO_ISIG) ? 1 : 0;
+    }
+}
+
 /* Shared zombie/reap tail for do_exit and terminate_by_signal, so wait4/zombie/reap
  * semantics are identical however a process ends. Also raises SIGCHLD on the parent. */
 static void reap_tail(struct pcb *self) {
     struct pcb *parent;
+    restore_console_on_death(self);   /* maize-250: un-strand + restore the console first */
     self->state = P_ZOMBIE;
     fdtable_close_all(self);   /* closing a pipe write end wakes blocked readers (EOF) */
     fb_release_held(self);     /* maize-236: free any framebuffer registration */

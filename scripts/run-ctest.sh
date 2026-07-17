@@ -1835,7 +1835,7 @@ run_quesos_ac_fixtures() {
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
     for src in fork_isolation fork_multi exec_launch exec_target pipe_roundtrip \
-               pipe_bigwrite pipeline producer filter consumer stress20 preempt \
+               pipe_bigwrite bigwrite_native pipeline producer filter consumer stress20 preempt \
                blocked console_echo \
                sig_handler sig_default sig_chld sig_pgroup \
                sig_kill sig_exec_launch sig_exec_target \
@@ -1879,6 +1879,46 @@ run_quesos_ac_fixtures() {
     quesos_ac_case quesos_stress20       "stress20: PASS"        stress20
     quesos_ac_case quesos_preempt        "preempt: PASS"         preempt
     quesos_ac_case quesos_blocked        "blocked-noslice: PASS" blocked
+
+    # maize-250 (AC 9108): native_write must deliver a single write larger than
+    # QUESOS_IOBUF_CAP (4096) in FULL, not silently truncate the tail (the root cause of
+    # kilo's garbled full-screen paint). The fixture does ONE sys_write(1, buf, 10000) and
+    # self-checks the returned count == 10000; the harness ALSO wc -c's stdout to confirm the
+    # 10000-byte payload physically reached the host (belt-and-suspenders on the guest-side
+    # return check). Before the fix the write returned 4096 and 5904 bytes were dropped.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(MSYS2_ARG_CONV_EXCL='/progs' timeout 90 "$MAIZE" --no-root \
+        --mount "${nat}=/progs:ro" "$quesos" /progs/bigwrite_native.mzx 2>/dev/null)
+    nbytes=$(printf '%s' "$out" | wc -c)
+    set -e
+    if printf '%s\n' "$out" | grep -qF "native-bigwrite: PASS n=10000" && [ "$nbytes" -ge 10000 ]; then
+        echo "[PASS] quesos_bigwrite_native (single >4096-byte write delivered in full)"
+    else
+        echo "[FAIL] quesos_bigwrite_native (payload bytes on host: ${nbytes})"
+        printf '%s\n' "$out" | grep -aF "native-bigwrite" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # maize-250 (AC 9114): the SAME native_write choke point feeds the windowed console's
+    # text_console::write_out backend (bound headlessly by --console-dump) as feeds the
+    # host_tty terminal path. Re-run the single >4096-byte write through that backend and
+    # confirm the guest still observes the full 10000-byte count returned -- a concrete,
+    # non-structural proof that the truncation fix reaches the windowed-console output path
+    # (the full interactive kilo paint in an actual SDL window is operator-verified; headless
+    # CI has no window, and windowed-console screen sizing is outside this card's scope).
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(printf '' | MSYS2_ARG_CONV_EXCL='/progs' timeout 60 "$MAIZE" --console-dump \
+        --no-root --mount "${nat}=/progs:ro" "$quesos" /progs/bigwrite_native.mzx 2>/dev/null)
+    set -e
+    if printf '%s\n' "$out" | grep -qF "native-bigwrite: PASS n=10000"; then
+        echo "[PASS] quesos_bigwrite_native_windowed (full delivery via text_console backend)"
+    else
+        echo "[FAIL] quesos_bigwrite_native_windowed"
+        printf '%s\n' "$out" | grep -aF "native-bigwrite" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
 
     # maize-174 guest signal subsystem. sig_handler proves the handler-dispatch path
     # (rt_sigaction -> kill -> user trampoline -> rt_sigreturn -> resume) deterministically
@@ -1942,7 +1982,7 @@ run_quesos94_fixtures() {
         echo "[FAIL] quesos94: quesOS link failed"; cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
-    for src in fs_forward cwd_resolve termios_raw libc_proc execvp_run bin_echoer setjmp_launch; do
+    for src in fs_forward cwd_resolve termios_raw raw_reap_restore libc_proc execvp_run bin_echoer setjmp_launch; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
             echo "[FAIL] quesos94: ${src}.c compile failed"; cat "$log" >&2
@@ -1992,6 +2032,24 @@ run_quesos94_fixtures() {
         echo "[PASS] quesos94_termios_raw"
     else
         echo "[FAIL] quesos94_termios_raw"
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # maize-250 killed-TUI restore (AC 9112, way 1): a raw-mode child killed by a signal must
+    # not strand the console raw. --console-dump binds the grid console's termios; the fixture
+    # forks a raw child, SIGTERMs it, and asserts the console's ICANON is restored to the
+    # parent's canonical image by reap_tail -> restore_console_on_death. The PASS marker rides
+    # the grid dump.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(printf '' | MSYS2_ARG_CONV_EXCL='/progs' timeout 60 "$MAIZE" --console-dump \
+        --no-root --mount "${pnat}=/progs:ro" "$quesos" /progs/raw_reap_restore.mzx 2>/dev/null)
+    set -e
+    if printf '%s\n' "$out" | grep -qF "raw-reap-restore: PASS"; then
+        echo "[PASS] quesos94_raw_reap_restore"
+    else
+        echo "[FAIL] quesos94_raw_reap_restore"
         printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
@@ -2097,6 +2155,14 @@ run_userland94_fixtures() {
     if ! "$CC_MAIZE" --preset "$PRESET" -o "${bindir}/bin_echoer.mzx" \
             "${REPO_ROOT}/os/quesos/bin_echoer.c" >>"$log" 2>&1; then
         echo "[FAIL] userland94: bin_echoer.c compile failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    # maize-250: kilo (the full-screen editor) built into /bin so the pty fixture can launch
+    # it as a child of oksh under quesOS. Compiles clean through cc-maize with no source
+    # changes (demos/kilo/README.md).
+    if ! "$CC_MAIZE" --preset "$PRESET" -o "${bindir}/kilo.mzx" \
+            "${REPO_ROOT}/demos/kilo/kilo.c" >>"$log" 2>&1; then
+        echo "[FAIL] userland94: kilo.c compile failed"; cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
     # The launcher drivers are quesOS worklist entries (compiled like any fixture):
@@ -2244,6 +2310,51 @@ run_userland94_fixtures() {
         fi
     else
         echo "[SKIP] userland94_oksh_keystrokes (python3 unavailable for the pty driver)"
+    fi
+
+    # maize-250 (AC 9109/9110/9111/9112): full-screen kilo as a quesOS CHILD of oksh through a
+    # real pty on the console binary. pty_oksh_kilo_check.py boots oksh, launches
+    # `kilo /rw/t.txt`, asserts a clean alt-screen paint (enter + home + frame-end, no
+    # unhandled syscall), types text, saves (Ctrl-S), quits (Ctrl-Q), asserts the oksh prompt
+    # returns and a follow-on pwd round-trips; the harness then reads /rw/t.txt back from the
+    # host and asserts the exact typed content. A second (kill) mode SIGTERMs the maize
+    # process mid-edit and asserts a non-hang reap (the in-VM killed-TUI console restore is
+    # proven deterministically by quesos94_raw_reap_restore, not through the pty). Linux pty
+    # variant only, like userland94_oksh_keystrokes; skips loudly where python3 is absent.
+    if command -v python3 >/dev/null 2>&1; then
+        rm -f "${rwdir}/t.txt"
+        TOTAL=$((TOTAL + 1))
+        set +e
+        out=$(python3 "${REPO_ROOT}/scripts/pty_oksh_kilo_check.py" \
+            "$MAIZE" "$quesos" "$bindir" "$rwdir" edit 2>&1)
+        rc=$?
+        set -e
+        saved=""
+        [ -f "${rwdir}/t.txt" ] && saved=$(cat "${rwdir}/t.txt" 2>/dev/null)
+        if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qF "pty-kilo: PASS" \
+        && [ "$saved" = "hello from kilo as a quesos child" ]; then
+            echo "[PASS] userland94_kilo_edit (paint + type + save + quit + prompt-return)"
+        else
+            echo "[FAIL] userland94_kilo_edit (saved=\"${saved}\")"
+            printf '%s\n' "$out" | sed 's/^/          | /'
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+
+        TOTAL=$((TOTAL + 1))
+        set +e
+        out=$(python3 "${REPO_ROOT}/scripts/pty_oksh_kilo_check.py" \
+            "$MAIZE" "$quesos" "$bindir" "$rwdir" kill 2>&1)
+        rc=$?
+        set -e
+        if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qF "pty-kilo: PASS"; then
+            echo "[PASS] userland94_kilo_kill (raw-child pty launch reaps without hanging)"
+        else
+            echo "[FAIL] userland94_kilo_kill"
+            printf '%s\n' "$out" | sed 's/^/          | /'
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+    else
+        echo "[SKIP] userland94_kilo (python3 unavailable for the pty driver)"
     fi
 
     # AC 8930 EOF (operator reopen #2, cycle 2): a piped default-path shell with NO explicit
