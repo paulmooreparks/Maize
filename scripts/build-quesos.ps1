@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+
 <#
 .SYNOPSIS
     Build quesOS into a loadable Maize image (quesos.mzx) from a Windows terminal.
@@ -59,7 +60,9 @@ $OutPath = [System.IO.Path]::GetFullPath($OutPath)
 # message rather than a raw .NET exception when wsl.exe is not on PATH.
 $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
 if (-not $wsl) {
-    Write-Error 'WSL is required to build quesOS (the C toolchain is POSIX-only) but wsl.exe was not found on PATH. Install WSL, or build from an MSYS2 shell instead.'
+    # -ErrorAction Continue: Set-StrictMode/EAP='Stop' would otherwise make Write-Error
+    # terminating, so the process would die on the throw (exit 1) before reaching exit 2.
+    Write-Error 'WSL is required to build quesOS (the C toolchain is POSIX-only) but wsl.exe was not found on PATH. Install WSL, or build from an MSYS2 shell instead.' -ErrorAction Continue
     exit 2
 }
 

@@ -1,11 +1,12 @@
 #Requires -Version 5.1
+
 <#
 .SYNOPSIS
     Build the vendored userland programs (the wave-1 /bin set) into Maize images.
 
 .DESCRIPTION
-    Compiles the vendored userland (the sbase coreutils plus the oksh shell) into one
-    .mzx image per program using the Maize C toolchain. The compile runs inside WSL (the
+    Compiles the vendored userland (the sbase coreutils plus the oksh shell) to Maize
+    images, one per program, using the Maize C toolchain. The compile runs inside WSL (the
     cproc/QBE C toolchain is POSIX-only), but you drive it entirely from PowerShell.
 
     With no program names, the full default set is built. Name one or more programs to
@@ -36,7 +37,9 @@
     .\scripts\build-userland.ps1 -Out C:\tmp\bin true false ls
     Builds just true, false, and ls into the given directory.
 #>
-[CmdletBinding()]
+# PositionalBinding=$false: -Preset and -Out are named-only, so bare positional args
+# (the program names) all flow to -Prog rather than the first one binding to -Preset.
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$Preset = '',
     [string]$Out = '',
@@ -63,11 +66,20 @@ if (-not [System.IO.Path]::IsPathRooted($OutDir)) {
 }
 $OutDir = [System.IO.Path]::GetFullPath($OutDir)
 
+# Snapshot whether the default sandbox root exists BEFORE the build. The build creates
+# <root>\bin (and thus <root>) via mkdir -p, so a post-build check would always find it;
+# capturing the first-run case up front is what lets the OQ-9246 warning fire. Only
+# meaningful when the default -Out is in effect.
+$RootDir = Join-Path $HOME '.maize\root'
+$RootMissingBefore = (-not $OutOverridden) -and (-not (Test-Path $RootDir))
+
 # WSL is required: the cproc/QBE C toolchain is POSIX-only. Fail fast with a clear
 # message rather than a raw .NET exception when wsl.exe is not on PATH.
 $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
 if (-not $wsl) {
-    Write-Error 'WSL is required to build the userland (the C toolchain is POSIX-only) but wsl.exe was not found on PATH. Install WSL, or build from an MSYS2 shell instead.'
+    # -ErrorAction Continue: Set-StrictMode/EAP='Stop' would otherwise make Write-Error
+    # terminating, so the process would die on the throw (exit 1) before reaching exit 2.
+    Write-Error 'WSL is required to build the userland (the C toolchain is POSIX-only) but wsl.exe was not found on PATH. Install WSL, or build from an MSYS2 shell instead.' -ErrorAction Continue
     exit 2
 }
 
@@ -103,9 +115,8 @@ if ($code -eq 0) {
     Write-Host "Staged userland images in $OutDir"
     if (-not $OutOverridden) {
         Write-Host 'These appear at guest /bin when you run maize with the default sandbox root.'
-        $RootDir = Join-Path $HOME '.maize\root'
-        if (-not (Test-Path $RootDir)) {
-            Write-Warning "The default sandbox root $RootDir does not exist yet, so the guest /bin is not populated. Run ``maize`` once with the default sandbox root (no --no-root) to auto-create it, or create the directory yourself."
+        if ($RootMissingBefore) {
+            Write-Warning "The default sandbox root $RootDir did not exist, so the guest /bin is not set up yet. Run ``maize`` once with the default sandbox root (no --no-root) to auto-create it, or create the directory yourself."
         }
     }
 }

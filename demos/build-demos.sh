@@ -91,10 +91,19 @@ for _demo in $DEMOS; do
 done
 
 # kilo: a single-source build straight through cc-maize.sh, per demos/kilo/README.md.
+# Returns cc-maize.sh's own exit code on failure (2 = environment/usage, e.g. a bad
+# --preset with no matching tools; 1 = a genuine compile failure), so the caller can
+# propagate an environment failure as 2 rather than collapsing every failure to 1. The
+# if/else captures the code set-e-safely (a bare failing command would abort under set -e).
 build_kilo() {
-    if ! "$CC_MAIZE" --preset "$PRESET" -o "${OUT}/kilo.mzx" "${REPO_ROOT}/demos/kilo/kilo.c"; then
-        echo "build-demos.sh: FAILED building kilo" >&2
-        return 1
+    if "$CC_MAIZE" --preset "$PRESET" -o "${OUT}/kilo.mzx" "${REPO_ROOT}/demos/kilo/kilo.c"; then
+        _cc=0
+    else
+        _cc=$?
+    fi
+    if [ "$_cc" -ne 0 ]; then
+        echo "build-demos.sh: FAILED building kilo (cc-maize.sh exit ${_cc})" >&2
+        return "$_cc"
     fi
     verify_mzx "${OUT}/kilo.mzx" || return 1
     echo "built ${OUT}/kilo.mzx"
@@ -108,24 +117,38 @@ build_doom() {
     if [ ! -d "${REPO_ROOT}/demos/doom/doomgeneric/doomgeneric" ]; then
         die "submodule not initialized: demos/doom/doomgeneric (git submodule update --init demos/doom/doomgeneric)"
     fi
-    if ! "$CC_MAIZE" --preset "$PRESET" --dev \
+    if "$CC_MAIZE" --preset "$PRESET" --dev \
             -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
             -o "${OUT}/doom.mzx" \
             --sources "${REPO_ROOT}/demos/doom/doom.sources" \
             "${REPO_ROOT}/demos/doom/doom_main.c" \
             "${REPO_ROOT}/demos/doom/doomgeneric_maize.c"; then
-        echo "build-demos.sh: FAILED building doom" >&2
-        return 1
+        _cc=0
+    else
+        _cc=$?
+    fi
+    if [ "$_cc" -ne 0 ]; then
+        echo "build-demos.sh: FAILED building doom (cc-maize.sh exit ${_cc})" >&2
+        return "$_cc"
     fi
     verify_mzx "${OUT}/doom.mzx" || return 1
     echo "built ${OUT}/doom.mzx"
 }
 
+# rc accumulates per-demo build failures (exit 1). A cc-maize.sh environment/usage
+# failure (exit 2, e.g. a bad --preset that resolves no tools) is not a per-demo build
+# problem: it will hit every demo, so fail fast and propagate it as 2 (mirroring how
+# build-quesos.sh surfaces the same resolve_exe die()). The if/else captures each build
+# function's return set-e-safely.
 rc=0
 for demo in $DEMOS; do
     case "$demo" in
-        kilo) build_kilo || rc=1 ;;
-        doom) build_doom || rc=1 ;;
+        kilo) if build_kilo; then _r=0; else _r=$?; fi ;;
+        doom) if build_doom; then _r=0; else _r=$?; fi ;;
     esac
+    if [ "$_r" -eq 2 ]; then
+        exit 2
+    fi
+    [ "$_r" -eq 0 ] || rc=1
 done
 exit "$rc"
