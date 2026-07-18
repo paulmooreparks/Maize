@@ -71,6 +71,10 @@ esac
 # copies the three binaries in and skips make/configure entirely; it still falls
 # through to the existing check_exe + `qbe -t maize` smoke check below, which
 # doubles as cache-integrity verification. MAIZE_NO_TOOLCHAIN_CACHE=1 forces a build.
+# A hit is additionally gated on the .provenance marker existing (review cycle-1
+# [minor]; written last when populating, mirroring C2's .complete marker in
+# build-userland.sh), so a torn cache from an interrupted populate (binaries copied,
+# marker not yet written) is never mistaken for a hit.
 QBE_MAIZE_DIR="${REPO_ROOT}/toolchain/qbe-maize"
 TOOLCHAIN_CACHE_ROOT="${MAIZE_TOOLCHAIN_CACHE:-$HOME/.cache/maize/toolchain}"
 
@@ -105,6 +109,7 @@ fi
 
 TOOLCHAIN_FROM_CACHE=0
 if [ "${MAIZE_NO_TOOLCHAIN_CACHE:-}" != "1" ] && [ -n "$CACHE_DIR" ] \
+    && [ -f "${CACHE_DIR}/.provenance" ] \
     && [ -n "$(tc_resolve "${CACHE_DIR}/qbe/obj/qbe")" ] \
     && [ -n "$(tc_resolve "${CACHE_DIR}/cproc/cproc")" ] \
     && [ -n "$(tc_resolve "${CACHE_DIR}/cproc/cproc-qbe")" ]; then
