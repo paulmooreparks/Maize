@@ -23,6 +23,13 @@ jobs:
       - name: Build and run tests
         run: scripts/run-tests.sh
 
+      # maize-242: a Release-preset leg catches optimization-general regressions
+      # (e.g. FP tie-rounding that only mis-rounds under -O2+/LTO) that the Debug
+      # leg above cannot see. The defect this guards against sat undetected since
+      # maize-237 because no CI leg built Release on either platform.
+      - name: Build and run tests (Release)
+        run: scripts/run-tests.sh --preset linux-release
+
       - name: C hello world end-to-end (cproc -> qbe -t maize -> mazm -> maize)
         run: scripts/run-ctest.sh --skip-build
 
@@ -88,6 +95,12 @@ jobs:
 
       - name: Build and run tests
         run: scripts/run-tests.ps1
+
+      # maize-242: Release-preset leg on the llvm-mingw (clang) toolchain. The
+      # RMM tie-rounding defect reproduced on BOTH clang and gcc Release builds,
+      # so the guard is needed on both platforms, not just one.
+      - name: Build and run tests (Release)
+        run: scripts/run-tests.ps1 -Preset windows-llvm-mingw-release
 
       - name: C hello world end-to-end (cproc -> qbe -t maize -> mazm -> maize)
         shell: msys2 {0}
