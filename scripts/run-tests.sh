@@ -139,6 +139,10 @@ MAIZE_EXE="${BUILD_DIR}/maize"
 MAZM_EXE="${BUILD_DIR}/mazm"
 MZLD_EXE="${BUILD_DIR}/mzld"
 MZDIS_EXE="${BUILD_DIR}/mzdis"
+# maize-264: the presenter transport fixtures drive the console `maize` session AND the
+# headless `maizeg --presenter` stub it spawns, so this harness needs maizeg too. Both are
+# built by the full-preset build above.
+MAIZEG_EXE="${BUILD_DIR}/maizeg"
 
 if [ ! -x "$MAZM_EXE" ]; then
     echo "Expected built executable not found: ${MAZM_EXE}" >&2
@@ -795,6 +799,62 @@ run_fb_stop_test() {
 
 run_fb_reject_test
 run_fb_stop_test
+
+# --- maize-264: cross-process presentation transport (pty harness) --------------------
+# Drives the console `maize` session under a real pty (so it creates the shared-memory
+# segment and spawns a `maizeg --presenter` stub) and asserts the doctrine's behaviors:
+# cross-process frame visibility + FNV checksum, the polled latest-frame doorbell, D16
+# auto-respawn + storm guard, D15 stale-steal self-terminate, teardown, and the input-ring
+# round trip. POSIX-only (stdlib pty + python3); the Windows twin (run-tests.ps1) skips it,
+# exactly like the pty_oksh_* fixtures, and the Windows shared-memory leg rides Merge CI.
+# The --fb-no-display rejection-unchanged case (AC 9414) stays covered by run_fb_reject_test
+# above (this card touches neither the flag nor its path).
+run_presenter_test() {
+    mode="$1"
+    name="presenter_${mode}"
+    TOTAL=$((TOTAL + 1))
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "[SKIP] ${name} (python3 unavailable for the pty driver)"
+        return
+    fi
+    if [ ! -x "$MAIZEG_EXE" ]; then
+        echo "[SKIP] ${name} (maizeg not built)"
+        return
+    fi
+    # Assemble the two fixture guests into the scratch dir (self-contained, like fb_reject).
+    for src in test_presenter_fixture.mazm test_presenter_doorbell.mazm; do
+        cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+        if ! "$MAZM_EXE" "${TEST_RUN_DIR}/${src}" >/dev/null 2>&1; then
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            echo "[FAIL] ${name} (mazm failed to assemble ${src})"
+            return
+        fi
+    done
+    scratch="${TEST_RUN_DIR}/presenter_scratch"
+    mkdir -p "$scratch"
+    out=$(HOME="$scratch" python3 "${REPO_ROOT}/scripts/pty_presenter_check.py" \
+        "$MAIZE_EXE" "$MAIZEG_EXE" \
+        "${TEST_RUN_DIR}/test_presenter_fixture.mzb" \
+        "${TEST_RUN_DIR}/test_presenter_doorbell.mzb" \
+        "$scratch" "$mode" 2>&1)
+    if printf '%s' "$out" | grep -q "pty-presenter: PASS ${mode}"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        printf '%s\n' "$out" | sed 's/^/        /'
+    fi
+}
+
+# One process per mode (each drives its own fresh session, so a stuck one cannot poison
+# the next). The order is cheapest-first; storm/stalesteal are the longest (~20s / ~7s).
+run_presenter_test checksum
+run_presenter_test doorbell
+run_presenter_test input
+run_presenter_test teardown
+run_presenter_test respawn
+run_presenter_test stalesteal
+run_presenter_test storm
 
 # --- maize-12: multi-TU assemble -> link -> run --------------------------------------
 # Two separately-assembled objects (link_a defines _start and imports from link_b)

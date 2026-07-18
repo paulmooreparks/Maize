@@ -643,6 +643,16 @@ $results += Invoke-IrqCollisionTest
 $results += Invoke-FbRejectTest
 $results += Invoke-FbStopTest
 
+# --- maize-264: cross-process presentation transport (test-runner-sync note) -----------
+# The presenter-transport acceptance fixtures (scripts/pty_presenter_check.py: cross-process
+# checksum, doorbell, D16 auto-respawn + storm guard, D15 stale-steal, teardown, input ring)
+# drive the console session under a REAL pty, which the Windows console has no stdlib
+# equivalent for; they run on the Linux legs of run-tests.sh only, exactly like the
+# pty_oksh_* fixtures. The Windows CreateFileMapping shared-memory backend is exercised by
+# the Merge-stage CI gate. Listed here per the maize-215 test-runner-sync rule so this twin
+# stays visibly aware of the fixtures rather than silently omitting them.
+Write-Host "[SKIP] presenter_* (pty transport harness is POSIX-only; runs on the Linux legs; Windows shm rides Merge CI)"
+
 # --- maize-12: multi-TU assemble -> link -> run -----------------------------------
 # Assemble two objects with `mazm -c`, link them with mzld into one .mzx, and run
 # it under maize. Also exercises two hard link-error paths.

@@ -177,6 +177,9 @@ void start(pt::mapped_segment& seg, devices::framebuffer_device& fb,
            devices::keyboard_device& kbd, const std::string& session_id,
            unsigned display_scale, unsigned refresh_hz) {
     if (g_link.started.exchange(true)) { return; }
+    /* The presenter (its input ring) is the session's keyboard source now, so drain the
+       ring through the same push_event/queue path the SDL window backend uses. */
+    kbd.use_window_source();
     g_link.seg = &seg;
     g_link.fb = &fb;
     g_link.kbd = &kbd;

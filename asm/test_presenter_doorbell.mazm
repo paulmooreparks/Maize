@@ -1,0 +1,33 @@
+; **********************************************************************************
+; maize-264 presenter-transport DOORBELL fixture guest.
+;
+; Proves the polled latest-frame-wins doorbell (Decision D4): present pattern A then
+; pattern B in immediate succession (only a few instructions apart, far under the stub's
+; 10ms poll interval), then go idle (stop presenting). The stub presenter, polling on its
+; own cadence, must only ever report B's checksum, never the intermediate A. The claim
+; (OUT $53) blocks until the presenter is ready, so both presents land while the stub is
+; already running and polling.
+;
+; Patterns: A = $A1A1A1A1, B = $B2B2B2B2 (palindromic; see test_presenter_fixture.mazm).
+; **********************************************************************************
+
+$0000`0000:
+    CP $00100000 R1        ; framebuffer base
+    CP $A1A1A1A1 R6.H0
+    ST R6.H0 @R1           ; pixel[0] = A
+    OUT R1 $53             ; claim slot 0 -> presenter is ready when this returns
+    CLR R0
+    OUT R0 $54             ; present A (seq -> 1)
+
+    CP $B2B2B2B2 R6.H0
+    ST R6.H0 @R1           ; pixel[0] = B, immediately
+    OUT R0 $54             ; present B (seq -> 2), before the stub's next poll tick
+
+idle:
+    ; Stay alive (the session lives while the guest runs) without presenting again, so
+    ; present_sequence stays at 2 and the stub reports exactly one checksum (B).
+    CP $00200000 R8.H0
+idle_l:
+    DEC R8.H0
+    JNZ idle_l
+    JMP idle

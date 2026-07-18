@@ -17,6 +17,10 @@
 #include "sdl_scancodes.h"   // shared map_scancode() (maize::devices::display)
 #endif
 
+#ifndef _WIN32
+#include <csignal>
+#endif
+
 namespace maize {
 namespace presenter_main {
 
@@ -41,10 +45,22 @@ namespace {
         return h;
     }
 
-    int env_int(const char* name, int dflt) {
-        const char* v = std::getenv(name);
-        if (!v || !*v) { return dflt; }
-        return std::atoi(v);
+    /* Test-only knobs are FILE-triggered (the file path comes from an env var, the file's
+       existence/content is toggled by the fixture at runtime). This lets a fixture make the
+       FIRST presenter healthy but a later respawn/stealer not, which env flags (inherited by
+       every child) cannot express. A one-shot knob unlinks the file so it fires exactly once
+       (the original stub, not the stealer that replaces it); a persistent knob leaves it. */
+    bool knob_file_present(const char* env_name, int* value_out, bool unlink_after) {
+        const char* path = std::getenv(env_name);
+        if (!path || !*path) { return false; }
+        std::FILE* f = std::fopen(path, "r");
+        if (!f) { return false; }
+        int v = 0;
+        if (std::fscanf(f, "%d", &v) != 1) { v = 0; }
+        std::fclose(f);
+        if (value_out) { *value_out = v; }
+        if (unlink_after) { std::remove(path); }
+        return true;
     }
 
     /* Shared open + single-owner claim + test knobs. Returns false (with the exit code in
@@ -63,9 +79,12 @@ namespace {
             *exit_code = 3;
             return false;
         }
-        /* D16 storm-guard knob: claim ownership then exit at once, without ever bumping a
-           heartbeat or releasing ownership (leaves a stale pid for the watcher to steal). */
-        if (env_int("MAIZE_PRESENTER_DIE_IMMEDIATELY", 0) != 0) {
+        /* D16 storm-guard knob (persistent file): claim ownership then exit at once, without
+           ever marking ready, bumping a heartbeat, or releasing ownership (leaves a stale pid
+           for the watcher to steal, and never satisfies wait_presenter_ready so each respawn
+           attempt counts against the storm guard). Persistent: every respawn dies while the
+           file exists, so the guard exhausts. */
+        if (knob_file_present("MAIZE_PRESENTER_DIE_FILE", nullptr, false)) {
             *exit_code = 0;
             return false;
         }
@@ -74,11 +93,26 @@ namespace {
 }
 
 #ifndef MAIZE_DISPLAY
+namespace {
+    volatile std::sig_atomic_t g_stub_term = 0;
+#ifndef _WIN32
+    void stub_sigterm(int) { g_stub_term = 1; }   // async-signal-safe flag write
+#endif
+}
+
 // ---- Headless checksum stub (the fixture-facing presenter) --------------------------
 int run(const std::string& session_id, unsigned /*scale*/, unsigned /*hz*/) {
     pt::mapped_segment seg{};
     int exit_code = 0;
     if (!attach_and_claim(session_id, seg, &exit_code)) { return exit_code; }
+
+#ifndef _WIN32
+    /* AC 9411 instant-detection leg: a SIGTERM'd stub releases ownership gracefully so the
+       session's watcher detects the death immediately (via release_ownership_if_owner)
+       rather than waiting out kStaleTimeoutMs. The handler only sets a flag; the loop below
+       does the release + exit. */
+    std::signal(SIGTERM, stub_sigterm);
+#endif
 
     pt::mark_presenter_ready(seg);
     std::fprintf(stdout, "presenter-stub: ready session=%s\n", session_id.c_str());
@@ -88,8 +122,13 @@ int run(const std::string& session_id, unsigned /*scale*/, unsigned /*hz*/) {
        checksums but do NOT bump the heartbeat, so a second presenter steals ownership;
        once the stall ends, the first resumed bump_heartbeat detects the pid mismatch and
        exits (no release, per the single-owner protocol). */
-    int stall_ms = env_int("MAIZE_PRESENTER_HEARTBEAT_STALL_MS", 0);
-    int inject_sc = env_int("MAIZE_PRESENTER_INJECT_SCANCODE", -1);
+    /* One-shot file knobs (unlinked on read) so the stealer/respawn that replaces this stub
+       does NOT re-trigger them: the stall applies to the first presenter only (the stealer
+       stays healthy), and the injected scancode fires exactly once. */
+    int stall_ms = 0;
+    knob_file_present("MAIZE_PRESENTER_STALL_FILE", &stall_ms, true);
+    int inject_sc = -1;
+    if (!knob_file_present("MAIZE_PRESENTER_INJECT_FILE", &inject_sc, true)) { inject_sc = -1; }
     clock::time_point ready = clock::now();
     clock::time_point stall_end = ready + std::chrono::milliseconds(stall_ms);
     bool in_stall = (stall_ms > 0);
@@ -101,7 +140,7 @@ int run(const std::string& session_id, unsigned /*scale*/, unsigned /*hz*/) {
         static_cast<std::size_t>(seg.ctl->width) * seg.ctl->height * 4u;
 
     for (;;) {
-        if (seg.ctl->shutdown.load(std::memory_order_acquire) != 0) {
+        if (seg.ctl->shutdown.load(std::memory_order_acquire) != 0 || g_stub_term != 0) {
             pt::release_ownership_if_owner(seg);
             break;
         }

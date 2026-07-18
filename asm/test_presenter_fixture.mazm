@@ -1,0 +1,63 @@
+; **********************************************************************************
+; maize-264 presenter-transport fixture guest (basic / long-running).
+;
+; Drives the cross-process presentation transport at the port level: writes a known
+; single-pixel pattern into a guest-RAM framebuffer, claims slot 0 (which, on an
+; interactive session, launches or attaches a maizeg presenter over shared memory),
+; presents it, then a second pattern, then loops forever pumping the second pattern and
+; responding to keyboard input with a third pattern. The Python harness
+; (scripts/pty_presenter_check.py) drives this under a real pty so the session creates
+; the segment, and reads the stub presenter's stdout checksums.
+;
+; Patterns are palindromic 32-bit values (endianness-agnostic first pixel):
+;   A = $A1A1A1A1   B = $B2B2B2B2   C = $C3C3C3C3
+; The frame region is width*height*4 bytes; only pixel[0] is written, the rest are the
+; guest's defined-zero RAM, so the stub's FNV-1a checksum is deterministic and the
+; harness recomputes the expected value for the (small) --resolution it launches with.
+;
+; The buffer sits at $00100000, well past the image and vector table.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- pattern A: write pixel[0], claim slot 0, present ----
+    CP $00100000 R1        ; framebuffer base (also address of pixel 0)
+    CP $A1A1A1A1 R6.H0
+    ST R6.H0 @R1           ; pixel[0] = A
+    OUT R1 $53             ; claim slot 0 -> launch/attach the presenter (bounded handshake)
+    CLR R0
+    OUT R0 $54             ; present A
+    CALL delay             ; let the stub sample A before it is overwritten
+
+    ; ---- pattern B: overwrite pixel[0], present ----
+    CP $B2B2B2B2 R6.H0
+    ST R6.H0 @R1
+    OUT R0 $54             ; present B
+    CALL delay
+
+loop:
+    ; ---- keyboard: if a scancode is available, present pattern C ----
+    IN  $11 R3.B0          ; keyboard status; bit0 = key-available
+    AND $01 R3.B0
+    JZ  no_key
+    IN  $10 R4.B0          ; consume the scancode (proves the input ring reached the guest)
+    CP  $C3C3C3C3 R6.H0
+    ST  R6.H0 @R1
+    OUT R0 $54             ; present C on key
+    CALL delay
+    CALL delay             ; hold C long enough for the stub to sample it
+
+no_key:
+    ; ---- steady pump: re-present B so checksums keep flowing (respawn resume proof) ----
+    CP  $B2B2B2B2 R6.H0
+    ST  R6.H0 @R1
+    OUT R0 $54
+    CALL delay
+    JMP loop
+
+; A busy-wait delay (~one stub poll interval on a typical host). Pacing need not be exact.
+delay:
+    CP $00200000 R8.H0
+delay_l:
+    DEC R8.H0
+    JNZ delay_l
+    RET
