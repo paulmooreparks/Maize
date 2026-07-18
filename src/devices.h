@@ -47,13 +47,21 @@ namespace maize {
 		   from stdin, 0x01 reports output-ready / input-available. When selected as the
 		   active input source it injects stdin bytes on the instruction tick and raises
 		   IRQ 33. The native SYS-based terminal path is untouched and stays the default. */
-		class console_device : public cpu::input_device, public port_host {
+		class console_device : public cpu::input_device, public port_host,
+			public console::stdin_injector {
 		public:
 			enum role { ROLE_DATA, ROLE_STATUS };
 
 			console_device();
 			void attach();
 			void on_input_tick() override;
+
+			/* maize-238 (Branch A): stdin_injector -- the single-host-stdin-owner seam so a
+			   bare-VM guest's SYS $00 read(0) and this device's eager on_input_tick pre-read
+			   do not both consume host stdin. drain_stdin returns any latched byte first,
+			   then blocks for one more. */
+			bool stdin_is_active() const override { return active_injector_; }
+			long drain_stdin(unsigned char* buf, unsigned long count) override;
 
 			/* maize-94: mark this device as the EAGER active injector (set only under an
 			   explicit --input=console, where on_input_tick pre-reads host stdin per
