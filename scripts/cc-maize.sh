@@ -85,15 +85,19 @@ case "$UNAME" in
     *) die "unsupported platform: ${UNAME}" ;;
 esac
 
-# --- maize-263: WSL-native mirror + throttle, BEFORE arg parsing consumes "$@" so
-#     the source path(s) and flags reach the mirrored child intact. The child never
-#     changes PWD and never rewrites the caller's own path arguments, so interactive
-#     `mzcc foo.c` still writes foo.mzx beside foo.c in the ORIGINAL directory (D3);
-#     only the ~15 RT/toolchain reads per call move to native storage. No -j: the
-#     compile pipeline is serial per translation unit (nothing to cap). ----------
+# --- maize-263: throttle only, NO native mirror (decision D15, reverses D3). The
+#     mirror's value is BATCH workloads (run-tests.sh / run-ctest.sh), where the
+#     one-time full-tree rsync is amortized over the whole suite. A STANDALONE
+#     cc-maize.sh call (the interactive `mzcc foo.c` path) compiles ONE small source,
+#     so the ~1.1s full-tree rsync scan makes it SLOWER than running in place (Test
+#     report #2910 measured ~1.5s mirrored vs ~1.2s in-place) -- the opposite of the
+#     spec's promise to keep interactive use fast. Suite-internal cc-maize.sh calls
+#     already run inside the mirrored parent (the recursion guard makes their own
+#     mirror check a no-op), so a wrapper here would only ever fire standalone, where
+#     it only hurts. So: keep the niceness throttle, drop the mirror. Interactive
+#     single compiles stay in place; the 9P cost of one small compile is negligible. -
 . "${SCRIPT_DIR}/lib/harness-env.sh"
 maize_apply_throttle
-maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
 
 # --- Parse arguments (flags accepted in any position) ----------------------------
 # Three orthogonal axes govern the compile path (RUN / EMIT / OUT); `build` is the

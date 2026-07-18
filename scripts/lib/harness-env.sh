@@ -89,6 +89,50 @@ maize_sha256() {
     fi
 }
 
+# maize_pinned_sha <repo_root> <submodule_relpath>
+#   Echo the submodule's PINNED commit as recorded in the superproject tree
+#   (git rev-parse HEAD:<relpath>), or "" if it cannot be read. Two properties matter:
+#     - It reads the pin from the SUPERPROJECT tree, so it works even when the
+#       submodule is not checked out (no gitlink needed).
+#     - It tries native `git` first, then falls back to Windows `git.exe` (with a
+#       wslpath-translated path). Card agents run in LINKED worktrees created by
+#       Windows git, whose top-level .git gitdir is an ABSOLUTE Windows path
+#       (C:/...): native WSL git cannot resolve that chain, but git.exe can. Without
+#       this fallback every submodule SHA silently degrades to a fallback label (the
+#       finding this fix pass addresses), so a re-pin would not roll the cache key.
+#   MUST be called on the SOURCE side (a real repo/worktree), not inside the git-less
+#   mirror; the precompute below runs it there and passes the result via env.
+maize_pinned_sha() {
+    _psr="$1"
+    _psrel="$2"
+    _pssha=$(git -C "$_psr" rev-parse "HEAD:${_psrel}" 2>/dev/null) || _pssha=""
+    if [ -z "$_pssha" ] && command -v git.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
+        _pswin=$(wslpath -w "$_psr" 2>/dev/null) || _pswin=""
+        if [ -n "$_pswin" ]; then
+            _pssha=$(git.exe -C "$_pswin" rev-parse "HEAD:${_psrel}" 2>/dev/null | tr -d '\r') || _pssha=""
+        fi
+    fi
+    printf '%s' "$_pssha"
+}
+
+# maize_precompute_submodule_keys <repo_root>
+#   Compute each vendored submodule's pinned commit on the SOURCE side and export it
+#   as MAIZE_KEY_<NAME>, so the mirrored child (a plain, git-less file tree per D14)
+#   reads the SHA from the environment instead of running git against a broken
+#   in-mirror gitlink. Idempotent: an already-set value (inherited by the mirrored
+#   child, or a deliberate operator override) is kept, never recomputed, so the child
+#   never runs a doomed in-mirror git call. Safe to call from any entry point before
+#   maize_native_mirror_run. Absent/unreadable submodules yield an empty key (there is
+#   nothing to build from them anyway; the cache-key label fallback then applies).
+maize_precompute_submodule_keys() {
+    _rr="$1"
+    : "${MAIZE_KEY_QBE:=$(maize_pinned_sha "$_rr" toolchain/qbe)}"
+    : "${MAIZE_KEY_CPROC:=$(maize_pinned_sha "$_rr" toolchain/cproc)}"
+    : "${MAIZE_KEY_SBASE:=$(maize_pinned_sha "$_rr" userland/sbase)}"
+    : "${MAIZE_KEY_OKSH:=$(maize_pinned_sha "$_rr" userland/oksh)}"
+    export MAIZE_KEY_QBE MAIZE_KEY_CPROC MAIZE_KEY_SBASE MAIZE_KEY_OKSH
+}
+
 # maize_sync_back_artifacts <mirror_dir> <repo_root>
 #   After a mirrored run, copy the small, named allowlist of conventionally-located
 #   binaries the mirror produced back to their in-tree locations under repo_root, so
@@ -202,14 +246,22 @@ maize_native_mirror_run() {
         return 0
     fi
 
-    # Exclude list is EXACTLY these four entries (decision D11), hardcoded (it cannot
-    # be derived from .gitignore alone: .claude/worktrees rides .git/info/exclude).
-    # .git IS included (D4): the submodule gitlinks' relative gitdir pointers must
-    # resolve inside the mirror for apply-maize-qbe-target.sh's idempotency check.
+    # Exclude list (decision D11, revised by D14), hardcoded (it cannot be derived
+    # from .gitignore alone: .claude/worktrees rides .git/info/exclude). .git is now
+    # EXCLUDED (D14 reverses D4's inclusion): every card agent runs in a LINKED git
+    # worktree whose .git is a pointer FILE into the main repo's .git/worktrees/<name>,
+    # and the submodule gitlinks resolve through .git/modules storage that lives
+    # OUTSIDE the mirrored tree, so a mirrored .git is a BROKEN pointer that makes
+    # `git -C <mirror>/toolchain/qbe ...` fail. Instead the mirror is a plain, git-less
+    # file tree: submodule SHAs are precomputed host-side (maize_precompute_submodule_
+    # keys) and passed via MAIZE_KEY_* env, and apply-maize-qbe-target.sh's `git apply`
+    # runs repo-less against the plain files. The unanchored `.git` match also drops
+    # each submodule's gitlink file. `.gitignore`/`.gitmodules` (different names) stay.
     if ! rsync -a --delete \
         --exclude='/build' --exclude='/build-wsl' \
         --exclude='/.toolchains' \
         --exclude='.claude' \
+        --exclude='.git' \
         "${_repo_root}/" "${_mirror_dir}/"; then
         echo "WARNING: native-mirror rsync failed; continuing in-place on ${_repo_root} (slow under WSL's 9P bridge)." >&2
         return 0

@@ -45,6 +45,10 @@ fi
 #     inherited MAIZE_NATIVE_MIRROR_ACTIVE=1 makes this a no-op (runs in-place). ----
 . "${SCRIPT_DIR}/lib/harness-env.sh"
 maize_apply_throttle
+# Precompute submodule SHAs on the SOURCE side (git works here) BEFORE re-exec, so the
+# git-less mirror (D14) reads them from MAIZE_KEY_* env instead of running git against a
+# broken in-mirror gitlink.
+maize_precompute_submodule_keys "$REPO_ROOT"
 maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
 
 : "${MAKE:=make}"
@@ -89,8 +93,11 @@ tc_resolve() {
 
 toolchain_cache_key() {
     {
-        git -C "${QBE_DIR}" rev-parse HEAD 2>/dev/null || echo no-qbe-head
-        git -C "${CPROC_DIR}" rev-parse HEAD 2>/dev/null || echo no-cproc-head
+        # Submodule SHAs come from the host-side precompute (D14): git does not resolve
+        # inside the git-less mirror. Fall back to the labels only if the env is unset
+        # (e.g. a submodule was absent at precompute time).
+        printf '%s\n' "${MAIZE_KEY_QBE:-no-qbe-head}"
+        printf '%s\n' "${MAIZE_KEY_CPROC:-no-cproc-head}"
         for _f in all.h targ.c abi.c isel.c emit.c data.c qbe-registration.patch; do
             cat "${QBE_MAIZE_DIR}/${_f}" 2>/dev/null || true
         done
@@ -195,8 +202,8 @@ if [ "$TOOLCHAIN_FROM_CACHE" -eq 0 ] && [ -n "$CACHE_DIR" ] \
         && cp -p "$_c"  "${CACHE_DIR}/cproc/$(basename "$_c")" \
         && cp -p "$_cq" "${CACHE_DIR}/cproc/$(basename "$_cq")"; then
         {
-            echo "qbe:   $(git -C "${QBE_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
-            echo "cproc: $(git -C "${CPROC_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
+            echo "qbe:   ${MAIZE_KEY_QBE:-unknown}"
+            echo "cproc: ${MAIZE_KEY_CPROC:-unknown}"
             "${CC}" --version 2>/dev/null | head -1 || true
         } > "${CACHE_DIR}/.provenance" 2>/dev/null || true
         echo "build-toolchain.sh: populated toolchain cache ($(printf '%.8s' "$CACHE_KEY"))."

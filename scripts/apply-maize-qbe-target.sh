@@ -49,6 +49,16 @@ done
 # tracked files to the pinned commit and re-apply. A fresh checkout never reaches
 # here, so this does not touch CI's happy path. Only tracked files are reset; the
 # untracked maize/ overlay (copied above) and obj/ build artifacts are preserved.
+#
+# maize-263 D14 (git-less native mirror): `git apply` does NOT require a git
+# repository (verified: it applies/checks/reverses plain files with no .git present),
+# so the two common branches work unchanged inside the mirror, where .git is excluded.
+# The else branch's `git checkout -- .` DOES need a repo and fails there -- which is
+# why it is already guarded with `|| true`: it degrades to a no-op. That degradation
+# is safe in the mirror because the mirror's qbe SOURCE tree is rsync-refreshed (with
+# --delete) from the pristine, correctly-pinned origin worktree on every sync, so a
+# git pristine-restore is redundant there; the guarded checkout falls through to the
+# forward apply --check, which succeeds on the freshly-synced pristine files.
 if git -C "${QBE_DIR}" apply --reverse --check "${PATCH}" >/dev/null 2>&1; then
     echo "apply-maize-qbe-target.sh: registration patch already applied."
 elif git -C "${QBE_DIR}" apply --check "${PATCH}" >/dev/null 2>&1; then

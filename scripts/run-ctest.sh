@@ -48,6 +48,9 @@ CPROC_DIR="${REPO_ROOT}/toolchain/cproc"
 #     runs in-place (no double sync/run). ----------------------------------------
 . "${SCRIPT_DIR}/lib/harness-env.sh"
 maize_apply_throttle
+# Precompute submodule SHAs host-side before re-exec (D14): this script nests
+# build-toolchain.sh inside the git-less mirror, which reads MAIZE_KEY_* from env.
+maize_precompute_submodule_keys "$REPO_ROOT"
 maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
 
 UNAME=$(uname -s)

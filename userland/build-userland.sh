@@ -52,6 +52,9 @@ verify_mzx() {
 #     removes the per-run submodule re-copy; the loop itself is serial (no -j). ----
 . "${REPO_ROOT}/scripts/lib/harness-env.sh"
 maize_apply_throttle
+# Precompute submodule SHAs host-side before re-exec (D14): the C2 stage-cache key
+# needs sbase/oksh HEADs, and git does not resolve inside the git-less mirror.
+maize_precompute_submodule_keys "$REPO_ROOT"
 maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
 
 USERLAND_STAGE_CACHE_ROOT="${MAIZE_USERLAND_STAGE_CACHE:-$HOME/.cache/maize/userland-stage}"
@@ -93,8 +96,18 @@ if [ -z "$PROGS" ]; then PROGS="${SBASE_WAVE1} oksh"; fi
 # the key here; the caller captures it.
 stage_cache_key() {
     _k_proj="$1"
+    # Submodule SHA comes from the host-side precompute (D14): git does not resolve
+    # inside the git-less mirror. Fall back to a source-side git read only when the env
+    # is unset (an in-place, non-mirrored run that skipped precompute).
+    case "$_k_proj" in
+        sbase) _k_sha="${MAIZE_KEY_SBASE:-}" ;;
+        oksh)  _k_sha="${MAIZE_KEY_OKSH:-}" ;;
+        *)     _k_sha="" ;;
+    esac
+    [ -n "$_k_sha" ] || _k_sha=$(maize_pinned_sha "$REPO_ROOT" "userland/${_k_proj}")
+    [ -n "$_k_sha" ] || _k_sha=no-head
     {
-        git -C "${SCRIPT_DIR}/${_k_proj}" rev-parse HEAD 2>/dev/null || echo no-head
+        printf '%s\n' "$_k_sha"
         for _kp in "${SCRIPT_DIR}/patches/${_k_proj}"/*.patch; do
             [ -e "$_kp" ] && cat "$_kp"
         done
