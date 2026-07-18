@@ -204,8 +204,10 @@ bulk memory (`sys_bulk_copy`/`sys_bulk_set`, maize-216); `$F6` `sys_ttysize` (ma
 size source since maize-253: a bound console device's cell grid, else the real host terminal, else -ENOTTY);
 `$F7`/`$F8`/`$F9` the quesOS-guest framebuffer registration calls (maize-236, documented in
 the guest section below); `$FA`/`$FB` the quesOS-guest job-control calls (maize-174,
-`sys_tcgetpgrp`/`sys_tcsetpgrp`, documented in the signal section below); `$FC`-`$FF` free.
-`$F3`-`$FB` are native or guest calls that this doc enumerates here so the block map is complete.
+`sys_tcgetpgrp`/`sys_tcsetpgrp`, documented in the signal section below); `$FC`
+`sys_fb_mmap` (maize-238, the quesOS-guest framebuffer mmap call, documented in the guest
+section below); `$FD`-`$FF` free.
+`$F3`-`$FC` are native or guest calls that this doc enumerates here so the block map is complete.
 
 Once C compiles against these stubs, the numbers are ABI. The convention frozen here
 (RV result, the `[-4095, -1]` errno range, the raw/wrapper split, Linux-mirrored
@@ -315,3 +317,62 @@ is zero or its page is unmapped), `-ENOSPC` (28, the table is full). `sys_fb_rel
 returns `-EBADF` (9) when the caller holds no registration. A registration is scoped to one
 exec-lifetime: `fork` does not propagate it to the child, and both `execve` and process exit
 release a held slot.
+
+### Phase 3: unix sockets, select/poll, framebuffer mmap (maize-238)
+
+quesOS Phase 3 adds the syscall gates TinyX and the borrowed window managers need per the
+display architecture doc: AF_UNIX SOCK_STREAM sockets, `select`/`poll` readiness
+multiplexing, and mmap of the framebuffer into user page tables. All are dispatched by
+quesOS's cause-7 handler (guest-only); a bare-VM program calling them hits the native table
+instead. The socket and poll/select numbers **mirror the Linux x86-64 table** (per the
+numbering policy); `sys_fb_mmap` is Maize-private (`$FC`, the next free byte after the
+`$F7`-`$FB` block) because there is no Linux syscall that maps a fixed hardware framebuffer
+by fixed geometry.
+
+| Number | Symbol | Linux x86-64 # | Args | Result |
+|--------|--------|----------------|------|--------|
+| `$29` | `sys_socket` | 41 | `R0`=domain, `R1`=type, `R2`=protocol | `RV`=fd or `-errno` |
+| `$31` | `sys_bind` | 49 | `R0`=fd, `R1`=`sockaddr*`, `R2`=addrlen | `RV`=0 or `-errno` |
+| `$2A` | `sys_connect` | 42 | `R0`=fd, `R1`=`sockaddr*`, `R2`=addrlen | `RV`=0 or `-errno` |
+| `$32` | `sys_listen` | 50 | `R0`=fd, `R1`=backlog | `RV`=0 or `-errno` |
+| `$2B` | `sys_accept` | 43 | `R0`=fd, `R1`=`sockaddr*` (nullable), `R2`=`socklen_t*` (nullable) | `RV`=newfd or `-errno` |
+| `$35` | `sys_socketpair` | 53 | `R0`=domain, `R1`=type, `R2`=protocol, `R3`=`int sv[2]` | `RV`=0 or `-errno` |
+| `$07` | `sys_poll` | 7 | `R0`=`struct pollfd*`, `R1`=nfds, `R2`=timeout_ms | `RV`=ready-count, `0` (timeout), or `-errno` |
+| `$17` | `sys_select` | 23 | `R0`=nfds, `R1`=readfds, `R2`=writefds, `R3`=exceptfds, `R4`=`timeval*` | `RV`=ready-count, `0` (timeout), or `-errno` |
+| `$FC` | `sys_fb_mmap` | (none, Maize-private) | none | `RV`=VA of the mapped fb buffer, or `-errno` |
+
+**Sockets (Family A).** `AF_UNIX` (1) `SOCK_STREAM` (1) only; `protocol` must be 0. A
+connected pair is two cross-wired ring buffers (full duplex); socket data I/O uses the
+ordinary `read`/`write`/`close`. `socket` errno set: `-EAFNOSUPPORT` (97, domain not
+AF_UNIX), `-EINVAL` (22, type not SOCK_STREAM, e.g. a `SOCK_NONBLOCK`/`SOCK_CLOEXEC` bit),
+`-EPROTONOSUPPORT` (93, protocol != 0). `bind`: `-EADDRINUSE` (98, path already bound),
+`-ENOSPC` (28, bind table full), `-EINVAL`. `connect`: `-ECONNREFUSED` (111, no listener /
+not listening / backlog full). `accept` parks until a connector arrives. Closing a
+listening socket wakes every still-parked connector with `-ECONNREFUSED` and frees the
+path. Sockets follow the pipe fork/exec rules (refcounted fd-table sharing; survive
+`execve`). No `sendto`/`recvfrom`/`shutdown`/`getsockname`/`setsockopt` (no named consumer;
+maize-90 scoping). The `sys/socket.h` + `sys/un.h` wrapper headers match the Linux/glibc
+shapes bit for bit so unmodified X11 client sources compile unchanged.
+
+**select/poll (Family B).** A non-blocking readiness check runs first; if nothing is ready
+the caller parks and is woken by a shared recheck sweep on any readiness-changing event, or
+by the timer on a finite-timeout deadline. Readiness: fd 0 (console) is `POLLIN`-ready when
+a byte is queued; a hostfs/stdout fd is always ready (Linux regular-file semantics); a
+pipe/socket read side is readable with data or at EOF; a pipe/socket write side is writable
+with room but reports `POLLERR` (not `POLLOUT`) once the peer read end is gone; a listening
+socket is `POLLIN`-ready with a connection waiting. `poll` timeout: negative = block
+forever, 0 = pure non-blocking, positive = milliseconds. `select` `timeval*`: NULL = block
+forever, `{0,0}` = non-blocking, else bounded. `exceptfds` is accepted but never reports
+ready (no OOB model). The `poll.h` + `sys/select.h` headers carry the real
+`struct pollfd`/`POLL*` and 1024-bit `fd_set`/`FD_*` shapes.
+
+**Framebuffer mmap (Family C).** `sys_fb_mmap` takes no arguments (geometry is fixed per
+boot) and maps a physically-contiguous, page-aligned framebuffer buffer into the caller's
+private fb-mmap window (`FB_MMAP_BASE`, a dedicated per-process 2 MiB region), returning its
+VA. Idempotent: a second call while one buffer is mapped returns the same VA. `-ENOMEM`
+(12) if the frame pool cannot satisfy the contiguous request (graceful, no PANIC). The
+buffer persists for the process lifetime (released at address-space teardown; no
+`fb_munmap`), and does not propagate across `fork` (the region is excluded from the eager
+copy). Pass the returned VA to `sys_fb_register` for scanout; that call now validates the
+whole `[base, base + width*height*4)` range for physical contiguity, returning `-EINVAL`
+(22) on a mapped-but-scattered buffer.
