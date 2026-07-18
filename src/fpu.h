@@ -117,24 +117,38 @@ namespace maize {
 
             /* Round a wider-type exact(-ish) value X to target type T with
                ties-to-max-magnitude (RMM). Used only for finite results; callers
-               pass non-finite results straight through. */
+               pass non-finite results straight through.
+
+               Nearest-even value: ONE evaluation, no redundant re-cast of `x`
+               under a second dynamic rounding mode (maize-242: the previous
+               implementation cast `x` twice, once under FE_DOWNWARD and once
+               under FE_UPWARD, and an optimizer without #pragma STDC FENV_ACCESS
+               ON may treat the two textually-identical casts as redundant and
+               fold them to one value, collapsing the tie-detection branch on
+               both GCC 13.3 and Clang at -O2+). Round-to-nearest and
+               round-ties-away only ever differ at an EXACT tie, so a single
+               nearest-even cast is correct off-tie; the tie case is detected and
+               corrected below using ULP-neighbor arithmetic on that one result,
+               never a second directed cast of the same source value. */
             template <typename T, typename Wide>
             T round_ties_away(Wide x) {
-                std::fesetround(FE_DOWNWARD);
-                T d = static_cast<T>(x);
-                std::fesetround(FE_UPWARD);
-                T u = static_cast<T>(x);
                 std::fesetround(FE_TONEAREST);
-                if (d == u) {
-                    return d; // exact
+                T nearest = static_cast<T>(x);
+                Wide back = static_cast<Wide>(nearest);
+                Wide diff = x - back;
+                if (diff == static_cast<Wide>(0)) return nearest; // exactly representable already
+
+                T neighbor = (diff > static_cast<Wide>(0))
+                    ? std::nextafter(nearest, std::numeric_limits<T>::infinity())
+                    : std::nextafter(nearest, -std::numeric_limits<T>::infinity());
+                Wide neighbor_back = static_cast<Wide>(neighbor);
+                Wide mid = back + (neighbor_back - back) / static_cast<Wide>(2);
+
+                if (x == mid) {
+                    // exact tie: ties-away picks the larger magnitude of the two candidates
+                    return (std::fabs(neighbor) >= std::fabs(nearest)) ? neighbor : nearest;
                 }
-                Wide dd = static_cast<Wide>(d);
-                Wide du = static_cast<Wide>(u);
-                Wide mid = dd + (du - dd) / 2;
-                if (x < mid) return d;
-                if (x > mid) return u;
-                // exact tie: pick the larger magnitude
-                return (std::fabs(du) >= std::fabs(dd)) ? u : d;
+                return nearest; // not a tie: nearest-even already equals ties-away here
             }
 
             /* ---- generic width-parameterised arithmetic --------------------- */
