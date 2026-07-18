@@ -1532,6 +1532,17 @@ namespace maize {
                bytes and raise its IRQ on the CPU thread. A windowed keyboard leaves this null
                and is driven off-thread (push_event latches + raises; port_read drains). */
             input_device* active_input_ptr = nullptr;
+
+            /* maize-238 (Branch A, OQ 9204): throttle counter for the per-instruction input
+               poll. Branch A sets active_input_ptr on the DEFAULT invocation too, so calling
+               on_input_tick() every single instruction (a virtual dispatch on the interpreter
+               hot path) measurably slowed bare-VM throughput (doom_bench). The poll only needs
+               to sample host stdin every few hundred instructions to keep wake latency bounded
+               (microseconds), so gate the call to once per INPUT_TICK_DIV instructions. This
+               applies to every input source (headless keyboard injector too), which merely
+               bounds its stdin-scancode pull latency identically. */
+            std::uint64_t input_tick_ctr_ = 0;
+            static constexpr std::uint64_t INPUT_TICK_MASK = 0x1FFull;   // poll every 512 ticks
         }
 
         bus address_bus;
@@ -3992,7 +4003,7 @@ namespace maize {
                     try_deliver_interrupt(); \
                 } \
                 if (active_timer_ptr != nullptr) { tick_active_timer(*active_timer_ptr); } \
-                if (active_input_ptr != nullptr) { active_input_ptr->on_input_tick(); } \
+                if (active_input_ptr != nullptr && (++input_tick_ctr_ & INPUT_TICK_MASK) == 0) { active_input_ptr->on_input_tick(); } \
                 current_instr_pc = regs::rp.w0; \
                 mm.read(translate(regs::rp.w0, access_kind::fetch), regs::ri, subreg_enum::w0); \
                 ++regs::rp.w0; \
