@@ -248,6 +248,105 @@ run_args_test() {
     fi
 }
 
+# maize-246 host-launcher bare-image-name resolution. The launcher resolves a bare
+# (extension-less) <image> by trying the exact name, then name.mzx, then name.mzb
+# (the guest-side exec_forms order, decision 9084); an already-extensioned name is
+# tried exactly as given with no cascade. A compiled hello.mzx is the reusable
+# payload: load_mzx keys off the image's magic bytes, not the filename, so a byte
+# copy renamed .mzb loads and runs identically (no flat-binary encoder needed).
+# Every bare/candidate name here is a SINGLE path component (no '/') so MSYS2's
+# argument auto-conversion cannot rewrite it before the native maize.exe sees it.
+run_image_resolution() {
+    name="image_resolution"
+    TOTAL=$((TOTAL + 1))
+
+    compile_c "hello" || return
+    hello_mzx="$BIN"
+    compile_c "args" || return
+    args_mzx="$BIN"
+    # compile_c reassigns the global `name` (no `local` in POSIX sh); restore it.
+    name="image_resolution"
+
+    hello_exp=$(tr -d '\r' < "${CTEST_DIR}/hello.expected")
+    ok=1
+
+    # (1) bare .mzx hit: only imgres_mzx.mzx present; `maize imgres_mzx` runs it.
+    cp "$hello_mzx" "${WORK_DIR}/imgres_mzx.mzx"
+    set +e
+    out1=$( cd "$WORK_DIR" && "$MAIZE" imgres_mzx 2>/dev/null )
+    set -e
+    [ "$out1" = "$hello_exp" ] || ok=0
+
+    # (2) bare .mzb hit: only imgres_mzb.mzb present; `maize imgres_mzb` runs it.
+    cp "$hello_mzx" "${WORK_DIR}/imgres_mzb.mzb"
+    set +e
+    out2=$( cd "$WORK_DIR" && "$MAIZE" imgres_mzb 2>/dev/null )
+    set -e
+    [ "$out2" = "$hello_exp" ] || ok=0
+
+    # (3) both-exist precedence: .mzx (hello) and .mzb (args) share the base name;
+    # the .mzx must win (tried first). args' first stdout line is its argv[0]
+    # (`imgres_both`), which hello never prints, so the two are distinguishable.
+    cp "$hello_mzx" "${WORK_DIR}/imgres_both.mzx"
+    cp "$args_mzx"  "${WORK_DIR}/imgres_both.mzb"
+    set +e
+    out3=$( cd "$WORK_DIR" && "$MAIZE" imgres_both 2>/dev/null )
+    set -e
+    [ "$out3" = "$hello_exp" ] || ok=0
+
+    # (4) exact-name-with-extension untouched: `maize imgres_exact.mzx` is
+    # byte-identical to the normal run_ctest "hello" behavior; no cascade fires.
+    cp "$hello_mzx" "${WORK_DIR}/imgres_exact.mzx"
+    set +e
+    out4=$( cd "$WORK_DIR" && "$MAIZE" imgres_exact.mzx 2>/dev/null )
+    set -e
+    [ "$out4" = "$hello_exp" ] || ok=0
+
+    # (5) nonexistent bare name: exit 2, stderr names all three candidates.
+    set +e
+    err5=$( cd "$WORK_DIR" && "$MAIZE" nosuchimage_246 2>&1 >/dev/null )
+    rc5=$?
+    set -e
+    [ "$rc5" -eq 2 ] || ok=0
+    printf '%s' "$err5" | grep -qF "nosuchimage_246" || ok=0
+    printf '%s' "$err5" | grep -qF "nosuchimage_246.mzx" || ok=0
+    printf '%s' "$err5" | grep -qF "nosuchimage_246.mzb" || ok=0
+
+    # (6) nonexistent extensioned name: exit 2, stderr names ONLY the given path;
+    # no .mzx/.mzb-appended phantoms (the cascade must not fire for a .mzb name).
+    set +e
+    err6=$( cd "$WORK_DIR" && "$MAIZE" nosuchimage_246.mzb 2>&1 >/dev/null )
+    rc6=$?
+    set -e
+    [ "$rc6" -eq 2 ] || ok=0
+    printf '%s' "$err6" | grep -qF "nosuchimage_246.mzb" || ok=0
+    if printf '%s' "$err6" | grep -qF "nosuchimage_246.mzb.mzx"; then ok=0; fi
+    if printf '%s' "$err6" | grep -qF "nosuchimage_246.mzb.mzb"; then ok=0; fi
+
+    # (7) argv[0] preservation: a bare resolved name runs the args fixture; the
+    # first stdout line (args prints argv[0]) is the TYPED bare name, not the
+    # resolved .mzx path.
+    cp "$args_mzx" "${WORK_DIR}/imgres_argv0.mzx"
+    set +e
+    out7=$( cd "$WORK_DIR" && "$MAIZE" imgres_argv0 2>/dev/null | head -n 1 )
+    set -e
+    [ "$out7" = "imgres_argv0" ] || ok=0
+
+    if [ "$ok" -eq 1 ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        (1) bare .mzx:    \"${out1}\" (want \"${hello_exp}\")"
+        echo "        (2) bare .mzb:    \"${out2}\""
+        echo "        (3) precedence:   \"${out3}\""
+        echo "        (4) exact ext:    \"${out4}\""
+        echo "        (5) missing bare: rc=${rc5} stderr=\"${err5}\""
+        echo "        (6) missing ext:  rc=${rc6} stderr=\"${err6}\""
+        echo "        (7) argv0:        \"${out7}\" (want \"imgres_argv0\")"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
 # maize-77 W^X negative case (AC 7147): mzld must reject an executable section that
 # is also writable. mazm only ever emits canonical per-kind attrs (CODE = R+X), so a
 # W+X object cannot be authored in source; instead we take the linked runtime's
@@ -962,6 +1061,8 @@ run_exit_status_test "abort" 134
 # compile time rather than passing silently. Proves qbe -t maize parses/lowers hlt.
 run_exit_status_test "noreturn" 57
 run_args_test
+# maize-246 host-launcher bare-image-name resolution (exact / .mzx / .mzb).
+run_image_resolution
 run_wx_reject_test
 # maize-111 CLI-rework self-checks: the new no-run default (produce beside source) and
 # the driver -r run-and-propagate path.

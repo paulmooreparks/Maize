@@ -179,6 +179,11 @@ static void print_usage(std::ostream &out) {
 		"Everything after <image> is passed to the program as its argv, verbatim.\n"
 		"argv[0] is <image> exactly as you typed it.\n"
 		"\n"
+		"If <image> has no extension and does not exist as given, maize also tries\n"
+		"appending .mzx, then .mzb, before giving up (so `maize hello` finds\n"
+		"hello.mzx or hello.mzb without typing the extension). A name that already\n"
+		"has an extension is tried exactly as given, with no appending.\n"
+		"\n"
 		"Options:\n"
 		"  -h, --help                 show this help\n"
 		"  -e, --env KEY=VAL          add one environment variable (repeatable)\n"
@@ -223,6 +228,63 @@ static void print_usage(std::ostream &out) {
 		"\n"
 		"Example:\n"
 		"  maize --env GREETING=hi hello.mzb alpha beta\n";
+}
+
+/* maize-246: resolve a bare (extension-less) image name by trying, in order, the
+   exact path, then path + ".mzx", then path + ".mzb", mirroring the guest-side
+   execvp fallback order in toolchain/rt/unistd.c's exec_forms (decision 9084).
+   Applies ONLY when std::filesystem::path(given).extension() is empty. An
+   already-extensioned name (.mzb, .mzx, or anything else, e.g. .txt) is left
+   untouched: only the exact name is tried, identical to pre-maize-246 behavior.
+   There is no directory/PATH search; only the exact location implied by `given`
+   (relative or absolute) is considered.
+   Returns true and fills `resolved` with the first candidate that exists and
+   opens; returns false when none of the tried candidates could be opened.
+   `tried` is always filled with every candidate attempted, in order, for the
+   caller's diagnostic. A candidate that EXISTS but fails to open (permission
+   denied, is a directory, and so on) stops the cascade immediately: it is
+   reported as the failure and later candidates are not tried, mirroring
+   exec_forms's non-ENOENT "found but failed, stop" semantics. Distinguishing
+   "does not exist, keep looking" from "exists but the open failed, stop" needs
+   the explicit std::filesystem::exists() step: a plain is_open() check alone
+   cannot tell the two apart (both merely report "not open"). A non-regular-file
+   candidate (a directory, a device) is treated as found-but-failed too: on some
+   platforms an std::ifstream on a directory reports is_open() == true yet aborts
+   on the first read ("Is a directory"), so is_regular_file() gates the open
+   rather than trusting is_open() alone, keeping the directory case a clean
+   reported failure instead of a crash. */
+static bool resolve_image_path(const std::string &given, std::string &resolved,
+	std::vector<std::string> &tried) {
+	namespace fs = std::filesystem;
+	tried.clear();
+
+	std::vector<std::string> candidates;
+	candidates.push_back(given);
+	if (fs::path(given).extension().empty()) {
+		candidates.push_back(given + ".mzx");
+		candidates.push_back(given + ".mzb");
+	}
+
+	for (const std::string &cand : candidates) {
+		tried.push_back(cand);
+		std::error_code ec;
+		if (!fs::exists(cand, ec)) {
+			continue;   /* candidate does not exist: keep looking */
+		}
+		/* Candidate exists, so commit to it whether or not it turns out to be
+		   openable (found-but-failed stops the cascade here). A regular file that
+		   opens is the win; a directory / device / unreadable file is reported as
+		   the failure, later candidates are not tried. */
+		if (fs::is_regular_file(cand, ec)) {
+			std::ifstream probe(cand, std::fstream::binary);
+			if (probe.is_open()) {
+				resolved = cand;
+				return true;
+			}
+		}
+		return false;   /* exists but not an openable regular file: report, stop */
+	}
+	return false;
 }
 
 /* maize-60: a guest environment KEY must match [A-Za-z_][A-Za-z0-9_]*. */
@@ -1343,11 +1405,26 @@ int main(int argc, char *argv[]) {
 		guest_argv.push_back(std::string(argv[k]));
 	}
 
-	std::ifstream fin(file_path, std::fstream::binary);
-	if (!fin.is_open()) {
-		std::cerr << "maize: cannot open image '" << file_path << "'" << std::endl;
+	/* maize-246: resolve a bare <image> name (exact, then .mzx, then .mzb) before
+	   opening. guest_argv[0] was already captured from the ORIGINAL file_path
+	   above, so argv[0] stays the typed name regardless of what resolves here;
+	   only resolved_path (the winning candidate) is fed to the loader. */
+	std::vector<std::string> tried_candidates;
+	std::string resolved_path;
+	if (!resolve_image_path(file_path, resolved_path, tried_candidates)) {
+		std::cerr << "maize: cannot open image '" << file_path << "'";
+		if (tried_candidates.size() > 1) {
+			std::cerr << " (tried ";
+			for (std::size_t i = 0; i < tried_candidates.size(); ++i) {
+				if (i) { std::cerr << ", "; }
+				std::cerr << "'" << tried_candidates[i] << "'";
+			}
+			std::cerr << ")";
+		}
+		std::cerr << std::endl;
 		return 2;
 	}
+	std::ifstream fin(resolved_path, std::fstream::binary);
 
 	/* Slurp the whole image so the loader can inspect the magic before deciding
 	   how to lay it out. */
