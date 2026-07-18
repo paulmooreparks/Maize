@@ -65,6 +65,9 @@ namespace maize {
 						b = 0;
 					}
 				}
+				// maize-238 Branch A: a data-port read drains the current readable state, so
+				// re-arm the rising-edge latch -- the next fresh byte raises a new IRQ 33.
+				readable_signaled_ = false;
 				out.w0 = b;
 			}
 			else {
@@ -101,12 +104,19 @@ namespace maize {
 			}
 			int r = maize::syscall::console_stdin_ready();
 			if (r == 0) {
-				return;   // nothing pending right now
+				readable_signaled_ = false;   // source went non-readable: re-arm the edge
+				return;
 			}
 			if (r < 0) {
-				eof_ = true;   // end of input: signal it once, then stop polling
+				eof_ = true;   // a genuinely drained source (pipe/pty at EOF): signal once
 			}
-			cpu::raise_irq(cpu::console_irq_vector);
+			// Rising edge only: raise IRQ 33 once when the source becomes readable, not every
+			// throttle tick. A dataless-but-readable source (/dev/null) then yields ONE bounded
+			// IRQ; a real byte re-arms the edge when the data port is read (see port_read).
+			if (!readable_signaled_) {
+				readable_signaled_ = true;
+				cpu::raise_irq(cpu::console_irq_vector);
+			}
 		}
 
 		// maize-238 (Branch A): the single-host-stdin-owner drain for a bare-VM guest's

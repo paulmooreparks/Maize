@@ -79,6 +79,14 @@ namespace maize {
 			device_port status_port_;
 			bool eof_ {false};         // host stdin reached real end-of-input (terminal latch)
 			bool active_injector_ {false};
+			// maize-238 Branch A: edge-trigger latch for the readiness IRQ. on_input_tick
+			// raises IRQ 33 only on a rising edge (host stdin becoming readable), not every
+			// throttle tick, so a persistently-readable-but-dataless source (a /dev/null
+			// default-invocation stdin) yields one bounded IRQ instead of a per-tick storm
+			// that would clobber the single-slot timer IRQ and starve preemption/signals.
+			// Cleared when the data port is read (a fresh byte re-arms the edge) or when the
+			// source goes non-readable.
+			bool readable_signaled_ {false};
 		};
 
 		/* Keyboard device (0x10 data, 0x11 status). Emits raw PC scancodes (Set-1 / XT

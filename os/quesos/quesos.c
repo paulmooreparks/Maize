@@ -2345,6 +2345,10 @@ void quesos_console_irq(void) {
      * timing-dependent bad interleaving (the phase-2-class flake). When it DID wake someone,
      * fall through to a normal reschedule so the woken process gets a slice. */
     if (woke == 0 && g_current != 0) {
+        /* Deliver any signal that came pending while this process ran (mirroring schedule(),
+         * which resume-in-place bypasses) so a periodic readiness IRQ cannot indefinitely
+         * defer a pending signal on a compute-bound process. */
+        deliver_pending_signal(g_current);
         quesos_switch_to(g_current);   /* noreturn: resume the interrupted process in place */
     }
     if (g_current != 0) { g_current->state = P_RUNNABLE; }
