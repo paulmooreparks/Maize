@@ -1,0 +1,138 @@
+; **********************************************************************************
+; Fixture for card maize-253: SYS $F6 (sys_ttysize) reports the bound console
+; device's cell-grid geometry.
+;
+; The program issues SYS $F6 (R0 = fd 1, R1 = 8-byte struct winsize buffer) and
+; prints one deterministic line reading back the result and the buffer:
+;
+;     ttysize: rv=<RV decimal> rows=<ws_row decimal> cols=<ws_col decimal>
+;
+; The buffer is pre-zeroed so the -ENOTTY path (which writes nothing) reads back
+; rows=0 cols=0. The SAME binary is run in two modes by scripts/run-tests.sh so a
+; green result in one mode cannot mask a failure in the other:
+;   maize --console-dump --console-size 100x30 ...  -> rv=0 rows=30 cols=100
+;   maize ...  (no console bound, non-tty stdio)     -> rv=-25
+;
+; Register use: R7 = saved return value, R8 = output cursor, R5 = divisor 10,
+; R6 = digit / temp, R9 = digit count. R0/R1/R2 are the syscall + helper scratch.
+; Scratch RAM (absolute runtime addresses, like test_memblock): $3000 = winsize
+; buffer (8 bytes), $3100 = output line buffer.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- pre-zero the 8-byte winsize buffer ----
+    CP $3000 R1
+    CLR R2
+    ST R2 @R1                  ; 8 zero bytes at $3000..$3007
+
+    ; ---- SYS $F6 sys_ttysize(fd=1, winsize* = $3000) ----
+    CP $01 R0
+    CP $3000 R1
+    SYS $F6
+    CP RV R7                   ; save the return value
+
+    ; ---- build the output line into $3100, cursor in R8 ----
+    CP $3100 R8
+
+    ; "ttysize: rv="
+    CP str_prefix R1
+    CALL emit_lit
+
+    ; rv (signed decimal)
+    CP R7 R0
+    CMP $00 R0
+    JGE rv_positive
+    CP $2D R6.B0               ; '-'
+    ST R6.B0 @R8
+    INC R8
+    NEG R0
+rv_positive:
+    CALL emit_udec
+
+    ; " rows=" then ws_row (u16 at $3000)
+    CP str_rows R1
+    CALL emit_lit
+    CLR R0
+    CP $3000 R1
+    LD @R1 R0.Q0
+    CALL emit_udec
+
+    ; " cols=" then ws_col (u16 at $3002)
+    CP str_cols R1
+    CALL emit_lit
+    CLR R0
+    CP $3002 R1
+    LD @R1 R0.Q0
+    CALL emit_udec
+
+    ; newline
+    CP str_nl R1
+    CALL emit_lit
+
+    ; ---- write the assembled line (length = cursor - $3100) ----
+    CP R8 R2
+    SUB $3100 R2
+    CP $01 R0
+    CP $3100 R1
+    SYS $01
+    HALT
+
+; **********************************************************************************
+; emit_lit: copy the NUL-terminated string at R1 into the buffer at R8, advancing
+; both. Clobbers R1, R2.
+; **********************************************************************************
+emit_lit:
+    LD @R1 R2.B0
+    CMP $00 R2.B0
+    JZ emit_lit_done
+    ST R2.B0 @R8
+    INC R1
+    INC R8
+    JMP emit_lit
+emit_lit_done:
+    RET
+
+; **********************************************************************************
+; emit_udec: append the unsigned decimal of R0 to the buffer at R8, advancing R8.
+; Digits are extracted low-to-high onto the stack, then popped high-to-low so they
+; land in reading order. Clobbers R0, R5, R6, R9.
+; **********************************************************************************
+emit_udec:
+    CP $0A R5                  ; divisor 10
+    CMP $00 R0
+    JNZ udec_convert
+    CP $30 R6.B0               ; value 0 prints a single '0'
+    ST R6.B0 @R8
+    INC R8
+    RET
+udec_convert:
+    CLR R9                     ; digit count
+udec_push:
+    CP R0 R6
+    UMOD R5 R6                 ; R6 = R0 % 10
+    ADD $30 R6.B0              ; digit -> ASCII
+    PUSH R6
+    INC R9
+    UDIV R5 R0                 ; R0 = R0 / 10
+    CMP $00 R0
+    JNZ udec_push
+udec_pop:
+    CMP $00 R9
+    JZ udec_done
+    POP R6
+    ST R6.B0 @R8
+    INC R8
+    DEC R9
+    JMP udec_pop
+udec_done:
+    RET
+
+; **********************************************************************************
+str_prefix:
+    STRING "ttysize: rv=\0"
+str_rows:
+    STRING " rows=\0"
+str_cols:
+    STRING " cols=\0"
+str_nl:
+    STRING "\n\0"

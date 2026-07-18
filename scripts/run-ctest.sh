@@ -2088,7 +2088,7 @@ run_quesos94_fixtures() {
         echo "[FAIL] quesos94: quesOS link failed"; cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
-    for src in fs_forward cwd_resolve termios_raw raw_reap_restore libc_proc execvp_run bin_echoer setjmp_launch; do
+    for src in fs_forward cwd_resolve termios_raw ttysize_console raw_reap_restore libc_proc execvp_run bin_echoer setjmp_launch; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
             echo "[FAIL] quesos94: ${src}.c compile failed"; cat "$log" >&2
@@ -2138,6 +2138,23 @@ run_quesos94_fixtures() {
         echo "[PASS] quesos94_termios_raw"
     else
         echo "[FAIL] quesos94_termios_raw"
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # Console terminal-size forwarding (maize-253): --console-dump --console-size 120x40 binds
+    # a 120x40 grid console, so the forwarded SYS $F6 (do_ttysize -> native sys_ttysize) reports
+    # that cell grid instead of returning -ENOTTY. The fixture asserts rv=0 and rows=40/cols=120.
+    # The PASS marker rides the grid dump.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(printf '' | MSYS2_ARG_CONV_EXCL='/progs' timeout 60 "$MAIZE" --console-dump --console-size 120x40 \
+        --no-root --mount "${pnat}=/progs:ro" "$quesos" /progs/ttysize_console.mzx 2>/dev/null)
+    set -e
+    if printf '%s\n' "$out" | grep -qF "ttysize-console: PASS"; then
+        echo "[PASS] quesos94_ttysize_console"
+    else
+        echo "[FAIL] quesos94_ttysize_console"
         printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi

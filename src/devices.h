@@ -326,6 +326,15 @@ namespace maize {
 			unsigned height() const { return height_px_; }
 			const std::uint32_t* pixels() const { return pixels_.data(); }
 
+			/* SYS $F6 ttysize: cell-grid geometry, distinct from width()/height() above
+			   which are PIXEL dimensions for the blit. cols_/rows_ are clamped >=1 at
+			   construction and bounded to 20..500 / 10..200 by --console-size, so the
+			   narrowing to unsigned short is always in range. */
+			void get_size(unsigned short* rows, unsigned short* cols) const override {
+				*rows = static_cast<unsigned short>(rows_);
+				*cols = static_cast<unsigned short>(cols_);
+			}
+
 			/* Cursor state for the present-time overlay (maize-140). The display thread
 			   reads these once per frame to place the blinking block; the CPU thread mutates
 			   row_/col_ through the VT engine. They are shared lock-free exactly like the

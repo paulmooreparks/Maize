@@ -1079,6 +1079,66 @@ $results += Invoke-MzdisTruncatedTest
 $results += Invoke-MzdisMzoRejectTest
 $results += Invoke-MzdisMzxTest
 
+# --- maize-253: SYS $F6 (sys_ttysize) reports the bound console device's geometry ------
+# One fixture (test_ttysize_console.mazm) issues SYS $F6 and prints
+# "ttysize: rv=<rv> rows=<ws_row> cols=<ws_col>". The SAME binary is run in two modes so a
+# green result in one cannot mask a failure in the other (mirrors run-tests.sh's
+# run_ttysize_console_test):
+#   1. --console-dump --console-size 100x30: a text_console is bound, so $F6 reports its
+#      cell grid. The line lands on the grid, which --console-dump dumps at exit; assert it
+#      contains "ttysize: rv=0 rows=30 cols=100".
+#   2. plain (no console bound, non-interactive stdio): $F6 returns -ENOTTY (rv=-25) and the
+#      pre-zeroed buffer is left untouched.
+function Invoke-TtysizeConsoleTest {
+    $srcPath = Join-Path $AsmDir 'test_ttysize_console.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_ttysize_console.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = 'ttysize_console'; Pass = $false; Expected = 'assembles'; Actual = 'mazm failed to assemble' }
+    }
+
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+
+    # Mode 1: console device bound via --console-dump; expect its cell grid on the dump.
+    $dumpFile = [System.IO.Path]::GetTempFileName()
+    $null | & $MaizeExe --console-dump --console-size 100x30 $binPath > $dumpFile 2> $null
+    $me1 = $LASTEXITCODE
+    $raw1 = Get-Content -Raw -Path $dumpFile -ErrorAction SilentlyContinue
+    Remove-Item -Force $dumpFile -ErrorAction SilentlyContinue
+    $pass1 = ($me1 -eq 0) -and ($raw1 -like '*ttysize: rv=0 rows=30 cols=100*')
+    $r1 = [pscustomobject]@{
+        Name     = 'ttysize_console_console_dump'
+        Pass     = $pass1
+        Expected = 'grid contains "ttysize: rv=0 rows=30 cols=100"'
+        Actual   = if ($pass1) { 'as expected' } else { "exit $me1; $(Trim-TrailingNewlines $raw1)" }
+    }
+
+    # Mode 2: no console bound, non-interactive stdio; expect -ENOTTY (rv=-25).
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $null | & $MaizeExe $binPath > $outFile 2> $null
+    $me2 = $LASTEXITCODE
+    $raw2 = Get-Content -Raw -Path $outFile -ErrorAction SilentlyContinue
+    Remove-Item -Force $outFile -ErrorAction SilentlyContinue
+    $actual2 = Trim-TrailingNewlines $raw2
+    $expected2 = 'ttysize: rv=-25 rows=0 cols=0'
+    $pass2 = ($me2 -eq 0) -and ($actual2 -eq $expected2)
+    $r2 = [pscustomobject]@{
+        Name     = 'ttysize_console_enotty'
+        Pass     = $pass2
+        Expected = $expected2
+        Actual   = if ($pass2) { $actual2 } else { "exit $me2; $actual2" }
+    }
+
+    $ErrorActionPreference = $prevEap
+    return $r1, $r2
+}
+
+$results += Invoke-TtysizeConsoleTest
+
 $failCount = 0
 foreach ($r in $results) {
     if ($r.Pass) {

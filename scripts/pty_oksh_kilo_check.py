@@ -138,6 +138,14 @@ if not wait_for("\x1b[?25h", 8):
 if b"unhandled syscall" in captured:
     fail("unhandled-syscall-in-paint")
 
+# maize-253: sys_ttysize ($F6) answers ioctl(TIOCGWINSZ) directly (here via the real host
+# terminal), so kilo's getWindowSize succeeds without falling back to the ESC[6n cursor-
+# position probe. By now kilo has completed its window-size query and first paint, so the
+# probe byte sequence must never appear. The pump() answer above is a defensive backstop;
+# if it ever fired, this assertion catches the regression to the fallback path.
+if b"\x1b[6n" in captured:
+    fail("esc-6n-cursor-probe-present (ioctl TIOCGWINSZ fell back instead of succeeding)")
+
 if mode == "kill":
     # Non-hang guard: SIGTERM the maize VM process mid-edit; it must reap without hanging.
     os.kill(pid, 15)

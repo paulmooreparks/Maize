@@ -36,7 +36,9 @@ namespace maize {
 
 		/* SYS $F6 ttysize: fill *rows / *cols with the host terminal's current size. Returns
 		   true when an interactive terminal reports a size, false otherwise (the guest then
-		   sees -ENOTTY and can fall back to its VT cursor-probe). */
+		   sees -ENOTTY and can fall back to its VT cursor-probe). This is the REAL-terminal-only
+		   branch: since maize-253 sys.cpp's $F6 answers a bound console device from its own cell
+		   grid first, and only reaches this path when no console device is bound. */
 		bool get_winsize(unsigned short* rows, unsigned short* cols);
 
 		/* maize-228 host-side kill escape. Fed the bytes just read from the real terminal on

@@ -64,8 +64,9 @@ GLOBAL sys_tcgetattr
 GLOBAL sys_tcsetattr
 
 ; maize-228 terminal size: Maize-private high-block number ($F6, no Linux mirror). Fills
-; a struct winsize (ws_row, ws_col, ...) from the REAL host terminal so ioctl(TIOCGWINSZ)
-; works on the console binary. sys_ttysize(fd, winsize*); RV = 0 or -ENOTTY.
+; a struct winsize (ws_row, ws_col, ...) from the bound console (real terminal, or the
+; windowed/dump text console's cell grid since maize-253) so ioctl(TIOCGWINSZ) works on the
+; console binary. sys_ttysize(fd, winsize*); RV = 0 or -ENOTTY (no console bound, no terminal).
 GLOBAL sys_ttysize
 
 ; path-mutating stubs: sys_unlink ($57), sys_mkdir ($53), sys_rename ($52), the

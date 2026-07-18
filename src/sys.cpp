@@ -810,24 +810,36 @@ namespace maize {
                 }
 
                 /* sys_ttysize (maize-228): fd R0.H0, struct winsize* R1 (ws_row, ws_col,
-                   ws_xpixel, ws_ypixel; four u16). Fills the row/col fields from the REAL host
-                   terminal so a guest's ioctl(TIOCGWINSZ) succeeds on the console binary and
-                   never falls back to the ESC[6n cursor-probe (which stalls a cooked read).
-                   Maize-private high-block number ($F6), no Linux mirror. Returns 0 on success,
-                   -ENOTTY (25) when there is no host terminal size (windowed console or non-tty
-                   host stdio -> the guest keeps its ESC[6n fallback, which the windowed console
-                   answers). */
+                   ws_xpixel, ws_ypixel; four u16). Fills the row/col fields so a guest's
+                   ioctl(TIOCGWINSZ) succeeds and never falls back to the ESC[6n cursor-probe
+                   (which stalls a cooked read). Maize-private high-block number ($F6), no Linux
+                   mirror. Three-branch contract (maize-253):
+                     1. A bound console device (windowed SDL backend or --console-dump, the same
+                        text_console instance): report its own cell-grid geometry, always succeeds.
+                     2. Else a real host terminal: report its ioctl(TIOCGWINSZ) size (maize-228).
+                     3. Else (no console bound, no real terminal, e.g. redirected/piped stdio):
+                        -ENOTTY (25), a genuine "no screen exists" case, so the guest degrades.
+                   Returns 0 on success, -ENOTTY (25) in branch 3 or when the real terminal has
+                   no size. */
                 case 0x00F6U: {
                     u_word fd {regs::r0.h0()};
                     u_word address {regs::r1.w0};
-                    if (fd > 2 || console_dev != nullptr || !host_tty::active()) {
+                    if (fd > 2) {
                         return static_cast<u_word>(-static_cast<long>(25));  /* -ENOTTY */
                     }
                     unsigned short rows = 0, cols = 0;
-                    if (!host_tty::get_winsize(&rows, &cols)) {
-                        return static_cast<u_word>(-static_cast<long>(25));  /* -ENOTTY */
+                    if (console_dev != nullptr) {
+                        console_dev->get_size(&rows, &cols);   /* windowed / --console-dump backend */
+                    } else if (host_tty::active()) {
+                        if (!host_tty::get_winsize(&rows, &cols)) {
+                            return static_cast<u_word>(-static_cast<long>(25));  /* -ENOTTY */
+                        }
+                    } else {
+                        return static_cast<u_word>(-static_cast<long>(25));  /* -ENOTTY: no console bound, no real terminal */
                     }
-                    /* struct winsize little-endian: ws_row @0, ws_col @2 (u16 each). */
+                    /* struct winsize little-endian: ws_row @0, ws_col @2 (u16 each); ws_xpixel/
+                       ws_ypixel stay 0 in every branch, matching the prior real-terminal-only
+                       behavior (no consumer, kilo/oksh, reads them). */
                     cpu::mm.write_byte(address + 0, static_cast<u_byte>(rows & 0xFF));
                     cpu::mm.write_byte(address + 1, static_cast<u_byte>((rows >> 8) & 0xFF));
                     cpu::mm.write_byte(address + 2, static_cast<u_byte>(cols & 0xFF));

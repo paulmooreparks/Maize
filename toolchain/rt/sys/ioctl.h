@@ -36,11 +36,13 @@ struct winsize {
 static inline int
 ioctl(int fd, unsigned long request, ...)
 {
-	/* maize-228: TIOCGWINSZ is answered by the real host terminal via SYS $F6 on the
-	   console binary (so kilo's getWindowSize succeeds via ioctl instead of the ESC[6n
-	   cursor-probe, which stalls a cooked read). The windowed console and non-tty host
-	   stdio return -ENOTTY here, and the caller keeps its ESC[6n fallback. Every other
-	   request still fails ENOTTY: Maize has no ioctl multiplexor. */
+	/* maize-228: TIOCGWINSZ is answered via SYS $F6 on the console binary (so kilo's
+	   getWindowSize succeeds via ioctl instead of the ESC[6n cursor-probe, which stalls a
+	   cooked read). Since maize-253 $F6 has three branches: a bound console device (windowed
+	   backend or --console-dump) reports its own cell grid, else a real host terminal reports
+	   its ioctl size, else (no console bound, non-tty host stdio) it returns -ENOTTY and the
+	   caller keeps its ESC[6n fallback. Every other request still fails ENOTTY: Maize has no
+	   ioctl multiplexor. */
 	if (request == TIOCGWINSZ) {
 		va_list ap;
 		void *ws;

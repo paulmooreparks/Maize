@@ -1351,6 +1351,69 @@ run_mzdis_truncated_test
 run_mzdis_mzo_reject_test
 run_mzdis_mzx_test
 
+# --- maize-253: SYS $F6 (sys_ttysize) reports the bound console device's geometry ------
+# One fixture (test_ttysize_console.mazm) issues SYS $F6 and prints
+# "ttysize: rv=<rv> rows=<ws_row> cols=<ws_col>". The SAME binary is run in two modes so a
+# green result in one cannot mask a failure in the other:
+#   1. --console-dump --console-size 100x30: a text_console is bound, so $F6 reports its
+#      cell grid. The line lands on the grid, which --console-dump dumps at exit; assert it
+#      contains "ttysize: rv=0 rows=30 cols=100".
+#   2. plain (no console bound, non-interactive stdio): $F6 has neither a console device nor
+#      a real terminal, so it returns -ENOTTY (rv=-25) with the pre-zeroed buffer untouched.
+run_ttysize_console_test() {
+    name="ttysize_console"
+    src="test_ttysize_console.mazm"
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        TOTAL=$((TOTAL + 1))
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+
+    # Mode 1: console device bound via --console-dump; expect its cell grid.
+    TOTAL=$((TOTAL + 1))
+    out_file=$(mktemp)
+    if "$MAIZE_EXE" --console-dump --console-size 100x30 "$bin_path" >"$out_file" 2>/dev/null </dev/null; then
+        me=0
+    else
+        me=$?
+    fi
+    if [ "$me" -eq 0 ] && grep -qF "ttysize: rv=0 rows=30 cols=100" "$out_file"; then
+        echo "[PASS] ${name}_console_dump"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}_console_dump"
+        echo "        expected: grid contains \"ttysize: rv=0 rows=30 cols=100\""
+        echo "        actual:   exit ${me}; \"$(cat "$out_file")\""
+    fi
+    rm -f "$out_file"
+
+    # Mode 2: no console bound, non-interactive stdio; expect -ENOTTY (rv=-25).
+    TOTAL=$((TOTAL + 1))
+    expected="ttysize: rv=-25 rows=0 cols=0"
+    out_file=$(mktemp)
+    if "$MAIZE_EXE" "$bin_path" >"$out_file" 2>/dev/null </dev/null; then
+        me=0
+    else
+        me=$?
+    fi
+    actual=$(cat "$out_file")
+    rm -f "$out_file"
+    if [ "$me" -eq 0 ] && [ "$actual" = "$expected" ]; then
+        echo "[PASS] ${name}_enotty"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}_enotty"
+        echo "        expected: \"${expected}\""
+        echo "        actual:   \"${actual}\" (exit ${me})"
+    fi
+}
+
+run_ttysize_console_test
+
 PASS_COUNT=$((TOTAL - FAIL_COUNT))
 echo ""
 echo "${PASS_COUNT} passed, ${FAIL_COUNT} failed (${TOTAL} total)"

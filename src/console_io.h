@@ -73,6 +73,12 @@ namespace maize {
 			virtual void termios_get(unsigned char* image) = 0;
 			/* SYS $F2 tcsetattr: adopt the TERMIOS_SIZE-byte image. */
 			virtual void termios_set(const unsigned char* image) = 0;
+
+			/* SYS $F6 ttysize: fill *rows / *cols with the console's cell-grid geometry.
+			   Fixed at construction (--console-size, or the console default); always
+			   succeeds when a console is bound, unlike the real-terminal path this never
+			   has to fail. */
+			virtual void get_size(unsigned short* rows, unsigned short* cols) const = 0;
 		};
 
 	} // namespace console

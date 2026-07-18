@@ -200,7 +200,8 @@ the private block instead.
 Current `$F0`-`$FF` block map (so a later assigner takes a genuinely-free number, not one
 that merely looks free in a partial dispatch switch): `$F0` `sys_clock_ms`; `$F1`/`$F2`
 termios (`sys_tcgetattr`/`sys_tcsetattr`); `$F3` `sys_palette_blit` (maize-213); `$F4`/`$F5`
-bulk memory (`sys_bulk_copy`/`sys_bulk_set`, maize-216); `$F6` `sys_ttysize` (maize-228);
+bulk memory (`sys_bulk_copy`/`sys_bulk_set`, maize-216); `$F6` `sys_ttysize` (maize-228, three-branch
+size source since maize-253: a bound console device's cell grid, else the real host terminal, else -ENOTTY);
 `$F7`/`$F8`/`$F9` the quesOS-guest framebuffer registration calls (maize-236, documented in
 the guest section below); `$FA`/`$FB` the quesOS-guest job-control calls (maize-174,
 `sys_tcgetpgrp`/`sys_tcsetpgrp`, documented in the signal section below); `$FC`-`$FF` free.
@@ -256,8 +257,10 @@ naming remains a later concern; job control and signals (`kill`) land in maize-1
 quesOS also FORWARDS the Maize-private console calls a process makes so an interactive
 shell works under it (maize-94): `$F1`/`$F2` (`sys_tcgetattr`/`sys_tcsetattr`, raw mode)
 and `$F6` (`sys_ttysize`, the `TIOCGWINSZ` terminal-size query the line editor runs at
-startup). Each maps the guest fd to its native fd and bounces the wire image through the
-kernel `g_iobuf`; a pipe (non-native) fd returns `-ENOTTY`, and any Maize-private number
+startup; since maize-253 the native provider answers it from a bound console device's cell
+grid too, so a TUI under `--console-dump` or the windowed backend sizes its screen, not just
+one on a real host terminal). Each maps the guest fd to its native fd and bounces the wire
+image through the kernel `g_iobuf`; a pipe (non-native) fd returns `-ENOTTY`, and any Maize-private number
 quesOS does NOT forward returns `-ENOSYS` to the caller (never strands the process), with a
 one-line `[quesos] unhandled syscall N` diagnostic naming the number to wire next.
 
