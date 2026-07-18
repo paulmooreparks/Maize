@@ -77,9 +77,15 @@ current (possibly unchanged) break, never `-errno`: the break is a low address t
 cannot land in the `[-4095, -1]` band, and failure is detected by the caller comparing
 the returned break to the requested one (the libc `sbrk` wrapper).
 
-**EFAULT is never produced.** Maize memory is sparse and lazily zero-filled, so every
-guest address is physically valid and a bad-pointer syscall cannot fault. This is an
-honest deviation from Linux, recorded rather than faked.
+**EFAULT is never produced by the native/hosted syscall layer.** Maize memory is sparse
+and lazily zero-filled, so at that layer every guest address is physically valid and a
+bad-pointer syscall cannot fault. This is an honest deviation from Linux, recorded rather
+than faked. It scopes strictly to the native flat-memory layer: a guest kernel that emulates
+per-process paging on top (quesOS's Sv48 address spaces, maize-180/194) enforces its own
+memory-protection bounds and DOES produce `-EFAULT` for a bulk syscall naming an unmapped or
+kernel-owned page (see the forwarded `$F4`/`$F5` note below). That is a distinct, higher
+enforcement layer, not a contradiction of this claim, the same relationship a real kernel's
+`SIGSEGV` has to physical RAM that is always addressable.
 
 ## Raw layer vs wrapper layer
 
@@ -265,6 +271,21 @@ one on a real host terminal). Each maps the guest fd to its native fd and bounce
 image through the kernel `g_iobuf`; a pipe (non-native) fd returns `-ENOTTY`, and any Maize-private number
 quesOS does NOT forward returns `-ENOSYS` to the caller (never strands the process), with a
 one-line `[quesos] unhandled syscall N` diagnostic naming the number to wire next.
+
+quesOS also forwards the bulk-memory accelerators `$F4`/`$F5` (`sys_bulk_copy`/`sys_bulk_set`,
+maize-247). The native handlers read/write FLAT PHYSICAL addresses with no MMU walk, so quesOS
+translates the caller's user src/dst VAs to physical addresses through the caller's own page
+table before forwarding, and validates every page in range against `PTE_V` (mapped) AND `PTE_U`
+(user-owned). `$F4` (copy/move) forwards a SINGLE native call only when BOTH src and dst are each
+one physically-contiguous run; a scattered range would need a boundary-merged, memmove-safe split
+the native call cannot express, so quesOS returns `-ENOSYS` and the guest RT `memcpy`/`memmove`
+fall back to their portable word loop (`toolchain/rt/string.c` gates its fast path on the raw
+return equalling `n`). `$F5` (fill) has no overlap hazard, so it ALWAYS forwards, coalescing the
+dst range into contiguous physical runs and issuing one native call per run (two-pass:
+validate-the-whole-range-then-deliver, preserving the native "no guest write on rejection"
+invariant). A walked page that is unmapped or kernel-owned (`PTE_U`=0, e.g. the quesOS image
+identity range) fails the range with `-EFAULT` (14) and no byte is touched, quesOS's own guest-side
+memory-protection layer as noted in the Error convention section above.
 
 ### Guest signal subsystem (maize-174)
 

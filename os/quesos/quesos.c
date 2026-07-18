@@ -56,6 +56,11 @@ long sys_tcgetattr(long fd, void *termios_p);
 long sys_tcsetattr(long fd, long optional_actions, void *termios_p);
 long sys_ttysize(long fd, void *winsize_p);   /* maize-94: native $F6, forwarded to guests */
 unsigned long sys_clock_ms(void);   /* maize-94: native $F0, forwarded to guests */
+/* maize-247: the native bulk-memory accelerators ($F4/$F5, src/sys.cpp). These operate on
+ * FLAT PHYSICAL addresses with no MMU walk, so quesOS translates the caller's user VAs to
+ * physical addresses (user_pa) BEFORE forwarding; see do_bulk_copy/do_bulk_set below. */
+long sys_bulk_copy(void *dst, const void *src, unsigned long n);   /* native $F4 */
+long sys_bulk_set(void *dst, int value, unsigned long n);          /* native $F5 */
 
 /* --- The metal half (quesos_boot.mazm). ---------------------------------------------
  * quesos_switch_to(pcb) loads the process's saved GP context, MOVTCRs its page-table
@@ -168,14 +173,17 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
  * gracefully to its default size. */
 #define SYS_ttysize   0xF6
 
-/* maize-94: the monotonic-clock and bulk-memory Maize-private numbers a borrowed guest
+/* maize-94/247: the monotonic-clock and bulk-memory Maize-private numbers a borrowed guest
  * reaches. SYS_clock_ms takes no pointer args, so quesOS forwards it straight to the
  * native provider (quesOS runs on bare metal; its own sys_clock_ms() re-traps to $F0).
- * SYS_bulk_copy/SYS_bulk_set take USER virtual addresses for src/dst, which are not valid
- * in the native provider's flat physical view under per-process paging, so they cannot be
- * forwarded as-is; quesOS returns -ENOSYS and the guest RT memcpy/memset fall back to
- * their portable word loop (toolchain/rt/string.c). Handled explicitly (rather than via
- * the default) so the fallback is silent instead of printing an alarming "unhandled". */
+ * SYS_bulk_copy/SYS_bulk_set take USER virtual addresses for src/dst; the native handlers
+ * read/write FLAT PHYSICAL addresses with no MMU walk, so quesOS translates each user VA to
+ * its physical address (user_pa) through the caller's own page table and forwards a native
+ * call per contiguous physical run (maize-247, do_bulk_copy/do_bulk_set below). Copy forwards
+ * only a fully-contiguous src+dst (else -ENOSYS, so the guest RT memcpy/memmove fall back to
+ * their portable word loop, toolchain/rt/string.c); set always forwards via run coalescing.
+ * An unmapped or kernel-owned (PTE_U=0) page in range is rejected with -EFAULT (QOS_EFAULT),
+ * no byte touched. */
 #define SYS_clock_ms  0xF0
 #define SYS_bulk_copy 0xF4
 #define SYS_bulk_set  0xF5
@@ -267,6 +275,17 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define QOS_ESRCH   3          /* maize-174: kill target pid/pgid names no process        */
 #define QOS_ENOENT  2          /* maize-94: execve target path does not exist             */
 #define QOS_ENOEXEC 8          /* maize-94: execve target is not a loadable .mzx image    */
+
+/* maize-247: bulk-syscall ($F4/$F5) result magnitudes. QOS_EFAULT is quesOS's OWN
+ * per-process memory-protection layer (Decision 4): a walked page that is unmapped or
+ * kernel-owned (PTE_U=0) fails the range. It is distinct from SYSCALL-ABI.md's
+ * "EFAULT is never produced" claim, which scopes to the native flat-memory layer;
+ * quesOS's Sv48-emulated bounds check is a separate, higher enforcement layer (same
+ * relationship as a real kernel's SIGSEGV vs. always-addressable physical RAM). QOS_ENOSYS
+ * is the "src or dst is not a single contiguous physical run" signal for $F4, the exact
+ * value toolchain/rt/string.c's memcpy/memmove fall-back gates on (rv == n). */
+#define QOS_EFAULT 14          /* maize-247: $F4/$F5 walked page unmapped or kernel-owned  */
+#define QOS_ENOSYS 38          /* maize-247: $F4 src/dst not a single contiguous run       */
 
 /* maize-236: registration-table capacity, mirroring src/maize_cpu.h fb_max_slots. */
 #define QUESOS_FB_MAX_SLOTS 8
@@ -2257,6 +2276,115 @@ static long do_fb_release(void) {
     return 0;
 }
 
+/* ==================================================================================
+ * maize-247: bulk-memory accelerators ($F4 sys_bulk_copy / $F5 sys_bulk_set) under paging.
+ *
+ * The native handlers (src/sys.cpp $F4/$F5) operate on FLAT PHYSICAL addresses with no MMU
+ * walk, so quesOS must translate the caller's user src/dst VAs to physical addresses through
+ * the caller's own page table before forwarding. Both ranges are validated page by page
+ * against PTE_V (mapped) AND PTE_U (user-owned): the kernel-identity range shares region 0's
+ * L0 table and reads PTE_V=1, PTE_U=0, so a PTE_U gate is what keeps a crafted VA from
+ * driving a native write into quesOS's own code/data (Decision 6, deliberately stricter than
+ * do_fb_register's PTE_V-only contiguity walk).
+ * ================================================================================== */
+
+/* Validate [uva, uva+n) page by page against the caller's page table: every page must be
+ * mapped (PTE_V) and user-owned (PTE_U). Returns 0 when the whole range is valid, -1 on the
+ * first unmapped or kernel-owned page. On a fully-valid range *contig_out is set to 1 iff
+ * every page is physically adjacent to its predecessor (a single contiguous run), else 0.
+ * A region with no L0 at all (va_l0 returns 0) is treated as unmapped rather than
+ * dereferenced, so a crafted region-1+ VA cannot fault quesOS itself. */
+static int bulk_validate_range(struct pcb *p, u64 uva, u64 n, int *contig_out) {
+    u64 first = uva & ~0xFFFul;
+    u64 last  = (uva + n - 1) & ~0xFFFul;
+    u64 va;
+    u64 prev_pa = 0;
+    int contig = 1;
+    int first_page = 1;
+    for (va = first; va <= last; va += PAGE_SIZE) {
+        u64 l0 = va_l0(p, va);
+        u64 pte;
+        u64 this_pa;
+        if (l0 == 0) { return -1; }                       /* region has no L0: unmapped   */
+        pte = pte_get(l0, (va >> 12) & 0x1FF);
+        if ((pte & PTE_V) == 0 || (pte & PTE_U) == 0) { return -1; }
+        this_pa = pte & ~0xFFFul;
+        if (!first_page && this_pa != prev_pa + PAGE_SIZE) { contig = 0; }
+        prev_pa = this_pa;
+        first_page = 0;
+    }
+    *contig_out = contig;
+    return 0;
+}
+
+/* SYS_bulk_copy ($F4): R0=dst uva, R1=src uva, R2=n. Forwards a SINGLE native call only when
+ * BOTH ranges are each one physically-contiguous run (Decision 1); a scattered range would
+ * need a boundary-merged, memmove-safe split the native $F4 cannot express, so quesOS returns
+ * -ENOSYS and the RT memcpy/memmove fall back to their word loop. An unmapped or kernel-owned
+ * page in either range is -EFAULT with no byte touched. n == 0 is a benign no-op (Decision 5). */
+static long do_bulk_copy(u64 dst_uva, u64 src_uva, u64 n) {
+    struct pcb *self = g_current;
+    int src_contig, dst_contig;
+
+    if (n == 0) { return 0; }                                       /* benign no-op */
+    if (src_uva + n < src_uva || dst_uva + n < dst_uva) {           /* 64-bit base+len wrap */
+        return -(long)QOS_EFAULT;
+    }
+    if (bulk_validate_range(self, src_uva, n, &src_contig) != 0) { return -(long)QOS_EFAULT; }
+    if (bulk_validate_range(self, dst_uva, n, &dst_contig) != 0) { return -(long)QOS_EFAULT; }
+    if (!src_contig || !dst_contig) { return -(long)QOS_ENOSYS; }   /* RT falls back */
+
+    /* Both ranges are single contiguous runs: translate each base VA to its PA (user_pa adds
+     * the intra-page offset) and forward ONE native call; contiguity guarantees the whole
+     * n-byte span is linear in physical memory from each base. */
+    return sys_bulk_copy((void *)user_pa(self, dst_uva),
+                         (const void *)user_pa(self, src_uva), n);
+}
+
+/* SYS_bulk_set ($F5): R0=dst uva, R1=value, R2=n. A fill has no overlap/ordering hazard, so
+ * it ALWAYS forwards, even when dst is scattered (Decision 2), splitting into one native call
+ * per contiguous physical run. Two-pass validate-then-deliver (Decision 3): the WHOLE range is
+ * validated before ANY native call, preserving the native "no guest write on rejection"
+ * invariant one layer up. n == 0 is a benign no-op (Decision 5). */
+static long do_bulk_set(u64 dst_uva, u64 value, u64 n) {
+    struct pcb *self = g_current;
+    int contig;
+    u64 first, last, va;
+    u64 req_end = dst_uva + n;
+    u64 run_pa_base = 0, run_len = 0, run_next_pa = 0;
+
+    if (n == 0) { return 0; }                                       /* benign no-op */
+    if (dst_uva + n < dst_uva) { return -(long)QOS_EFAULT; }        /* 64-bit base+len wrap */
+
+    /* Pass 1: validate the whole range before writing any byte. */
+    if (bulk_validate_range(self, dst_uva, n, &contig) != 0) { return -(long)QOS_EFAULT; }
+
+    /* Pass 2: deliver. Walk the now-known-valid range page by page, clipping each page's
+     * chunk to [dst_uva, dst_uva+n), and coalesce physically adjacent chunks into one native
+     * call. The common case (single contiguous run) degenerates to one iteration + one call. */
+    first = dst_uva & ~0xFFFul;
+    last  = (dst_uva + n - 1) & ~0xFFFul;
+    for (va = first; va <= last; va += PAGE_SIZE) {
+        u64 page_pa     = pte_get(va_l0(self, va), (va >> 12) & 0x1FF) & ~0xFFFul;
+        u64 page_end    = va + PAGE_SIZE;
+        u64 chunk_start = (va > dst_uva) ? va : dst_uva;            /* clip to request start */
+        u64 chunk_end   = (page_end < req_end) ? page_end : req_end;/* clip to request end   */
+        u64 chunk_pa    = page_pa + (chunk_start - va);
+        u64 chunk_len   = chunk_end - chunk_start;
+
+        if (run_len != 0 && chunk_pa == run_next_pa) {
+            run_len += chunk_len;                                   /* extend the current run */
+        } else {
+            if (run_len != 0) { sys_bulk_set((void *)run_pa_base, (int)value, run_len); }
+            run_pa_base = chunk_pa;
+            run_len     = chunk_len;
+        }
+        run_next_pa = chunk_pa + chunk_len;
+    }
+    if (run_len != 0) { sys_bulk_set((void *)run_pa_base, (int)value, run_len); }
+    return (long)n;
+}
+
 /* SYS_fb_mmap(): map a contiguous, page-aligned framebuffer buffer into the caller's
  * fb-mmap window (FB_MMAP_BASE, region 1) and return its VA. No arguments (geometry is
  * fixed per boot, maize-236 D2). Idempotent: a second call while one buffer is already
@@ -2618,11 +2746,12 @@ void quesos_syscall(void) {
         case SYS_tcsetpgrp:      g_fg_pgid = (long)a0; result = 0;             break;
         /* maize-94: forward the pointer-free monotonic clock to the native provider. */
         case SYS_clock_ms:       result = (long)sys_clock_ms();                break;
-        /* maize-94: the bulk-memory accelerators cannot be forwarded under paging (user
-         * VAs are not native-physical); return -ENOSYS silently so the guest RT copy
-         * loop takes over. See the SYS_bulk_* note above. */
-        case SYS_bulk_copy:
-        case SYS_bulk_set:       result = -38;                                 break;
+        /* maize-247: forward the bulk-memory accelerators under paging. do_bulk_copy
+         * translates + forwards only a fully-contiguous src/dst (else -ENOSYS, so the RT
+         * memcpy/memmove fall back); do_bulk_set always forwards, one native call per
+         * contiguous dst run. An unmapped or kernel-owned page in range is -EFAULT. */
+        case SYS_bulk_copy:      result = do_bulk_copy(a0, a1, a2);            break;
+        case SYS_bulk_set:       result = do_bulk_set(a0, a1, a2);            break;
         default:
             /* maize-94 (operator reopen) unhandled-syscall POLICY: return -ENOSYS to the
              * caller (never strand the process) so a Linux-shaped userland degrades on an

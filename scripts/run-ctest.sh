@@ -2089,7 +2089,8 @@ run_quesos_ac_fixtures() {
                socketpair_echo unix_listen_connect unix_listen_close \
                poll_timeout poll_broken poll_multi select_console_pipe \
                poll_fd0_default stdin_owner_probe poll_unconnected_sock poll_fd0_eof \
-               fb_mmap_paint fb_noncontig_reject fb_mmap_isolation fb_mmap_enomem; do
+               fb_mmap_paint fb_noncontig_reject fb_mmap_isolation fb_mmap_enomem \
+               bulk_forward bulk_noncontig bulk_bounds bulk_kernel_range; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
             echo "[FAIL] quesos_ac: ${src}.c compile failed"; cat "$log" >&2
@@ -2205,6 +2206,18 @@ run_quesos_ac_fixtures() {
     quesos_ac_case quesos_fb_mmap_paint  "fb-mmap-paint: PASS"        fb_mmap_paint
     quesos_ac_case quesos_fb_noncontig   "fb-noncontig: PASS"         fb_noncontig_reject
     quesos_ac_case quesos_fb_isolation   "fb-isolation: PASS"         fb_mmap_isolation
+
+    # maize-247: forward the bulk-memory accelerators ($F4 sys_bulk_copy / $F5 sys_bulk_set)
+    # under quesOS paging. bulk_forward proves the raw contiguous forward (rv == n) for both
+    # copy and set plus the libc entrypoint smoke test; bulk_noncontig proves $F4's
+    # contiguity-check -ENOSYS branch via a fork-interleaved physically-scattered buffer (the
+    # deterministic rv discriminator, cycle 3); bulk_bounds and bulk_kernel_range prove the
+    # QOS_EFAULT gate (unmapped page / kernel-owned PTE_U=0 VA) rejects with no partial write
+    # (sentinel verified).
+    quesos_ac_case quesos_bulk_forward   "bulk-forward: PASS"         bulk_forward
+    quesos_ac_case quesos_bulk_noncontig "bulk-noncontig: PASS"       bulk_noncontig
+    quesos_ac_case quesos_bulk_bounds    "bulk-bounds: PASS"          bulk_bounds
+    quesos_ac_case quesos_bulk_kernel    "bulk-kernel: PASS"          bulk_kernel_range
 
     # maize-238 fb-mmap pool exhaustion: repeated fork+fb_mmap+exit until alloc_frames_contig
     # returns -ENOMEM gracefully (no PANIC/poweroff). Slower than the others (it drains the
