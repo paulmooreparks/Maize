@@ -1996,10 +1996,12 @@ namespace maize {
            (a sub-32 vector would deliver through a trap slot with an IRQ cause packing).
 
            Threading constraint: this seam is already called cross-thread today. The
-           instruction-tick timer calls it on the CPU thread, but the keyboard device
-           raises from the SDL thread (devices.cpp:174, 245, via push_event) and the
-           framebuffer raises from the display thread (devices.cpp:507,
-           on_display_refresh). The per-vector mask and the atomic irq_pending summary that
+           instruction-tick timer calls it on the CPU thread, and so does the headless
+           keyboard's deterministic stdin injection (devices.cpp:245, on_input_tick, via
+           the input-tick preamble); the genuine cross-thread raisers are the windowed
+           keyboard's pump_latch (devices.cpp:174, via push_event, SDL thread) and the
+           framebuffer (devices.cpp:507, on_display_refresh, display thread). The
+           per-vector mask and the atomic irq_pending summary that
            delivery actually gates on are both written only under int_mutex, so a
            cross-thread raise is race-free for delivery. The one remaining hazard is the
            advisory interrupt_set_flag RF-mirror write below: a host-thread caller races the
