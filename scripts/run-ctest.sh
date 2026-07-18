@@ -2313,7 +2313,7 @@ run_quesos_ac_fixtures() {
                poll_fd0_default stdin_owner_probe poll_unconnected_sock poll_fd0_eof \
                fb_mmap_paint fb_noncontig_reject fb_mmap_isolation fb_mmap_enomem \
                bulk_forward bulk_noncontig bulk_bounds bulk_kernel_range \
-               bigalloc fb_present kbd_acl; do
+               bigalloc fb_present kbd_acl bigfootprint_fork loader_guard bigimage; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
             echo "[FAIL] quesos_ac: ${src}.c compile failed"; cat "$log" >&2
@@ -2457,6 +2457,15 @@ run_quesos_ac_fixtures() {
         printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
+
+    # maize-251 address-space addendum. bigfootprint_fork: a 320 KiB-BSS + 80 KiB-deep-stack
+    # program forks and the child verifies BOTH regions copied byte-identically -- proves the
+    # generalized do_fork L1-walk copies region 0 AND the relocated stack region. loader_guard:
+    # a child execve's an oversized image (BSS past USER_BRK_MAX); the load_segments guard fires
+    # post-teardown so the child exits 127 cleanly and the parent (VM) survives. bigimage is the
+    # oversized target (built to /progs, never on the worklist).
+    quesos_ac_case quesos_bigfootprint_fork "bigfootprint-fork: PASS" bigfootprint_fork
+    quesos_ac_case quesos_loader_guard      "loader-guard: PASS"      loader_guard
 
     # maize-247: forward the bulk-memory accelerators ($F4 sys_bulk_copy / $F5 sys_bulk_set)
     # under quesOS paging. bulk_forward proves the raw contiguous forward (rv == n) for both

@@ -77,6 +77,13 @@ current (possibly unchanged) break, never `-errno`: the break is a low address t
 cannot land in the `[-4095, -1]` band, and failure is detected by the caller comparing
 the returned break to the requested one (the libc `sbrk` wrapper).
 
+Under quesOS the per-process heap ceiling `USER_BRK_MAX` is **0x00100000** (maize-251;
+raised from 0x000F0000): the user stack was relocated out of region 0 into its own
+dedicated region above the frame pool, so the entire region-0 span [0x2000, 0x100000) is
+free for code/data/BSS/heap. This is a capacity change only, not an ABI change: a bigger
+ceiling is strictly more permissive, so every program that fit under the old ceiling is
+unaffected. Allocations larger than the region-0 heap route through `sys_bigalloc` ($FF).
+
 **EFAULT is never produced by the native/hosted syscall layer.** Maize memory is sparse
 and lazily zero-filled, so at that layer every guest address is physically valid and a
 bad-pointer syscall cannot fault. This is an honest deviation from Linux, recorded rather
@@ -434,8 +441,8 @@ scancode. quesOS installs a keyboard-IRQ (vector 34) sink so a delivered key eve
 the VM; the sink leaves the scancode latched for this poll.
 
 **Big alloc (`$FF`).** A per-process bump allocator over a dedicated 16 MiB VA window
-(`BIGALLOC_BASE`), for allocations too large for the sbrk heap ceiling (`USER_BRK_MAX`, ~960
-KiB) -- DOOM's ~6 MiB zone heap in particular. `malloc` falls back to it when sbrk growth is
+(`BIGALLOC_BASE`), for allocations too large for the sbrk heap ceiling (`USER_BRK_MAX`,
+0x00100000, shared with code/data/BSS) -- DOOM's ~6 MiB zone heap in particular. `malloc` falls back to it when sbrk growth is
 refused (transparent no-op under bare-VM). `size` 0 is `-EINVAL` (22); a request past the
 per-process window is `-ENOMEM` (12); frame-pool exhaustion is also `-ENOMEM` (graceful, no
 PANIC). The mapping is fresh, zeroed, and physically contiguous; it is NOT inherited across

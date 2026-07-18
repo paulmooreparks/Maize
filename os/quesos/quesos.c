@@ -15,17 +15,25 @@
  * process table so a trap handler keeps executing across a MOVTCR address-space swap.
  *
  *   0x00001000  trap vector table page             kernel (U=0), one 4 KiB leaf
- *   0x00002000 .. 0x000FFFFF  user VA region        per-process user pages (U=1), region 0
+ *   0x00002000 .. 0x000FFFFF  user code/data/BSS/heap  per-process user pages (U=1), region 0
  *   0x00100000 .. 0x001FFFFF  quesOS image (code+data)   kernel (U=0), 4 KiB leaves
  *   0x00200000 .. 0x003FFFFF  fb-mmap window (maize-238)  per-process, lazy L0 (region 1)
  *   0x00400000 .. 0x013FFFFF  bigalloc window (maize-251)  per-process, lazy L0 (regions 2..9)
  *   0x01400000 .. 0x053FFFFF  frame + page-table pool     kernel (U=0), 2 MiB superpages
+ *   0x05400000 .. 0x0543FFFF  user stack (maize-251)      per-process, lazy L0 (region 42)
  *
  * maize-251: the bigalloc window ([0x00400000, +16 MiB), regions 2..9) is a per-process
  * bump-allocated VA range for allocations too large for the sbrk heap ceiling (DOOM's
  * ~6 MiB zone heap; sys_bigalloc / do_bigalloc below). It sits between the fb-mmap window
  * and the (relocated) pool, so the pool superpages moved up from 0x00400000 to 0x01400000.
  * Its physical frames still come from the same pool; only the pool's base VA changed.
+ *
+ * maize-251 addendum: the user stack was relocated OUT of region 0 to its own dedicated
+ * region above the pool top (STACK_REGION_BASE = 0x05400000, 256 KiB), so USER_BRK_MAX rose
+ * to 0x00100000 and the whole region-0 span is now free for code+data+BSS+heap. A large
+ * guest (DOOM: 270 KiB BSS) no longer collides its own BSS zero-fill with the stack. The
+ * stack region is an ordinary per-process window (lazy L0 via ensure_l0, copied on fork by
+ * the generalized L1-walk), NOT excluded like fb-mmap/bigalloc.
  *
  * A user process's own pages are DISTINCT physical frames drawn from the pool and
  * mapped U=1 in the process's own table; that separation (not the U bit) is what makes
@@ -109,9 +117,16 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
  * Physical memory layout + Sv48 constants.
  * ================================================================================== */
 #define TRAP_TABLE_PA     0x00001000ul
-#define USER_STACK_TOP    0x00100000ul   /* user VA just above the stack region        */
-#define USER_STACK_PAGES  16u            /* 64 KiB user stack, [0xF0000, 0x100000)      */
-#define USER_BRK_MAX      0x000F0000ul   /* maize-94: heap ceiling (stack bottom)       */
+/* maize-251 addendum: the user stack lives in its OWN dedicated region above the pool top,
+ * NOT in region 0. Before this, the stack sat at [0xF0000, 0x100000) with USER_BRK_MAX just
+ * below it, and a guest whose code+data+BSS reached past 0xF0000 (DOOM: 270 KiB BSS, end
+ * 0x0f1834) collided its own BSS zero-fill with the stack at load time -> crash. Relocating
+ * the stack reclaims the ENTIRE region-0 span [0x2000, 0x100000) for code+data+BSS+heap. */
+#define STACK_REGION_BASE 0x05400000ul   /* immediately above POOL_TOP (its own region)  */
+#define STACK_REGION_SIZE 0x00040000ul   /* 256 KiB (up from 64 KiB): DOOM render recursion */
+#define USER_STACK_TOP    (STACK_REGION_BASE + STACK_REGION_SIZE)   /* 0x05440000 */
+#define USER_STACK_PAGES  64u            /* 256 KiB user stack / 4 KiB                    */
+#define USER_BRK_MAX      0x00100000ul   /* maize-251: RAISED from 0x0F0000; all of region 0 */
 #define QUESOS_IMG_BASE   0x00100000ul   /* quesOS link base; code+data in [base,+1MiB) */
 #define QUESOS_IMG_TOP    0x00200000ul
 #define FB_MMAP_BASE      0x00200000ul   /* maize-238: per-process fb-mmap window (region 1) */
@@ -754,6 +769,22 @@ static int load_segments(struct pcb *p, const char *path, u64 *entry_out) {
         file_off  = rd_u64(seg, 16);
         mem_size  = rd_u64(seg, 24);
         file_size = rd_u64(seg, 32);
+
+        /* maize-251 addendum (Decision 9508): segment-fits-USER_BRK_MAX guard. Region 0's user
+         * span ends at USER_BRK_MAX (= the quesOS image base); a segment whose code/data/BSS
+         * runs past it would map pages over the kernel image (and its initial brk_cur would
+         * land past the ceiling). Reject cleanly BEFORE mapping any of this segment's pages,
+         * rather than silently corrupting the kernel image. One point of truth for BOTH callers
+         * (do_execve -> do_exit(127) post-teardown; spawn -> "cannot start" diagnostic). This is
+         * a defensive backstop for any oversized guest; DOOM's own 0x0f1834 end fits under the
+         * raised 0x00100000 ceiling. */
+        if (vaddr + mem_size > USER_BRK_MAX) {
+            sys_close(fd);
+            qos_puts("[quesos] image exceeds user address space (segment past USER_BRK_MAX): ");
+            qos_puts(path);
+            qos_puts("\n");
+            return -1;
+        }
 
         /* Map every page the segment spans. */
         for (va = vaddr & ~0xFFFul; va < vaddr + mem_size; va += PAGE_SIZE) {
@@ -1499,7 +1530,8 @@ static long do_getcwd(u64 buf_uva, long size) {
 /* maize-94: heap break for a quesOS process. The native SYS_brk manages the VM's flat
  * memory break, which is meaningless under per-process Sv48 paging, so quesOS implements
  * brk against the process's own page table: a grow maps fresh (zeroed) user pages on
- * demand up to USER_BRK_MAX (just below the stack); a query (new==0) returns the current
+ * demand up to USER_BRK_MAX (maize-251: now 0x00100000, the whole region-0 span up to the
+ * quesOS image base, since the stack was relocated to its own region); a query (new==0) returns the current
  * break. Like the native brk, this is exempt from the errno convention (it always returns
  * a break address, never -errno): the sbrk wrapper detects failure by comparing the
  * returned break to the requested one, so a refused grow returns the UNCHANGED break. */
@@ -2053,6 +2085,18 @@ static u32 wait_status(struct pcb *c) {
     return (u32)((c->exit_status & 0xFF) << 8);
 }
 
+/* maize-251 addendum (Decision 9507): regions fork does NOT eager-copy. fb-mmap (region 1)
+ * and the bigalloc window (regions 2..9) are per-exec-lifetime by their own decisions (D4 /
+ * this card's own bigalloc_next reset), so a child inherits neither. Every OTHER per-process
+ * region (region 0 code/data/BSS/heap, the relocated stack region) IS copied. Named-exclusion
+ * list, not a hard-coded region walk: adding a future window extends this function only. */
+static int fork_region_excluded(u64 l1_idx) {
+    u64 va = l1_idx << 21;
+    if (va == FB_MMAP_BASE) { return 1; }                                       /* maize-238 D4 */
+    if (va >= BIGALLOC_BASE && va < BIGALLOC_BASE + BIGALLOC_MAX) { return 1; }  /* this card's D */
+    return 0;
+}
+
 /* fork (eager copy, ratified). Allocate a child, build it a fresh address space, and
  * EAGER-COPY every mapped user page into distinct child frames (the separation that
  * makes the two address spaces independent). The child resumes at the same saved
@@ -2100,12 +2144,33 @@ static long do_fork(void) {
     fdtable_copy(child, parent);   /* the child inherits the fd table (shared OFDs) */
 
     build_address_space(child);
-    for (idx = 0; idx < 512; ++idx) {
-        u64 ppte = pte_get(parent->l0_pa, idx);
-        if ((ppte & PTE_V) && (ppte & PTE_U)) {
-            u64 cframe = alloc_frame();
-            memcpy((void *)cframe, (void *)(ppte & ~0xFFFul), PAGE_SIZE);
-            pte_set(child->l0_pa, idx, (cframe & ~0xFFFul) | PTE_USER);
+    /* maize-251 addendum (Decision 9507): generalized eager copy. Walk the parent's L1 and
+     * copy every per-process region's user pages into fresh child frames -- NOT just region 0,
+     * because the stack now lives in its own region and the old region-0-only loop would leave
+     * a forked child with no stack. Outer test: skip a LEAF/superpage (the pool's own kernel
+     * identity mappings carry R|W|X); a bare-V table pointer (region 0, the stack, fb-mmap,
+     * bigalloc) falls through. Testing PTE_KERNEL here would be wrong (it contains V, so it is
+     * truthy for every valid entry incl. table pointers). Then skip the named per-exec windows.
+     * Inner test: PTE_U specifically (matches the existing proven region-0 check; PTE_USER also
+     * matches kernel-image pages). PTE_USER is the correct WRITE stamp on the child's new page. */
+    {
+        u64 l1_idx;
+        for (l1_idx = 0; l1_idx < 512; ++l1_idx) {
+            u64 ppte1 = pte_get(parent->l1_pa, l1_idx);
+            u64 parent_l0, child_l0;
+            if ((ppte1 & PTE_V) == 0) { continue; }
+            if (ppte1 & (PTE_R | PTE_W | PTE_X)) { continue; }   /* leaf/superpage: shared, no copy */
+            if (fork_region_excluded(l1_idx)) { continue; }      /* fb-mmap / bigalloc: per-exec */
+            parent_l0 = ppte1 & ~0xFFFul;
+            child_l0  = ensure_l0(child, l1_idx << 21);          /* lazily allocate the child's L0 */
+            for (idx = 0; idx < 512; ++idx) {
+                u64 ppte0 = pte_get(parent_l0, idx);
+                if ((ppte0 & PTE_V) && (ppte0 & PTE_U)) {
+                    u64 cframe = alloc_frame();
+                    memcpy((void *)cframe, (void *)(ppte0 & ~0xFFFul), PAGE_SIZE);
+                    pte_set(child_l0, idx, (cframe & ~0xFFFul) | PTE_USER);
+                }
+            }
         }
     }
 
@@ -2514,7 +2579,7 @@ static long do_fb_mmap(void) {
 
 /* maize-251: SYS_bigalloc ($FF). A per-process bump allocator over the dedicated bigalloc VA
  * window (BIGALLOC_BASE, regions 2..9), for allocations too large for quesOS's sbrk heap
- * ceiling (USER_BRK_MAX ~= 960 KiB) -- DOOM's ~6 MiB zone heap in particular. malloc()
+ * ceiling (USER_BRK_MAX = 0x00100000, ~1 MiB shared with code/data/BSS) -- DOOM's ~6 MiB zone heap in particular. malloc()
  * (toolchain/rt/stdlib.c) falls back here when sbrk growth is refused. General-purpose, not
  * DOOM-specific (Decision 9322); every existing small allocation and the entire bare-VM build
  * are unaffected. Frames come from the same pool as everything else, so a pool-exhausting
