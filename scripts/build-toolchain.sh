@@ -38,6 +38,15 @@ if [ ! -f "${QBE_DIR}/Makefile" ] || [ ! -f "${CPROC_DIR}/Makefile" ]; then
     exit 2
 fi
 
+# --- maize-263: WSL-native mirror + throttle. This script takes no arguments, so the
+#     mirrored child runs argument-free; the mirror still moves the cold make/configure
+#     churn (and the .git-dependent apply-maize-qbe-target.sh check, D4) onto native
+#     storage. When invoked by an already-mirrored run-ctest.sh / cc-maize.sh the
+#     inherited MAIZE_NATIVE_MIRROR_ACTIVE=1 makes this a no-op (runs in-place). ----
+. "${SCRIPT_DIR}/lib/harness-env.sh"
+maize_apply_throttle
+maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
+
 : "${MAKE:=make}"
 if [ -z "${CC:-}" ]; then
     if command -v cc >/dev/null 2>&1; then CC=cc; else CC=gcc; fi
@@ -53,22 +62,87 @@ case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) CONFIGURE_HOST="--host=x86_64-linux-gnu" ;;
 esac
 
-# Overlay the Maize QBE target onto the pinned qbe submodule (maize-62). This
-# copies the target sources into qbe/maize/ and applies the registration patch
-# before the build, keeping the submodule pinned at its upstream commit.
-echo "=== overlaying Maize qbe target ==="
-"${SCRIPT_DIR}/apply-maize-qbe-target.sh"
+# --- maize-263 C1: content-addressed toolchain binary cache ------------------------
+# cproc/qbe are pinned-submodule build products that every fresh worktree otherwise
+# cold-builds. Cache them keyed on the two submodule SHAs + the Maize QBE-target
+# overlay/patch content + compiler identity + platform (decision D7), so the key
+# rolls automatically on any submodule re-pin or overlay/patch edit (the maize-110
+# stale-patch footgun cannot recur: the registration patch is IN the key). A hit
+# copies the three binaries in and skips make/configure entirely; it still falls
+# through to the existing check_exe + `qbe -t maize` smoke check below, which
+# doubles as cache-integrity verification. MAIZE_NO_TOOLCHAIN_CACHE=1 forces a build.
+QBE_MAIZE_DIR="${REPO_ROOT}/toolchain/qbe-maize"
+TOOLCHAIN_CACHE_ROOT="${MAIZE_TOOLCHAIN_CACHE:-$HOME/.cache/maize/toolchain}"
 
-echo "=== building qbe (${QBE_DIR}) ==="
-"${MAKE}" -C "${QBE_DIR}" CC="${CC}"
+# Resolve a cached/produced binary tolerating a .exe suffix; echo the real path or "".
+tc_resolve() {
+    if [ -f "$1" ]; then
+        echo "$1"
+    elif [ -f "$1.exe" ]; then
+        echo "$1.exe"
+    fi
+}
 
-echo "=== building cproc (${CPROC_DIR}) ==="
-(
-    cd "${CPROC_DIR}"
+toolchain_cache_key() {
+    {
+        git -C "${QBE_DIR}" rev-parse HEAD 2>/dev/null || echo no-qbe-head
+        git -C "${CPROC_DIR}" rev-parse HEAD 2>/dev/null || echo no-cproc-head
+        for _f in all.h targ.c abi.c isel.c emit.c data.c qbe-registration.patch; do
+            cat "${QBE_MAIZE_DIR}/${_f}" 2>/dev/null || true
+        done
+        command -v "${CC}" 2>/dev/null || printf '%s\n' "${CC}"
+        "${CC}" --version 2>/dev/null | head -1 || true
+        uname -s
+        uname -m
+    } | maize_sha256
+}
+
+CACHE_KEY=$(toolchain_cache_key) || CACHE_KEY=""
+CACHE_DIR=""
+if [ -n "$CACHE_KEY" ]; then
+    CACHE_DIR="${TOOLCHAIN_CACHE_ROOT}/${CACHE_KEY}"
+fi
+
+TOOLCHAIN_FROM_CACHE=0
+if [ "${MAIZE_NO_TOOLCHAIN_CACHE:-}" != "1" ] && [ -n "$CACHE_DIR" ] \
+    && [ -n "$(tc_resolve "${CACHE_DIR}/qbe/obj/qbe")" ] \
+    && [ -n "$(tc_resolve "${CACHE_DIR}/cproc/cproc")" ] \
+    && [ -n "$(tc_resolve "${CACHE_DIR}/cproc/cproc-qbe")" ]; then
+    echo "=== toolchain cache hit ($(printf '%.8s' "$CACHE_KEY")) ==="
+    mkdir -p "${QBE_DIR}/obj" "${CPROC_DIR}"
+    _c=$(tc_resolve "${CACHE_DIR}/qbe/obj/qbe");     cp -p "$_c" "${QBE_DIR}/obj/$(basename "$_c")"
+    _c=$(tc_resolve "${CACHE_DIR}/cproc/cproc");     cp -p "$_c" "${CPROC_DIR}/$(basename "$_c")"
+    _c=$(tc_resolve "${CACHE_DIR}/cproc/cproc-qbe"); cp -p "$_c" "${CPROC_DIR}/$(basename "$_c")"
+    TOOLCHAIN_FROM_CACHE=1
+else
+    # Cache miss: overlay + build exactly as before. Bound make parallelism off CI
+    # (D6); GNU make defaults to serial with -j unset, so this is the explicit cap.
+    MAKE_JOBS_FLAG=""
+    if ! maize_is_ci; then
+        _mj=$(maize_bounded_jobs)
+        MAKE_JOBS_FLAG="-j ${_mj}"
+        echo "build-toolchain.sh: using ${_mj} build jobs (nproc=$(maize_nproc))"
+    fi
+
+    # Overlay the Maize QBE target onto the pinned qbe submodule (maize-62). This
+    # copies the target sources into qbe/maize/ and applies the registration patch
+    # before the build, keeping the submodule pinned at its upstream commit.
+    echo "=== overlaying Maize qbe target ==="
+    "${SCRIPT_DIR}/apply-maize-qbe-target.sh"
+
+    echo "=== building qbe (${QBE_DIR}) ==="
     # shellcheck disable=SC2086
-    ./configure CC="${CC}" ${CONFIGURE_HOST}
-    "${MAKE}" CC="${CC}"
-)
+    "${MAKE}" -C "${QBE_DIR}" CC="${CC}" ${MAKE_JOBS_FLAG}
+
+    echo "=== building cproc (${CPROC_DIR}) ==="
+    (
+        cd "${CPROC_DIR}"
+        # shellcheck disable=SC2086
+        ./configure CC="${CC}" ${CONFIGURE_HOST}
+        # shellcheck disable=SC2086
+        "${MAKE}" CC="${CC}" ${MAKE_JOBS_FLAG}
+    )
+fi
 
 # --- Verify the expected executables exist (tolerating a .exe suffix) -------------
 missing=0
@@ -100,6 +174,31 @@ if printf 'export function w $t() {\n@s\n\tret 0\n}\n' | "${QBE_EXE}" -t maize -
 else
     echo "build-toolchain.sh: qbe does not recognize the 'maize' target." >&2
     exit 1
+fi
+
+# --- maize-263 C1: populate the toolchain cache on a fresh build (D7) --------------
+# Only after check_exe + the `qbe -t maize` smoke check above have passed, so a
+# cached entry is always a verified-good one. A hit skipped this block entirely.
+if [ "$TOOLCHAIN_FROM_CACHE" -eq 0 ] && [ -n "$CACHE_DIR" ] \
+    && [ "${MAIZE_NO_TOOLCHAIN_CACHE:-}" != "1" ]; then
+    _q=$(tc_resolve "${QBE_DIR}/obj/qbe")
+    _c=$(tc_resolve "${CPROC_DIR}/cproc")
+    _cq=$(tc_resolve "${CPROC_DIR}/cproc-qbe")
+    if [ -n "$_q" ] && [ -n "$_c" ] && [ -n "$_cq" ] \
+        && mkdir -p "${CACHE_DIR}/qbe/obj" "${CACHE_DIR}/cproc" \
+        && cp -p "$_q"  "${CACHE_DIR}/qbe/obj/$(basename "$_q")" \
+        && cp -p "$_c"  "${CACHE_DIR}/cproc/$(basename "$_c")" \
+        && cp -p "$_cq" "${CACHE_DIR}/cproc/$(basename "$_cq")"; then
+        {
+            echo "qbe:   $(git -C "${QBE_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
+            echo "cproc: $(git -C "${CPROC_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
+            "${CC}" --version 2>/dev/null | head -1 || true
+        } > "${CACHE_DIR}/.provenance" 2>/dev/null || true
+        echo "build-toolchain.sh: populated toolchain cache ($(printf '%.8s' "$CACHE_KEY"))."
+    else
+        echo "build-toolchain.sh: WARNING: could not populate toolchain cache; continuing." >&2
+        rm -rf "$CACHE_DIR" 2>/dev/null || true
+    fi
 fi
 
 echo "toolchain build OK (cproc + qbe + Maize target)"

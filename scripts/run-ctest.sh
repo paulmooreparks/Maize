@@ -42,6 +42,14 @@ RT_DIR="${REPO_ROOT}/toolchain/rt"
 QBE_DIR="${REPO_ROOT}/toolchain/qbe"
 CPROC_DIR="${REPO_ROOT}/toolchain/cproc"
 
+# --- maize-263: WSL-native mirror + throttle, BEFORE the arg loop consumes "$@" so
+#     the original argument vector reaches the mirrored child intact. A nested
+#     cc-maize.sh call inside the mirror inherits MAIZE_NATIVE_MIRROR_ACTIVE=1 and
+#     runs in-place (no double sync/run). ----------------------------------------
+. "${SCRIPT_DIR}/lib/harness-env.sh"
+maize_apply_throttle
+maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
+
 UNAME=$(uname -s)
 case "$UNAME" in
     Linux)  DEFAULT_PRESET='linux-debug' ;;

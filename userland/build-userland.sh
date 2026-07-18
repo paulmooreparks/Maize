@@ -45,6 +45,17 @@ verify_mzx() {
     return 0
 }
 
+# --- maize-263: WSL-native mirror + throttle, BEFORE arg parsing consumes "$@" so
+#     --out and the program list reach the mirrored child intact. --out is a
+#     caller-supplied path resolved against the unchanged PWD (no cd), so the .mzx
+#     outputs still land where the caller asked. The staged-source cache (C2) below
+#     removes the per-run submodule re-copy; the loop itself is serial (no -j). ----
+. "${REPO_ROOT}/scripts/lib/harness-env.sh"
+maize_apply_throttle
+maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
+
+USERLAND_STAGE_CACHE_ROOT="${MAIZE_USERLAND_STAGE_CACHE:-$HOME/.cache/maize/userland-stage}"
+
 UNAME=$(uname -s)
 case "$UNAME" in
     Linux)  PRESET='linux-debug' ;;
@@ -75,13 +86,55 @@ mkdir -p "$OUT"
 SBASE_WAVE1="true false echo printf pwd cat cp mv rm ls"
 if [ -z "$PROGS" ]; then PROGS="${SBASE_WAVE1} oksh"; fi
 
+# maize-263 C2: content-addressed staged-source cache key for a project. sha256 over
+# the pinned submodule SHA + the whole applied patch series + the shim-header set
+# (decision D8): any re-pin, patch edit, or shim change rolls the key. Echoes "" when
+# no sha256 tool is available (caller then always stages fresh). Stdout only carries
+# the key here; the caller captures it.
+stage_cache_key() {
+    _k_proj="$1"
+    {
+        git -C "${SCRIPT_DIR}/${_k_proj}" rev-parse HEAD 2>/dev/null || echo no-head
+        for _kp in "${SCRIPT_DIR}/patches/${_k_proj}"/*.patch; do
+            [ -e "$_kp" ] && cat "$_kp"
+        done
+        for _kh in "${INCLUDE_DIR}"/*.h; do
+            [ -e "$_kh" ] && cat "$_kh"
+        done
+    } | maize_sha256
+}
+
 # Stage a pristine submodule into a scratch dir and apply its patch series in order.
-# Idempotent per run (scratch is rebuilt each invocation).
+# Idempotent per run (scratch is rebuilt each invocation). maize-263 C2: when the
+# post-patch/post-shim staged tree for this project's exact inputs is already cached
+# (a .complete marker guards against a killed-mid-populate cache), restore it with a
+# single native-to-native rsync and skip the cp -a / patch-apply / find-exec-copy
+# steps entirely. MAIZE_NO_USERLAND_STAGE_CACHE=1 forces a fresh stage. Echoes ONLY
+# the stage path on stdout; all cache chatter goes to stderr (the caller captures
+# stdout as the return value).
 stage_project() {
     _proj="$1"
     _sub="${SCRIPT_DIR}/${_proj}"
     _stage="${WORK}/${_proj}"
     [ -d "$_sub" ] || die "submodule not initialized: ${_sub} (git submodule update --init)"
+
+    _key=$(stage_cache_key "$_proj") || _key=""
+    _cache_dir=""
+    if [ -n "$_key" ]; then
+        _cache_dir="${USERLAND_STAGE_CACHE_ROOT}/${_proj}/${_key}"
+    fi
+
+    if [ "${MAIZE_NO_USERLAND_STAGE_CACHE:-}" != "1" ] && [ -n "$_cache_dir" ] \
+        && [ -f "${_cache_dir}/.complete" ] && command -v rsync >/dev/null 2>&1; then
+        echo "build-userland.sh: userland-stage cache hit for ${_proj} ($(printf '%.8s' "$_key"))." >&2
+        rm -rf "$_stage"
+        mkdir -p "$_stage"
+        # Exclude the marker so the restored stage stays a clean source tree.
+        rsync -a --delete --exclude='/.complete' "${_cache_dir}/" "${_stage}/"
+        echo "$_stage"
+        return 0
+    fi
+
     rm -rf "$_stage"
     cp -a "$_sub" "$_stage"
     if [ -d "${SCRIPT_DIR}/patches/${_proj}" ]; then
@@ -102,6 +155,20 @@ stage_project() {
             find "$_stage" -type d -exec cp "$_h" {} \;
         done
     fi
+
+    # Populate the cache (marker written LAST) for the next run/worktree with the same
+    # inputs. Best-effort: a cache-write failure removes the partial dir and continues.
+    if [ "${MAIZE_NO_USERLAND_STAGE_CACHE:-}" != "1" ] && [ -n "$_cache_dir" ] \
+        && command -v rsync >/dev/null 2>&1; then
+        rm -rf "$_cache_dir"
+        if mkdir -p "$_cache_dir" && rsync -a --delete "${_stage}/" "${_cache_dir}/"; then
+            : > "${_cache_dir}/.complete"
+        else
+            echo "build-userland.sh: WARNING: could not populate userland-stage cache for ${_proj}; continuing." >&2
+            rm -rf "$_cache_dir" 2>/dev/null || true
+        fi
+    fi
+
     echo "$_stage"
 }
 

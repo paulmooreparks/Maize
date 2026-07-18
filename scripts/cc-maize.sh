@@ -85,6 +85,16 @@ case "$UNAME" in
     *) die "unsupported platform: ${UNAME}" ;;
 esac
 
+# --- maize-263: WSL-native mirror + throttle, BEFORE arg parsing consumes "$@" so
+#     the source path(s) and flags reach the mirrored child intact. The child never
+#     changes PWD and never rewrites the caller's own path arguments, so interactive
+#     `mzcc foo.c` still writes foo.mzx beside foo.c in the ORIGINAL directory (D3);
+#     only the ~15 RT/toolchain reads per call move to native storage. No -j: the
+#     compile pipeline is serial per translation unit (nothing to cap). ----------
+. "${SCRIPT_DIR}/lib/harness-env.sh"
+maize_apply_throttle
+maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
+
 # --- Parse arguments (flags accepted in any position) ----------------------------
 # Three orthogonal axes govern the compile path (RUN / EMIT / OUT); `build` is the
 # one special mode. See the Modes block above for the authoritative matrix.

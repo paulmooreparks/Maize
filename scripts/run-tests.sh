@@ -24,6 +24,14 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 ASM_DIR="${REPO_ROOT}/asm"
 
+# --- maize-263: WSL-native mirror + throttle. Sourced and invoked BEFORE the arg
+#     loop below consumes "$@", so the original argument vector reaches the mirrored
+#     child intact. maize_native_mirror_run either re-runs this script from a
+#     native-storage mirror and exits, or returns for an in-place run (native/CI). --
+. "${SCRIPT_DIR}/lib/harness-env.sh"
+maize_apply_throttle
+maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
+
 # --- Preset selection: dispatch on uname, with a manual override ------------------
 UNAME=$(uname -s)
 case "$UNAME" in
@@ -105,9 +113,20 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
         echo "cmake configure failed for preset '${PRESET}'." >&2
         exit 2
     fi
-    if ! (cd "$REPO_ROOT" && "$CMAKE_EXE" --build --preset "$PRESET"); then
-        echo "cmake build failed for preset '${PRESET}'." >&2
-        exit 2
+    # maize-263: bound build parallelism to leave the operator cores free. CI keeps
+    # the current full-parallel behavior unchanged (the one hard must-not-regress).
+    if maize_is_ci; then
+        if ! (cd "$REPO_ROOT" && "$CMAKE_EXE" --build --preset "$PRESET"); then
+            echo "cmake build failed for preset '${PRESET}'." >&2
+            exit 2
+        fi
+    else
+        JOBS=$(maize_bounded_jobs)
+        echo "run-tests.sh: using ${JOBS} build jobs (nproc=$(maize_nproc))"
+        if ! (cd "$REPO_ROOT" && "$CMAKE_EXE" --build --preset "$PRESET" --parallel "$JOBS"); then
+            echo "cmake build failed for preset '${PRESET}'." >&2
+            exit 2
+        fi
     fi
 fi
 

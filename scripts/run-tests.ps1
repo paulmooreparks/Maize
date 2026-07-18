@@ -168,12 +168,25 @@ if (-not $NinjaExe) {
 
 # --- Configure + build ------------------------------------------------------------
 if (-not $SkipBuild) {
+    # maize-263 (D13): cap build parallelism to leave the operator at least two cores
+    # free, mirroring run-tests.sh so the .sh/.ps1 twins stay in parity. CI keeps the
+    # current full-parallel behavior (the one hard must-not-regress). No native mirror
+    # and no niceness here: there is no WSL/9P bridge on native Windows PowerShell and
+    # no direct POSIX nice/ionice equivalent (both left as follow-ups per D13).
+    $IsCi = ($env:CI) -or ($env:GITHUB_ACTIONS)
     Push-Location $RepoRoot
     try {
         & $CmakeExe --preset $Preset
         $configureExit = $LASTEXITCODE
         if ($configureExit -eq 0) {
-            & $CmakeExe --build --preset $Preset
+            if ($IsCi) {
+                & $CmakeExe --build --preset $Preset
+            } else {
+                $Jobs = [Environment]::ProcessorCount - 2
+                if ($Jobs -lt 2) { $Jobs = 2 }
+                Write-Host "run-tests.ps1: using $Jobs build jobs (ProcessorCount=$([Environment]::ProcessorCount))"
+                & $CmakeExe --build --preset $Preset --parallel $Jobs
+            }
             $buildExit = $LASTEXITCODE
         } else {
             $buildExit = 0
