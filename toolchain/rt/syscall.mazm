@@ -148,6 +148,14 @@ GLOBAL sys_poll
 GLOBAL sys_select
 GLOBAL sys_fb_mmap
 
+; maize-251 guest-OS display surface: three Maize-private high-block numbers ($FD fb_present /
+; $FE kbd_read / $FF bigalloc), the LAST three free in the $F0-$FF block (now fully exhausted).
+; All trap to quesOS's cause-7 dispatcher (guest-only); a bare-VM caller hits the native table
+; (harmless: an unmatched native $FD/$FE/$FF returns 0, which the shim/malloc treat as failure).
+GLOBAL sys_fb_present
+GLOBAL sys_kbd_read
+GLOBAL sys_bigalloc
+
 ; maize-174 guest signal subsystem: six Linux-mirror numbers (kill $3E, rt_sigaction $0D,
 ; rt_sigprocmask $0E, rt_sigreturn $0F, setpgid $6D, getpgid $79) plus two Maize-private
 ; job-control numbers (tcgetpgrp $FA / tcsetpgrp $FB, no Linux syscall equivalent). All
@@ -319,6 +327,18 @@ sys_select:
 
 sys_fb_mmap:
     SYS $FC                 ; no args; RV = VA of the mapped fb buffer, or -errno
+    RET
+
+sys_fb_present:
+    SYS $FD                 ; no args; RV = 0, or -EBADF if the caller holds no registration
+    RET
+
+sys_kbd_read:
+    SYS $FE                 ; no args; RV = scancode (0-255), -EAGAIN (none), or -EACCES (not owner)
+    RET
+
+sys_bigalloc:
+    SYS $FF                 ; R0 = size; RV = VA of a fresh zeroed mapping, or -errno
     RET
 
 sys_kill:

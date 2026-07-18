@@ -143,6 +143,17 @@ long sys_poll(void *fds, unsigned long nfds, long timeout);
 long sys_select(long nfds, void *r, void *w, void *e, void *timeout);
 long sys_fb_mmap(void);
 
+/* maize-251 guest-OS display-surface raw stubs (SYS $FD/$FE/$FF), the last three numbers in
+ * the now-exhausted Maize-private high block. Guest-only: dispatched by quesOS; a bare-VM
+ * caller hits the native table (an unmatched native $FD/$FE/$FF returns 0). sys_fb_present:
+ * present the caller's registered slot (RV 0, or -EBADF). sys_kbd_read: combined keyboard
+ * status+read, ACL-gated to the active fb-slot owner (RV = scancode, -EAGAIN, or -EACCES).
+ * sys_bigalloc: a per-process bump allocation over the bigalloc window for the DOOM zone heap
+ * (RV = VA of a fresh zeroed mapping, or -errno; malloc() in stdlib.c falls back to it). */
+long sys_fb_present(void);
+long sys_kbd_read(void);
+long sys_bigalloc(unsigned long size);
+
 /* --- errno + wrappers (errno.c) -------------------------------------------- */
 
 /* The musl error translator: a pure function of its input. A raw result in

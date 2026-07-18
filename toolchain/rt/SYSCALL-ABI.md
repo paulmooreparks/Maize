@@ -212,8 +212,13 @@ size source since maize-253: a bound console device's cell grid, else the real h
 the guest section below); `$FA`/`$FB` the quesOS-guest job-control calls (maize-174,
 `sys_tcgetpgrp`/`sys_tcsetpgrp`, documented in the signal section below); `$FC`
 `sys_fb_mmap` (maize-238, the quesOS-guest framebuffer mmap call, documented in the guest
-section below); `$FD`-`$FF` free.
-`$F3`-`$FC` are native or guest calls that this doc enumerates here so the block map is complete.
+section below); `$FD`/`$FE`/`$FF` the quesOS-guest display-surface calls (maize-251,
+`sys_fb_present`/`sys_kbd_read`/`sys_bigalloc`, documented in the guest section below).
+**With `$FD`/`$FE`/`$FF` assigned by maize-251, the Maize-private high block `$F0`-`$FF` is
+now FULLY EXHAUSTED**: there is no free number left in it, so any future no-Linux-equivalent
+call needs a different home (widening the SYS operand beyond 8 bits is an ISA change, or a
+second reserved block would have to be carved).
+`$F3`-`$FF` are native or guest calls that this doc enumerates here so the block map is complete.
 
 Once C compiles against these stubs, the numbers are ABI. The convention frozen here
 (RV result, the `[-4095, -1]` errno range, the raw/wrapper split, Linux-mirrored
@@ -397,3 +402,42 @@ buffer persists for the process lifetime (released at address-space teardown; no
 copy). Pass the returned VA to `sys_fb_register` for scanout; that call now validates the
 whole `[base, base + width*height*4)` range for physical contiguity, returning `-EINVAL`
 (22) on a mapped-but-scattered buffer.
+
+## quesOS guest-OS display surface (maize-251)
+
+These three calls let a quesOS graphical child (DOOM) present its registered framebuffer,
+read the keyboard, and allocate a zone heap larger than the sbrk ceiling. They are the LAST
+three numbers in the Maize-private high block, which they exhaust. All are guest-only
+(dispatched by quesOS's cause-7 handler); a bare-VM `SYS $FD/$FE/$FF` hits the native table's
+unmatched case (returns `0`, no memory touched), which the shim and `malloc` treat as a
+transparent no-op.
+
+| Number | Symbol | Args | Result |
+|--------|--------|------|--------|
+| `$FD` | `sys_fb_present` | none | `RV`=0, or `-EBADF` (9) if the caller holds no registration |
+| `$FE` | `sys_kbd_read` | none | `RV`=scancode (0-255), `-EAGAIN` (11, none pending), or `-EACCES` (13, not the active-slot owner) |
+| `$FF` | `sys_bigalloc` | `R0`=size in bytes | `RV`=VA of a fresh zeroed mapping, or `-errno` |
+
+**Present (`$FD`).** A quesOS process cannot issue the privileged `OUT $54` present itself, so
+this is its only path to the present step (and, under the maize-264 session-host transport, to
+making a frame visible to a live presenter). It selects the caller's registered slot and
+presents; `-EBADF` if the caller holds none. `present_into`'s write-destination (private
+capture vector vs. shared presenter frame region) is entirely host-side; the guest contract is
+unchanged from bare metal.
+
+**Keyboard read (`$FE`).** Combined status+read (one trap round-trip instead of a poll pair),
+gated to the process owning the currently-active fb slot. The physical `keyboard_device` is one
+shared queue, so an ungated read would let a background graphical process steal the foreground
+slot's scancodes. Order is status-first: `-EAGAIN` when no scancode is pending; otherwise
+`-EACCES` for a non-owner (the scancode is left latched for the real owner), else the Set-1
+scancode. quesOS installs a keyboard-IRQ (vector 34) sink so a delivered key event does not halt
+the VM; the sink leaves the scancode latched for this poll.
+
+**Big alloc (`$FF`).** A per-process bump allocator over a dedicated 16 MiB VA window
+(`BIGALLOC_BASE`), for allocations too large for the sbrk heap ceiling (`USER_BRK_MAX`, ~960
+KiB) -- DOOM's ~6 MiB zone heap in particular. `malloc` falls back to it when sbrk growth is
+refused (transparent no-op under bare-VM). `size` 0 is `-EINVAL` (22); a request past the
+per-process window is `-ENOMEM` (12); frame-pool exhaustion is also `-ENOMEM` (graceful, no
+PANIC). The mapping is fresh, zeroed, and physically contiguous; it is NOT inherited across
+`fork` (the window is excluded from the eager copy, `bigalloc_next` reset in the child) and NOT
+reclaimed on exit/exec (the accepted maize-238 bump-no-free precedent).

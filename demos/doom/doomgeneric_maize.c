@@ -31,9 +31,53 @@
 #include "doomgeneric/doomgeneric/doomkeys.h"     /* KEY_* symbols for the Set-1 -> DOOM table */
 #include "doomgeneric/doomgeneric/i_sound.h"      /* sound_module_t / music_module_t for the stub structs */
 
-#include "mzdev.h"    /* fb_* / kbd_* device stubs (linked via cc-maize.sh --dev) */
-#include "syscall.h"  /* sys_clock_ms (SYS $F0) */
-#include "string.h"   /* memset (DG_GetKey's per-pass make tracking) */
+#include "mzdev.h"    /* fb_* / kbd_* device stubs (linked via cc-maize.sh --dev, bare-VM) */
+#include "syscall.h"  /* sys_clock_ms ($F0), sys_fb_mmap ($FC), sys_fb_present/kbd_read ($FD/$FE) */
+#include "string.h"   /* memset / memcpy */
+
+/* maize-251: the two quesOS fb syscalls this shim needs that are NOT in syscall.h's public
+ * surface (they are guest-only; the os/quesos fixtures declare them locally the same way).
+ * Under bare-VM sys_fb_geometry ($F7) hits the native table's unmatched-case (returns 0,
+ * touches NO guest memory), which is exactly the world-detection discriminator below. */
+long sys_fb_geometry(void *out);   /* SYS $F7: writes {u32 w,h,format}; quesOS only */
+long sys_fb_register(void *base);  /* SYS $F8: RV = slot, or -errno; quesOS only */
+
+/*
+ * maize-251 world detection: the SAME doom.mzx binary runs both bare-VM (the standalone
+ * demo, direct device stubs) and as a quesOS child (video/input via the fb registration
+ * syscalls). dm_probe_world runs a one-time SYS $F7 with a zero-initialized buffer: under
+ * quesOS the call writes the real {320,200,1}; under bare-VM the native unmatched-case
+ * touches no guest memory, so the buffer stays zero. That difference is a deterministic
+ * discriminator (Decision 9324), reusing os/quesos/fb_register.c's own first assertion. The
+ * geometry is cached so the world-aware wrappers do not re-probe per frame.
+ */
+static int      dm_under_quesos = -1;      /* -1 = unprobed, 0 = bare-VM, 1 = quesOS */
+static unsigned dm_geo[3] = { 0, 0, 0 };   /* cached {w,h,format} once probed under quesOS */
+
+static int dm_probe_world(void)
+{
+    if (dm_under_quesos < 0) {
+        unsigned int geo[3] = { 0, 0, 0 };
+        sys_fb_geometry(geo);
+        if (geo[0] == 320 && geo[1] == 200 && geo[2] == 1) {
+            dm_under_quesos = 1;
+            dm_geo[0] = geo[0]; dm_geo[1] = geo[1]; dm_geo[2] = geo[2];
+        } else {
+            dm_under_quesos = 0;
+        }
+    }
+    return dm_under_quesos;
+}
+
+/* World-aware geometry / present wrappers. Under quesOS use the cached probe geometry and
+ * the fb syscalls; under bare-VM defer to the mzdev.h device stubs (unchanged). */
+static unsigned dm_fb_width(void)  { return dm_probe_world() ? dm_geo[0] : fb_width(); }
+static unsigned dm_fb_height(void) { return dm_probe_world() ? dm_geo[1] : fb_height(); }
+static unsigned dm_fb_format(void) { return dm_probe_world() ? dm_geo[2] : fb_format(); }
+static void     dm_fb_present(void)
+{
+    if (dm_under_quesos) { sys_fb_present(); } else { fb_present(); }
+}
 
 /*
  * Non-static globals the headless self-check (doom_selfcheck.c) reads back:
@@ -118,9 +162,9 @@ static const unsigned char scancode_to_doom[128] = {
  */
 void DG_Init(void)
 {
-    unsigned w = fb_width();
-    unsigned h = fb_height();
-    unsigned f = fb_format();
+    unsigned w = dm_fb_width();
+    unsigned h = dm_fb_height();
+    unsigned f = dm_fb_format();
 
     if (w != DOOMGENERIC_RESX || h != DOOMGENERIC_RESY || f != 1) {
         DG_MaizeInitError = 1;
@@ -132,8 +176,30 @@ void DG_Init(void)
     }
     DG_MaizeInitError = 0;
 
-    DG_MaizeFB = (uint32_t *)DG_ScreenBuffer;
-    fb_set_base(DG_MaizeFB);
+    if (dm_under_quesos) {
+        /* quesOS (maize-251): DG_MaizeFB is a SEPARATE, physically-contiguous fb-mmap buffer
+         * (not an alias of the malloc'd DG_ScreenBuffer), because sys_fb_register's hardened
+         * contiguity check requires it. Map the buffer, then register it as the scanout base.
+         * Under maize-264's session-host transport the sys_fb_register call also launches or
+         * attaches the presenter window (blocking the VM up to ~3s the first time). A mmap
+         * failure is init-error 4; a register failure (incl. -ENODEV under --fb-no-display,
+         * -EBUSY/-ENOSPC on a re-register) is init-error 3. */
+        long va = sys_fb_mmap();
+        if (va <= 0) {
+            DG_MaizeInitError = 4;
+            return;
+        }
+        DG_MaizeFB = (uint32_t *)(unsigned long)va;
+        if (sys_fb_register(DG_MaizeFB) < 0) {
+            DG_MaizeInitError = 3;
+            return;
+        }
+    } else {
+        /* bare-VM: the existing maize-201 zero-copy alias. DOOM renders straight into the
+         * presented buffer, so DG_DrawFrame is a plain present with no copy. */
+        DG_MaizeFB = (uint32_t *)DG_ScreenBuffer;
+        fb_set_base(DG_MaizeFB);
+    }
 }
 
 /*
@@ -144,7 +210,14 @@ void DG_Init(void)
  */
 void DG_DrawFrame(void)
 {
-    fb_present();
+    if (dm_under_quesos) {
+        /* quesOS (maize-251): DG_MaizeFB (fb-mmap'd, contiguity-guaranteed) and DG_ScreenBuffer
+         * (malloc'd, inside the small sbrk heap) are two DIFFERENT buffers, so copy the frame
+         * DOOM rendered into the registered scanout buffer before presenting. */
+        memcpy(DG_MaizeFB, DG_ScreenBuffer,
+               (unsigned long)DOOMGENERIC_RESX * (unsigned long)DOOMGENERIC_RESY * 4u);
+    }
+    dm_fb_present();
 }
 
 /*
@@ -202,6 +275,17 @@ int DG_GetKey(int *pressed, unsigned char *key)
         if (have_held) {
             sc = held_sc;              /* deliver the deferred break first, new pass */
             have_held = 0;
+        }
+        else if (dm_under_quesos) {
+            /* quesOS (maize-251): drain one scancode via the ACL-gated keyboard syscall. A
+             * result < 0 means no key this pass -- either -EAGAIN (queue drained) or -EACCES
+             * (this process is not the active fb-slot owner); both end the pass. */
+            long r = sys_kbd_read();
+            if (r < 0) {
+                memset(made_this_pass, 0, sizeof made_this_pass);
+                return 0;
+            }
+            sc = (unsigned)r;
         }
         else {
             if (!(kbd_status() & 1u)) {

@@ -41,10 +41,16 @@ GLOBAL quesos_fb_slot_select
 GLOBAL quesos_fb_base_read
 GLOBAL quesos_fb_base_write
 GLOBAL quesos_fb_status_read
+; maize-251: the guest-OS display-surface metal helpers (present / active-slot / keyboard).
+GLOBAL quesos_fb_present
+GLOBAL quesos_fb_activate_read
+GLOBAL quesos_kbd_status
+GLOBAL quesos_kbd_read
 
 EXTERN quesos_main             ; quesos.c: init entry, runs the worklist (noreturn)
 EXTERN quesos_syscall          ; quesos.c: cause-7 dispatcher (reads g_current->saved_rs)
 EXTERN quesos_timer_tick       ; quesos.c: timer preemption (marks runnable + schedule)
+EXTERN quesos_keyboard_tick    ; quesos.c: keyboard IRQ sink (leave scancode latched + schedule)
 EXTERN quesos_console_irq      ; quesos.c: console IRQ (deliver a byte + schedule)
 EXTERN quesos_stack            ; quesos.c: 64 KiB private kernel-stack byte array (base)
 EXTERN g_current               ; quesos.c: struct pcb * of the running process
@@ -74,6 +80,15 @@ _start:
     ; console device raises vector 33 when a stdin byte is available (maize --input=...).
     CP  quesos_console_handler R3
     CP  $1108 RT
+    ST  R3 @RT
+
+    ; maize-251: install the keyboard IRQ handler at entry 34 (0x1000 + 34*8 = 0x1110). The
+    ; keyboard device (0x10/0x11) raises vector 34 when a scancode latches; without a handler
+    ; the first keystroke of a graphical quesOS session would halt the VM (deliver_vectored
+    ; halts on a zero trap-table entry). DOOM reads keys by POLLING sys_kbd_read, so the
+    ; handler only drains the IRQ and resumes; it never consumes the scancode.
+    CP  quesos_keyboard_handler R3
+    CP  $1110 RT
     ST  R3 @RT
 
     ; Switch to quesOS's kernel stack: full-descending, top = base + size (0x10000).
@@ -257,6 +272,45 @@ console_no_save:
     HALT                       ; safety net (unreachable)
 
 ; ----------------------------------------------------------------------------------
+; quesos_keyboard_handler (maize-251): keyboard IRQ (vector 34) entry. Same save/dispatch
+; shape as the timer/console handlers. The keyboard device raises this when a scancode
+; latches; DOOM reads scancodes by POLLING sys_kbd_read, so this handler does NOT touch the
+; keyboard ports -- it only saves the interrupted process, drops the provider flag, switches
+; to the kernel stack, and reschedules (quesos_keyboard_tick marks current runnable + schedules,
+; leaving the scancode latched for the active fb-slot owner). Its sole purpose is to keep the
+; delivered vector-34 IRQ from halting the VM (deliver_vectored halts on a zero handler). The
+; IRQ is acknowledged by delivery (no status-port ack). The g_current NULL guard covers idle.
+; ----------------------------------------------------------------------------------
+quesos_keyboard_handler:
+    PUSH RB
+    PUSH RV
+    PUSH RT
+    PUSH R9
+    PUSH R8
+    PUSH R7
+    PUSH R6
+    PUSH R5
+    PUSH R4
+    PUSH R3
+    PUSH R2
+    PUSH R1
+    PUSH R0
+
+    CP  g_current R0
+    LD  @R0 R0
+    CMP $00 R0                 ; 0 while idle-spinning
+    JZ  keyboard_no_save
+    ST  RS @R0                 ; pcb->saved_rs = RS
+keyboard_no_save:
+
+    CLRSYSG
+    CP  quesos_stack R1        ; switch to the kernel stack
+    ADD $00010000 R1
+    CP  R1 SP
+    CALL quesos_keyboard_tick  ; mark current runnable + schedule (noreturn); scancode latched
+    HALT                       ; safety net (unreachable)
+
+; ----------------------------------------------------------------------------------
 ; quesos_con_status() / quesos_con_data(): privileged IN over the console ports ($01
 ; status, $00 data). Callable from C; the byte is returned in RV. Status bit0 is
 ; input-available; reading data clears it. Reading the data port when nothing is
@@ -325,6 +379,33 @@ quesos_fb_base_write:
 quesos_fb_status_read:
     CLR RV
     IN  $55 RV.B0            ; RV = selected slot's status (bit2 = register-rejected)
+    RET
+
+; ----------------------------------------------------------------------------------
+; maize-251: guest-OS display-surface metal helpers. present ($54) triggers the device
+; present for the already-slot-selected surface (the written value is ignored by the device,
+; devices.cpp ROLE_PRESENT port_write); activate-read ($57) returns the active slot or the
+; console sentinel (0xFFFFFFFF); kbd-status ($11 bit0) and kbd-read ($10) poll the shared
+; keyboard device (reading $10 clears key-available). All privileged; legal here because
+; quesOS runs supervisor.
+; ----------------------------------------------------------------------------------
+quesos_fb_present:
+    OUT R0 $54               ; present the currently slot-selected surface (value ignored)
+    RET
+
+quesos_fb_activate_read:
+    CLR RV
+    IN  $57 RV               ; RV = active slot, or FB_CONSOLE sentinel (0xFFFFFFFF)
+    RET
+
+quesos_kbd_status:
+    CLR RV
+    IN  $11 RV.B0            ; RV = bit0 key-available
+    RET
+
+quesos_kbd_read:
+    CLR RV
+    IN  $10 RV.B0            ; RV = latched scancode (read clears key-available)
     RET
 
 ; ----------------------------------------------------------------------------------

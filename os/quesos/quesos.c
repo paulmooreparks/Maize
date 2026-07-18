@@ -18,7 +18,14 @@
  *   0x00002000 .. 0x000FFFFF  user VA region        per-process user pages (U=1), region 0
  *   0x00100000 .. 0x001FFFFF  quesOS image (code+data)   kernel (U=0), 4 KiB leaves
  *   0x00200000 .. 0x003FFFFF  fb-mmap window (maize-238)  per-process, lazy L0 (region 1)
- *   0x00400000 .. 0x043FFFFF  frame + page-table pool     kernel (U=0), 2 MiB superpages
+ *   0x00400000 .. 0x013FFFFF  bigalloc window (maize-251)  per-process, lazy L0 (regions 2..9)
+ *   0x01400000 .. 0x053FFFFF  frame + page-table pool     kernel (U=0), 2 MiB superpages
+ *
+ * maize-251: the bigalloc window ([0x00400000, +16 MiB), regions 2..9) is a per-process
+ * bump-allocated VA range for allocations too large for the sbrk heap ceiling (DOOM's
+ * ~6 MiB zone heap; sys_bigalloc / do_bigalloc below). It sits between the fb-mmap window
+ * and the (relocated) pool, so the pool superpages moved up from 0x00400000 to 0x01400000.
+ * Its physical frames still come from the same pool; only the pool's base VA changed.
  *
  * A user process's own pages are DISTINCT physical frames drawn from the pool and
  * mapped U=1 in the process's own table; that separation (not the U bit) is what makes
@@ -84,6 +91,14 @@ void quesos_fb_slot_select(u64 slot);        /* OUT $56: select the slot for bas
 u64  quesos_fb_base_read(void);              /* IN $53: selected slot's base (0=unclaimed) */
 void quesos_fb_base_write(u64 base);         /* OUT $53: nonzero claims, zero releases      */
 u64  quesos_fb_status_read(void);            /* IN $55: selected slot status (bit2=reject) */
+/* maize-251: the present trigger + the active-slot / keyboard poll ports the guest-OS
+ * display surface ($FD/$FE) drives. present ($54) and activate-read ($57) are the fb
+ * device; kbd-status/read ($11/$10) are the shared keyboard device. All privileged
+ * IN/OUT, supervisor-only, so a quesOS process reaches them only via these syscalls. */
+void quesos_fb_present(void);                /* OUT $54: present the selected slot's surface */
+u64  quesos_fb_activate_read(void);          /* IN $57: active slot, or FB_CONSOLE sentinel */
+u64  quesos_kbd_status(void);                /* IN $11: bit0 = a scancode is available       */
+u64  quesos_kbd_read(void);                  /* IN $10: latched scancode (read clears avail) */
 
 /* quesOS's private kernel stack (quesos_boot.mazm switches RS here at _start and on
  * every trap entry, so the C dispatcher never runs on a user stack). 64 KiB. */
@@ -100,7 +115,12 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define QUESOS_IMG_BASE   0x00100000ul   /* quesOS link base; code+data in [base,+1MiB) */
 #define QUESOS_IMG_TOP    0x00200000ul
 #define FB_MMAP_BASE      0x00200000ul   /* maize-238: per-process fb-mmap window (region 1) */
-#define POOL_BASE         0x00400000ul   /* frame + page-table pool (2 MiB aligned)     */
+/* maize-251: per-process bump-allocated window for allocations that overflow the sbrk heap
+ * ceiling (DOOM's ~6 MiB zone heap). 16 MiB (2.6x DOOM's 6 MiB need, general headroom),
+ * regions 2..9. sys_bigalloc / do_bigalloc allocate here; malloc() falls back to it. */
+#define BIGALLOC_BASE     0x00400000ul   /* region 2+, immediately above FB_MMAP_BASE     */
+#define BIGALLOC_MAX      (16ul * 1024 * 1024)   /* 16 MiB per-process window              */
+#define POOL_BASE         0x01400000ul   /* maize-251: RELOCATED above BIGALLOC's window   */
 #define POOL_SUPERPAGES   32u            /* 32 * 2 MiB = 64 MiB pool                     */
 #define POOL_TOP          (POOL_BASE + (u64)POOL_SUPERPAGES * 0x200000ul)
 #define PAGE_SIZE         0x1000ul
@@ -253,6 +273,15 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define SYS_select     0x17
 #define SYS_fb_mmap    0xFC   /* (void) -> long (VA of the mapped fb buffer, or -errno)   */
 
+/* maize-251: the guest-OS display-surface calls that let a quesOS graphical child (DOOM)
+ * present its registered framebuffer, read the keyboard, and allocate its large zone heap.
+ * These take the LAST three free numbers in the Maize-private high block ($F0-$FF); with
+ * $FD/$FE/$FF assigned, that block is now FULLY EXHAUSTED (SYSCALL-ABI.md). Quesos-private,
+ * guest-only, no Linux analog. */
+#define SYS_fb_present 0xFD   /* (void)         -> long (0, or -EBADF if unregistered)     */
+#define SYS_kbd_read   0xFE   /* (void)         -> long (scancode, -EAGAIN, or -EACCES)    */
+#define SYS_bigalloc   0xFF   /* (u64 size)     -> long (VA of a fresh zeroed map, -errno) */
+
 /* maize-238: AF_UNIX SOCK_STREAM only (the X11-transport shape; maize-90 scoping). */
 #define AF_UNIX     1
 #define SOCK_STREAM 1
@@ -286,6 +315,16 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
  * value toolchain/rt/string.c's memcpy/memmove fall-back gates on (rv == n). */
 #define QOS_EFAULT 14          /* maize-247: $F4/$F5 walked page unmapped or kernel-owned  */
 #define QOS_ENOSYS 38          /* maize-247: $F4 src/dst not a single contiguous run       */
+
+/* maize-251: sys_kbd_read result magnitudes (real Linux values). EAGAIN = no scancode is
+ * pending yet; EACCES = the caller does not own the currently-active fb slot (the shared
+ * keyboard queue is gated to the foreground graphical process, Decision 9321). */
+#define QOS_EAGAIN 11          /* maize-251: sys_kbd_read, no scancode pending             */
+#define QOS_EACCES 13          /* maize-251: sys_kbd_read, caller is not the active owner  */
+
+/* maize-251: the active-slot sentinel the fb ROLE_ACTIVATE port ($57) returns when the text
+ * console (not any fb slot) owns scanout. Mirrors src/maize_cpu.h fb_console_sentinel. */
+#define QUESOS_FB_CONSOLE 0xFFFFFFFFul
 
 /* maize-236: registration-table capacity, mirroring src/maize_cpu.h fb_max_slots. */
 #define QUESOS_FB_MAX_SLOTS 8
@@ -354,6 +393,10 @@ struct pcb {
     u64  poll_deadline_ms;        /* 0 = block forever; else absolute sys_clock_ms deadline */
     /* maize-238 Family C: the process's framebuffer mmap window base VA (0 = none). */
     long fb_mmap_va;
+    /* maize-251: next free VA in the per-process bigalloc window (bump allocator). Init to
+     * BIGALLOC_BASE at spawn; RESET to BIGALLOC_BASE (not inherited) in do_fork's child-init,
+     * mirroring fb_mmap_va's fork-exclusion, so a child never sees the parent's mapped pages. */
+    u64  bigalloc_next;
 };
 
 static struct pcb g_proc[QUESOS_MAX_PROC];
@@ -976,6 +1019,7 @@ static struct pcb *spawn(const char *path, long parent) {
     p->block_kind = BLK_NONE;
     p->fb_slot = -1;   /* maize-236: no framebuffer registration until SYS_fb_register */
     p->fb_mmap_va = 0; /* maize-238: no fb-mmap window until SYS_fb_mmap */
+    p->bigalloc_next = BIGALLOC_BASE; /* maize-251: bump allocator starts at the window base */
     p->pgid = p->pid;  /* maize-174: a top-level spawn starts its own process group */
     p->pending = 0; p->blocked = 0; p->term_signal = 0; p->in_handler = 0;
     p->termios_valid = 0;   /* maize-250: no console termios set until this proc tcsetattr's */
@@ -2017,6 +2061,12 @@ static long do_fork(void) {
      * unmapped). fb MEMORY does not propagate to a child, mirroring maize-236 D4's fb
      * REGISTRATION non-propagation one level down. */
     child->fb_mmap_va = 0;
+    /* maize-251: the bigalloc window is likewise excluded from fork's eager copy (regions
+     * 2..9, which build_address_space(child) leaves unmapped). Resetting bigalloc_next to
+     * BIGALLOC_BASE, NOT inheriting the parent's value, mirrors fb_mmap_va's fork-exclusion
+     * one window over: the child's first sys_bigalloc starts fresh at the base with its own
+     * frames, never seeing the parent's mapped pages. */
+    child->bigalloc_next = BIGALLOC_BASE;
     /* maize-174: fork inherits the process group, the block mask, and the installed
      * handlers (POSIX); pending signals are NOT inherited. */
     child->pgid = parent->pgid;
@@ -2276,6 +2326,38 @@ static long do_fb_release(void) {
     return 0;
 }
 
+/* maize-251: SYS_fb_present ($FD). Trigger the device present for the caller's registered
+ * slot. A quesOS process has no way to issue the privileged OUT $54 itself, so this syscall
+ * is its only path to the present-into-capture-buffer step (and, under maize-264's transport,
+ * the only way to make a frame visible to a live presenter). -EBADF if the caller holds no
+ * registration (mirrors do_fb_release's guard). Otherwise select the slot ($56) and present
+ * ($54). present_into's write-destination (private vector vs. shared frame region) is entirely
+ * host-side (maize-264); the guest contract here is unchanged. */
+static long do_fb_present(void) {
+    struct pcb *self = g_current;
+    if (self->fb_slot < 0) { return -(long)QOS_EBADF; }
+    quesos_fb_slot_select((u64)self->fb_slot);
+    quesos_fb_present();
+    return 0;
+}
+
+/* maize-251: SYS_kbd_read ($FE). Combined keyboard status+read (Decision 9320: one trap
+ * round-trip instead of two), gated to the process that owns the currently-active fb slot
+ * (Decision 9321). The physical keyboard_device is ONE shared queue; an ungated read would
+ * let a background graphical process steal scancodes meant for the foreground slot once more
+ * than one exists. Order (pinned by the spec): poll status ($11) FIRST -- if no scancode is
+ * pending, -EAGAIN; otherwise check the active slot ($57) and refuse a non-owner with -EACCES
+ * WITHOUT consuming the scancode (it stays latched for the real owner); only the active owner
+ * consumes it via $10. Returns the Set-1 scancode (0-255) on success. */
+static long do_kbd_read(void) {
+    struct pcb *self = g_current;
+    u64 active;
+    if ((quesos_kbd_status() & 0x1u) == 0) { return -(long)QOS_EAGAIN; }
+    active = quesos_fb_activate_read();
+    if (self->fb_slot < 0 || (u64)self->fb_slot != active) { return -(long)QOS_EACCES; }
+    return (long)quesos_kbd_read();
+}
+
 /* ==================================================================================
  * maize-247: bulk-memory accelerators ($F4 sys_bulk_copy / $F5 sys_bulk_set) under paging.
  *
@@ -2406,6 +2488,38 @@ static long do_fb_mmap(void) {
     return (long)FB_MMAP_BASE;
 }
 
+/* maize-251: SYS_bigalloc ($FF). A per-process bump allocator over the dedicated bigalloc VA
+ * window (BIGALLOC_BASE, regions 2..9), for allocations too large for quesOS's sbrk heap
+ * ceiling (USER_BRK_MAX ~= 960 KiB) -- DOOM's ~6 MiB zone heap in particular. malloc()
+ * (toolchain/rt/stdlib.c) falls back here when sbrk growth is refused. General-purpose, not
+ * DOOM-specific (Decision 9322); every existing small allocation and the entire bare-VM build
+ * are unaffected. Frames come from the same pool as everything else, so a pool-exhausting
+ * request fails gracefully with -ENOMEM (no PANIC), exactly like fb_mmap. size 0 -> -EINVAL;
+ * a request past the per-process 16 MiB window -> -ENOMEM. On success returns the VA of a
+ * fresh, zeroed, contiguous mapping. The window is NOT inherited by fork (bigalloc_next reset
+ * in do_fork) and NOT reclaimed on exit/exec (the accepted maize-238 bump-no-free precedent). */
+static long do_bigalloc(u64 size) {
+    struct pcb *self = g_current;
+    u64 n = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    u64 base_pa = 0, va, i;
+    if (size == 0) { return -(long)QOS_EINVAL; }
+    if (self->bigalloc_next + n * PAGE_SIZE > BIGALLOC_BASE + BIGALLOC_MAX) {
+        return -(long)QOS_ENOMEM;                        /* per-process window exhausted */
+    }
+    if (alloc_frames_contig(n, &base_pa) != 0) {          /* reused verbatim from maize-238 */
+        return -(long)QOS_ENOMEM;                          /* pool exhausted, graceful, no PANIC */
+    }
+    va = self->bigalloc_next;
+    (void)ensure_l0(self, va);
+    for (i = 0; i < n; ++i) {
+        u64 pg = va + i * PAGE_SIZE;
+        if ((pg >> 21) != (va >> 21)) { (void)ensure_l0(self, pg); }  /* crossed a 2 MiB region */
+        map_user_page(self, pg, base_pa + i * PAGE_SIZE);
+    }
+    self->bigalloc_next = va + n * PAGE_SIZE;
+    return (long)va;
+}
+
 /* Cleanup: release a held registration on exit / exec (Decision D5, the per-exec-lifetime
  * scoping). A no-op when the process holds none. */
 static void fb_release_held(struct pcb *p) {
@@ -2435,6 +2549,25 @@ void quesos_timer_tick(void) {
     }
     if (g_current != 0) { g_current->state = P_RUNNABLE; }   /* 0 while idle-spinning */
     schedule();   /* noreturn */
+}
+
+/* maize-251: Keyboard IRQ (vector 34). The physical keyboard_device raises vector 34 when a
+ * scancode latches (headless on_input_tick injection, or -- under the maize-264 session-host
+ * transport -- the presenter's SDL loop -> shared input ring -> presenter_link -> push_event
+ * -> pump_latch). quesOS's keyboard path is a POLL: DOOM's DG_GetKey drains scancodes through
+ * sys_kbd_read ($FE), which reads the ports directly. So this handler must NOT consume the
+ * scancode; it exists ONLY so that a delivered vector-34 IRQ does not halt the VM. Without a
+ * handler installed, deliver_vectored (src/cpu.cpp) reads a zero trap-table entry and calls
+ * halt_no_interrupt_handler -- i.e. the FIRST keystroke of a quesOS graphical session would
+ * power the whole VM off. The spec's shim-rework designs sys_kbd_read as the read path but did
+ * not enumerate this IRQ sink; it is a necessary consequence of routing real key events into
+ * the shared keyboard_device under quesOS (Decision 9319). Leave the scancode latched for the
+ * active fb-slot owner's next sys_kbd_read, mark the interrupted process runnable, and
+ * reschedule (round-robin, exactly like the timer tick). External IRQs are acknowledged by
+ * delivery, so there is no status-port ack. */
+void quesos_keyboard_tick(void) {
+    if (g_current != 0) { g_current->state = P_RUNNABLE; }   /* 0 while idle-spinning */
+    schedule();   /* noreturn: resume a runnable process; the scancode stays latched */
 }
 
 /* Console input IRQ (vector 33): the console device signaled host-stdin readiness (a
@@ -2733,6 +2866,12 @@ void quesos_syscall(void) {
         case SYS_select:     result = do_select((long)a0, a1, a2, a3, a4);      break;
         /* maize-238 Family C: framebuffer mmap. */
         case SYS_fb_mmap:    result = do_fb_mmap();                             break;
+        /* maize-251: the guest-OS display surface. fb_present triggers the privileged present
+         * ($54) for the caller's slot; kbd_read is the ACL-gated combined keyboard status+read
+         * ($11/$10); bigalloc is the large-allocation bump allocator (DOOM's zone heap). */
+        case SYS_fb_present: result = do_fb_present();                          break;
+        case SYS_kbd_read:   result = do_kbd_read();                            break;
+        case SYS_bigalloc:   result = do_bigalloc(a0);                          break;
         case SYS_kill:           result = do_kill((long)a0, (int)a1);          break;
         case SYS_rt_sigaction:   result = do_rt_sigaction((long)a0, a1, a2);   break;
         case SYS_rt_sigprocmask: result = do_rt_sigprocmask((long)a0, a1, a2); break;

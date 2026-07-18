@@ -213,6 +213,35 @@ grow(unsigned long total)
     return 0;
 }
 
+/* maize-251: fall back to sys_bigalloc (SYS $FF) when ordinary sbrk growth is refused. quesOS
+ * caps a process's sbrk heap at USER_BRK_MAX (~960 KiB), far below DOOM's ~6 MiB zone-heap
+ * malloc; sys_bigalloc serves that from a separate 16 MiB per-process VA window. A result <= 0
+ * is failure: an -errno band value, OR the transparent BARE-VM no-op (a bare-VM SYS $FF hits
+ * the native table's unmatched-case `return 0`, treated as failure here), so this needs ZERO
+ * world-probe in stdlib.c -- under bare-VM it simply no-ops and malloc falls through to NULL.
+ * The returned VA is page-aligned (>= 16-aligned); pad the block header to 8 (mod 16) so
+ * payloads stay 16-aligned exactly like the sbrk path, then thread the region into the free
+ * list. bigalloc regions sit at a high VA far from the sbrk heap, so free_insert never
+ * false-coalesces them with sbrk blocks. Only reached when grow() fails, so every small
+ * allocation and the whole bare-VM build are byte-for-byte unaffected. */
+static int
+bigalloc_grow(unsigned long total)
+{
+    unsigned long amount = (total + ALIGN) > CHUNK ? (total + ALIGN) : CHUNK;
+    long va = sys_bigalloc(amount);
+    word *b;
+
+    if (va <= 0)
+        return -1;   /* -errno, or the bare-VM native no-op (0): malloc falls through to NULL */
+
+    /* Header at va+HDR lands at 8 (mod 16) since va is page-aligned, giving 16-aligned
+     * payloads. The block spans [va+HDR, va+HDR+(amount-ALIGN)) subset [va, va+amount). */
+    b = (word *)((unsigned long)va + HDR);
+    b[0] = (amount - ALIGN) & SIZEMASK;   /* 16-aligned free block (amount is 16-aligned) */
+    free_insert(b);
+    return 0;
+}
+
 /* Carve `total` bytes out of free block cur (whose predecessor in the free list is
  * prev), splitting off the remainder as a new free block when it is large enough. */
 static void
@@ -278,7 +307,9 @@ malloc(size_t size)
 
     cur = find_fit(total, &prev);
     if (!cur) {
-        if (grow(total) != 0)
+        /* maize-251: on an sbrk-refused grow, try the bigalloc window (quesOS large-alloc
+         * fallback) before giving up. Transparent no-op under bare-VM (sys_bigalloc <= 0). */
+        if (grow(total) != 0 && bigalloc_grow(total) != 0)
             return 0;
         cur = find_fit(total, &prev);
         if (!cur)

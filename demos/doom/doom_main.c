@@ -18,9 +18,24 @@
 
 #include "doomgeneric/doomgeneric/doomgeneric.h"
 
+#include <stdio.h>   /* maize-251: fprintf(stderr, ...) for the reportable init-error path */
+
+/* maize-251: the platform layer's DG_Init sets DG_MaizeInitError != 0 when the framebuffer
+ * cannot be brought up (geometry mismatch=1, null screenbuffer=2, register failure=3 which
+ * covers -ENODEV under a display-less --fb-no-display session, mmap failure=4). Report it and
+ * exit with a distinct code (4, vs maize-221's own exit code 3) rather than spinning a frame
+ * loop against a dead framebuffer -- so `doom` at the oksh prompt on a display-less session
+ * fails loud and cleanly, and the reap transcript / stderr diagnostic is observable. */
+extern int DG_MaizeInitError;
+
 int main(int argc, char **argv)
 {
     doomgeneric_Create(argc, argv);
+
+    if (DG_MaizeInitError != 0) {
+        fprintf(stderr, "doom: framebuffer init failed (code %d)\n", DG_MaizeInitError);
+        return 4;
+    }
 
     for (;;)
     {
