@@ -2,9 +2,9 @@
 # harness-env.sh (maize-263): shared helpers for the test/build harness scripts.
 #
 # This file is SOURCED, never executed directly (it defines functions and sets no
-# top-level state). The five POSIX-sh harness entry points (run-tests.sh,
-# run-ctest.sh, build-toolchain.sh, cc-maize.sh, userland/build-userland.sh) source
-# it and call:
+# top-level state). The six POSIX-sh harness entry points (run-tests.sh,
+# run-ctest.sh, build-toolchain.sh, cc-maize.sh, userland/build-userland.sh,
+# demos/build-demos.sh) source it and call:
 #
 #   maize_apply_throttle         once, near the top, to renice/ionice the whole run
 #   maize_native_mirror_run ...  once, near the top (BEFORE argument parsing consumes
