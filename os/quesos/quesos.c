@@ -327,6 +327,11 @@ struct pcb {
     long poll_nfds;               /* poll()/select(): fd count                          */
     int  poll_mode;               /* 0 = poll(), 1 = select()                           */
     u64  poll_r_uva, poll_w_uva, poll_e_uva;  /* select(): the three fd_set VAs (0=NULL) */
+    u64  poll_r_bits, poll_w_bits;/* select(): the REQUESTED read/write masks, captured  */
+                                  /* once at call time -- a re-evaluation must read these */
+                                  /* and NOT the user fd_set words, which the commit      */
+                                  /* overwrites in place with the ready result (else a     */
+                                  /* parked select loses its request and never wakes).    */
     u64  poll_deadline_ms;        /* 0 = block forever; else absolute sys_clock_ms deadline */
     /* maize-238 Family C: the process's framebuffer mmap window base VA (0 = none). */
     long fb_mmap_va;
@@ -786,7 +791,7 @@ static void ofd_ref(int idx) { if (idx >= 0) { g_ofd[idx].refcount++; } }
 
 static void pipe_wake_readers(int pi);
 static void pipe_wake_writers(int pi);
-static void poll_recheck_all(void);   /* maize-238: re-evaluate parked poll()/select() */
+static int poll_recheck_all(void);    /* maize-238: re-evaluate parked poll()/select(); returns #woken */
 static void wake_with(struct pcb *p, long rv);
 static struct pcb *find_by_pid(long pid);
 
@@ -1173,12 +1178,12 @@ static long console_read(struct pcb *self, u64 uva, long count) {
     u8 b;
     if (count <= 0) { return 0; }
     if (quesos_con_status() & CON_STAT_INPUT) {
+        /* maize-238 Branch A (decision 9285): CON_STAT_INPUT is the non-consuming probe
+         * reporting a DATA byte pending, so quesos_con_data returns a real byte -- do NOT
+         * re-probe status for EOF here (that would misread the NEXT read's end-of-input,
+         * e.g. a pipe that closes right after its last byte, and wrongly discard the byte
+         * just read). Real end-of-input is handled below, when nothing is pending. */
         b = (u8)quesos_con_data();
-        /* maize-94: the on-demand data-port read latches EOF when host stdin returns 0, so
-         * re-check status AFTER the read: a real end-of-input returns 0 (EOF) from this fd0
-         * read so a shell exits normally instead of looping on a synthesized NUL byte (this
-         * is what makes a piped script WITHOUT an explicit `exit` terminate). */
-        if (quesos_con_status() & CON_STAT_EOF) { return 0; }
         if (g_tty_isig && b == 0x03) { signal_fg_group(SIGINT); }        /* INTR: no data */
         else if (g_tty_isig && b == 0x1C) { signal_fg_group(SIGQUIT); }  /* QUIT: no data */
         else { as_write8(self, uva, b); return 1; }   /* raw mode delivers 0x03/0x1C as data */
@@ -1186,7 +1191,7 @@ static long console_read(struct pcb *self, u64 uva, long count) {
          * delivered the next time a targeted process is runnable). */
     }
     else if (quesos_con_status() & CON_STAT_EOF) {
-        return 0;   /* the eager injector hit EOF with no byte pending: end-of-input */
+        return 0;   /* nothing pending and host stdin is at end-of-input */
     }
     self->block_kind = BLK_CONSOLE;
     self->block_buf = uva;
@@ -1853,8 +1858,12 @@ static long poll_evaluate(struct pcb *p, int commit) {
             if (rev != 0) { ++count; }
         }
     } else {
-        u64 rmask = (p->poll_r_uva != 0) ? as_read64(p, p->poll_r_uva) : 0;
-        u64 wmask = (p->poll_w_uva != 0) ? as_read64(p, p->poll_w_uva) : 0;
+        /* Read the REQUESTED masks from the pcb-captured copy, never from the user fd_set
+         * words: the commit below overwrites those words in place with the ready result, so
+         * re-reading them after the first (empty) commit would see a cleared request and a
+         * parked select() would never wake (the pipe-leg lost-wake / CI flake, maize-238). */
+        u64 rmask = p->poll_r_bits;
+        u64 wmask = p->poll_w_bits;
         u64 rword = 0, wword = 0;
         int nf = (int)p->poll_nfds;
         int fd;
@@ -1880,18 +1889,22 @@ static long poll_evaluate(struct pcb *p, int commit) {
 
 /* Re-evaluate every parked poll()/select() caller; wake any whose condition is now met.
  * Called at the tail of every readiness-changing event (see pipe_fetch/pipe_deposit,
- * ofd_unref, quesos_console_irq, connect()'s enqueue). */
-static void poll_recheck_all(void) {
-    int i;
+ * ofd_unref, quesos_console_irq, connect()'s enqueue). Returns the number of callers woken
+ * (so quesos_console_irq can tell a readiness signal that actually released a waiter from a
+ * no-op one, and avoid perturbing the round-robin order in the latter case). */
+static int poll_recheck_all(void) {
+    int i, woke = 0;
     for (i = 0; i < QUESOS_MAX_PROC; ++i) {
         struct pcb *p = &g_proc[i];
         if (p->state == P_BLOCKED && p->block_kind == BLK_POLL) {
             if (poll_evaluate(p, 0) > 0) {
                 long ready = poll_evaluate(p, 1);
                 wake_with(p, ready);
+                ++woke;
             }
         }
     }
+    return woke;
 }
 
 static long do_poll(u64 fds_uva, u64 nfds, long timeout_ms) {
@@ -1918,6 +1931,9 @@ static long do_select(long nfds, u64 r_uva, u64 w_uva, u64 e_uva, u64 tv_uva) {
     self->poll_r_uva = r_uva;
     self->poll_w_uva = w_uva;
     self->poll_e_uva = e_uva;
+    /* Capture the requested masks ONCE, before any commit clobbers the user fd_set words. */
+    self->poll_r_bits = (r_uva != 0) ? as_read64(self, r_uva) : 0;
+    self->poll_w_bits = (w_uva != 0) ? as_read64(self, w_uva) : 0;
     ready = poll_evaluate(self, 1);
     if (ready > 0) { return ready; }
     if (tv_uva != 0) {
@@ -2294,7 +2310,7 @@ void quesos_timer_tick(void) {
  * idle). */
 void quesos_console_irq(void) {
     struct pcb *r = 0;
-    int i;
+    int i, woke = 0;
     for (i = 0; i < QUESOS_MAX_PROC; ++i) {
         if (g_proc[i].state == P_BLOCKED && g_proc[i].block_kind == BLK_CONSOLE) {
             r = &g_proc[i];
@@ -2302,14 +2318,17 @@ void quesos_console_irq(void) {
         }
     }
     if (r != 0) {
+        woke = 1;   /* a console reader was parked: this IRQ services it (deliver / EOF / signal) */
         if (quesos_con_status() & CON_STAT_INPUT) {
             /* A data byte is pending: consume it at read time and complete the parked read.
-             * A control byte (0x03/0x1C) in canonical mode is intercepted as a signal on the
-             * foreground group and NOT delivered as data (the reader stays parked for a real
-             * byte, matching the no-EINTR model); raw mode delivers it as an ordinary byte. */
+             * CON_STAT_INPUT is the non-consuming data-pending probe, so quesos_con_data
+             * returns a real byte (no post-read EOF re-check, which would misread the NEXT
+             * read's end-of-input). A control byte (0x03/0x1C) in canonical mode is
+             * intercepted as a signal on the foreground group and NOT delivered as data (the
+             * reader stays parked for a real byte, matching the no-EINTR model); raw mode
+             * delivers it as an ordinary byte. */
             u8 b = (u8)quesos_con_data();
-            if (quesos_con_status() & CON_STAT_EOF) { wake_with(r, 0); }              /* raced to EOF */
-            else if (g_tty_isig && b == 0x03) { signal_fg_group(SIGINT); }
+            if (g_tty_isig && b == 0x03) { signal_fg_group(SIGINT); }
             else if (g_tty_isig && b == 0x1C) { signal_fg_group(SIGQUIT); }
             else { as_write8(r, r->block_buf, b); wake_with(r, 1); }
         } else if (quesos_con_status() & CON_STAT_EOF) {
@@ -2317,7 +2336,17 @@ void quesos_console_irq(void) {
         }
     }
     /* fd 0 became readable (or hit EOF): wake any poll()/select() caller watching it. */
-    poll_recheck_all();
+    woke += poll_recheck_all();
+    /* maize-238 Branch A (decision 9285): if this readiness IRQ released no waiter (the
+     * common case on the default path -- fd 0 signals readiness every throttle tick but the
+     * data was already taken synchronously, or no one is watching fd 0), RESUME the
+     * interrupted process rather than round-robin to another. A periodic readiness signal
+     * must not perturb the scheduler, or an unrelated multi-process fixture reaches a
+     * timing-dependent bad interleaving (the phase-2-class flake). When it DID wake someone,
+     * fall through to a normal reschedule so the woken process gets a slice. */
+    if (woke == 0 && g_current != 0) {
+        quesos_switch_to(g_current);   /* noreturn: resume the interrupted process in place */
+    }
     if (g_current != 0) { g_current->state = P_RUNNABLE; }
     schedule();   /* noreturn */
 }

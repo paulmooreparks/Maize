@@ -110,10 +110,12 @@ namespace maize {
             if (::ioctl(0, FIONREAD, &navail) == 0) {
                 return (navail > 0) ? 1 : -1;   // readable with 0 bytes buffered == EOF
             }
-            // FIONREAD unsupported on this fd: readable but cannot distinguish. Treat as a
-            // pending byte; a subsequent data-port read yields the byte, or 0 (which the
-            // data port latches as EOF), so no byte is ever lost either way.
-            return 1;
+            // FIONREAD unsupported on this fd while poll reports it readable: the realistic
+            // case is a null-ish device (/dev/null, a redirected empty stream) whose reads
+            // return 0, i.e. end-of-input. Pipes, ptys, ttys, sockets and files all support
+            // FIONREAD, so report EOF here rather than a phantom pending byte that would
+            // spam the console IRQ on a /dev/null default-invocation stdin.
+            return -1;
         }
 #elif _WIN32
         namespace {
@@ -416,7 +418,14 @@ namespace maize {
                 return (avail > 0) ? 1 : 0;   // buffered bytes == data pending; else nothing yet
             }
             if (type == FILE_TYPE_CHAR) {
-                return 1;   // interactive console: defer to the blocking data-port read
+                DWORD mode {0};
+                if (!GetConsoleMode(h, &mode)) {
+                    // Not a real console (e.g. NUL / a null-ish char device): reads return 0,
+                    // i.e. end-of-input. Report EOF rather than a phantom byte that would spam
+                    // the console IRQ on a NUL default-invocation stdin.
+                    return -1;
+                }
+                return 1;   // real interactive console: defer to the blocking data-port read
             }
             if (type == FILE_TYPE_DISK) {
                 LARGE_INTEGER pos, size, zero;
