@@ -84,6 +84,14 @@ namespace maize {
 			bool exhausted_ {false};   // eager injector reached host-stdin EOF
 			bool eof_ {false};         // maize-94: on-demand data-port read reached EOF
 			bool active_injector_ {false};
+			/* maize-238 (Branch A, OQ 9204): on_input_tick now runs on EVERY instruction tick
+			   under the default-path injector, so an unconditional host-stdin poll per tick
+			   would be a syscall per VM instruction (a real interpreter-hot-path cost that
+			   would sink doom_bench). Throttle the poll to once per POLL_TICK_DIV ticks: the
+			   amortized cost is negligible and the wake latency stays bounded (a few hundred
+			   instructions, microseconds on the idle spin), meeting AC 9199's bounded wake. */
+			static constexpr unsigned POLL_TICK_DIV {512};
+			unsigned poll_tick_ctr_ {0};
 		};
 
 		/* Keyboard device (0x10 data, 0x11 status). Emits raw PC scancodes (Set-1 / XT

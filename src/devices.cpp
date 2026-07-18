@@ -100,10 +100,18 @@ namespace maize {
 			if (exhausted_ || available_) {
 				return;
 			}
-			// maize-238 (Branch A): NON-BLOCKING pre-read. Under the ratified default-path
-			// injector this runs every instruction tick, so a blocking read would stall the
-			// whole VM between keystrokes; console_poll_read returns immediately when nothing
-			// is pending. A latched byte drives the console IRQ / poll-readiness model.
+			// maize-238 (Branch A, OQ 9204): throttle the host-stdin poll to once per
+			// POLL_TICK_DIV instruction ticks. This runs on EVERY tick under the default-path
+			// injector, so polling host stdin unconditionally would be a syscall per VM
+			// instruction (an interpreter-hot-path cost). The counter check is a couple of
+			// integer ops per tick; the actual poll amortizes to negligible while keeping the
+			// wake latency bounded to a few hundred instructions.
+			if (++poll_tick_ctr_ < POLL_TICK_DIV) {
+				return;
+			}
+			poll_tick_ctr_ = 0;
+			// NON-BLOCKING pre-read: console_poll_read returns immediately when nothing is
+			// pending. A latched byte drives the console IRQ / poll-readiness model.
 			unsigned char b = 0;
 			int r = maize::syscall::console_poll_read(&b);
 			if (r == 0) {
