@@ -1946,7 +1946,10 @@ run_quesos_ac_fixtures() {
                sig_handler sig_default sig_chld sig_pgroup \
                sig_kill sig_exec_launch sig_exec_target \
                fb_register fb_reject fb_fork_cleanup fb_exec_launch fb_exec_target \
-               fb_exit_cleanup; do
+               fb_exit_cleanup \
+               socketpair_echo unix_listen_connect unix_listen_close \
+               poll_timeout poll_broken poll_multi select_console_pipe \
+               fb_mmap_paint fb_noncontig_reject fb_mmap_isolation fb_mmap_enomem; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
             echo "[FAIL] quesos_ac: ${src}.c compile failed"; cat "$log" >&2
@@ -2046,6 +2049,58 @@ run_quesos_ac_fixtures() {
     quesos_ac_case quesos_fb_fork        "fb-fork: PASS"         fb_fork_cleanup
     quesos_ac_case quesos_fb_exec        "fb-exec: PASS"         fb_exec_launch
     quesos_ac_case quesos_fb_exit        "fb-exit: PASS"         fb_exit_cleanup
+
+    # maize-238 Phase 3. Family A (unix sockets): socketpair full duplex + EOF/EPIPE;
+    # bind/listen/accept/connect handshake ordering; listen-close wakes parked connectors
+    # with -ECONNREFUSED and frees the path. Family B (select/poll): timeout semantics,
+    # broken-pipe POLLERR, and the injector-mode fd-0 legs (--input=console cases below).
+    # Family C (fb mmap): full ~63-page contiguity end to end, non-contiguous-buffer
+    # rejection, per-process isolation, and graceful -ENOMEM pool exhaustion.
+    quesos_ac_case quesos_socketpair     "socketpair-echo: PASS"      socketpair_echo
+    quesos_ac_case quesos_unix_connect   "unix-listen-connect: PASS"  unix_listen_connect
+    quesos_ac_case quesos_unix_close     "unix-listen-close: PASS"    unix_listen_close
+    quesos_ac_case quesos_poll_timeout   "poll-timeout: PASS"         poll_timeout
+    quesos_ac_case quesos_poll_broken    "poll-broken: PASS"          poll_broken
+    quesos_ac_case quesos_fb_mmap_paint  "fb-mmap-paint: PASS"        fb_mmap_paint
+    quesos_ac_case quesos_fb_noncontig   "fb-noncontig: PASS"         fb_noncontig_reject
+    quesos_ac_case quesos_fb_isolation   "fb-isolation: PASS"         fb_mmap_isolation
+
+    # maize-238 fb-mmap pool exhaustion: repeated fork+fb_mmap+exit until alloc_frames_contig
+    # returns -ENOMEM gracefully (no PANIC/poweroff). Slower than the others (it drains the
+    # 64 MiB pool one ~63-page buffer per exited child), so it gets its own longer timeout.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(MSYS2_ARG_CONV_EXCL='/progs' timeout 180 "$MAIZE" --no-root \
+        --mount "${nat}=/progs:ro" "$quesos" /progs/fb_mmap_enomem.mzx 2>/dev/null | grep -v '^$')
+    set -e
+    if printf '%s\n' "$out" | grep -qF "fb-enomem: PASS"; then
+        echo "[PASS] quesos_fb_enomem (alloc_frames_contig -ENOMEM, VM still running)"
+    else
+        echo "[FAIL] quesos_fb_enomem"
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # maize-238 injector-mode fd-0 poll/select legs (AC 9190/9192): launched WITH
+    # --input=console (the console as the active stdin injector) with a byte piped on
+    # stdin, exactly as the console_echo case below. poll_multi polls a pipe fd, a socket
+    # fd, and fd 0; select_console_pipe selects fd 0 + a pipe fd. Each self-checks PASS.
+    for case in poll_multi:poll-multi select_console_pipe:select-console-pipe; do
+        launcher="${case%%:*}"; marker="${case#*:}: PASS"
+        TOTAL=$((TOTAL + 1))
+        set +e
+        out=$(printf 'Z' | MSYS2_ARG_CONV_EXCL='/progs' timeout 60 "$MAIZE" --input=console \
+            --no-root --mount "${nat}=/progs:ro" "$quesos" "/progs/${launcher}.mzx" 2>/dev/null \
+            | grep -v '^$')
+        set -e
+        if printf '%s\n' "$out" | grep -qF "$marker"; then
+            echo "[PASS] quesos_${launcher}"
+        else
+            echo "[FAIL] quesos_${launcher}"
+            printf '%s\n' "$out" | sed 's/^/          | /'
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+    done
 
     # Console input rides the device IRQ/status path (vector 33), not a native blocking
     # read, so a parked fd-0 reader never freezes the VM (design doc 17). This case pipes

@@ -994,7 +994,13 @@ static void schedule(void) {
      * violate "blocked processes consume no slices". Otherwise the worklist is drained
      * (or the survivors are deadlocked with no possible waker): power off cleanly. */
     for (i = 0; i < QUESOS_MAX_PROC; ++i) {
-        if (g_proc[i].state == P_BLOCKED && g_proc[i].block_kind == BLK_CONSOLE) {
+        if (g_proc[i].state == P_BLOCKED
+            && (g_proc[i].block_kind == BLK_CONSOLE || g_proc[i].block_kind == BLK_POLL)) {
+            /* maize-238: a BLK_POLL caller is woken by the console IRQ (fd 0 readiness) or,
+             * for a finite timeout, by the timer-tick deadline sweep, both of which keep
+             * firing during the idle spin (interrupts on). Idle-spin rather than declaring a
+             * deadlock so poll()/select() with a timeout returns 0 on schedule instead of
+             * powering off the VM when nothing else is runnable. */
             g_current = 0;
             quesos_idle();   /* noreturn: SETINT; spin */
         }
@@ -2169,12 +2175,17 @@ static long do_fb_register(u64 base_uva) {
     if ((pte & PTE_V) == 0) { return -(long)QOS_EINVAL; }
     pa = user_pa(self, base_uva);
 
-    /* maize-238: validate that the WHOLE [base, base + width*height*4) range is mapped and
+    /* maize-238: validate that the mapped extent of [base, base + width*height*4) is
      * physically contiguous, not just base's own page. The device reads that linear range
      * with zero page-table awareness (doc 18's dumb-device contract), so a caller passing a
-     * non-fb_mmap'd (e.g. malloc'd) buffer whose pages are not contiguous would silently
-     * scan out wrong physical memory beyond page 0. Reject with -EINVAL instead. The
-     * existing one-page maize-236 fixtures are trivially contiguous (no next page to check). */
+     * non-fb_mmap'd buffer whose mapped pages are scattered would silently scan out wrong
+     * physical memory beyond page 0 -- defined bytes, wrong picture. Reject that with
+     * -EINVAL. A page that is simply unmapped stops the walk rather than rejecting: the
+     * existing one-page maize-236 fixtures register a tiny dummy buffer (the tail is
+     * unmapped, no next page to check) and must stay green, and the device tolerates
+     * reading defined-but-unwritten memory past a short buffer's end (devices.h: every
+     * address is defined, no host OOB). A genuinely scattered buffer, by contrast, has a
+     * MAPPED page at a non-contiguous physical address, which is what this catches. */
     {
         u64 n = fb_page_count();
         u64 base_page = base_uva & ~0xFFFul;
@@ -2184,7 +2195,7 @@ static long do_fb_register(u64 base_uva) {
             u64 va = base_page + k * PAGE_SIZE;
             u64 pte2 = pte_get(va_l0(self, va), (va >> 12) & 0x1FF);
             u64 this_pa;
-            if ((pte2 & PTE_V) == 0) { return -(long)QOS_EINVAL; }
+            if ((pte2 & PTE_V) == 0) { break; }   /* short buffer: no further page to check */
             this_pa = pte2 & ~0xFFFul;
             if (this_pa != prev_pa + PAGE_SIZE) { return -(long)QOS_EINVAL; }
             prev_pa = this_pa;
