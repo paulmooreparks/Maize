@@ -22,6 +22,16 @@ namespace maize {
 		   from an atexit handler or from a signal / console-control handler. */
 		void restore();
 
+		/* maize-264 (Decision 9403): register a best-effort teardown callback invoked from
+		   restore() on every exit path (normal, atexit, and the SIGTERM/SIGHUP/SIGSEGV/SIGABRT
+		   signal_restore path host_tty already owns). This EXTENDS restore()/signal_restore()
+		   rather than registering a SECOND signal()/sigaction() handler for those signals,
+		   which would silently discard host_tty's own terminal-restore handler on a crash. The
+		   hook is what the console binary uses to tear down the presenter segment + child on a
+		   crash; kept as a plain function pointer so host_tty (also linked into mazm) carries no
+		   dependency on the presenter transport. */
+		void set_teardown_hook(void (*hook)());
+
 		/* True when init() ran against an interactive terminal (the gate the termios
 		   syscalls use to decide whether to drive the host terminal vs. return -EBADF). */
 		bool active();

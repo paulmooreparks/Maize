@@ -34,6 +34,10 @@ namespace maize {
 			// handler (0 = none). Only a flag write happens in the handler (async-signal-safe).
 			volatile sig_atomic_t g_synth_byte = 0;
 
+			// maize-264: best-effort teardown callback (presenter segment + child) invoked from
+			// restore() on every exit path. NULL until the console binary registers it.
+			void (*g_teardown_hook)() = nullptr;
+
 			void put_u32(unsigned char* p, unsigned v) {
 				p[0] = static_cast<unsigned char>(v & 0xFF);
 				p[1] = static_cast<unsigned char>((v >> 8) & 0xFF);
@@ -198,7 +202,16 @@ namespace maize {
 			register_handlers();
 		}
 
+		void set_teardown_hook(void (*hook)()) {
+			g_teardown_hook = hook;
+		}
+
 		void restore() {
+			/* maize-264: run the presenter teardown on EVERY exit path (normal, atexit, and the
+			   signal_restore path). It is a no-op if no segment was ever created, so calling it
+			   before the interactive-terminal early-return below is safe and covers a crash on a
+			   non-interactive run too. */
+			if (g_teardown_hook) { g_teardown_hook(); }
 			if (!g_active) { return; }
 #if defined(_WIN32)
 			SetConsoleMode(g_hin, g_orig_in);

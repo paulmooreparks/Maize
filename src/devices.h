@@ -9,10 +9,12 @@
 
 #include "maize_cpu.h"
 #include "console_io.h"
+#include "presenter_transport.h"   // maize-264: shared-memory control block + frame regions
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <ostream>
 #include <string>
@@ -231,6 +233,23 @@ namespace maize {
 			   caller, evolving maize-221 from whole-VM power-off to per-exec rejection. */
 			void set_display_available(bool on) { display_available_.store(on, std::memory_order_relaxed); }
 
+			/* maize-264: rehome present_into's write destination into an externally-owned
+			   buffer (a shared-memory mapping) instead of each slot's private std::vector, and
+			   mirror active_slot_/present_count_ into `ctl` on every transition/present. Call
+			   once, right after construction, before attach() and before any port is touched (no
+			   guest has run yet). `frames_base` must hold fb_max_slots * width() * height()
+			   uint32_t entries, slot-major. Passing nullptr for both leaves the device in today's
+			   private-vector mode, byte-identical to pre-card behavior: this is what maizeg's
+			   standalone construction keeps doing (Decision D13). */
+			void bind_presenter_transport(std::uint32_t* frames_base, presenter_transport::control_block* ctl);
+
+			/* maize-264: installed only by the console binary's interactive path (never by
+			   maizeg standalone). Consulted (in place of display_available_) on a claim attempt:
+			   returns true once a live presenter is confirmed (spawned-or-reused and ready),
+			   false if that cannot be achieved. Owns its own spawn/liveness bookkeeping (via
+			   presenter_link::ensure_presenter); the device just trusts the boolean. */
+			void set_presenter_launch_hook(std::function<bool()> hook) { presenter_launch_hook_ = std::move(hook); }
+
 			/* Called by the display thread once per refresh (vblank). If the guest has enabled
 			   the vsync IRQ (port $55 bit1), set vsync-pending and raise the framebuffer IRQ so
 			   a guest parked in HALT wakes at the refresh rate. This is the periodic "monitor"
@@ -256,6 +275,21 @@ namespace maize {
 			void activate_locked(int new_slot);
 			void claim_locked(int slot, u_word base);
 			void release_locked(int slot);
+
+			/* maize-264: present_into's destination for `slot`. When the presenter transport is
+			   bound this is the slot's region inside the shared segment; otherwise the slot's
+			   own private capture vector (today's behavior, byte-identical). */
+			std::uint32_t* frame_dest(int slot) {
+				return shm_frames_ ? shm_frames_ + static_cast<std::size_t>(slot) * pixel_count_
+				                   : slots_[static_cast<size_t>(slot)].frame.data();
+			}
+			/* maize-264: whether a claim can be honored on this view. The presenter launch hook
+			   (console interactive path) supersedes display_available_ when installed; otherwise
+			   the maize-236 display_available_ flag decides. */
+			bool display_ok() {
+				return presenter_launch_hook_ ? presenter_launch_hook_()
+				                              : display_available_.load(std::memory_order_relaxed);
+			}
 
 			device_port width_port_;
 			device_port height_port_;
@@ -291,6 +325,16 @@ namespace maize {
 			std::atomic<bool> stop_on_claim_ {false};        // maize-221: console build stops the VM on a rejected claim
 			std::atomic<bool> display_available_ {true};     // maize-236: false rejects claims (per-exec)
 			std::vector<std::uint32_t> empty_frame_;         // returned by frame() when the console is active
+
+			/* maize-264: presenter transport. shm_frames_ / shm_ctl_ are non-null once
+			   bind_presenter_transport is called (the console interactive path); present_into
+			   then writes into the shared segment and mirrors active_slot_/present_sequence into
+			   the control block. presenter_launch_hook_ is the launch-or-attach gate consulted on
+			   a claim (Decision D8). All stay null/empty for maizeg standalone (Decision D13), so
+			   its construction and hot path are provably untouched. */
+			std::uint32_t* shm_frames_ {nullptr};
+			presenter_transport::control_block* shm_ctl_ {nullptr};
+			std::function<bool()> presenter_launch_hook_;
 		};
 
 		/* maize-140: host/VM text console (approach (i)). The window becomes a first-class

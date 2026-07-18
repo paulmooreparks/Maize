@@ -22,9 +22,33 @@ set(MAIZE_HOSTFS_SOURCES
 # GUI-subsystem binary whose output is the window. `maize` is the console build: no SDL, so it
 # stays a console-subsystem binary whose stdout/stderr reach the invoking terminal. Console
 # programs (hello, quesOS) run under `maize`; the screen (framebuffer, DOOM) runs under `maizeg`.
-set(MAIZE_VM_SOURCES "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" "src/perf.cpp" "src/host_tty.cpp" ${MAIZE_HOSTFS_SOURCES})
+# maize-264: the cross-process presentation transport (workbench doc 18 session-host
+# doctrine). Three TUs mirror the hostfs core/posix/win32 split: a platform-independent
+# core plus two backends, each internally #ifdef-guarded so the non-matching one compiles
+# to nothing. presenter_link is the session-side background thread (input drain +
+# pending_activate + the D16 auto-respawn watcher). All are SDL-free, so they link into
+# the console `maize` binary too; only the presenter role itself (presenter_main.cpp,
+# below) is maizeg-only. `maize` never runs as a presenter.
+set(MAIZE_PRESENTER_SOURCES
+  "src/presenter_transport_core.cpp"
+  "src/presenter_transport_posix.cpp"
+  "src/presenter_transport_win32.cpp"
+  "src/presenter_link.cpp")
+set(MAIZE_VM_SOURCES "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" "src/perf.cpp" "src/host_tty.cpp" ${MAIZE_HOSTFS_SOURCES} ${MAIZE_PRESENTER_SOURCES})
 add_executable(maizeg ${MAIZE_VM_SOURCES})
 add_executable(maize  ${MAIZE_VM_SOURCES})
+
+# maize-264: the presenter role (SDL window under MAIZE_DISPLAY, headless checksum stub
+# otherwise) is compiled into `maizeg` only; the console `maize` binary is never a
+# presenter, so it does not carry this TU.
+target_sources(maizeg PRIVATE "src/presenter_main.cpp")
+
+# maize-264: shm_open / posix_spawn on Linux. Modern glibc carries these in libc, but
+# link librt explicitly so an older CI toolchain still resolves them.
+if (UNIX AND NOT APPLE)
+  target_link_libraries(maizeg PRIVATE rt)
+  target_link_libraries(maize  PRIVATE rt)
+endif()
 
 # maize-217/230: the console binary `maize` is the console-only VM. This define makes maize.cpp ignore the
 # graphical-only launcher knobs (display, input=keyboard scancode injection) that live in

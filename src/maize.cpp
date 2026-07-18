@@ -14,6 +14,11 @@
 #include "devices.h"
 #include "perf.h"
 #include "host_tty.h"
+#include "presenter_transport.h"
+#include "presenter_link.h"
+#ifndef MAIZE_CONSOLE_ONLY
+#include "presenter_main.h"   // maize-264: the presenter role is compiled into maizeg only
+#endif
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
@@ -841,6 +846,33 @@ static const char *PER_BINARY_CONFIG_NAME = "maizeg.config";
 
 int main(int argc, char *argv[]) {
 	using namespace cpu;
+
+	/* maize-264: remember argv[0] so the presenter transport can find `maizeg` next to the
+	   running binary when it spawns a presenter. */
+	presenter_transport::set_argv0(argv[0]);
+
+#ifndef MAIZE_CONSOLE_ONLY
+	/* maize-264: `maizeg --presenter <session-id>` is the presenter role. It branches here
+	   BEFORE any normal VM/image-load setup and never returns to it; `maize` (console build)
+	   is never a presenter, so this whole branch is compiled out there. --display-scale /
+	   --refresh-hz are the two existing flags (no new CLI surface). */
+	for (int i = 1; i < argc; ++i) {
+		if (std::string(argv[i]) == "--presenter") {
+			std::string presenter_session = (i + 1 < argc) ? argv[i + 1] : std::string();
+			unsigned p_scale = 3, p_hz = 60;
+			for (int j = 1; j < argc; ++j) {
+				std::string a = argv[j];
+				if (a == "--display-scale" && j + 1 < argc) { p_scale = static_cast<unsigned>(std::atoi(argv[j + 1])); }
+				else if (a == "--refresh-hz" && j + 1 < argc) { p_hz = static_cast<unsigned>(std::atoi(argv[j + 1])); }
+			}
+			if (presenter_session.empty()) {
+				std::cerr << "maizeg --presenter: missing <session-id>" << std::endl;
+				return 2;
+			}
+			return presenter_main::run(presenter_session, p_scale, p_hz);
+		}
+	}
+#endif
 
 	/* card maize-60: CLI grammar `maize [options] <image> [guest-args...]`. Parse
 	   maize-options left-to-right and STOP at the first non-option token, which is
@@ -1699,14 +1731,41 @@ int main(int argc, char *argv[]) {
 	   test, must keep the framebuffer usable without a window and exit on the guest's own
 	   terms. */
 	const bool fb_trap_interactive = stdin_is_interactive();
-	if (fb_trap_interactive) {
-		/* maize-236: the console binary has no window, so mark the view display-less AND
-		   stop-on-claim. A bare single-tasking graphics program's claim is then rejected and
-		   halts the VM (the maize-221 use-the-graphical-binary diagnostic, byte-identical).
-		   A multi-process quesOS boot that wants per-exec rejection instead (keep running,
-		   return -ENODEV) passes --fb-no-display without --fb-stop-on-claim. */
-		framebuffer.set_display_available(false);
-		framebuffer.set_stop_on_claim(true);
+	/* maize-264: the presenter transport (workbench doc 18 session-host doctrine). On an
+	   interactive run WITHOUT --fb-no-display, a graphical registration launches or attaches
+	   a maizeg presenter window that the guest buffer presents through; the console binary is
+	   no longer display-less. This unifies the bare single-tasking case (maize doom.mzb) with
+	   the quesOS-mediated case (maize-251), replacing maize-221/236's display-less power-off
+	   here (Decision D10). The --fb-no-display / --fb-stop-on-claim CLI paths stay the
+	   deliberate CI/headless opt-out (Decision D10): no hook is installed there, so
+	   display_available_ keeps whatever those flags set, exactly as today. */
+	presenter_transport::mapped_segment presenter_seg{};
+	std::string session_id;
+	if (fb_trap_interactive && !fb_no_display) {
+		session_id = presenter_transport::new_session_id();
+		presenter_seg = presenter_transport::create_segment(session_id, fb_width, fb_height,
+			cpu::fb_format_xrgb8888, static_cast<std::uint32_t>(cpu::fb_max_slots));
+		if (presenter_seg.ctl) {
+			framebuffer.bind_presenter_transport(presenter_seg.frames_base, presenter_seg.ctl);
+			framebuffer.set_presenter_launch_hook([&]() {
+				return presenter_link::ensure_presenter(presenter_seg, session_id, display_scale, refresh_hz);
+			});
+			presenter_link::start(presenter_seg, framebuffer, keyboard, session_id, display_scale, refresh_hz);
+			/* Crash/signal teardown extends host_tty's restore()/signal_restore() via this hook
+			   (Decision 9403); no second signal handler is registered. */
+			maize::host_tty::set_teardown_hook(presenter_transport::teardown_if_active);
+			std::cerr << "maize: a graphical registration will open a presenter window; if it closes, "
+			             "it reopens automatically, or run `maizeg --presenter " << session_id
+			          << "` to reattach immediately." << std::endl;
+		} else {
+			/* Segment creation failed (e.g. no shared-memory support): fall back to the
+			   maize-221 display-less behavior so a graphical guest still degrades cleanly. */
+			framebuffer.set_display_available(false);
+			framebuffer.set_stop_on_claim(true);
+		}
+	} else if (fb_trap_interactive) {
+		/* Interactive but --fb-no-display: keep the maize-236 per-exec rejection posture the
+		   flag already selected (no presenter). */
 	}
 #endif
 
@@ -1738,6 +1797,12 @@ int main(int argc, char *argv[]) {
 	}
 
 #ifdef MAIZE_CONSOLE_ONLY
+	/* maize-264: clean-exit presenter teardown. Stop the background link thread, then tear
+	   down the segment + child (sets shutdown, grace-waits, force-kills, unmaps, unlinks).
+	   Done BEFORE host_tty::restore() so the crash-path teardown_if_active hook restore()
+	   fires is an idempotent no-op afterward. teardown is safe (no-op) when no segment exists. */
+	presenter_link::stop();
+	presenter_transport::teardown(presenter_seg);
 	/* maize-228: the guest has halted; put the host terminal back to cooked before any
 	   post-run host output (the perf report, the fb diagnostic). The atexit + signal/console
 	   handlers also restore, so an abnormal exit is covered; this is the clean-exit path. */
@@ -1771,8 +1836,11 @@ int main(int argc, char *argv[]) {
 #ifdef MAIZE_CONSOLE_ONLY
 	/* maize-221: the guest claimed the framebuffer under the console build (the takeover
 	   trap above stopped the VM). Tell the operator to use the graphical binary rather than
-	   exiting silently as if the program had simply run. Distinct exit code (3). */
-	if (fb_trap_interactive && framebuffer.graphics_claim_attempted()) {
+	   exiting silently as if the program had simply run. Distinct exit code (3).
+	   maize-264: this fires ONLY when no presenter was active (the display-less fallback or
+	   the --fb-no-display path). With a presenter bound, a graphical registration is honored
+	   through the presenter window, so the "use the graphical binary" diagnostic is wrong. */
+	if (fb_trap_interactive && presenter_seg.ctl == nullptr && framebuffer.graphics_claim_attempted()) {
 		std::cerr << "maize: '" << file_path << "' drives the graphical framebuffer, which this "
 			"console build cannot display." << std::endl
 			<< "maize: run it with the graphical Maize binary (the build that opens a window)."
