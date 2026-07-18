@@ -413,15 +413,15 @@ static void reap_tail(struct pcb *self);             /* maize-174: shared zombie
 static char g_pathbuf[QUESOS_MAX_PROC][QUESOS_PATH_CAP];
 static long g_worklist_count;
 
-/* Whole child image is slurped here before segment placement. maize-94: raised from
- * 256 KiB to 640 KiB so the vendored oksh image (~458 KiB linked, the whole shell +
- * the freestanding libc slice) fits; the earlier 256 KiB cap silently truncated it and
- * load_segments then rejected it ("cannot start"). g_filebuf lives in quesOS's BSS
- * inside the [0x100000, 0x200000) 1 MiB image region; at 640 KiB it plus quesOS's code
- * (~32 KiB) and the rest of its static data (stack 64 KiB, pcbs, arg/io bounce buffers)
- * still fits comfortably under 1 MiB, verified against the linked image size. */
-#define QUESOS_FILEBUF_CAP (640u * 1024u)
-static u8 g_filebuf[QUESOS_FILEBUF_CAP];
+/* maize-251: the child image is STREAMED segment by segment straight into the process's user
+ * frames (read_exact_at + a g_iobuf-sized chunk loop in load_segments), NOT slurped whole into
+ * a fixed BSS buffer first. The old whole-file g_filebuf (640 KiB, raised from 256 KiB for oksh
+ * in maize-94) was an arbitrary ceiling that silently truncated any larger image: DOOM's ~707
+ * KiB .mzx overflowed it and quesOS reported "cannot start". Streaming removes the ceiling (any
+ * image up to the address space fits) AND frees ~640 KiB of quesOS BSS out of the 1 MiB image
+ * region, with no memory-layout surgery. The only staging buffer is the existing 4 KiB g_iobuf,
+ * reused during load (single-threaded dispatch, no concurrent read). The spec did not enumerate
+ * this dependency; it is a necessary consequence of running a large graphical guest under quesOS. */
 
 /* Bounce buffer: user-pointer syscall args are copied through this identity-mapped
  * kernel staging area, because the native provider reads guest memory raw-physical
@@ -633,19 +633,18 @@ static void ensure_user_page(struct pcb *p, u64 va) {
 /* ==================================================================================
  * Image load + first-entry stack.
  * ================================================================================== */
-static long quesos_slurp(const char *path) {
-    long fd = sys_open(path, 0 /* O_RDONLY */, 0);
-    long total = 0;
-    if (fd < 0) { return -1; }
-    for (;;) {
-        long n = sys_read(fd, g_filebuf + total, (long)(QUESOS_FILEBUF_CAP - (u64)total));
-        if (n < 0) { sys_close(fd); return -1; }
-        if (n == 0) { break; }
-        total += n;
-        if ((u64)total >= QUESOS_FILEBUF_CAP) { break; }
+/* maize-251: read exactly n bytes at file offset off into buf. Returns 0 on success, -1 on a
+ * seek/read error or a premature EOF (a truncated/malformed image). This is the streaming-load
+ * primitive: it reads directly from the hostfs fd rather than through a whole-file buffer. */
+static long read_exact_at(long fd, u64 off, u8 *buf, u64 n) {
+    u64 got = 0;
+    if (sys_lseek(fd, (long)off, 0 /* SEEK_SET */) < 0) { return -1; }
+    while (got < n) {
+        long r = sys_read(fd, buf + got, (long)(n - got));
+        if (r <= 0) { return -1; }   /* error or premature EOF */
+        got += (u64)r;
     }
-    sys_close(fd);
-    return total;
+    return 0;
 }
 
 /* Marshalled argv/envp for the next process image. build_start_block reads these; they
@@ -722,45 +721,66 @@ static void build_start_block(struct pcb *p, u64 entry) {
  * the segment vaddr, zero-filling the BSS tail. Writes the entry point to *entry_out.
  * Does NOT build the start block (the caller marshals argv/envp first). Returns 0. */
 static int load_segments(struct pcb *p, const char *path, u64 *entry_out) {
-    long size = quesos_slurp(path);
-    const u8 *b = g_filebuf;
-    u16 seg_count;
+    long fd = sys_open(path, 0 /* O_RDONLY */, 0);
+    u8 hdr[MZX_HEADER_SIZE];
+    u16 seg_count, i;
     u64 shoff;
     u64 top_va = 0;   /* maize-94: highest segment end, becomes the initial heap break */
-    u16 i;
 
-    if (size < (long)MZX_HEADER_SIZE
-        || b[0] != 'M' || b[1] != 'Z' || b[2] != 'X' || b[3] != 0x01) {
+    if (fd < 0) { return -1; }
+    /* maize-251: read + validate the header directly from the fd (no whole-file slurp). A
+     * short read (truncated image) or a bad magic is rejected the same way slurp+check was. */
+    if (read_exact_at(fd, 0, hdr, MZX_HEADER_SIZE) != 0
+        || hdr[0] != 'M' || hdr[1] != 'Z' || hdr[2] != 'X' || hdr[3] != 0x01) {
+        sys_close(fd);
         qos_puts("[quesos] not a loadable .mzx image: ");
         qos_puts(path);
         qos_puts("\n");
         return -1;
     }
 
-    seg_count = rd_u16(b, 6);
-    *entry_out = rd_u64(b, 8);
-    shoff      = rd_u64(b, 16);
+    seg_count = rd_u16(hdr, 6);
+    *entry_out = rd_u64(hdr, 8);
+    shoff      = rd_u64(hdr, 16);
 
     for (i = 0; i < seg_count; ++i) {
+        u8 seg[MZX_SEGMENT_SIZE];
         u64 so = shoff + (u64)i * MZX_SEGMENT_SIZE;
-        u64 vaddr, file_off, mem_size, file_size, j, va;
+        u64 vaddr, file_off, mem_size, file_size, j, va, done;
 
-        if (so + MZX_SEGMENT_SIZE > (u64)size) { return -1; }
-        vaddr     = rd_u64(b, so + 8);
-        file_off  = rd_u64(b, so + 16);
-        mem_size  = rd_u64(b, so + 24);
-        file_size = rd_u64(b, so + 32);
-        if (file_off + file_size > (u64)size) { return -1; }
+        /* Read the segment table entry; a short read means a malformed/truncated image. */
+        if (read_exact_at(fd, so, seg, MZX_SEGMENT_SIZE) != 0) { sys_close(fd); return -1; }
+        vaddr     = rd_u64(seg, 8);
+        file_off  = rd_u64(seg, 16);
+        mem_size  = rd_u64(seg, 24);
+        file_size = rd_u64(seg, 32);
 
-        /* Map every page the segment spans, then copy bytes through the frame's
-         * identity address (CR0 is not necessarily this process's table yet). */
+        /* Map every page the segment spans. */
         for (va = vaddr & ~0xFFFul; va < vaddr + mem_size; va += PAGE_SIZE) {
             ensure_user_page(p, va);
         }
-        for (j = 0; j < file_size; ++j) { as_write8(p, vaddr + j, b[file_off + j]); }
+        /* maize-251: stream file_size bytes from file_off straight into the user frames in
+         * g_iobuf-sized chunks (each byte written through the process's page table via
+         * as_write8, so it lands correctly even when CR0 is not yet this process's table).
+         * A short read (past EOF) rejects the image. */
+        if (file_size > 0) {
+            if (sys_lseek(fd, (long)file_off, 0 /* SEEK_SET */) < 0) { sys_close(fd); return -1; }
+            done = 0;
+            while (done < file_size) {
+                u64 want = file_size - done;
+                long r;
+                if (want > QUESOS_IOBUF_CAP) { want = QUESOS_IOBUF_CAP; }
+                r = sys_read(fd, g_iobuf, (long)want);
+                if (r <= 0) { sys_close(fd); return -1; }
+                for (j = 0; j < (u64)r; ++j) { as_write8(p, vaddr + done + j, g_iobuf[j]); }
+                done += (u64)r;
+            }
+        }
+        /* Zero-fill the BSS tail [file_size, mem_size). */
         for (j = file_size; j < mem_size; ++j) { as_write8(p, vaddr + j, 0); }
         if (vaddr + mem_size > top_va) { top_va = vaddr + mem_size; }
     }
+    sys_close(fd);
     /* maize-94: the heap break starts page-aligned above the highest loaded segment and
      * grows upward via SYS_brk (do_brk maps pages on demand up to USER_BRK_MAX). */
     p->brk_cur = (top_va + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
@@ -2188,13 +2208,17 @@ static long do_execve(u64 path_uva, u64 argv_uva, u64 envp_uva) {
      * or a shell's own retry) probe candidates: a miss returns ENOENT and the caller tries
      * the next form. The kernel still does NO name rewriting itself (it stays dumb). */
     {
-        long psize = quesos_slurp(kpath);
-        const u8 *pb = g_filebuf;
-        if (psize < 0) { return -(long)QOS_ENOENT; }
-        if (psize < (long)MZX_HEADER_SIZE
-            || pb[0] != 'M' || pb[1] != 'Z' || pb[2] != 'X' || pb[3] != 0x01) {
+        long pfd = sys_open(kpath, 0 /* O_RDONLY */, 0);
+        u8 phdr[MZX_HEADER_SIZE];
+        if (pfd < 0) { return -(long)QOS_ENOENT; }
+        /* maize-251: validate the header directly (no whole-file slurp). A short read or bad
+         * magic is ENOEXEC, exactly as the old slurp+size+magic check reported. */
+        if (read_exact_at(pfd, 0, phdr, MZX_HEADER_SIZE) != 0
+            || phdr[0] != 'M' || phdr[1] != 'Z' || phdr[2] != 'X' || phdr[3] != 0x01) {
+            sys_close(pfd);
             return -(long)QOS_ENOEXEC;
         }
+        sys_close(pfd);
     }
 
     marshal_vec(argv_uva, &nstr, &pack, QUESOS_MAX_ARG);
