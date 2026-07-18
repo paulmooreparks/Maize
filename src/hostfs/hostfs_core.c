@@ -473,15 +473,25 @@ int64_t hostfs_open(hostfs_table *t, const char *path, int flags, int mode) {
         hostfs_fd_slot *s = slot_for_fd(fd);
         s->mount = m;
         s->handle = handle;
-        /* maize-255: a fd opened for the literal root mount ("/") also merges in
-           the top-level names of every other granted mount, deduped against this
-           mount's own physical entries. This is the same is_root_pfx test
-           match_mount already applies internally; it is duplicated here rather
-           than plumbed out through match_mount's signature to keep the diff to
-           the two call sites that need it. A fd opened for a deeper mount (e.g.
-           /bin, its own registered mount) never sets this. */
+        /* maize-255: a fd opened for the root of the literal "/" mount also merges
+           in the top-level names of every other granted mount, deduped against this
+           mount's own physical entries. TWO conditions must both hold:
+             1. the matched mount is the root "/" mount (guest_prefix is exactly
+                "/"), the same is_root_pfx test match_mount applies internally; and
+             2. the opened path IS that mount's root itself, i.e. the host-relative
+                remainder rel is "." (norm == "/").
+           Condition 2 is load-bearing: the "/" mount is match_mount's fallback and
+           WINS the match for every path that no deeper mount claims (e.g.
+           /home/user, /tmp, /home/user/doom all resolve through it). Gating on the
+           mount identity alone (condition 1 only) wrongly set merge_root on those
+           deeper fds, so their listings appended the synthetic mount names too, and
+           a subdirectory holding a physical dir named like a mount showed it twice
+           (the operator's "double doom"). rel is match_mount's already-computed
+           remainder ("." only for the mount root), so this costs one strcmp and no
+           extra plumbing. A fd opened for a deeper mount (e.g. /bin, its own
+           registered mount) never reaches guest_prefix "/" and never sets this. */
         size_t plen = strlen(m->guest_prefix);
-        if (plen == 1 && m->guest_prefix[0] == '/') {
+        if (plen == 1 && m->guest_prefix[0] == '/' && strcmp(rel, ".") == 0) {
             s->merge_root = 1;
             cache_merge_extra_names(t, m, s);
         }

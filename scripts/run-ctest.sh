@@ -849,6 +849,67 @@ run_hostfs_root_merge() {
         echo "        actual:   \"${actual2}\""
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
+
+    # maize-255 REOPEN negative cases: the merged mount-name listing must appear ONLY
+    # in the root "/" listing, never in a deeper directory that merely resolves through
+    # the "/" root mount. Reproduces the operator's exact "double doom" shape: a --root
+    # sandbox with a PHYSICAL /home/user/doom subdir, plus /bin and /doom OVERLAY grants
+    # (the two names that were bleeding into every listing). /tmp is left as the
+    # sandbox's own physical dir (NO overlay) so its listing reproduces the operator's
+    # "ls /tmp shows bin+doom" case. Distinct marker files pin each listing to an exact
+    # set, so a stray synthetic name (or a duplicated physical one) is caught precisely.
+    name3="root_merge_neg_hostfs"
+    TOTAL=$((TOTAL + 1))
+    compile_c "$name3" || return
+    bin3="$BIN"
+
+    nroot="${WORK_DIR}/hostfs_root_merge_neg"
+    rm -rf "$nroot"
+    mkdir -p "$nroot/sandbox/home/user/doom" "$nroot/sandbox/tmp" \
+        "$nroot/binhost" "$nroot/doomhost"
+    printf 'x\n' > "$nroot/sandbox/home/user/sub_marker.txt"
+    printf 'x\n' > "$nroot/sandbox/tmp/tmp_marker.txt"
+    printf 'x\n' > "$nroot/binhost/bin_marker.txt"
+    printf 'x\n' > "$nroot/doomhost/doom_marker.txt"
+    nat_nroot=$(host_to_native "$nroot/sandbox")
+    nat_nbin=$(host_to_native "$nroot/binhost")
+    nat_ndoom=$(host_to_native "$nroot/doomhost")
+
+    set +e
+    negout=$(MSYS2_ARG_CONV_EXCL='/bin;/doom' "$MAIZE" --root "${nat_nroot}" \
+        --mount "${nat_nbin}=/bin:ro" --mount "${nat_ndoom}=/doom:ro" "$bin3" 2>/dev/null)
+    set -e
+
+    neg_root=$(printf '%s\n' "$negout" | grep '^ROOT:' | sed 's/^ROOT://' | sort)
+    neg_sub=$(printf '%s\n' "$negout" | grep '^SUB:' | sed 's/^SUB://' | sort)
+    neg_tmp=$(printf '%s\n' "$negout" | grep '^TMP:' | sed 's/^TMP://' | sort)
+    neg_doom=$(printf '%s\n' "$negout" | grep '^DOOM:' | sed 's/^DOOM://' | sort)
+    neg_bin=$(printf '%s\n' "$negout" | grep '^BIN:' | sed 's/^BIN://' | sort)
+
+    exp_root=$(printf 'bin\ndoom\nhome\ntmp\n' | sort)
+    exp_sub=$(printf 'doom\nsub_marker.txt\n' | sort)     # doom exactly ONCE, no bin
+    exp_tmp=$(printf 'tmp_marker.txt\n' | sort)           # no bin/doom
+    exp_doom=$(printf 'doom_marker.txt\n' | sort)         # overlay root, no synthetic
+    exp_bin=$(printf 'bin_marker.txt\n' | sort)           # overlay root, no synthetic
+
+    negok=1
+    [ "$neg_root" = "$exp_root" ] || negok=0
+    [ "$neg_sub" = "$exp_sub" ]   || negok=0
+    [ "$neg_tmp" = "$exp_tmp" ]   || negok=0
+    [ "$neg_doom" = "$exp_doom" ] || negok=0
+    [ "$neg_bin" = "$exp_bin" ]   || negok=0
+
+    if [ "$negok" -eq 1 ]; then
+        echo "[PASS] ${name3}"
+    else
+        echo "[FAIL] ${name3}"
+        echo "        ROOT expected: \"${exp_root}\"  actual: \"${neg_root}\""
+        echo "        SUB  expected: \"${exp_sub}\"  actual: \"${neg_sub}\""
+        echo "        TMP  expected: \"${exp_tmp}\"  actual: \"${neg_tmp}\""
+        echo "        DOOM expected: \"${exp_doom}\"  actual: \"${neg_doom}\""
+        echo "        BIN  expected: \"${exp_bin}\"  actual: \"${neg_bin}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
 }
 
 # maize-138 multi-file compile/link. Builds N C sources into one .mzx through the
