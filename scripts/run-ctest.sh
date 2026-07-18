@@ -2312,7 +2312,8 @@ run_quesos_ac_fixtures() {
                poll_timeout poll_broken poll_multi select_console_pipe \
                poll_fd0_default stdin_owner_probe poll_unconnected_sock poll_fd0_eof \
                fb_mmap_paint fb_noncontig_reject fb_mmap_isolation fb_mmap_enomem \
-               bulk_forward bulk_noncontig bulk_bounds bulk_kernel_range; do
+               bulk_forward bulk_noncontig bulk_bounds bulk_kernel_range \
+               bigalloc fb_present kbd_acl; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
             echo "[FAIL] quesos_ac: ${src}.c compile failed"; cat "$log" >&2
@@ -2428,6 +2429,34 @@ run_quesos_ac_fixtures() {
     quesos_ac_case quesos_fb_mmap_paint  "fb-mmap-paint: PASS"        fb_mmap_paint
     quesos_ac_case quesos_fb_noncontig   "fb-noncontig: PASS"         fb_noncontig_reject
     quesos_ac_case quesos_fb_isolation   "fb-isolation: PASS"         fb_mmap_isolation
+
+    # maize-251 guest-OS display surface (the DOOM-under-quesOS syscalls). bigalloc: size-0
+    # -EINVAL, over-16-MiB -ENOMEM, writable+readback, and fork-exclusion (child's window is
+    # NOT the parent's eager copy). fb_present: -EBADF unregistered, then present-after-register
+    # returns 0 with no crash. Both run headless like the other fb cases.
+    quesos_ac_case quesos_bigalloc       "bigalloc: PASS"             bigalloc
+    quesos_ac_case quesos_fb_present     "fb-present: PASS"           fb_present
+
+    # maize-251 sys_kbd_read ACL (AC 9315). Unlike the other quesos_ac cases this one needs a
+    # latched scancode, so it runs with --input=keyboard and a single Set-1 byte (0x1E, 'a')
+    # piped on stdin -- NOT the /dev/null stdin quesos_ac_case uses. The fixture proves all
+    # three legs with one scancode: non-owner+pending -> -EACCES (no consume), owner+pending ->
+    # the scancode, owner+none -> -EAGAIN. quesOS's new vector-34 keyboard IRQ sink keeps the
+    # injected key from halting the VM.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(printf '\036' | MSYS2_ARG_CONV_EXCL='/progs' timeout 90 "$MAIZE" --input=keyboard \
+        --no-root --mount "${nat}=/progs:ro" "$quesos" /progs/kbd_acl.mzx 2>/dev/null \
+        | grep -v '^$')
+    set -e
+    if printf '%s\n' "$out" | grep -qF "kbd-acl: PASS"; then
+        echo "[PASS] quesos_kbd_acl"
+    else
+        echo "[FAIL] quesos_kbd_acl"
+        echo "        expected marker: \"kbd-acl: PASS\""
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
 
     # maize-247: forward the bulk-memory accelerators ($F4 sys_bulk_copy / $F5 sys_bulk_set)
     # under quesOS paging. bulk_forward proves the raw contiguous forward (rv == n) for both
@@ -2557,6 +2586,144 @@ run_quesos_ac_fixtures() {
 }
 
 run_quesos_ac_fixtures
+
+# maize-251 DOOM as a quesOS child: the North Star payoff. Boots the WHOLE DOOM engine as a
+# quesOS worklist child against the synthetic min-IWAD, with video/input flowing through the
+# fb registration + fb-mmap + keyboard-port machinery and DOOM's ~6 MiB zone heap satisfied by
+# sys_bigalloc (over the sbrk ceiling). Three legs:
+#   - render (both CI legs, AC 9309/9310): headless quesOS child renders + presents; the same
+#     pixel-exact 3-point viewport check asserts a real 3D frame reading DG_MaizeFB. "doom: PASS".
+#   - exit-4 (both CI legs, AC 9500): --fb-no-display makes sys_fb_register -ENODEV, so DG_Init
+#     sets DG_MaizeInitError==3; doom_main.c's diagnostic path prints "doom: framebuffer init
+#     failed (code 3)" to stderr and the child exits 4 (quesOS reaps status=4, VM keeps running).
+#   - pty checksum (Linux only, AC 9499): under a real pty the full maize-264 launch-or-attach
+#     machinery engages; the quesOS child's fb_register triggers the same presenter-launch hook
+#     a bare-VM registration would, and the stub's FNV-1a checksum of the 320x200 frame matches
+#     a pinned value.
+# Same submodule-presence [SKIP] guard, --dev compile, mount, and MSYS2_ARG_CONV_EXCL handling
+# as run_doom_render.
+run_doom_quesos() {
+    name="doom-quesos"
+    doom_dir="${REPO_ROOT}/demos/doom"
+    render="${doom_dir}/doom_render_selfcheck_quesos.c"
+    platform="${doom_dir}/doomgeneric_maize.c"
+    sources="${doom_dir}/doom.sources"
+    generator="${doom_dir}/tools/make_min_iwad.c"
+    builder="${REPO_ROOT}/os/quesos/build-quesos.sh"
+    probe="${doom_dir}/doomgeneric/doomgeneric/doomgeneric.c"
+
+    if [ ! -f "$probe" ]; then
+        echo "[SKIP] ${name}: demos/doom/doomgeneric submodule not initialized" \
+             "(run 'git submodule update --init demos/doom/doomgeneric'); skipping DOOM-quesOS gate"
+        return
+    fi
+
+    # Build quesOS once (its own non-default base link).
+    quesos="${WORK_DIR}/doom-quesos.mzx"
+    log="${WORK_DIR}/doom-quesos.log"
+    if ! sh "$builder" --preset "$PRESET" -o "$quesos" >"$log" 2>&1 || [ ! -f "$quesos" ]; then
+        echo "[FAIL] ${name}: quesOS link failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    # System C compiler for the synthetic IWAD generator (present on both CI hosts).
+    gen_cc="${CC:-}"
+    if [ -z "$gen_cc" ]; then
+        if command -v cc >/dev/null 2>&1; then gen_cc=cc; else gen_cc=gcc; fi
+    fi
+    gen_exe="${WORK_DIR}/make_min_iwad_quesos"
+    if ! "$gen_cc" -O2 -o "$gen_exe" "$generator" >>"$log" 2>&1; then
+        echo "[FAIL] ${name}: min-IWAD generator failed to compile"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    waddir="${WORK_DIR}/doom-quesos-wad"
+    rm -rf "$waddir"; mkdir -p "$waddir"
+    if ! "$gen_exe" "${waddir}/min.wad" >>"$log" 2>&1 || [ ! -f "${waddir}/min.wad" ]; then
+        echo "[FAIL] ${name}: min-IWAD generation failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    # Link the quesOS-child render harness: doom.sources core + platform + mzdev (--dev) + RT
+    # libc, at the 320x200 geometry override, into a /progs mount dir.
+    progs="${WORK_DIR}/doom-quesos-progs"
+    rm -rf "$progs"; mkdir -p "$progs"
+    child="${progs}/doom_render_selfcheck_quesos.mzx"
+    if ! "$CC_MAIZE" --preset "$PRESET" --dev \
+        -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
+        -o "$child" --sources "$sources" "$render" "$platform" >>"$log" 2>&1 \
+    || [ ! -f "$child" ]; then
+        echo "[FAIL] ${name}: quesOS-child render C compile/link failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    nat_progs=$(host_to_native "$progs")
+    nat_wad=$(host_to_native "$waddir")
+
+    # Leg 1: headless render (both CI legs). The synthetic IWAD path is baked into the child's
+    # synthesized argv (/ro/min.wad); MSYS2_ARG_CONV_EXCL exempts /progs and /ro from the
+    # POSIX->Windows argv rewrite on the MinGW leg (see run_doom_render).
+    TOTAL=$((TOTAL + 1))
+    set +e
+    actual=$(MSYS2_ARG_CONV_EXCL='/progs;/ro' timeout 120 "$MAIZE" --no-root \
+        --mount "${nat_progs}=/progs:ro" --mount "${nat_wad}=/ro:ro" \
+        "$quesos" /progs/doom_render_selfcheck_quesos.mzx 2>/dev/null | grep -v '^$')
+    set -e
+    if printf '%s\n' "$actual" | grep -qx "doom: PASS"; then
+        echo "[PASS] ${name}_render"
+    else
+        echo "[FAIL] ${name}_render"
+        echo "        expected a \"doom: PASS\" line (quesOS-mediated 3D viewport render)"
+        echo "        actual:   \"$(printf '%s' "$actual" | tail -4 | tr '\n' '|')\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # Leg 2: --fb-no-display exit-code-4 diagnostic (both CI legs). sys_fb_register -ENODEV ->
+    # DG_MaizeInitError==3 -> doom_main.c-style diagnostic + child exit 4; quesOS reaps status=4
+    # and keeps running. Capture stdout+stderr together.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    ejout=$(MSYS2_ARG_CONV_EXCL='/progs;/ro' timeout 120 "$MAIZE" --fb-no-display --no-root \
+        --mount "${nat_progs}=/progs:ro" --mount "${nat_wad}=/ro:ro" \
+        "$quesos" /progs/doom_render_selfcheck_quesos.mzx 2>&1)
+    set -e
+    if printf '%s\n' "$ejout" | grep -qF "doom: framebuffer init failed (code 3)" \
+    && printf '%s\n' "$ejout" | grep -qF "reaped /progs/doom_render_selfcheck_quesos.mzx status=4"; then
+        echo "[PASS] ${name}_exit4"
+    else
+        echo "[FAIL] ${name}_exit4"
+        echo "        expected stderr \"doom: framebuffer init failed (code 3)\" + reap status=4"
+        echo "        actual:   \"$(printf '%s' "$ejout" | tail -4 | tr '\n' '|')\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # Leg 3: cross-process pty checksum (Linux only; the Windows leg rides AC 9308). Needs a real
+    # pty so the launch-or-attach machinery engages. Skipped where python3/pty is unavailable.
+    case "$UNAME" in
+        Linux)
+            if command -v python3 >/dev/null 2>&1; then
+                TOTAL=$((TOTAL + 1))
+                set +e
+                ptyout=$(timeout 90 python3 "${REPO_ROOT}/scripts/pty_presenter_doom_check.py" \
+                    "$MAIZE" "$quesos" "$child" "$progs" "$waddir" 2>&1)
+                set -e
+                if printf '%s\n' "$ptyout" | grep -qF "pty-presenter-doom: PASS"; then
+                    echo "[PASS] ${name}_pty"
+                else
+                    echo "[FAIL] ${name}_pty"
+                    printf '%s\n' "$ptyout" | tail -6 | sed 's/^/          | /'
+                    FAIL_COUNT=$((FAIL_COUNT + 1))
+                fi
+            else
+                echo "[SKIP] ${name}_pty: python3 not available (Linux-only pty leg)"
+            fi
+            ;;
+        *)
+            echo "[SKIP] ${name}_pty: pty checksum leg is Linux-only (Windows rides AC 9308)"
+            ;;
+    esac
+}
+
+run_doom_quesos
 
 # maize-94 wave-1 kernel plumbing: quesOS forwards the native hostfs file/dir subset
 # (decision 8941), owns a per-process cwd + relative-path resolution (decision 8940), and
