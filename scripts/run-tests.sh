@@ -655,6 +655,48 @@ run_keyboard_test() {
 
 run_keyboard_test
 
+# --- maize-240: a masked-window IRQ collision must deliver BOTH vectors ----------------
+# A periodic timer (vector 32) and the console readiness IRQ (vector 33) raised inside the
+# same masked window must both survive to be delivered. The old single-slot latch dropped
+# one; when the timer was the loser its tick-pending bit was never acked, so the countdown
+# paused and the timer wedged permanently. The guest prints PASS only after >= 3 serviced
+# timer ticks AND >= 1 serviced console IRQ, so a dropped-vector regression livelocks and
+# trips the timeout (exit 124) instead of hanging the suite. One byte is piped to stdin
+# with the DEFAULT invocation (the console is the default input source, maize-238), driving
+# the console's rising-edge readiness IRQ inside the masked window.
+run_irq_collision_test() {
+    name="irq_collision"
+    expected="irqcoll: PASS"
+    TOTAL=$((TOTAL + 1))
+    src="test_irq_collision.mazm"
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+    out_file=$(mktemp)
+    if printf 'X' | timeout 10 "$MAIZE_EXE" "$bin_path" >"$out_file" 2>/dev/null; then
+        me=0
+    else
+        me=$?
+    fi
+    actual=$(cat "$out_file")
+    rm -f "$out_file"
+    if [ "$me" -eq 0 ] && [ "$actual" = "$expected" ]; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: \"${expected}\" (exit 0, both vectors delivered)"
+        echo "        actual:   \"${actual}\" (exit ${me}; 124 = timed out = dropped-IRQ wedge)"
+    fi
+}
+
+run_irq_collision_test
+
 # --- maize-236: framebuffer registration table, the two display-less branches ---------
 # The same test_fb_registration fixture self-adapts to the host display policy. run under
 # --fb-no-display the device rejects the claim (STATUS bit2) and the fixture takes its

@@ -1,0 +1,175 @@
+; **********************************************************************************
+; Deterministic collision regression for card maize-240: two devices raising
+; distinct IRQ vectors inside one masked window must BOTH be delivered, not one
+; dropped. The old single-slot controller kept a lone pending-vector scalar
+; (last-raise-wins), so a periodic timer (vector 32) and the console readiness IRQ
+; (vector 33) firing in the same masked window lost one of the two. When the timer
+; was the loser its tick-pending status bit was never acknowledged, so the countdown
+; paused forever and the timer subsystem wedged permanently: the sharpest form of the
+; bug this fixture pins down.
+;
+; Shape: install handlers at entry[32] (timer) and entry[33] (console), keep
+; interrupts masked, program a periodic timer, then spin a counted loop of well over
+; INPUT_TICK_MASK+1 = 16384 instructions. Inside that masked window the timer fires
+; once (then self-pauses awaiting its ack) and the console's rising-edge readiness IRQ
+; fires once, so both raise_irq calls land before either can be delivered. SETINT then
+; unmasks. A correct multi-slot controller delivers vector 32 first (ascending-vector
+; priority), the timer handler acks and re-arms, the console handler reads the piped
+; byte, and the timer keeps firing on subsequent periods. The guest prints PASS only
+; after the timer has been serviced at least three times (proving it did not wedge on
+; the collision) AND the console byte handler has run at least once (proving that
+; vector survived too).
+;
+; Against the pre-fix scalar-latch build the console raise (vector 33, later in the
+; window) clobbers the timer raise (vector 32), so the timer never delivers, its
+; tick-pending bit is never acked, the countdown stays paused, and the tick counter is
+; stuck at zero forever. The wait loop then spins without end, so the bespoke runner's
+; timeout (exit 124) trips instead of the suite hanging. That timeout IS the pre-fix
+; failure signal; a green PASS is the post-fix signal.
+;
+; Timer pinout (maize-21): period port $40, control port $41, status/ack port $42,
+; IRQ vector 32, entry[32] at $1000 + 32*8 = $1100. Console pinout (maize-238): data
+; port $00, status port $01, IRQ vector 33, entry[33] at $1000 + 33*8 = $1108. The
+; console is the default input source (no --input flag), so a single byte piped to
+; stdin drives its readiness edge.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- install the timer handler at entry[32] ($1100) ----
+    CLR R0
+    CP timer_handler R0.H0
+    CLR R1
+    CP $1100 R1
+    ST R0 @R1              ; entry[32] = timer_handler (full 64-bit address)
+
+    ; ---- install the console handler at entry[33] ($1108) ----
+    CLR R0
+    CP console_handler R0.H0
+    CLR R1
+    CP $1108 R1
+    ST R0 @R1             ; entry[33] = console_handler (full 64-bit address)
+
+    ; ---- zero both serviced counters ----
+    CLR R0
+    CLR R1
+    CP tick_count R1.H0
+    ST R0 @R1
+    CLR R1
+    CP byte_count R1.H0
+    ST R0 @R1
+
+    CLRINT               ; explicit: hold interrupts masked across the collision window
+
+    ; ---- program the timer: period = 50, mode = periodic + enable ----
+    CLR R0
+    CP $32 R0.B0         ; period 50 instructions
+    OUT R0.B0 $40        ; period register
+    CP $03 R0.B0         ; bit0 = enable, bit1 = periodic
+    OUT R0.B0 $41        ; control register
+
+    ; ---- masked counted spin, well over INPUT_TICK_MASK+1 (16384) instructions ----
+    ; $00008000 = 32768 iterations * 3 instructions/iteration is ~98304 instructions, so
+    ; the throttled console poll (on_input_tick, every 16384 instructions) fires several
+    ; times: its first rising edge raises IRQ 33 while the timer's IRQ 32 is already
+    ; pending, both under the mask. Neither can be delivered until SETINT below. The count
+    ; is written as an explicit 32-bit literal so it zero-extends: a bare 16-bit $8000
+    ; would sign-extend (bit 15 set) into a near-endless countdown.
+    CP $00008000 R3
+masked_spin:
+    DEC R3               ; counter -= 1 (sets Z at zero)
+    JZ armed
+    JMP masked_spin
+
+armed:
+    SETINT               ; unmask: both pending vectors deliver (32 first, then 33)
+
+wait_loop:
+    ; Require >= 3 serviced timer ticks: the first is the collided tick, the rest prove
+    ; the periodic timer keeps firing afterward (it did not permanently wedge). Uses the
+    ; proven JGE-exit / JMP-loop idiom from test_timer.mazm so a stuck counter spins here
+    ; (tripping the runner timeout) rather than falling through.
+    CLR R1
+    CP tick_count R1.H0
+    CLR R2
+    LD @R1 R2
+    CMP $03 R2
+    JGE check_byte       ; three or more serviced ticks: go check the console side
+    JMP wait_loop        ; fewer than three: keep spinning
+
+check_byte:
+    ; Require the console byte handler to have run at least once: that vector survived the
+    ; collision too rather than being the one dropped.
+    CLR R1
+    CP byte_count R1.H0
+    CLR R2
+    LD @R1 R2
+    CMP $01 R2
+    JGE done             ; console handler ran: both vectors were delivered
+    JMP wait_loop        ; console handler has not run yet: keep spinning
+
+done:
+    CLRINT
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $0E R2            ; 14 bytes: "irqcoll: PASS\n"
+    SYS $01
+    HALT
+
+; **********************************************************************************
+; Timer interrupt handler. On entry SP points at aux (the four-word frame, from SP
+; upward: aux, cause, RF, PC). Discard the two trap-only words, bump the serviced-tick
+; counter, acknowledge the timer (re-arming the periodic countdown), and IRET.
+timer_handler:
+    ADD $10 SP           ; discard aux + cause (2 words); SP now at the saved RF
+    PUSH R8
+    PUSH R9
+
+    CLR R8
+    CP tick_count R8.H0
+    LD @R8 R9
+    INC R9
+    ST R9 @R8           ; ++serviced ticks
+
+    CLR R9
+    OUT R9.B0 $42       ; ack: write 0 to the status register (clears pending, re-arms)
+
+    POP R9
+    POP R8
+    IRET                ; pop RF (re-enables interrupts), pop PC (resume the spin)
+
+; **********************************************************************************
+; Console interrupt handler. Same frame discard, then read the console data port
+; (consuming the piped byte and re-arming the readiness edge), bump the byte counter,
+; and IRET. A read on an already-drained/EOF source returns 0, which still counts as a
+; serviced console interrupt: the fixture only requires the vector to have survived.
+console_handler:
+    ADD $10 SP           ; discard aux + cause (2 words); SP now at the saved RF
+    PUSH R7
+    PUSH R8
+    PUSH R9
+
+    IN $00 R7.B0         ; read the console data byte (consumes it, re-arms the edge)
+
+    CLR R8
+    CP byte_count R8.H0
+    LD @R8 R9
+    INC R9
+    ST R9 @R8           ; ++serviced console interrupts
+
+    POP R9
+    POP R8
+    POP R7
+    IRET                ; pop RF (re-enables interrupts), pop PC (resume the spin)
+
+; **********************************************************************************
+tick_count:
+    DATA $00 $00 $00 $00 $00 $00 $00 $00   ; 8-byte serviced-tick counter
+
+byte_count:
+    DATA $00 $00 $00 $00 $00 $00 $00 $00   ; 8-byte serviced-console-IRQ counter
+
+pass_string:
+    STRING "irqcoll: PASS\n\0"

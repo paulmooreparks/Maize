@@ -512,6 +512,51 @@ function Invoke-KeyboardTest {
     return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = $expected; Actual = $actual }
 }
 
+# --- maize-240: a masked-window IRQ collision must deliver BOTH vectors ----------------
+# A periodic timer (vector 32) and the console readiness IRQ (vector 33) raised inside the
+# same masked window must both survive delivery; the old single-slot latch dropped one, and
+# a lost timer vector left its tick-pending bit unacked so the timer wedged permanently. The
+# guest prints PASS only after >= 3 serviced timer ticks AND >= 1 serviced console IRQ, so a
+# dropped-vector regression livelocks and trips the WaitForExit deadline instead of hanging
+# the suite. One byte is piped to stdin with the DEFAULT invocation (the console is the
+# default input source, maize-238). Same Process API + bounded-wait idiom as
+# Invoke-TimerPeriod1Test; mirrors run-tests.sh's run_irq_collision_test (maize-215).
+function Invoke-IrqCollisionTest {
+    $name = 'irq_collision'
+    $expected = 'irqcoll: PASS'
+    $srcPath = Join-Path $AsmDir 'test_irq_collision.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_irq_collision.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'mazm failed to assemble' }
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $MaizeExe
+    $psi.Arguments = "`"$binPath`""
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    # One byte drives the console's rising-edge readiness IRQ inside the masked window.
+    $bytes = [byte[]](0x58)
+    $stdin = $proc.StandardInput.BaseStream
+    $stdin.Write($bytes, 0, $bytes.Length)
+    $stdin.Close()
+    if (-not $proc.WaitForExit(10000)) {
+        try { $proc.Kill() } catch { }
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = $expected; Actual = 'timed out (dropped-IRQ wedge?)' }
+    }
+    $me = $proc.ExitCode
+    $actual = Trim-TrailingNewlines $proc.StandardOutput.ReadToEnd()
+    $null = $proc.StandardError.ReadToEnd()
+    return [pscustomobject]@{ Name = $name; Pass = (($me -eq 0) -and ($actual -eq $expected)); Expected = $expected; Actual = $actual }
+}
+
 # --- maize-236: framebuffer registration table, the two display-less branches ---------
 # The same test_fb_registration fixture self-adapts to the host display policy. Under
 # --fb-no-display the device rejects the claim (STATUS bit2) and the fixture takes its
@@ -581,6 +626,7 @@ $results += Invoke-TrapTest 'mmu_priv_rf_write'      'test_mmu_priv_rf_write.maz
 $results += Invoke-TimerPeriod1Test
 $results += Invoke-SysreadTest
 $results += Invoke-KeyboardTest
+$results += Invoke-IrqCollisionTest
 $results += Invoke-FbRejectTest
 $results += Invoke-FbStopTest
 

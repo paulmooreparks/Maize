@@ -5,6 +5,7 @@
 #include <sstream>
 #include <exception>
 #include <atomic>
+#include <bitset>
 #include <cassert>
 #include <cstring>
 
@@ -1511,19 +1512,26 @@ namespace maize {
             bool perf_count_enabled = false;
             u_word perf_insn_count = 0;
 
-            /* Flat interrupt controller state (card maize-21). irq_pending is the single
-               DURABLE pending-vector latch and the authoritative delivery signal: it is
-               std::atomic so the run loop's lock-free fast path can read it race-free, and
-               it survives a handler return (unlike the RF bit_interrupt_set mirror, which
-               IRET pops back to its saved value). Writes happen under int_mutex. Multiple
-               raises coalesce to this one latch (the flat model promises no queue). The RF
-               interrupt_set_flag is kept as the ISA-visible mirror but is advisory only;
-               delivery never gates on it. active_timer_ptr is the instruction-tick timer
-               the run loop advances once per executed instruction; it is null until a
-               timer is installed, so the machine and every existing fixture run with no
-               interrupt source. */
+            /* Multi-slot interrupt controller state (card maize-21 lineage; maize-240
+               replaced the single-vector scalar latch with a per-vector pending mask).
+               irq_pending is the atomic lock-free DELIVERY SUMMARY: true whenever any
+               vector is pending, so the run loop's per-instruction fast path reads it
+               race-free with no lock. It survives a handler return (unlike the RF
+               bit_interrupt_set mirror, which IRET pops back to its saved value).
+               irq_pending_mask is the authoritative per-vector pending set (bit v set means
+               vector v is pending), indexed directly by cause/vector number to match the
+               vector table's own 0..255 indexing; only indices 32..255 are ever set (the
+               vector >= 32 assert in raise_irq). Both fields are written only under
+               int_mutex. Multiple raises of DISTINCT vectors now each survive to be
+               delivered in ascending-vector order (maize-240 fixed the old last-raise-wins
+               drop); a re-raise of an already-pending vector still coalesces (setting a set
+               bit is a no-op). The RF interrupt_set_flag is kept as the ISA-visible mirror
+               but is advisory only; delivery never gates on it. active_timer_ptr is the
+               instruction-tick timer the run loop advances once per executed instruction;
+               it is null until a timer is installed, so the machine and every existing
+               fixture run with no interrupt source. */
             std::atomic<bool> irq_pending {false};
-            u_byte irq_pending_vector = 0;
+            std::bitset<256> irq_pending_mask;
             timer_device* active_timer_ptr = nullptr;
 
             /* The single active instruction-tick input source (device-plugin API). null
@@ -1883,6 +1891,34 @@ namespace maize {
             }
         }
 
+        /* Take the highest-priority pending vector off the controller mask (card
+           maize-240). PRECONDITION: the caller holds int_mutex and has already confirmed
+           at least one vector is pending (irq_pending true). Priority is ascending vector
+           number: the lowest set bit wins (32 before 33 before 34...), matching the
+           cause-number ordering the synchronous traps already use. Clears the picked bit,
+           clears the RF interrupt_set mirror (advisory, restored by IRET anyway), and
+           clears the durable irq_pending summary only when no vector remains, so a second
+           still-pending vector survives to be delivered at the next instruction boundary
+           (the whole point of maize-240: the old scalar latch dropped it). Both delivery
+           sites (try_deliver_interrupt and the HALT wait-for-interrupt park) call this one
+           helper so their scan-and-clear order cannot drift apart. Only indices 32..255
+           are ever set, so the scan starts at 32. */
+        u_byte take_next_pending_vector() {
+            for (std::size_t v = 32; v < irq_pending_mask.size(); ++v) {
+                if (irq_pending_mask.test(v)) {
+                    irq_pending_mask.reset(v);
+                    interrupt_set_flag = false;
+                    irq_pending = irq_pending_mask.any();
+                    return static_cast<u_byte>(v);
+                }
+            }
+            /* Unreachable while the precondition holds; keep the latch consistent if a
+               caller ever reaches here with an empty mask. */
+            interrupt_set_flag = false;
+            irq_pending = false;
+            return 0;
+        }
+
         /* Single delivery seam (card maize-21). Checked at the instruction boundary in
            the run loop. The gate is the DURABLE controller latch irq_pending, not the RF
            interrupt_set_flag mirror: IRET pops the whole RF word, so the mirror bit is
@@ -1904,9 +1940,7 @@ namespace maize {
                 if (!irq_pending || !interrupt_enabled_flag) {
                     return false;
                 }
-                vector = irq_pending_vector;
-                irq_pending = false;
-                interrupt_set_flag = false;
+                vector = take_next_pending_vector();
             }
             /* External interrupts resume at the boundary instruction, so the saved PC is
                the next instruction that would have run (no faulting-instruction stash). */
@@ -1947,26 +1981,36 @@ namespace maize {
             running_flag = on && is_power_on;
         }
 
-        /* A device raises an IRQ by making a vector pending (card maize-21). The flat
-           controller coalesces multiple raises to the single pending-vector latch
-           (last-raise-wins). Taking int_mutex and notifying int_event makes delivery
-           race-free for both a running core (checked at the instruction boundary) and a
-           core waiting on int_event.
+        /* A device raises an IRQ by making a vector pending (card maize-21; maize-240
+           multi-slot). The controller now holds a per-vector pending mask: this sets the
+           vector's bit rather than overwriting a single scalar, so two devices raising
+           distinct vectors before either is delivered no longer drop the first
+           (last-raise-wins was the maize-240 bug). Re-raising an already-pending vector is
+           a no-op (setting a set bit coalesces, exactly as the old same-vector reraise
+           did). Taking int_mutex and notifying int_event makes delivery race-free for both
+           a running core (checked at the instruction boundary) and a core waiting on
+           int_event.
 
            Precondition: vector is an external-interrupt vector in [32, 255]; the
            synchronous-trap range 0..31 is not an IRQ source and must not be raised here
            (a sub-32 vector would deliver through a trap slot with an IRQ cause packing).
 
-           Threading constraint: today the only caller is the instruction-tick timer,
-           which runs on the CPU thread, so the interrupt_set_flag RF-mirror write below
-           is safe. A host-thread device backend that calls this seam would race the CPU
-           thread's unsynchronized RF accesses on that mirror bit; the durable latch
-           (irq_pending, atomic) that delivery actually gates on is race-free, and the
-           full cross-thread RF synchronization lands with the device-plugin work. */
+           Threading constraint: this seam is already called cross-thread today. The
+           instruction-tick timer calls it on the CPU thread, but the keyboard device
+           raises from the SDL thread (devices.cpp:174, 245, via push_event) and the
+           framebuffer raises from the display thread (devices.cpp:507,
+           on_display_refresh). The per-vector mask and the atomic irq_pending summary that
+           delivery actually gates on are both written only under int_mutex, so a
+           cross-thread raise is race-free for delivery. The one remaining hazard is the
+           advisory interrupt_set_flag RF-mirror write below: a host-thread caller races the
+           CPU thread's unsynchronized RF accesses on that mirror bit. Delivery never gates
+           on the mirror (it is popped by IRET regardless), so this is a benign advisory
+           staleness today; the full cross-thread RF synchronization lands with the
+           device-plugin work, not this card. */
         void raise_irq(u_byte vector) {
             assert(vector >= 32 && "raise_irq: vector must be an external-interrupt vector (32..255)");
             std::lock_guard<std::mutex> lk(int_mutex);
-            irq_pending_vector = vector;
+            irq_pending_mask.set(vector);
             irq_pending = true;
             interrupt_set_flag = true;
             int_event.notify_all();
@@ -5581,9 +5625,7 @@ namespace maize {
                         }
 
                         if (is_power_on) {
-                            u_byte vector = irq_pending_vector;
-                            irq_pending = false;
-                            interrupt_set_flag = false;
+                            u_byte vector = take_next_pending_vector();
                             lk.unlock();
                             /* running_flag is a bit in RF (bit_running). HALT parked by clearing
                                it, so RF currently has running=false. deliver_vectored saves RF
