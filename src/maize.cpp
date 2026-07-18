@@ -1553,6 +1553,7 @@ int main(int argc, char *argv[]) {
 	else if (input_source == "console") {
 		cpu::set_active_input(&console);
 		console.set_active_injector(true);   /* maize-94: eager pre-read + park/IRQ model */
+		sys::set_stdin_injector(&console);   /* maize-238: single host-stdin owner (no theft) */
 	}
 
 	/* card maize-114: install the mount table built and validated above (before the
@@ -1583,6 +1584,20 @@ int main(int argc, char *argv[]) {
 			? devices::text_console::input_mode::QUEUE
 			: devices::text_console::input_mode::STDIN);
 		sys::set_console(&console_dev);
+	}
+
+	/* maize-238 (Branch A, OQ 9198 ratified): the DEFAULT invocation (no --input flag, plain
+	   host stdio -- not a windowed console and not --console-dump) migrates its console-input
+	   model to the same IRQ/readiness-fed injector the --input=console path uses, so poll()
+	   and select() on fd 0 work on the operator's primary invocation. This retires decision
+	   9101's (maize-94) DOC-17 deviation: on_input_tick is now non-blocking, so running it on
+	   every instruction tick does not stall the VM between keystrokes, and set_stdin_injector
+	   makes the console device the single host-stdin owner so a bare-VM guest's own SYS $00
+	   read(0) drains the same latch instead of racing the eager pre-read (no byte theft). */
+	if (input_source.empty() && !windowed_console && !console_dump) {
+		cpu::set_active_input(&console);
+		console.set_active_injector(true);
+		sys::set_stdin_injector(&console);
 	}
 
 	sys::init();

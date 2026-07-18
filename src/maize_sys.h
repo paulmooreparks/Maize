@@ -22,8 +22,9 @@ struct hostfs_table;
 
 namespace maize {
 	/* maize-140: forward-declared so sys.cpp can hold a console_io* without pulling in
-	   the device models (mazm links sys.cpp but never devices.cpp). */
-	namespace console { class console_io; }
+	   the device models (mazm links sys.cpp but never devices.cpp). maize-238 adds the
+	   stdin_injector seam (the single-stdin-owner routing) for the same reason. */
+	namespace console { class console_io; class stdin_injector; }
 
 	namespace sys {
 		void init();
@@ -51,11 +52,24 @@ namespace maize {
 		   termios line discipline, and SYS $F1/$F2 (tcgetattr/tcsetattr) reach its termios
 		   state. */
 		void set_console(console::console_io* c);
+
+		/* maize-238 (Branch A): bind the active stdin injector (the console PORT device on
+		   the default path). When set, SYS $00 read(0) routes through it so the device's
+		   eager pre-read latch and the guest's synchronous read do not both consume host
+		   stdin. NULL (default, and always in mazm) leaves fd 0 on the plain host-stdin
+		   path exactly as before. */
+		void set_stdin_injector(console::stdin_injector* inj);
 	} // namespace sys
 
 	namespace syscall {
 		u_word read(u_word fd, void* buf, u_word count);
 		u_word write(u_word fd, const void *buf, u_word count);
+
+		/* maize-238 (Branch A): non-blocking host-stdin poll for console_device::on_input_tick.
+		   Returns 1 and stores one byte in *b if a byte is immediately available, 0 if nothing
+		   is pending (would block), or -1 on end of input / error. Platform-specific (POSIX
+		   poll(fd0,0); Windows PeekNamedPipe / handle-type dispatch). */
+		int console_poll_read(unsigned char* b);
 	}
 
 } // namespace maize

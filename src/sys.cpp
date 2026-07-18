@@ -8,6 +8,9 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#ifdef __linux__
+#include <poll.h>   /* maize-238 (Branch A): non-blocking stdin readiness for the console injector */
+#endif
 
 /* This is all very broken right now, but I'm going to replace it with a sys_call architecture instead. */
 
@@ -80,6 +83,30 @@ namespace maize {
                 return neg_errno(errno);
             }
             return static_cast<u_word>(r);
+        }
+
+        /* maize-238 (Branch A): non-blocking host-stdin poll. poll(fd0, POLLIN, 0) tests
+           readiness without consuming; a ready fd (including EOF-readable) then reads one
+           byte, which cannot block since data is pending. This does NOT set O_NONBLOCK on
+           fd 0, so the ordinary blocking read() path above is unaffected. Returns 1 (byte
+           in *b), 0 (nothing pending), or -1 (EOF/error). */
+        int console_poll_read(unsigned char* b) {
+            struct pollfd pfd;
+            pfd.fd = 0;
+            pfd.events = POLLIN;
+            pfd.revents = 0;
+            int pr = ::poll(&pfd, 1, 0);
+            if (pr <= 0) {
+                return 0;   // nothing ready (or a transient poll error): treat as nothing pending
+            }
+            if ((pfd.revents & (POLLIN | POLLHUP | POLLERR)) == 0) {
+                return 0;
+            }
+            long r = ::read(0, b, 1);
+            if (r == 1) {
+                return 1;
+            }
+            return -1;   // 0 = EOF, <0 = error: end of input
         }
 #elif _WIN32
         namespace {
@@ -358,7 +385,45 @@ namespace maize {
             return neg_errno(abi_ebadf);       // real file I/O is out of scope (M4)
         }
 
-#else 
+        /* maize-238 (Branch A): non-blocking host-stdin poll. Windows stdin has no single
+           O_NONBLOCK knob, so dispatch on the handle type (the maize-237 console-vs-pipe-vs-
+           file divergence): a pipe uses PeekNamedPipe to test for bytes without consuming; a
+           redirected file is always ready until EOF; an interactive console handle is left to
+           the on-demand blocking path (ReadFile on a console can block on non-key events), so
+           it reports "nothing pending" here rather than risk a blocking eager read. Returns 1
+           (byte in *b), 0 (nothing pending), or -1 (EOF/error). */
+        int console_poll_read(unsigned char* b) {
+            HANDLE h {GetStdHandle(STD_INPUT_HANDLE)};
+            if (h == INVALID_HANDLE_VALUE || h == nullptr) {
+                return -1;
+            }
+            DWORD type {GetFileType(h)};
+            if (type == FILE_TYPE_PIPE) {
+                DWORD avail {0};
+                if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) {
+                    return -1;   // broken pipe = EOF
+                }
+                if (avail == 0) {
+                    return 0;    // nothing pending yet
+                }
+            }
+            else if (type == FILE_TYPE_CHAR) {
+                // Interactive console: eager non-blocking read is unsafe (ReadFile may block
+                // on non-key events). Defer to the on-demand blocking drain path.
+                return 0;
+            }
+            // FILE_TYPE_DISK (redirected file): ready until EOF. Fall through to a read.
+            DWORD got {0};
+            if (!ReadFile(h, b, 1, &got, nullptr)) {
+                return -1;   // ERROR_BROKEN_PIPE / ERROR_HANDLE_EOF / other: end of input
+            }
+            if (got == 1) {
+                return 1;
+            }
+            return -1;   // EOF
+        }
+
+#else
 // Future expansion to other systems
 
 #endif
@@ -403,6 +468,12 @@ namespace maize {
                instead of host stdio. */
             console::console_io* console_dev = nullptr;
 
+            /* maize-238 (Branch A): the active stdin injector (console PORT device on the
+               default path), or NULL. When non-NULL and active, fd 0 SYS $00 reads route
+               through it so the device's eager pre-read latch is the single host-stdin
+               owner (no byte theft with the guest's own read). */
+            console::stdin_injector* stdin_inj = nullptr;
+
             /* maize-114: bounded guest-C-string copy-in (maize-79 trust boundary).
                Reads NUL-terminated bytes from guest memory at addr, capped at
                HOSTFS_PATH_MAX. Returns true on a NUL within the bound; false when
@@ -436,6 +507,11 @@ namespace maize {
         /* maize-140: bind (or clear) the window text console. */
         void set_console(console::console_io* c) {
             console_dev = c;
+        }
+
+        /* maize-238 (Branch A): bind (or clear) the active stdin injector. */
+        void set_stdin_injector(console::stdin_injector* inj) {
+            stdin_inj = inj;
         }
 
         int exit_code() {
@@ -479,6 +555,23 @@ namespace maize {
                        write-only. */
                     if (console_dev != nullptr && fd == 0) {
                         long rc = console_dev->read_in(bufvec, count);
+                        u_word n = static_cast<u_word>(rc);
+                        for (u_word i = 0; i < n; ++i) {
+                            cpu::mm.write_byte(address + i, bufvec[i]);
+                        }
+                        return n;
+                    }
+
+                    /* maize-238 (Branch A): on the default path the console PORT device is
+                       the active stdin injector (its on_input_tick eagerly pre-reads host
+                       stdin to drive the console IRQ / poll readiness). Route a bare-VM
+                       guest's SYS $00 read(0) through it so the device's latch is the single
+                       host-stdin owner -- otherwise the eager reader and this read would both
+                       consume stdin and steal each other's bytes. drain_stdin returns any
+                       latched bytes first, then blocks for more. */
+                    if (stdin_inj != nullptr && fd == 0 && stdin_inj->stdin_is_active()) {
+                        long rc = stdin_inj->drain_stdin(bufvec, count);
+                        if (rc < 0) { return static_cast<u_word>(rc); }
                         u_word n = static_cast<u_word>(rc);
                         for (u_word i = 0; i < n; ++i) {
                             cpu::mm.write_byte(address + i, bufvec[i]);
