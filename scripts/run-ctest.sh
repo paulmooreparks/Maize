@@ -2088,6 +2088,7 @@ run_quesos_ac_fixtures() {
                fb_exit_cleanup \
                socketpair_echo unix_listen_connect unix_listen_close \
                poll_timeout poll_broken poll_multi select_console_pipe \
+               poll_fd0_default stdin_owner_probe \
                fb_mmap_paint fb_noncontig_reject fb_mmap_isolation fb_mmap_enomem; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
@@ -2256,6 +2257,42 @@ run_quesos_ac_fixtures() {
         echo "[PASS] quesos_console_input"
     else
         echo "[FAIL] quesos_console_input"
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # maize-238 Branch A (AC 9199): poll/select on fd 0 work on the plain DEFAULT invocation
+    # (NO --input flag -- the operator's primary path), previously a deadlock. A quesOS test
+    # program polls then selects fd 0 with two bytes piped on stdin; the migrated IRQ/readiness
+    # model wakes it. This is the piped-stdin form of the pty fixture (the real-pty keystroke
+    # variant is the Linux-only pty harness; native Windows is verified separately).
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(printf 'XY' | MSYS2_ARG_CONV_EXCL='/progs' timeout 30 "$MAIZE" --no-root \
+        --mount "${nat}=/progs:ro" "$quesos" /progs/poll_fd0_default.mzx 2>/dev/null | grep -v '^$')
+    set -e
+    if printf '%s\n' "$out" | grep -qF "poll-fd0-default: PASS"; then
+        echo "[PASS] quesos_poll_fd0_default (default-path poll/select on fd 0)"
+    else
+        echo "[FAIL] quesos_poll_fd0_default"
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # maize-238 Branch A byte-theft proof: a BARE-VM guest (run directly, not under quesOS)
+    # reads fd 0 via SYS $00 on the default path, where the console device is the active stdin
+    # injector eagerly pre-reading host stdin. sys.cpp routes the guest read through the device
+    # latch (single host-stdin owner), so piping "hello" must round-trip all five bytes with
+    # none stolen by the eager reader.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(printf 'hello' | MSYS2_ARG_CONV_EXCL='/progs' timeout 20 "$MAIZE" --no-root \
+        "${progs}/stdin_owner_probe.mzx" 2>/dev/null | grep -v '^$')
+    set -e
+    if printf '%s\n' "$out" | grep -qF "stdin-owner: PASS"; then
+        echo "[PASS] quesos_stdin_owner (bare-VM default-path stdin, no byte theft)"
+    else
+        echo "[FAIL] quesos_stdin_owner"
         printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
