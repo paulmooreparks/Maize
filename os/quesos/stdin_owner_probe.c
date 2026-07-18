@@ -1,10 +1,11 @@
-/* stdin_owner_probe.c -- maize-238 Branch A byte-theft proof, run as a BARE-VM guest
- * (directly by maize, NOT under quesOS) on the plain DEFAULT invocation. Under Branch A the
- * console device is the active stdin injector: its on_input_tick eagerly pre-reads host
- * stdin. This program reads fd 0 through SYS $00 (the bare-VM path); sys.cpp routes that
- * through the device's drain_stdin so the eager pre-read latch is the SINGLE host-stdin
- * owner. If bytes were stolen by the eager reader, the echoed stream would be short or
- * corrupt. Piping "hello" must round-trip all five bytes in order.
+/* stdin_owner_probe.c -- maize-238 Branch A single-stdin-owner proof, run as a BARE-VM
+ * guest (directly by maize, NOT under quesOS) on the plain DEFAULT invocation. Under Branch A
+ * the console device is the active stdin injector: its on_input_tick SIGNALS host-stdin
+ * readiness (readiness-signal model, decision 9285) and consumes nothing. This program reads
+ * fd 0 through SYS $00 (the bare-VM path); sys.cpp routes that through the device's
+ * drain_stdin, the single on-demand host-stdin reader. Because the readiness poll consumes
+ * nothing, no byte is stolen from the guest's own read. Piping "hello" must round-trip all
+ * five bytes in order.
  * Output on success: stdin-owner: PASS
  */
 int  printf(const char *, ...);

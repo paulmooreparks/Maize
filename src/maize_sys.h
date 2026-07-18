@@ -65,11 +65,12 @@ namespace maize {
 		u_word read(u_word fd, void* buf, u_word count);
 		u_word write(u_word fd, const void *buf, u_word count);
 
-		/* maize-238 (Branch A): non-blocking host-stdin poll for console_device::on_input_tick.
-		   Returns 1 and stores one byte in *b if a byte is immediately available, 0 if nothing
-		   is pending (would block), or -1 on end of input / error. Platform-specific (POSIX
-		   poll(fd0,0); Windows PeekNamedPipe / handle-type dispatch). */
-		int console_poll_read(unsigned char* b);
+		/* maize-238 (Branch A, decision 9285): NON-CONSUMING host-stdin readiness probe for
+		   console_device (on_input_tick and the status port). Returns 1 if a data byte is
+		   pending, 0 if nothing is pending yet, or -1 at end of input -- consuming nothing, so
+		   the data port stays the sole reader. Platform-specific (POSIX poll(fd0,0)+FIONREAD;
+		   Windows PeekNamedPipe / handle-type dispatch). */
+		int console_stdin_ready();
 	}
 
 } // namespace maize

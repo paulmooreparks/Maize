@@ -1533,16 +1533,19 @@ namespace maize {
                and is driven off-thread (push_event latches + raises; port_read drains). */
             input_device* active_input_ptr = nullptr;
 
-            /* maize-238 (Branch A, OQ 9204): throttle counter for the per-instruction input
-               poll. Branch A sets active_input_ptr on the DEFAULT invocation too, so calling
-               on_input_tick() every single instruction (a virtual dispatch on the interpreter
-               hot path) measurably slowed bare-VM throughput (doom_bench). The poll only needs
-               to sample host stdin every few hundred instructions to keep wake latency bounded
-               (microseconds), so gate the call to once per INPUT_TICK_DIV instructions. This
-               applies to every input source (headless keyboard injector too), which merely
-               bounds its stdin-scancode pull latency identically. */
+            /* maize-238 (Branch A, OQ 9204 / decision 9285): throttle counter for the input
+               readiness poll. Branch A sets active_input_ptr on the DEFAULT invocation too, so
+               calling on_input_tick() every single instruction (a virtual dispatch plus a host
+               stdin poll on the interpreter hot path) measurably slowed bare-VM throughput
+               (doom_bench: ~9% worst case at a 512-tick stride). The readiness poll only needs
+               to sample host stdin at human-input timescales (milliseconds), so coarsen the
+               gate to once per INPUT_TICK_MASK+1 instructions: at interpreter speeds that is
+               sub-millisecond wake latency (well within AC 9199's bounded-wake requirement)
+               while dropping the per-tick cost into the noise for AC 9196's doom_bench. Applies
+               to every input source (headless keyboard injector too), bounding its
+               stdin-scancode pull latency identically. */
             std::uint64_t input_tick_ctr_ = 0;
-            static constexpr std::uint64_t INPUT_TICK_MASK = 0x1FFull;   // poll every 512 ticks
+            static constexpr std::uint64_t INPUT_TICK_MASK = 0x3FFFull;   // poll every 16384 ticks
         }
 
         bus address_bus;

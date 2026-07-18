@@ -45,8 +45,9 @@ namespace maize {
 		/* Console / terminal port device (0x00 data, 0x01 status). Bridges the abstract
 		   console to host stdio: OUT 0x00 writes a byte to stdout, IN 0x00 reads a byte
 		   from stdin, 0x01 reports output-ready / input-available. When selected as the
-		   active input source it injects stdin bytes on the instruction tick and raises
-		   IRQ 33. The native SYS-based terminal path is untouched and stays the default. */
+		   active input source (both --input=console and, under maize-238 Branch A, the
+		   default invocation) its on_input_tick SIGNALS host-stdin readiness and raises
+		   IRQ 33; the byte is consumed later, at read time, by the data port. */
 		class console_device : public cpu::input_device, public port_host,
 			public console::stdin_injector {
 		public:
@@ -57,20 +58,17 @@ namespace maize {
 			void on_input_tick() override;
 
 			/* maize-238 (Branch A): stdin_injector -- the single-host-stdin-owner seam so a
-			   bare-VM guest's SYS $00 read(0) and this device's eager on_input_tick pre-read
-			   do not both consume host stdin. drain_stdin returns any latched byte first,
-			   then blocks for one more. */
+			   bare-VM guest's SYS $00 read(0) reads host stdin through one path. Because
+			   on_input_tick no longer pre-reads (readiness-signal model, decision 9285), the
+			   drain is a plain on-demand consuming read: no latch to drain first. */
 			bool stdin_is_active() const override { return active_injector_; }
 			long drain_stdin(unsigned char* buf, unsigned long count) override;
 
-			/* maize-94: mark this device as the EAGER active injector (set only under an
-			   explicit --input=console, where on_input_tick pre-reads host stdin per
-			   instruction and drives the park+IRQ multi-process model, doc 17). When it is
-			   NOT the active injector (the default console-binary path), the status port
-			   reports input-ready so the guest reads the data port on demand, which does a
-			   blocking read of host stdin only when the guest actually asks for a byte: the
-			   demand-driven model that makes an interactive quesOS shell work on the default
-			   invocation without the eager pre-read stalling the guest's own output. */
+			/* maize-238 Branch A: mark this device as the active stdin injector (set on both
+			   --input=console AND the default console-binary path). It gates the bare-VM
+			   SYS $00 read(0) seam routing (stdin_is_active); on_input_tick / the status
+			   port behave identically regardless, keying fd-0 readiness to a non-consuming
+			   host-stdin probe rather than the pre-read latch the eager model used. */
 			void set_active_injector(bool b) { active_injector_ = b; }
 
 			void port_write(int role, cpu::reg_value const& value, cpu::subreg_enum value_subreg) override;
@@ -79,10 +77,7 @@ namespace maize {
 		private:
 			device_port data_port_;
 			device_port status_port_;
-			u_word data_byte_ {0};
-			bool available_ {false};
-			bool exhausted_ {false};   // eager injector reached host-stdin EOF
-			bool eof_ {false};         // maize-94: on-demand data-port read reached EOF
+			bool eof_ {false};         // host stdin reached real end-of-input (terminal latch)
 			bool active_injector_ {false};
 		};
 

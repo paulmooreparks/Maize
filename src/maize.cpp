@@ -1552,8 +1552,8 @@ int main(int argc, char *argv[]) {
 	}
 	else if (input_source == "console") {
 		cpu::set_active_input(&console);
-		console.set_active_injector(true);   /* maize-94: eager pre-read + park/IRQ model */
-		sys::set_stdin_injector(&console);   /* maize-238: single host-stdin owner (no theft) */
+		console.set_active_injector(true);   /* maize-238 Branch A: readiness-signal + park/IRQ model */
+		sys::set_stdin_injector(&console);   /* maize-238: single on-demand host-stdin owner */
 	}
 
 	/* card maize-114: install the mount table built and validated above (before the
@@ -1586,14 +1586,15 @@ int main(int argc, char *argv[]) {
 		sys::set_console(&console_dev);
 	}
 
-	/* maize-238 (Branch A, OQ 9198 ratified): the DEFAULT invocation (no --input flag, plain
-	   host stdio -- not a windowed console and not --console-dump) migrates its console-input
-	   model to the same IRQ/readiness-fed injector the --input=console path uses, so poll()
-	   and select() on fd 0 work on the operator's primary invocation. This retires decision
-	   9101's (maize-94) DOC-17 deviation: on_input_tick is now non-blocking, so running it on
-	   every instruction tick does not stall the VM between keystrokes, and set_stdin_injector
-	   makes the console device the single host-stdin owner so a bare-VM guest's own SYS $00
-	   read(0) drains the same latch instead of racing the eager pre-read (no byte theft). */
+	/* maize-238 (Branch A, OQ 9198 ratified; decision 9285): the DEFAULT invocation (no
+	   --input flag, plain host stdio -- not a windowed console and not --console-dump) migrates
+	   its console-input model to the same IRQ/readiness-fed injector the --input=console path
+	   uses, so poll() and select() on fd 0 work on the operator's primary invocation. This
+	   retires decision 9101's (maize-94) DOC-17 deviation: on_input_tick only SIGNALS readiness
+	   (a non-consuming host-stdin probe) so running it on the throttled instruction tick does
+	   not stall the VM between keystrokes and pre-reads no byte that could strand across a
+	   fork/exec console handoff; set_stdin_injector keeps a bare-VM guest's SYS $00 read(0) on
+	   the single on-demand host-stdin path. */
 	if (input_source.empty() && !windowed_console && !console_dump) {
 		cpu::set_active_input(&console);
 		console.set_active_injector(true);

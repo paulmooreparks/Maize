@@ -9,7 +9,8 @@
 #include <iostream>
 #include <string>
 #ifdef __linux__
-#include <poll.h>   /* maize-238 (Branch A): non-blocking stdin readiness for the console injector */
+#include <poll.h>          /* maize-238 (Branch A): non-consuming stdin readiness for the console injector */
+#include <sys/ioctl.h>     /* maize-238 (Branch A): FIONREAD distinguishes a pending byte from EOF */
 #endif
 
 /* This is all very broken right now, but I'm going to replace it with a sys_call architecture instead. */
@@ -85,28 +86,34 @@ namespace maize {
             return static_cast<u_word>(r);
         }
 
-        /* maize-238 (Branch A): non-blocking host-stdin poll. poll(fd0, POLLIN, 0) tests
-           readiness without consuming; a ready fd (including EOF-readable) then reads one
-           byte, which cannot block since data is pending. This does NOT set O_NONBLOCK on
-           fd 0, so the ordinary blocking read() path above is unaffected. Returns 1 (byte
-           in *b), 0 (nothing pending), or -1 (EOF/error). */
-        int console_poll_read(unsigned char* b) {
+        /* maize-238 (Branch A, decision 9285): NON-CONSUMING host-stdin readiness probe.
+           poll(fd0, POLLIN, 0) tests readiness without consuming; when readable, FIONREAD
+           distinguishes a pending data byte (n > 0) from real end-of-input (readable with
+           0 bytes buffered: a closed pipe, a drained redirected file, or /dev/null), still
+           WITHOUT consuming anything. This never sets O_NONBLOCK on fd 0, so the ordinary
+           blocking read() path above is unaffected, and the data port stays the sole
+           consumer. Returns 1 (a data byte is pending), 0 (nothing pending yet), or -1
+           (end of input). */
+        int console_stdin_ready() {
             struct pollfd pfd;
             pfd.fd = 0;
             pfd.events = POLLIN;
             pfd.revents = 0;
             int pr = ::poll(&pfd, 1, 0);
             if (pr <= 0) {
-                return 0;   // nothing ready (or a transient poll error): treat as nothing pending
+                return 0;   // nothing ready (or a transient poll error): nothing pending
             }
             if ((pfd.revents & (POLLIN | POLLHUP | POLLERR)) == 0) {
                 return 0;
             }
-            long r = ::read(0, b, 1);
-            if (r == 1) {
-                return 1;
+            int navail = 0;
+            if (::ioctl(0, FIONREAD, &navail) == 0) {
+                return (navail > 0) ? 1 : -1;   // readable with 0 bytes buffered == EOF
             }
-            return -1;   // 0 = EOF, <0 = error: end of input
+            // FIONREAD unsupported on this fd: readable but cannot distinguish. Treat as a
+            // pending byte; a subsequent data-port read yields the byte, or 0 (which the
+            // data port latches as EOF), so no byte is ever lost either way.
+            return 1;
         }
 #elif _WIN32
         namespace {
@@ -385,14 +392,17 @@ namespace maize {
             return neg_errno(abi_ebadf);       // real file I/O is out of scope (M4)
         }
 
-        /* maize-238 (Branch A): non-blocking host-stdin poll. Windows stdin has no single
-           O_NONBLOCK knob, so dispatch on the handle type (the maize-237 console-vs-pipe-vs-
-           file divergence): a pipe uses PeekNamedPipe to test for bytes without consuming; a
-           redirected file is always ready until EOF; an interactive console handle is left to
-           the on-demand blocking path (ReadFile on a console can block on non-key events), so
-           it reports "nothing pending" here rather than risk a blocking eager read. Returns 1
-           (byte in *b), 0 (nothing pending), or -1 (EOF/error). */
-        int console_poll_read(unsigned char* b) {
+        /* maize-238 (Branch A, decision 9285): NON-CONSUMING host-stdin readiness probe.
+           Windows stdin has no single O_NONBLOCK knob, so dispatch on the handle type (the
+           maize-237 console-vs-pipe-vs-file divergence): a pipe uses PeekNamedPipe to test
+           for buffered bytes without consuming; a redirected file compares position to size
+           without consuming; an interactive console reports "data pending" so the on-demand
+           data-port read blocks for a real line (no deadlock) -- poll/select on a native
+           Windows console is correspondingly imprecise, the honestly-stated AC 9199 gap
+           (the pty keystroke leg is Linux-only; the Windows CI suite feeds a pipe). Returns
+           1 (a data byte is pending), 0 (nothing pending yet), or -1 (end of input). Consumes
+           nothing, so the ordinary blocking read() path stays the sole consumer. */
+        int console_stdin_ready() {
             HANDLE h {GetStdHandle(STD_INPUT_HANDLE)};
             if (h == INVALID_HANDLE_VALUE || h == nullptr) {
                 return -1;
@@ -401,26 +411,21 @@ namespace maize {
             if (type == FILE_TYPE_PIPE) {
                 DWORD avail {0};
                 if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) {
-                    return -1;   // broken pipe = EOF
+                    return -1;   // broken pipe == EOF (write end closed)
                 }
-                if (avail == 0) {
-                    return 0;    // nothing pending yet
-                }
+                return (avail > 0) ? 1 : 0;   // buffered bytes == data pending; else nothing yet
             }
-            else if (type == FILE_TYPE_CHAR) {
-                // Interactive console: eager non-blocking read is unsafe (ReadFile may block
-                // on non-key events). Defer to the on-demand blocking drain path.
-                return 0;
+            if (type == FILE_TYPE_CHAR) {
+                return 1;   // interactive console: defer to the blocking data-port read
             }
-            // FILE_TYPE_DISK (redirected file): ready until EOF. Fall through to a read.
-            DWORD got {0};
-            if (!ReadFile(h, b, 1, &got, nullptr)) {
-                return -1;   // ERROR_BROKEN_PIPE / ERROR_HANDLE_EOF / other: end of input
+            if (type == FILE_TYPE_DISK) {
+                LARGE_INTEGER pos, size, zero;
+                zero.QuadPart = 0;
+                if (!SetFilePointerEx(h, zero, &pos, FILE_CURRENT)) { return 1; }
+                if (!GetFileSizeEx(h, &size)) { return 1; }
+                return (pos.QuadPart < size.QuadPart) ? 1 : -1;   // bytes remaining vs EOF
             }
-            if (got == 1) {
-                return 1;
-            }
-            return -1;   // EOF
+            return 1;   // unknown handle type: a read resolves data vs EOF
         }
 
 #else
@@ -562,13 +567,13 @@ namespace maize {
                         return n;
                     }
 
-                    /* maize-238 (Branch A): on the default path the console PORT device is
-                       the active stdin injector (its on_input_tick eagerly pre-reads host
-                       stdin to drive the console IRQ / poll readiness). Route a bare-VM
-                       guest's SYS $00 read(0) through it so the device's latch is the single
-                       host-stdin owner -- otherwise the eager reader and this read would both
-                       consume stdin and steal each other's bytes. drain_stdin returns any
-                       latched bytes first, then blocks for more. */
+                    /* maize-238 (Branch A, decision 9285): on the default path the console
+                       PORT device is the active stdin injector (its on_input_tick SIGNALS
+                       host-stdin readiness to drive the console IRQ / poll readiness, consuming
+                       nothing). Route a bare-VM guest's SYS $00 read(0) through the device so it
+                       stays the single host-stdin owner; drain_stdin is a plain on-demand read
+                       of up to `count` bytes (behaviorally identical to the stdio path below,
+                       since the readiness poll pre-reads nothing). */
                     if (stdin_inj != nullptr && fd == 0 && stdin_inj->stdin_is_active()) {
                         long rc = stdin_inj->drain_stdin(bufvec, count);
                         if (rc < 0) { return static_cast<u_word>(rc); }

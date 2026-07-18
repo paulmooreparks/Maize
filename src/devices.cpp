@@ -50,22 +50,15 @@ namespace maize {
 		reg_value console_device::port_read(int role, subreg_enum /*dst_subreg*/) {
 			reg_value out;
 			if (role == ROLE_DATA) {
+				/* maize-238 Branch A (decision 9285): consume one host-stdin byte AT READ
+				   TIME. The console never pre-reads into a latch, so a byte is taken only
+				   when the guest actually reads the data port -- after the status port (or
+				   on_input_tick's IRQ) confirmed readiness, so this read does not block. A
+				   host read of 0 is real EOF (stdin closed / piped script drained): latch
+				   eof_ so the status port exposes bit2 and the guest's read returns 0 (EOF)
+				   rather than a synthesized NUL byte (maize-94). */
 				unsigned char b = 0;
-				if (available_) {
-					b = static_cast<unsigned char>(data_byte_);
-					available_ = false;
-				}
-				else if (!active_injector_) {
-					/* On-demand read when the console is NOT the active injector (the legacy
-					   non-injector path). A host stdin read of 0 is real EOF (stdin closed /
-					   piped script drained): latch eof_ so the status port exposes bit2 and
-					   the guest's read returns 0 (EOF) rather than a synthesized NUL byte
-					   (maize-94). maize-238 Branch A: under the active injector the guest
-					   reads the data port only after the status port shows a latched byte, so
-					   this on-demand blocking read is retired for that path -- a data-port
-					   read with an empty latch just drains to 0 (no host read here; the
-					   injector's on_input_tick is the sole eager reader, and a synchronous
-					   fd-0 read goes through drain_stdin instead). */
+				if (!eof_) {
 					u_word n = maize::syscall::read(0, &b, 1);
 					if (n != 1) {
 						eof_ = true;
@@ -76,20 +69,18 @@ namespace maize {
 			}
 			else {
 				u_word s = 0x2;   // bit1 output-ready (stdout is always writable)
-				/* bit0 input-available. Under an explicit --input=console (active injector)
-				   this reflects the latched byte, driving the guest's park+IRQ read. On the
-				   default path (no injector) report ready unconditionally so the guest reads
-				   the data port, which blocks on host stdin only when the guest asks for a
-				   byte (maize-94: demand-driven console input for the default interactive
-				   invocation). */
-				if (available_ || !active_injector_) {
-					s |= 0x1;
-				}
-				/* bit2 EOF: host stdin is exhausted (the eager injector hit EOF, or an
-				   on-demand read returned 0). The guest reads this to return a real 0/EOF
-				   from its fd0 read so a shell exits normally instead of looping on NUL. */
-				if (exhausted_ || eof_) {
+				/* bit0 input-available / bit2 EOF from a NON-CONSUMING host-stdin readiness
+				   probe (maize-238 Branch A): the probe reports a data byte pending vs real
+				   end-of-input WITHOUT consuming, so the guest can poll fd 0 and the on-demand
+				   data-port read above stays the sole consumer. Once eof_ is latched the probe
+				   is skipped (a drained stdin stays at EOF). */
+				if (eof_) {
 					s |= 0x4;
+				}
+				else {
+					int r = maize::syscall::console_stdin_ready();
+					if (r > 0) { s |= 0x1; }        // a data byte is pending
+					else if (r < 0) { s |= 0x4; }   // end-of-input (nothing consumed)
 				}
 				out.w0 = s;
 			}
@@ -97,55 +88,50 @@ namespace maize {
 		}
 
 		void console_device::on_input_tick() {
-			if (exhausted_ || available_) {
-				return;
+			// maize-238 Branch A (decision 9285): SIGNAL host-stdin readiness only; consume
+			// nothing. The run loop throttles this call (cpu.cpp INPUT_TICK_MASK, OQ 9204) so
+			// it fires once per few thousand instructions -- a bounded host-stdin poll whose
+			// wake latency stays imperceptible. A non-consuming probe distinguishes a pending
+			// data byte from end-of-input; either raises the console IRQ so a parked reader or
+			// a poll()/select() caller wakes. The byte itself is consumed later, at read time
+			// (the data-port read), never pre-read into a latch that could strand across a
+			// fork/exec console handoff (the phase-2 kilo deadlock this model retires).
+			if (eof_) {
+				return;   // end-of-input already latched: nothing more will arrive
 			}
-			// maize-238 (Branch A): NON-BLOCKING pre-read. Under the ratified default-path
-			// injector this runs on the interpreter's input tick, which the run loop already
-			// throttles (cpu.cpp INPUT_TICK_MASK, OQ 9204) so it fires only every few hundred
-			// instructions -- keeping the per-instruction hot-path cost negligible while the
-			// wake latency stays bounded. console_poll_read returns immediately when nothing
-			// is pending; a latched byte drives the console IRQ / poll-readiness model.
-			unsigned char b = 0;
-			int r = maize::syscall::console_poll_read(&b);
+			int r = maize::syscall::console_stdin_ready();
 			if (r == 0) {
 				return;   // nothing pending right now
 			}
 			if (r < 0) {
-				exhausted_ = true;   // end of input: stop pulling
-				return;
+				eof_ = true;   // end of input: signal it once, then stop polling
 			}
-			data_byte_ = b;
-			available_ = true;
 			cpu::raise_irq(cpu::console_irq_vector);
 		}
 
 		// maize-238 (Branch A): the single-host-stdin-owner drain for a bare-VM guest's
 		// SYS $00 read(0), routed here by sys.cpp when this device is the active injector.
+		// Under the readiness-signal model on_input_tick pre-reads nothing, so this is a
+		// plain on-demand consuming read of up to `count` bytes (no latch to drain first,
+		// and the same shape as the non-injector stdio path so a multi-byte read is not
+		// truncated). It remains the sole host-stdin reader for the blocking wait (one CPU
+		// thread; on_input_tick does not run while the read blocks).
 		long console_device::drain_stdin(unsigned char* buf, unsigned long count) {
 			if (count == 0) {
 				return 0;
 			}
-			// Return any eagerly-latched byte first (what on_input_tick pre-read), so a byte
-			// is never stranded in the latch while the guest reads host stdin directly.
-			if (available_) {
-				buf[0] = static_cast<unsigned char>(data_byte_);
-				available_ = false;
-				return 1;
-			}
-			if (exhausted_ || eof_) {
+			if (eof_) {
 				return 0;   // end of input
 			}
-			// Nothing latched: block for one byte. on_input_tick does not run while this
-			// blocks (one CPU thread), so this is the sole host-stdin reader for the wait.
-			unsigned char b = 0;
-			u_word n = maize::syscall::read(0, &b, 1);
-			if (n != 1) {
-				eof_ = true;
+			long rc = static_cast<long>(maize::syscall::read(0, buf, count));
+			if (rc < 0) {
+				return rc;   // -errno passthrough
+			}
+			if (rc == 0) {
+				eof_ = true;   // real end-of-input
 				return 0;
 			}
-			buf[0] = b;
-			return 1;
+			return rc;
 		}
 
 		// ---- Keyboard device (0x10 / 0x11) -----------------------------------------------

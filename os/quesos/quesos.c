@@ -1119,21 +1119,17 @@ static long do_write(u64 fd_num, u64 uva, long count) {
  *
  * quesOS reads the console as an undifferentiated raw byte stream (it forwards no
  * termios to the host), so ISIG is realized here, in guest code, by raw byte VALUE:
- * the console IRQ recognizes 0x03 (INTR) / 0x1C (QUIT) and raises SIGINT / SIGQUIT on
- * the foreground process group, even when that group is compute-bound and not blocked
- * in read(). Data bytes are queued in a small kernel input ring (a bounded tty input
- * queue) so a byte read for inspection in the IRQ is not lost when no reader is parked.
+ * a console read recognizes 0x03 (INTR) / 0x1C (QUIT) and raises SIGINT / SIGQUIT on
+ * the foreground process group.
+ *
+ * maize-238 Branch A (decision 9285): the console device SIGNALS readiness (the IRQ,
+ * vector 33) and console bytes are CONSUMED only at read time (console_read, or the
+ * IRQ handing a byte directly to an already-parked reader) -- never pre-read into a
+ * kernel ring ahead of a reader. So there is no input ring to buffer an ownerless
+ * byte: fd-0 readiness is the device's own non-consuming status probe, and ISIG on a
+ * data byte is recognized where the byte is consumed. This retires the phase-2 eager
+ * pre-read model, whose stranded latch raced the oksh-to-child console handoff.
  * ================================================================================== */
-#define CON_RING_CAP 64
-static u8  g_con_ring[CON_RING_CAP];
-static u32 g_con_r, g_con_w, g_con_count;
-static void con_ring_push(u8 b) {
-    if (g_con_count < CON_RING_CAP) { g_con_ring[g_con_w] = b; g_con_w = (g_con_w + 1) % CON_RING_CAP; ++g_con_count; }
-}
-static int con_ring_pop(u8 *b) {
-    if (g_con_count == 0) { return 0; }
-    *b = g_con_ring[g_con_r]; g_con_r = (g_con_r + 1) % CON_RING_CAP; --g_con_count; return 1;
-}
 
 /* The single controlling tty's foreground process group; set at boot to the first
  * worklist job's pgid, changed only by SYS_tcsetpgrp. */
@@ -1176,7 +1172,6 @@ static void signal_fg_group(int sig) { raise_on_pgid(g_fg_pgid, sig); }
 static long console_read(struct pcb *self, u64 uva, long count) {
     u8 b;
     if (count <= 0) { return 0; }
-    if (con_ring_pop(&b)) { as_write8(self, uva, b); return 1; }   /* queued data byte */
     if (quesos_con_status() & CON_STAT_INPUT) {
         b = (u8)quesos_con_data();
         /* maize-94: the on-demand data-port read latches EOF when host stdin returns 0, so
@@ -1800,8 +1795,9 @@ static long do_socketpair(long domain, long type, long protocol, u64 sv_uva) {
 #define POLLNVAL 0x0020
 
 /* Readiness of one fd against the requested events (POLLERR/POLLNVAL always reported).
- * fd 0 (console) is readable when a byte is queued (g_con_count, the IRQ/readiness model
- * -- both invocation modes under ratified Branch A); a hostfs/stdout fd is always ready
+ * fd 0 (console) is readable when a DATA byte is pending on host stdin (the device's
+ * non-consuming status probe, the IRQ/readiness model -- both invocation modes under
+ * ratified Branch A); a hostfs/stdout fd is always ready
  * (Linux regular-file semantics); a pipe/socket read side is readable with data or at EOF
  * (writers==0); a pipe/socket write side is writable with room, but reports POLLERR (not
  * POLLOUT) once the peer read end is gone, since a write would then fail -EPIPE; a
@@ -1813,7 +1809,11 @@ static short fd_ready(struct pcb *p, int fd, short events) {
     o = &g_ofd[p->fd[fd]];
     if (o->kind == OFD_NATIVE) {
         if (o->native_fd == 0) {
-            if ((events & POLLIN) && g_con_count > 0) { r |= POLLIN; }
+            /* maize-238 Branch A (decision 9285): readable when a DATA byte is pending
+             * (CON_STAT_INPUT from the non-consuming probe), NOT merely at end-of-input --
+             * console EOF surfaces through a read returning 0, not as poll-readable, so a
+             * drained-then-EOF console does not spuriously wake a poll/select waiter. */
+            if ((events & POLLIN) && (quesos_con_status() & CON_STAT_INPUT)) { r |= POLLIN; }
         } else {
             if (events & POLLIN)  { r |= POLLIN; }
             if (events & POLLOUT) { r |= POLLOUT; }
@@ -2283,36 +2283,40 @@ void quesos_timer_tick(void) {
     schedule();   /* noreturn */
 }
 
-/* Console input IRQ (vector 33): the console device latched a byte and raised its IRQ.
- * Deliver it to a parked console reader (if any) and wake that reader; if none is
- * parked, leave the byte latched for a future read. Then reschedule (the metal handler
- * saved the interrupted process, or none if idle). */
+/* Console input IRQ (vector 33): the console device signaled host-stdin readiness (a
+ * data byte pending, or end-of-input) and raised its IRQ. maize-238 Branch A (decision
+ * 9285): the IRQ does NOT pre-read/buffer a byte. If a reader is parked, CONSUME one byte
+ * now -- readiness was just signaled, so the data-port read does not block -- and hand it
+ * over; this is the parked read COMPLETING, at read time, not an eager pre-read into an
+ * ownerless ring. With no reader parked, consume nothing (the byte stays in host stdin
+ * until a read/poll drains it); just re-check poll()/select() waiters keyed to fd-0
+ * readiness. Then reschedule (the metal handler saved the interrupted process, or none if
+ * idle). */
 void quesos_console_irq(void) {
     struct pcb *r = 0;
     int i;
-    /* Drain the device latch. A control byte (0x03/0x1C) is intercepted as a signal on
-     * the foreground group and never delivered as data; any other byte is queued. */
-    if (quesos_con_status() & 1ul) {
-        u8 b = (u8)quesos_con_data();
-        if (g_tty_isig && b == 0x03) { signal_fg_group(SIGINT); }
-        else if (g_tty_isig && b == 0x1C) { signal_fg_group(SIGQUIT); }
-        else { con_ring_push(b); }   /* raw mode queues 0x03/0x1C as data */
-    }
-    /* Hand one queued byte to a parked reader, if any. */
-    if (g_con_count > 0) {
-        for (i = 0; i < QUESOS_MAX_PROC; ++i) {
-            if (g_proc[i].state == P_BLOCKED && g_proc[i].block_kind == BLK_CONSOLE) {
-                r = &g_proc[i];
-                break;
-            }
-        }
-        if (r != 0) {
-            u8 db;
-            if (con_ring_pop(&db)) { as_write8(r, r->block_buf, db); wake_with(r, 1); }
+    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+        if (g_proc[i].state == P_BLOCKED && g_proc[i].block_kind == BLK_CONSOLE) {
+            r = &g_proc[i];
+            break;
         }
     }
-    /* maize-238: a byte reaching g_con_count makes fd 0 readable; wake any poll()/select()
-     * caller watching it that a blocking BLK_CONSOLE reader did not already drain. */
+    if (r != 0) {
+        if (quesos_con_status() & CON_STAT_INPUT) {
+            /* A data byte is pending: consume it at read time and complete the parked read.
+             * A control byte (0x03/0x1C) in canonical mode is intercepted as a signal on the
+             * foreground group and NOT delivered as data (the reader stays parked for a real
+             * byte, matching the no-EINTR model); raw mode delivers it as an ordinary byte. */
+            u8 b = (u8)quesos_con_data();
+            if (quesos_con_status() & CON_STAT_EOF) { wake_with(r, 0); }              /* raced to EOF */
+            else if (g_tty_isig && b == 0x03) { signal_fg_group(SIGINT); }
+            else if (g_tty_isig && b == 0x1C) { signal_fg_group(SIGQUIT); }
+            else { as_write8(r, r->block_buf, b); wake_with(r, 1); }
+        } else if (quesos_con_status() & CON_STAT_EOF) {
+            wake_with(r, 0);   /* end-of-input: the parked read returns 0 (EOF) */
+        }
+    }
+    /* fd 0 became readable (or hit EOF): wake any poll()/select() caller watching it. */
     poll_recheck_all();
     if (g_current != 0) { g_current->state = P_RUNNABLE; }
     schedule();   /* noreturn */
