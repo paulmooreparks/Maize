@@ -133,6 +133,21 @@ GLOBAL sys_fb_geometry
 GLOBAL sys_fb_register
 GLOBAL sys_fb_release
 
+; maize-238 Phase 3: unix-domain sockets, select/poll, framebuffer mmap. The socket family
+; mirrors the Linux x86-64 numbers (socket 41=$29, bind 49=$31, connect 42=$2A, listen
+; 50=$32, accept 43=$2B, socketpair 53=$35, poll 7=$07, select 23=$17); fb_mmap is
+; Maize-private ($FC). All trap to quesOS's cause-7 dispatcher (guest-only); a bare-VM
+; caller hits the native table (harmless -ENOSYS for the socket calls).
+GLOBAL sys_socket
+GLOBAL sys_bind
+GLOBAL sys_connect
+GLOBAL sys_listen
+GLOBAL sys_accept
+GLOBAL sys_socketpair
+GLOBAL sys_poll
+GLOBAL sys_select
+GLOBAL sys_fb_mmap
+
 ; maize-174 guest signal subsystem: six Linux-mirror numbers (kill $3E, rt_sigaction $0D,
 ; rt_sigprocmask $0E, rt_sigreturn $0F, setpgid $6D, getpgid $79) plus two Maize-private
 ; job-control numbers (tcgetpgrp $FA / tcsetpgrp $FB, no Linux syscall equivalent). All
@@ -268,6 +283,42 @@ sys_fb_register:
 
 sys_fb_release:
     SYS $F9                 ; no args; RV = 0 or -errno
+    RET
+
+sys_socket:
+    SYS $29                 ; R0=domain, R1=type, R2=protocol; RV = fd or -errno
+    RET
+
+sys_bind:
+    SYS $31                 ; R0=fd, R1=sockaddr*, R2=addrlen; RV = 0 or -errno
+    RET
+
+sys_connect:
+    SYS $2A                 ; R0=fd, R1=sockaddr*, R2=addrlen; RV = 0 or -errno
+    RET
+
+sys_listen:
+    SYS $32                 ; R0=fd, R1=backlog; RV = 0 or -errno
+    RET
+
+sys_accept:
+    SYS $2B                 ; R0=fd, R1=sockaddr*(nullable), R2=socklen_t*(nullable); RV = newfd or -errno
+    RET
+
+sys_socketpair:
+    SYS $35                 ; R0=domain, R1=type, R2=protocol, R3=int sv[2]; RV = 0 or -errno
+    RET
+
+sys_poll:
+    SYS $07                 ; R0=pollfd*, R1=nfds, R2=timeout_ms; RV = ready-count / 0 / -errno
+    RET
+
+sys_select:
+    SYS $17                 ; R0=nfds, R1=readfds, R2=writefds, R3=exceptfds, R4=timeval*; RV = ready-count / 0 / -errno
+    RET
+
+sys_fb_mmap:
+    SYS $FC                 ; no args; RV = VA of the mapped fb buffer, or -errno
     RET
 
 sys_kill:

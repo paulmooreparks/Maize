@@ -15,8 +15,9 @@
  * process table so a trap handler keeps executing across a MOVTCR address-space swap.
  *
  *   0x00001000  trap vector table page             kernel (U=0), one 4 KiB leaf
- *   0x00002000 .. 0x000FFFFF  user VA region        per-process user pages (U=1)
+ *   0x00002000 .. 0x000FFFFF  user VA region        per-process user pages (U=1), region 0
  *   0x00100000 .. 0x001FFFFF  quesOS image (code+data)   kernel (U=0), 4 KiB leaves
+ *   0x00200000 .. 0x003FFFFF  fb-mmap window (maize-238)  per-process, lazy L0 (region 1)
  *   0x00400000 .. 0x043FFFFF  frame + page-table pool     kernel (U=0), 2 MiB superpages
  *
  * A user process's own pages are DISTINCT physical frames drawn from the pool and
@@ -93,6 +94,7 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define USER_BRK_MAX      0x000F0000ul   /* maize-94: heap ceiling (stack bottom)       */
 #define QUESOS_IMG_BASE   0x00100000ul   /* quesOS link base; code+data in [base,+1MiB) */
 #define QUESOS_IMG_TOP    0x00200000ul
+#define FB_MMAP_BASE      0x00200000ul   /* maize-238: per-process fb-mmap window (region 1) */
 #define POOL_BASE         0x00400000ul   /* frame + page-table pool (2 MiB aligned)     */
 #define POOL_SUPERPAGES   32u            /* 32 * 2 MiB = 64 MiB pool                     */
 #define POOL_TOP          (POOL_BASE + (u64)POOL_SUPERPAGES * 0x200000ul)
@@ -229,6 +231,32 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define SYS_fb_register 0xF8   /* (u64 base_uva) -> long (slot, or -errno)                */
 #define SYS_fb_release  0xF9   /* (void)         -> long (0, or -errno)                   */
 
+/* maize-238 Phase 3: unix-domain sockets, select/poll, framebuffer mmap. The socket
+ * family mirrors the Linux x86-64 numbers (socket 41=$29, bind 49=$31, connect 42=$2A,
+ * listen 50=$32, accept 43=$2B, socketpair 53=$35, poll 7=$07, select 23=$17) per the
+ * numbering policy; fb_mmap is Maize-private ($FC, next free after the $F7-$FB block). */
+#define SYS_socket     0x29
+#define SYS_bind       0x31
+#define SYS_connect    0x2A
+#define SYS_listen     0x32
+#define SYS_accept     0x2B
+#define SYS_socketpair 0x35
+#define SYS_poll       0x07
+#define SYS_select     0x17
+#define SYS_fb_mmap    0xFC   /* (void) -> long (VA of the mapped fb buffer, or -errno)   */
+
+/* maize-238: AF_UNIX SOCK_STREAM only (the X11-transport shape; maize-90 scoping). */
+#define AF_UNIX     1
+#define SOCK_STREAM 1
+
+/* maize-238 errno magnitudes for the socket/mmap surface (real Linux values). */
+#define QOS_ENOMEM         12   /* alloc_frames_contig could not satisfy the fb request  */
+#define QOS_EPROTONOSUPPORT 93  /* socket(): protocol != 0                                */
+#define QOS_EOPNOTSUPP     95   /* reserved (Branch B fast-fail; not built under Branch A)*/
+#define QOS_EAFNOSUPPORT   97   /* socket(): domain != AF_UNIX                            */
+#define QOS_EADDRINUSE     98   /* bind(): the path is already bound                      */
+#define QOS_ECONNREFUSED  111   /* connect(): no listener, or listen queue full          */
+
 /* maize-236 per-exec rejection errno magnitudes (Decision D7; real Linux values so a
  * ported shell's strerror needs no Maize-specific table). */
 #define QOS_ENODEV 19          /* no display attached (claim rejected by the device)      */
@@ -258,6 +286,9 @@ enum proc_state { P_FREE = 0, P_RUNNABLE, P_BLOCKED, P_ZOMBIE };
 #define BLK_PIPE_R  2            /* parked reading an empty pipe (woken by a writer)    */
 #define BLK_PIPE_W  3            /* parked writing a full pipe (woken by a reader)      */
 #define BLK_CONSOLE 4            /* parked reading fd 0 (woken by the console IRQ, v33)  */
+#define BLK_CONNECT 5            /* maize-238: parked in connect() (woken by accept())   */
+#define BLK_ACCEPT  6            /* maize-238: parked in accept() (woken by connect())   */
+#define BLK_POLL    7            /* maize-238: parked in poll()/select() (readiness wake)*/
 
 /* saved_rs (offset 0) and root_pa (offset 8) are read by the quesos_switch_to metal at
  * those exact byte offsets; keep them first and in this order. */
@@ -265,6 +296,7 @@ struct pcb {
     u64 saved_rs;                 /* offset 0:  RS at the saved-regs block (context)   */
     u64 root_pa;                  /* offset 8:  page-table root physical (satp = |1)   */
     u64 l0_pa;                    /* [0,2 MiB) L0 table physical (user-page mapping)    */
+    u64 l1_pa;                    /* maize-238: L1 table physical (lazy multi-L0 walk)  */
     long pid;
     long parent;
     int  state;
@@ -289,6 +321,15 @@ struct pcb {
     u64  brk_cur;                 /* maize-94: current heap break (grows via SYS_brk)  */
     unsigned char termios_img[TERMIOS_WIRE_SIZE];  /* maize-250: last termios this proc set */
     int  termios_valid;           /* maize-250: 0 until this proc's first tcsetattr     */
+    /* maize-238 Family B: poll()/select() park state. Read back by poll_recheck_all and
+     * the timer timeout sweep to re-evaluate a parked caller's fd set. */
+    long poll_fds_uva;            /* poll(): user VA of the pollfd array (select: unused)*/
+    long poll_nfds;               /* poll()/select(): fd count                          */
+    int  poll_mode;               /* 0 = poll(), 1 = select()                           */
+    u64  poll_r_uva, poll_w_uva, poll_e_uva;  /* select(): the three fd_set VAs (0=NULL) */
+    u64  poll_deadline_ms;        /* 0 = block forever; else absolute sys_clock_ms deadline */
+    /* maize-238 Family C: the process's framebuffer mmap window base VA (0 = none). */
+    long fb_mmap_va;
 };
 
 static struct pcb g_proc[QUESOS_MAX_PROC];
@@ -388,6 +429,26 @@ static u64 alloc_frame(void) {
     return f;
 }
 
+/* maize-238: a graceful batch allocator for the fb-mmap buffer. Unlike alloc_frame (which
+ * PANICs and powers off the whole VM on exhaustion, acceptable for its small kernel-internal
+ * single-frame requests), a large (~63-page), user-triggerable request that can legitimately
+ * exhaust the pool across repeated exec cycles must fail cleanly. Checks headroom BEFORE
+ * allocating (no partial allocation, no PANIC), then bumps g_pool_next by n pages in one
+ * uninterrupted step -- so the n frames are physically contiguous with NO free-list needed
+ * (the same atomicity argument as alloc_frame's implicit single-frame contiguity, since
+ * quesOS's syscall dispatch is atomic w.r.t. the round-robin scheduler). Returns 0 and the
+ * base physical address on success, -1 on exhaustion. */
+static long alloc_frames_contig(u64 n, u64 *out_base_pa) {
+    u64 base = g_pool_next;
+    u64 i;
+    if (n == 0) { return -1; }
+    if (base + n * PAGE_SIZE > POOL_TOP) { return -1; }
+    g_pool_next += n * PAGE_SIZE;
+    for (i = 0; i < n; ++i) { memset((void *)(base + i * PAGE_SIZE), 0, PAGE_SIZE); }
+    *out_base_pa = base;
+    return 0;
+}
+
 /* Read/write a table entry via its identity (pool) address. */
 static u64  pte_get(u64 table_pa, u64 idx)          { return ((u64 *)table_pa)[idx]; }
 static void pte_set(u64 table_pa, u64 idx, u64 val) { ((u64 *)table_pa)[idx] = val; }
@@ -422,19 +483,46 @@ static int build_address_space(struct pcb *p) {
     }
 
     p->root_pa = root;
+    p->l1_pa   = l1;
     p->l0_pa   = l0;
     return 0;
 }
 
-/* Map one user 4 KiB page (VA < 2 MiB) to a physical frame, U=1, in p's L0. */
+/* maize-238: resolve the L0 table for VA's 2 MiB region, allocating and linking a fresh
+ * L0 in the process's L1 on first touch of a region above the pre-allocated region 0.
+ * This lifts the old single-L0 cap (user VA <= 2 MiB) so a dedicated fb-mmap window
+ * (FB_MMAP_BASE, region 1) coexists with the process's own code/data/heap in region 0.
+ * Region 0's L0 stays pre-allocated at build_address_space (l1[0]), so this returns it
+ * unchanged for VA < 2 MiB. Any 2 MiB region, not a hard-coded second special case. */
+static u64 ensure_l0(struct pcb *p, u64 va) {
+    u64 i1 = (va >> 21) & 0x1FF;
+    u64 e  = pte_get(p->l1_pa, i1);
+    if ((e & PTE_V) == 0) {
+        u64 nl0 = alloc_frame();
+        pte_set(p->l1_pa, i1, nl0 | PTE_V);
+        return nl0;
+    }
+    return e & ~0xFFFul;
+}
+
+/* Non-allocating L0 lookup for an already-mapped VA (returns region 0's L0 fast, or the
+ * region's linked L0; 0 if the region has no L0 yet). */
+static u64 va_l0(struct pcb *p, u64 va) {
+    u64 i1 = (va >> 21) & 0x1FF;
+    if (i1 == 0) { return p->l0_pa; }
+    return pte_get(p->l1_pa, i1) & ~0xFFFul;
+}
+
+/* Map one user 4 KiB page to a physical frame, U=1, in p's L0 for VA's region. */
 static void map_user_page(struct pcb *p, u64 va, u64 frame) {
-    pte_set(p->l0_pa, (va >> 12) & 0x1FF, (frame & ~0xFFFul) | PTE_USER);
+    u64 l0 = ensure_l0(p, va);
+    pte_set(l0, (va >> 12) & 0x1FF, (frame & ~0xFFFul) | PTE_USER);
 }
 
 /* Resolve a mapped user VA to its physical frame address (for building the image /
  * stack contents while another address space, or bare mode, is active in CR0). */
 static u64 user_pa(struct pcb *p, u64 va) {
-    u64 pte = pte_get(p->l0_pa, (va >> 12) & 0x1FF);
+    u64 pte = pte_get(va_l0(p, va), (va >> 12) & 0x1FF);
     return (pte & ~0xFFFul) + (va & 0xFFF);
 }
 
@@ -442,10 +530,35 @@ static void as_write8(struct pcb *p, u64 va, u8 val)   { *(u8 *)user_pa(p, va) =
 static void as_write32(struct pcb *p, u64 va, u32 val) { *(u32 *)user_pa(p, va) = val; }
 static void as_write64(struct pcb *p, u64 va, u64 val) { *(u64 *)user_pa(p, va) = val; }
 
+/* maize-238: mirror-image reads of a (possibly other) process's memory. Assembled
+ * byte-wise via user_pa so a multi-byte field that straddles a 4 KiB page boundary
+ * (a pollfd array, a sockaddr_un on the stack) reads correctly across non-contiguous
+ * frames. poll_recheck_all reads a PARKED process's fd set through these, translating
+ * via that process's own page table rather than the live CR0. */
+static u8  as_read8(struct pcb *p, u64 va)  { return *(u8 *)user_pa(p, va); }
+static u16 as_read16(struct pcb *p, u64 va) {
+    return (u16)((u16)as_read8(p, va) | ((u16)as_read8(p, va + 1) << 8));
+}
+static u32 as_read32(struct pcb *p, u64 va) {
+    u32 v = 0; int i;
+    for (i = 0; i < 4; ++i) { v |= (u32)as_read8(p, va + (u64)i) << (8 * i); }
+    return v;
+}
+static u64 as_read64(struct pcb *p, u64 va) {
+    u64 v = 0; int i;
+    for (i = 0; i < 8; ++i) { v |= (u64)as_read8(p, va + (u64)i) << (8 * i); }
+    return v;
+}
+static void as_write16(struct pcb *p, u64 va, u16 val) {
+    as_write8(p, va, (u8)(val & 0xFF));
+    as_write8(p, va + 1, (u8)((val >> 8) & 0xFF));
+}
+
 /* Ensure the page containing user VA `va` is mapped (allocate + map on first touch). */
 static void ensure_user_page(struct pcb *p, u64 va) {
+    u64 l0 = ensure_l0(p, va);
     u64 idx = (va >> 12) & 0x1FF;
-    if ((pte_get(p->l0_pa, idx) & PTE_V) == 0) {
+    if ((pte_get(l0, idx) & PTE_V) == 0) {
         map_user_page(p, va, alloc_frame());
     }
 }
@@ -600,7 +713,11 @@ static int load_segments(struct pcb *p, const char *path, u64 *entry_out) {
  * they are correct regardless of which address space CR0 currently names.
  * ================================================================================== */
 #define QUESOS_MAX_OFD  128
-#define QUESOS_MAX_PIPE 16
+/* maize-238: the shared ring pool now backs both plain pipes AND every socket connection
+ * (each connected pair consumes 2 rings). Raised from 16 to 48 so a TinyX-shaped scenario
+ * (a listener + a few accepted clients + a shell's own pipes) does not exhaust the pool.
+ * A fixed compile-time capacity, not a contract (DIRT: cheap to raise later). */
+#define QUESOS_MAX_PIPE 48
 #define PIPE_CAP        4096u
 
 #define OFD_FREE   0
@@ -608,14 +725,36 @@ static int load_segments(struct pcb *p, const char *path, u64 *entry_out) {
 #define OFD_PIPE_R 2
 #define OFD_PIPE_W 3
 #define OFD_RESVD  4    /* reserved by ofd_alloc; the caller fills in the real kind */
+#define OFD_SOCK        5   /* maize-238: a connected AF_UNIX SOCK_STREAM end (full duplex) */
+#define OFD_SOCK_LISTEN 6   /* maize-238: a bound+listening socket (namespace entry only)   */
 
 struct ofd {
     int  kind;
-    long native_fd;   /* OFD_NATIVE: the host fd handed to the native SYS provider */
-    int  pipe_idx;    /* OFD_PIPE_*: index into g_pipe                              */
+    long native_fd;   /* OFD_NATIVE: the host fd. OFD_SOCK_LISTEN: the g_unix_bind[] index */
+    int  pipe_idx;    /* OFD_PIPE_*: the ring. OFD_SOCK: the RECV ring (reads)             */
+    int  peer_idx;    /* maize-238: OFD_SOCK only: the SEND ring (writes)                  */
     int  refcount;
 };
 static struct ofd g_ofd[QUESOS_MAX_OFD];
+
+/* maize-238: AF_UNIX namespace. bind() records a path -> listening-socket entry; connect()
+ * looks a path up here. Purely in-kernel: no hostfs file is created at the bound path
+ * (there is no way to represent a listening-socket special file over the hostfs
+ * passthrough, and no named consumer needs the path to appear in a directory listing;
+ * only connect()-by-path must succeed). */
+#define QUESOS_MAX_UNIX_BIND    8
+#define QUESOS_MAX_UNIX_BACKLOG 8   /* also the pending-connect queue depth */
+
+struct unix_bind {
+    int  used;
+    char path[QUESOS_PATH_CAP];
+    int  listening;              /* set by listen(); bind() alone is not enough  */
+    int  backlog;
+    long pending_pid[QUESOS_MAX_UNIX_BACKLOG];   /* FIFO of blocked connectors    */
+    int  pending_ofd[QUESOS_MAX_UNIX_BACKLOG];   /* the connector's socket ofd idx */
+    int  pending_head, pending_tail, pending_count;
+};
+static struct unix_bind g_unix_bind[QUESOS_MAX_UNIX_BIND];
 
 struct pipe_obj {
     int used;
@@ -637,6 +776,7 @@ static int ofd_alloc(void) {
             g_ofd[i].kind = OFD_RESVD;
             g_ofd[i].refcount = 0;
             g_ofd[i].pipe_idx = -1;
+            g_ofd[i].peer_idx = -1;
             return i;
         }
     }
@@ -646,6 +786,9 @@ static void ofd_ref(int idx) { if (idx >= 0) { g_ofd[idx].refcount++; } }
 
 static void pipe_wake_readers(int pi);
 static void pipe_wake_writers(int pi);
+static void poll_recheck_all(void);   /* maize-238: re-evaluate parked poll()/select() */
+static void wake_with(struct pcb *p, long rv);
+static struct pcb *find_by_pid(long pid);
 
 /* Drop a reference to an OFD; on the last reference close it (a hostfs fd is closed
  * natively; a pipe end decrements the pipe's reader/writer count and wakes any peer
@@ -664,8 +807,38 @@ static void ofd_unref(int idx) {
     } else if (o->kind == OFD_PIPE_W) {
         g_pipe[o->pipe_idx].writers--;
         if (g_pipe[o->pipe_idx].writers == 0) { pipe_wake_readers(o->pipe_idx); }
+    } else if (o->kind == OFD_SOCK) {
+        /* maize-238: one socket fd close tears down BOTH directions at once. The recv
+         * ring (pipe_idx) had this end as its reader; the send ring (peer_idx) had it as
+         * its writer. Do both pipe branches' effects so the peer sees EOF and -EPIPE. */
+        if (o->pipe_idx >= 0) {
+            g_pipe[o->pipe_idx].readers--;
+            if (g_pipe[o->pipe_idx].readers == 0) { pipe_wake_writers(o->pipe_idx); }
+        }
+        if (o->peer_idx >= 0) {
+            g_pipe[o->peer_idx].writers--;
+            if (g_pipe[o->peer_idx].writers == 0) { pipe_wake_readers(o->peer_idx); }
+        }
+    } else if (o->kind == OFD_SOCK_LISTEN) {
+        /* maize-238: closing a listening socket wakes every still-parked connector with
+         * -ECONNREFUSED and frees the bound path for a fresh bind(). */
+        int bi = (int)o->native_fd;
+        if (bi >= 0 && bi < QUESOS_MAX_UNIX_BIND) {
+            struct unix_bind *b = &g_unix_bind[bi];
+            while (b->pending_count > 0) {
+                long pid = b->pending_pid[b->pending_head];
+                struct pcb *c = find_by_pid(pid);
+                b->pending_head = (b->pending_head + 1) % QUESOS_MAX_UNIX_BACKLOG;
+                b->pending_count--;
+                if (c != 0 && c->state == P_BLOCKED && c->block_kind == BLK_CONNECT) {
+                    wake_with(c, -(long)QOS_ECONNREFUSED);
+                }
+            }
+            b->used = 0; b->listening = 0; b->path[0] = 0;
+        }
     }
     o->kind = OFD_FREE;
+    poll_recheck_all();   /* maize-238: a reader/writer count hit 0 (readiness changed) */
 }
 
 /* Allocate the shared stdio OFDs once at boot. */
@@ -710,6 +883,7 @@ static long pipe_fetch(int pi, struct pcb *dst, u64 uva, long count) {
         q->count--;
         ++n;
     }
+    if (n > 0) { poll_recheck_all(); }   /* maize-238: ring drained (POLLOUT may open) */
     return n;
 }
 /* Copy up to `count` bytes from process `src`'s buffer into pipe `pi`'s ring. */
@@ -722,6 +896,7 @@ static long pipe_deposit(int pi, struct pcb *src, u64 uva, long count) {
         q->count++;
         ++n;
     }
+    if (n > 0) { poll_recheck_all(); }   /* maize-238: ring filled (POLLIN may open) */
     return n;
 }
 
@@ -776,6 +951,7 @@ static struct pcb *spawn(const char *path, long parent) {
     p->exit_status = 0;
     p->block_kind = BLK_NONE;
     p->fb_slot = -1;   /* maize-236: no framebuffer registration until SYS_fb_register */
+    p->fb_mmap_va = 0; /* maize-238: no fb-mmap window until SYS_fb_mmap */
     p->pgid = p->pid;  /* maize-174: a top-level spawn starts its own process group */
     p->pending = 0; p->blocked = 0; p->term_signal = 0; p->in_handler = 0;
     p->termios_valid = 0;   /* maize-250: no console termios set until this proc tcsetattr's */
@@ -913,8 +1089,10 @@ static long do_write(u64 fd_num, u64 uva, long count) {
     struct ofd *o = fd_ofd(self, fd_num);
     if (o == 0) { return -9; }   /* -EBADF */
     if (o->kind == OFD_NATIVE) { return native_write(o->native_fd, uva, count); }
-    if (o->kind == OFD_PIPE_W) {
-        int pi = o->pipe_idx;
+    if (o->kind == OFD_PIPE_W || o->kind == OFD_SOCK) {
+        /* maize-238: a socket writes into its SEND ring (peer_idx); the pipe-write path is
+         * reused verbatim (BLK_PIPE_W park + reader-wake), only the ring index differs. */
+        int pi = (o->kind == OFD_SOCK) ? o->peer_idx : o->pipe_idx;
         if (g_pipe[pi].readers == 0) { return -32; }   /* -EPIPE */
         if (g_pipe[pi].count < PIPE_CAP) {
             long n = pipe_deposit(pi, self, uva, count);
@@ -1025,7 +1203,9 @@ static long do_read(u64 fd_num, u64 uva, long count) {
         if (o->native_fd == 0) { return console_read(self, uva, count); }
         return native_read(o->native_fd, uva, count);
     }
-    if (o->kind == OFD_PIPE_R) {
+    if (o->kind == OFD_PIPE_R || o->kind == OFD_SOCK) {
+        /* maize-238: a socket reads from its RECV ring (pipe_idx); the pipe-read path is
+         * reused verbatim (BLK_PIPE_R park + writer-wake), only the ring index differs. */
         int pi = o->pipe_idx;
         if (g_pipe[pi].count > 0) {
             long n = pipe_fetch(pi, self, uva, count);
@@ -1368,6 +1548,386 @@ static long do_pipe(u64 fds_uva) {
     return 0;
 }
 
+/* ==================================================================================
+ * maize-238 Family A: AF_UNIX SOCK_STREAM sockets over the existing pipe ring pool.
+ *
+ * A connected socket pair is two cross-wired rings (one per direction = full duplex);
+ * a socket's read()/write() reuse pipe_fetch/pipe_deposit against the recv/send ring,
+ * so no new data-I/O path exists (only a new ring-index selection at each dispatch
+ * site, above). bind()/listen()/accept()/connect() add an in-kernel namespace and a
+ * park/handshake, reusing wake_with exactly as the pipe and wait paths do.
+ * ================================================================================== */
+
+/* Allocate a fresh ring from the shared pool (readers=writers=1, empty). -1 if full. */
+static int alloc_ring(void) {
+    int i;
+    for (i = 0; i < QUESOS_MAX_PIPE; ++i) {
+        if (!g_pipe[i].used) {
+            g_pipe[i].used = 1; g_pipe[i].readers = 1; g_pipe[i].writers = 1;
+            g_pipe[i].r = 0; g_pipe[i].w = 0; g_pipe[i].count = 0;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int unix_bind_lookup(const char *path) {
+    int i, j;
+    for (i = 0; i < QUESOS_MAX_UNIX_BIND; ++i) {
+        if (!g_unix_bind[i].used) { continue; }
+        for (j = 0; g_unix_bind[i].path[j] == path[j]; ++j) {
+            if (path[j] == 0) { return i; }
+        }
+    }
+    return -1;
+}
+
+/* Copy a sockaddr_un's sun_path (bytes after the 2-byte sun_family) out of process p's
+ * address space into a kernel buffer, NUL-terminated. */
+static void read_sun_path(struct pcb *p, u64 addr_uva, char *dst) {
+    int i;
+    for (i = 0; i < QUESOS_PATH_CAP - 1; ++i) {
+        char c = (char)as_read8(p, addr_uva + 2u + (u64)i);
+        dst[i] = c;
+        if (c == 0) { return; }
+    }
+    dst[QUESOS_PATH_CAP - 1] = 0;
+}
+
+/* accept()'s peer address for a unix socket has no meaningful value; synthesize the
+ * unnamed {sun_family=AF_UNIX, sun_path=""} Linux itself often returns for this side. */
+static void write_empty_sockaddr(struct pcb *p, u64 addr_uva, u64 addrlen_uva) {
+    as_write16(p, addr_uva, (u16)AF_UNIX);
+    if (addrlen_uva != 0) { as_write32(p, addrlen_uva, 2u); }   /* sizeof(sa_family_t) */
+}
+
+/* Complete the connect/accept handshake: allocate the two cross-wired rings, wire the
+ * connector's own ofd (cofd) in place, and create the accepter's new fd. Returns the
+ * accepter's new fd slot, or -1 if a ring / fd / ofd could not be allocated. Does NOT
+ * wake either party (the caller does, so the accept and connect legs stay symmetric). */
+static long socket_handshake(struct pcb *accepter, int cofd) {
+    int x, y, aslot, aofd;
+    x = alloc_ring();
+    if (x < 0) { return -1; }
+    y = alloc_ring();
+    if (y < 0) { g_pipe[x].used = 0; return -1; }
+    aslot = fd_alloc_slot(accepter);
+    if (aslot < 0) { g_pipe[x].used = 0; g_pipe[y].used = 0; return -1; }
+    aofd = ofd_alloc();
+    if (aofd < 0) { g_pipe[x].used = 0; g_pipe[y].used = 0; return -1; }
+    /* Ring X: connector writes, accepter reads. Ring Y: accepter writes, connector reads. */
+    g_ofd[cofd].pipe_idx = y; g_ofd[cofd].peer_idx = x;   /* connector recv=Y send=X */
+    g_ofd[aofd].kind = OFD_SOCK; g_ofd[aofd].pipe_idx = x; g_ofd[aofd].peer_idx = y;
+    g_ofd[aofd].refcount = 1;
+    accepter->fd[aslot] = aofd;
+    return aslot;
+}
+
+static long do_socket(long domain, long type, long protocol) {
+    struct pcb *self = g_current;
+    int slot, o;
+    if (domain != AF_UNIX)   { return -(long)QOS_EAFNOSUPPORT; }
+    if (type != SOCK_STREAM) { return -(long)QOS_EINVAL; }   /* reject SOCK_NONBLOCK/CLOEXEC honestly */
+    if (protocol != 0)       { return -(long)QOS_EPROTONOSUPPORT; }
+    slot = fd_alloc_slot(self);
+    if (slot < 0) { return -24; }   /* -EMFILE */
+    o = ofd_alloc();
+    if (o < 0) { return -24; }
+    g_ofd[o].kind = OFD_SOCK; g_ofd[o].pipe_idx = -1; g_ofd[o].peer_idx = -1; g_ofd[o].refcount = 1;
+    self->fd[slot] = o;
+    return slot;
+}
+
+static long do_bind(u64 fd_num, u64 addr_uva, u64 addrlen) {
+    struct pcb *self = g_current;
+    struct ofd *o = fd_ofd(self, fd_num);
+    char path[QUESOS_PATH_CAP];
+    int bi, k;
+    (void)addrlen;
+    if (o == 0 || o->kind != OFD_SOCK || o->pipe_idx >= 0) { return -(long)QOS_EINVAL; }
+    if (as_read16(self, addr_uva) != (u16)AF_UNIX) { return -(long)QOS_EINVAL; }
+    read_sun_path(self, addr_uva, path);
+    if (unix_bind_lookup(path) >= 0) { return -(long)QOS_EADDRINUSE; }
+    bi = -1;
+    for (k = 0; k < QUESOS_MAX_UNIX_BIND; ++k) { if (!g_unix_bind[k].used) { bi = k; break; } }
+    if (bi < 0) { return -(long)QOS_ENOSPC; }
+    {
+        struct unix_bind *b = &g_unix_bind[bi];
+        b->used = 1; b->listening = 0; b->backlog = QUESOS_MAX_UNIX_BACKLOG;
+        b->pending_head = 0; b->pending_tail = 0; b->pending_count = 0;
+        for (k = 0; k < QUESOS_PATH_CAP - 1 && path[k]; ++k) { b->path[k] = path[k]; }
+        b->path[k] = 0;
+    }
+    o->kind = OFD_SOCK_LISTEN;   /* bind() converts the ofd to a namespace entry */
+    o->native_fd = bi;
+    return 0;
+}
+
+static long do_listen(u64 fd_num, long backlog) {
+    struct ofd *o = fd_ofd(g_current, fd_num);
+    struct unix_bind *b;
+    if (o == 0 || o->kind != OFD_SOCK_LISTEN) { return -(long)QOS_EINVAL; }
+    b = &g_unix_bind[(int)o->native_fd];
+    if (backlog < 1) { backlog = 1; }
+    if (backlog > QUESOS_MAX_UNIX_BACKLOG) { backlog = QUESOS_MAX_UNIX_BACKLOG; }
+    b->backlog = (int)backlog;
+    b->listening = 1;
+    return 0;   /* Linux silently clamps an over-large backlog, always succeeds */
+}
+
+static long do_connect(u64 fd_num, u64 addr_uva, u64 addrlen) {
+    struct pcb *self = g_current;
+    struct ofd *o = fd_ofd(self, fd_num);
+    char path[QUESOS_PATH_CAP];
+    struct unix_bind *b;
+    int bi, cofd, j;
+    (void)addrlen;
+    if (o == 0 || o->kind != OFD_SOCK || o->pipe_idx >= 0) { return -(long)QOS_EINVAL; }
+    read_sun_path(self, addr_uva, path);
+    bi = unix_bind_lookup(path);
+    if (bi < 0) { return -(long)QOS_ECONNREFUSED; }
+    b = &g_unix_bind[bi];
+    if (!b->listening) { return -(long)QOS_ECONNREFUSED; }
+    cofd = self->fd[fd_num];
+    /* If an accepter is already parked on this listener, complete the handshake now and
+     * wake it with its new fd; the connector (self) returns 0 without parking. */
+    for (j = 0; j < QUESOS_MAX_PROC; ++j) {
+        struct pcb *a = &g_proc[j];
+        if (a->state == P_BLOCKED && a->block_kind == BLK_ACCEPT && a->block_pipe == bi) {
+            long afd = socket_handshake(a, cofd);
+            if (afd < 0) { return -(long)QOS_ECONNREFUSED; }
+            if (a->block_buf != 0) { write_empty_sockaddr(a, a->block_buf, a->block_count); }
+            wake_with(a, afd);
+            return 0;
+        }
+    }
+    if (b->pending_count >= b->backlog) { return -(long)QOS_ECONNREFUSED; }
+    /* Enqueue and park; a later accept() completes the handshake and wakes us with 0. */
+    b->pending_pid[b->pending_tail] = self->pid;
+    b->pending_ofd[b->pending_tail] = cofd;
+    b->pending_tail = (b->pending_tail + 1) % QUESOS_MAX_UNIX_BACKLOG;
+    b->pending_count++;
+    self->block_kind = BLK_CONNECT; self->block_pipe = bi;
+    self->state = P_BLOCKED;
+    poll_recheck_all();   /* the listener just became readable (a connection is waiting) */
+    schedule();           /* noreturn: accept() completes this connect */
+    return 0;
+}
+
+static long do_accept(u64 fd_num, u64 addr_uva, u64 addrlen_uva) {
+    struct pcb *self = g_current;
+    struct ofd *o = fd_ofd(self, fd_num);
+    struct unix_bind *b;
+    int bi;
+    if (o == 0 || o->kind != OFD_SOCK_LISTEN) { return -(long)QOS_EINVAL; }
+    bi = (int)o->native_fd;
+    b = &g_unix_bind[bi];
+    if (b->pending_count > 0) {
+        long pid = b->pending_pid[b->pending_head];
+        int cofd = b->pending_ofd[b->pending_head];
+        struct pcb *conn;
+        long afd;
+        b->pending_head = (b->pending_head + 1) % QUESOS_MAX_UNIX_BACKLOG;
+        b->pending_count--;
+        conn = find_by_pid(pid);
+        if (conn == 0 || conn->state != P_BLOCKED || conn->block_kind != BLK_CONNECT) {
+            return -(long)QOS_ECONNREFUSED;   /* connector vanished */
+        }
+        afd = socket_handshake(self, cofd);
+        if (afd < 0) { wake_with(conn, -(long)QOS_ECONNREFUSED); return -24; }
+        if (addr_uva != 0) { write_empty_sockaddr(self, addr_uva, addrlen_uva); }
+        wake_with(conn, 0);
+        return afd;
+    }
+    /* Nothing pending: park until a connect() enqueues and completes us. Stash the
+     * caller's out-address so the completing connect can fill it. */
+    self->block_kind = BLK_ACCEPT; self->block_pipe = bi;
+    self->block_buf = addr_uva; self->block_count = (long)addrlen_uva;
+    self->state = P_BLOCKED;
+    schedule();   /* noreturn: connect() completes this accept */
+    return 0;
+}
+
+static long do_socketpair(long domain, long type, long protocol, u64 sv_uva) {
+    struct pcb *self = g_current;
+    int x, y, s0, s1, o0, o1;
+    if (domain != AF_UNIX)   { return -(long)QOS_EAFNOSUPPORT; }
+    if (type != SOCK_STREAM) { return -(long)QOS_EINVAL; }
+    if (protocol != 0)       { return -(long)QOS_EPROTONOSUPPORT; }
+    x = alloc_ring(); if (x < 0) { return -24; }
+    y = alloc_ring(); if (y < 0) { g_pipe[x].used = 0; return -24; }
+    s0 = fd_alloc_slot(self);
+    o0 = ofd_alloc();
+    if (s0 < 0 || o0 < 0) { g_pipe[x].used = 0; g_pipe[y].used = 0; if (o0 >= 0) { g_ofd[o0].kind = OFD_FREE; } return -24; }
+    self->fd[s0] = o0;                 /* claim so the second slot differs */
+    s1 = fd_alloc_slot(self);
+    o1 = ofd_alloc();
+    if (s1 < 0 || o1 < 0) {
+        g_pipe[x].used = 0; g_pipe[y].used = 0;
+        self->fd[s0] = -1; g_ofd[o0].kind = OFD_FREE;
+        if (o1 >= 0) { g_ofd[o1].kind = OFD_FREE; }
+        return -24;
+    }
+    self->fd[s1] = o1;
+    /* end0 recv=X send=Y; end1 recv=Y send=X (cross-wired full duplex). */
+    g_ofd[o0].kind = OFD_SOCK; g_ofd[o0].pipe_idx = x; g_ofd[o0].peer_idx = y; g_ofd[o0].refcount = 1;
+    g_ofd[o1].kind = OFD_SOCK; g_ofd[o1].pipe_idx = y; g_ofd[o1].peer_idx = x; g_ofd[o1].refcount = 1;
+    as_write32(self, sv_uva,      (u32)s0);
+    as_write32(self, sv_uva + 4u, (u32)s1);
+    return 0;
+}
+
+/* ==================================================================================
+ * maize-238 Family B: select()/poll() readiness multiplexing.
+ *
+ * A non-blocking readiness check (fd_ready) is evaluated first on every call; if nothing
+ * is ready the caller parks (BLK_POLL) and a shared O(QUESOS_MAX_PROC) recheck sweep
+ * (poll_recheck_all), fired from every event that can change readiness (pipe fill-level,
+ * a reader/writer count hitting 0, a byte arriving on the console, a listener gaining a
+ * pending connection), re-evaluates each parked caller's fd set and wakes any now-ready
+ * one via wake_with. The timer tick sweeps parked callers past their timeout deadline.
+ * ================================================================================== */
+#define POLLIN   0x0001
+#define POLLOUT  0x0004
+#define POLLERR  0x0008
+#define POLLHUP  0x0010
+#define POLLNVAL 0x0020
+
+/* Readiness of one fd against the requested events (POLLERR/POLLNVAL always reported).
+ * fd 0 (console) is readable when a byte is queued (g_con_count, the IRQ/readiness model
+ * -- both invocation modes under ratified Branch A); a hostfs/stdout fd is always ready
+ * (Linux regular-file semantics); a pipe/socket read side is readable with data or at EOF
+ * (writers==0); a pipe/socket write side is writable with room, but reports POLLERR (not
+ * POLLOUT) once the peer read end is gone, since a write would then fail -EPIPE; a
+ * listening socket is readable when a connection is waiting for accept(). */
+static short fd_ready(struct pcb *p, int fd, short events) {
+    short r = 0;
+    struct ofd *o;
+    if (fd < 0 || fd >= QUESOS_MAX_FD || p->fd[fd] < 0) { return POLLNVAL; }
+    o = &g_ofd[p->fd[fd]];
+    if (o->kind == OFD_NATIVE) {
+        if (o->native_fd == 0) {
+            if ((events & POLLIN) && g_con_count > 0) { r |= POLLIN; }
+        } else {
+            if (events & POLLIN)  { r |= POLLIN; }
+            if (events & POLLOUT) { r |= POLLOUT; }
+        }
+    } else if (o->kind == OFD_PIPE_R) {
+        int pi = o->pipe_idx;
+        if ((events & POLLIN) && (g_pipe[pi].count > 0 || g_pipe[pi].writers == 0)) { r |= POLLIN; }
+    } else if (o->kind == OFD_PIPE_W) {
+        int pi = o->pipe_idx;
+        if (g_pipe[pi].readers == 0) { r |= POLLERR; }
+        else if ((events & POLLOUT) && g_pipe[pi].count < PIPE_CAP) { r |= POLLOUT; }
+    } else if (o->kind == OFD_SOCK) {
+        int rr = o->pipe_idx, ww = o->peer_idx;
+        if ((events & POLLIN) && (g_pipe[rr].count > 0 || g_pipe[rr].writers == 0)) { r |= POLLIN; }
+        if (g_pipe[ww].readers == 0) { r |= POLLERR; }
+        else if ((events & POLLOUT) && g_pipe[ww].count < PIPE_CAP) { r |= POLLOUT; }
+    } else if (o->kind == OFD_SOCK_LISTEN) {
+        if ((events & POLLIN) && g_unix_bind[(int)o->native_fd].pending_count > 0) { r |= POLLIN; }
+    }
+    return r;
+}
+
+/* Evaluate process p's parked (or freshly requested) fd set. commit != 0 writes the
+ * revents / result fd_sets back into p's own address space. Returns the ready count
+ * (poll: pollfds with nonzero revents; select: total ready read + write bits). */
+static long poll_evaluate(struct pcb *p, int commit) {
+    long count = 0;
+    if (p->poll_mode == 0) {
+        u64 base = (u64)p->poll_fds_uva;
+        long i;
+        for (i = 0; i < p->poll_nfds; ++i) {
+            u64 e = base + (u64)i * 8ul;
+            int fd = (int)as_read32(p, e);
+            short events = (short)as_read16(p, e + 4u);
+            short rev = fd_ready(p, fd, events);
+            if (commit) { as_write16(p, e + 6u, (u16)rev); }
+            if (rev != 0) { ++count; }
+        }
+    } else {
+        u64 rmask = (p->poll_r_uva != 0) ? as_read64(p, p->poll_r_uva) : 0;
+        u64 wmask = (p->poll_w_uva != 0) ? as_read64(p, p->poll_w_uva) : 0;
+        u64 rword = 0, wword = 0;
+        int nf = (int)p->poll_nfds;
+        int fd;
+        if (nf > QUESOS_MAX_FD) { nf = QUESOS_MAX_FD; }
+        for (fd = 0; fd < nf; ++fd) {
+            int in_r = (int)((rmask >> fd) & 1ul);
+            int in_w = (int)((wmask >> fd) & 1ul);
+            short events, rev;
+            if (!in_r && !in_w) { continue; }
+            events = (short)((in_r ? POLLIN : 0) | (in_w ? POLLOUT : 0));
+            rev = fd_ready(p, fd, events);
+            if (in_r && (rev & (POLLIN | POLLERR | POLLHUP | POLLNVAL))) { rword |= (1ul << fd); ++count; }
+            if (in_w && (rev & (POLLOUT | POLLERR | POLLNVAL)))          { wword |= (1ul << fd); ++count; }
+        }
+        if (commit) {
+            if (p->poll_r_uva != 0) { as_write64(p, p->poll_r_uva, rword); }
+            if (p->poll_w_uva != 0) { as_write64(p, p->poll_w_uva, wword); }
+            if (p->poll_e_uva != 0) { as_write64(p, p->poll_e_uva, 0); }   /* no OOB model */
+        }
+    }
+    return count;
+}
+
+/* Re-evaluate every parked poll()/select() caller; wake any whose condition is now met.
+ * Called at the tail of every readiness-changing event (see pipe_fetch/pipe_deposit,
+ * ofd_unref, quesos_console_irq, connect()'s enqueue). */
+static void poll_recheck_all(void) {
+    int i;
+    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+        struct pcb *p = &g_proc[i];
+        if (p->state == P_BLOCKED && p->block_kind == BLK_POLL) {
+            if (poll_evaluate(p, 0) > 0) {
+                long ready = poll_evaluate(p, 1);
+                wake_with(p, ready);
+            }
+        }
+    }
+}
+
+static long do_poll(u64 fds_uva, u64 nfds, long timeout_ms) {
+    struct pcb *self = g_current;
+    long ready;
+    self->poll_mode = 0;
+    self->poll_fds_uva = (long)fds_uva;
+    self->poll_nfds = (long)nfds;
+    ready = poll_evaluate(self, 1);
+    if (ready > 0) { return ready; }
+    if (timeout_ms == 0) { return 0; }   /* pure non-blocking: revents committed (all 0) */
+    self->poll_deadline_ms = (timeout_ms < 0) ? 0 : (sys_clock_ms() + (u64)timeout_ms);
+    self->block_kind = BLK_POLL;
+    self->state = P_BLOCKED;
+    schedule();   /* noreturn: poll_recheck_all or the timer timeout sweep completes this */
+    return 0;
+}
+
+static long do_select(long nfds, u64 r_uva, u64 w_uva, u64 e_uva, u64 tv_uva) {
+    struct pcb *self = g_current;
+    long ready;
+    self->poll_mode = 1;
+    self->poll_nfds = nfds;
+    self->poll_r_uva = r_uva;
+    self->poll_w_uva = w_uva;
+    self->poll_e_uva = e_uva;
+    ready = poll_evaluate(self, 1);
+    if (ready > 0) { return ready; }
+    if (tv_uva != 0) {
+        u64 sec  = as_read64(self, tv_uva);
+        u64 usec = as_read64(self, tv_uva + 8u);
+        if (sec == 0 && usec == 0) { return 0; }   /* {0,0}: non-blocking */
+        self->poll_deadline_ms = sys_clock_ms() + sec * 1000ul + usec / 1000ul;
+    } else {
+        self->poll_deadline_ms = 0;   /* NULL timeval: block forever */
+    }
+    self->block_kind = BLK_POLL;
+    self->state = P_BLOCKED;
+    schedule();   /* noreturn */
+    return 0;
+}
+
 /* Encode a normal-exit wait status the way Linux does: exit code in bits 8..15
  * (WIFEXITED true, WEXITSTATUS = (status >> 8) & 0xFF). */
 /* maize-174: WIFSIGNALED (low 7 bits = terminating signal) when term_signal is set;
@@ -1401,6 +1961,11 @@ static long do_fork(void) {
      * registered base is a physical-frame snapshot belonging to the parent; copying fb_slot
      * would let the child's later exit wrongly release the parent's still-live claim. */
     child->fb_slot = -1;
+    /* maize-238 Decision: the fb-mmap window is excluded from fork's eager copy (region 0
+     * only; the fb window lives in region 1, which build_address_space(child) leaves
+     * unmapped). fb MEMORY does not propagate to a child, mirroring maize-236 D4's fb
+     * REGISTRATION non-propagation one level down. */
+    child->fb_mmap_va = 0;
     /* maize-174: fork inherits the process group, the block mask, and the installed
      * handlers (POSIX); pending signals are NOT inherited. */
     child->pgid = parent->pgid;
@@ -1585,6 +2150,14 @@ static long do_fb_geometry(u64 out_uva) {
  * -EBUSY if the caller already holds one (Decision D3), -EINVAL if base_uva is zero or its
  * page is unmapped, -ENOSPC if the table is full, -ENODEV if the device rejects the claim
  * (a display-less view; Decision D7, evolving maize-221). On success sets pcb.fb_slot. */
+/* maize-238: the fb buffer's page count from the fixed per-boot geometry (XRGB8888 = 4
+ * bytes/pixel), rounded up. 63 pages for 320x200x4. Shared by sys_fb_mmap and the
+ * hardened do_fb_register contiguity walk. */
+static u64 fb_page_count(void) {
+    u64 bytes = (u64)quesos_fb_width() * (u64)quesos_fb_height() * 4ul;
+    return (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+}
+
 static long do_fb_register(u64 base_uva) {
     struct pcb *self = g_current;
     u64 pte, pa;
@@ -1592,9 +2165,31 @@ static long do_fb_register(u64 base_uva) {
 
     if (self->fb_slot >= 0) { return -(long)QOS_EBUSY; }
     if (base_uva == 0) { return -(long)QOS_EINVAL; }
-    pte = pte_get(self->l0_pa, (base_uva >> 12) & 0x1FF);
+    pte = pte_get(va_l0(self, base_uva), (base_uva >> 12) & 0x1FF);
     if ((pte & PTE_V) == 0) { return -(long)QOS_EINVAL; }
     pa = user_pa(self, base_uva);
+
+    /* maize-238: validate that the WHOLE [base, base + width*height*4) range is mapped and
+     * physically contiguous, not just base's own page. The device reads that linear range
+     * with zero page-table awareness (doc 18's dumb-device contract), so a caller passing a
+     * non-fb_mmap'd (e.g. malloc'd) buffer whose pages are not contiguous would silently
+     * scan out wrong physical memory beyond page 0. Reject with -EINVAL instead. The
+     * existing one-page maize-236 fixtures are trivially contiguous (no next page to check). */
+    {
+        u64 n = fb_page_count();
+        u64 base_page = base_uva & ~0xFFFul;
+        u64 prev_pa = pa & ~0xFFFul;
+        u64 k;
+        for (k = 1; k < n; ++k) {
+            u64 va = base_page + k * PAGE_SIZE;
+            u64 pte2 = pte_get(va_l0(self, va), (va >> 12) & 0x1FF);
+            u64 this_pa;
+            if ((pte2 & PTE_V) == 0) { return -(long)QOS_EINVAL; }
+            this_pa = pte2 & ~0xFFFul;
+            if (this_pa != prev_pa + PAGE_SIZE) { return -(long)QOS_EINVAL; }
+            prev_pa = this_pa;
+        }
+    }
 
     /* Free-slot scan: select each slot and read its base back; a zero base is free. The
      * dispatcher runs with interrupts masked, so no other process can race the claim
@@ -1625,6 +2220,27 @@ static long do_fb_release(void) {
     return 0;
 }
 
+/* SYS_fb_mmap(): map a contiguous, page-aligned framebuffer buffer into the caller's
+ * fb-mmap window (FB_MMAP_BASE, region 1) and return its VA. No arguments (geometry is
+ * fixed per boot, maize-236 D2). Idempotent: a second call while one buffer is already
+ * mapped returns the same VA rather than -EBUSY. -ENOMEM if the frame pool cannot satisfy
+ * the contiguous request (graceful, no PANIC). The buffer persists for the process's
+ * lifetime (released implicitly at address-space teardown, like BSS/heap); there is no
+ * fb_munmap. A registered scanout is then set up by passing this VA to SYS_fb_register. */
+static long do_fb_mmap(void) {
+    struct pcb *self = g_current;
+    u64 n = fb_page_count();
+    u64 base_pa = 0, i;
+    if (self->fb_mmap_va != 0) { return self->fb_mmap_va; }   /* idempotent re-query */
+    if (alloc_frames_contig(n, &base_pa) != 0) { return -(long)QOS_ENOMEM; }
+    (void)ensure_l0(self, FB_MMAP_BASE);   /* lazily allocate region 1's L0 on first touch */
+    for (i = 0; i < n; ++i) {
+        map_user_page(self, FB_MMAP_BASE + i * PAGE_SIZE, base_pa + i * PAGE_SIZE);
+    }
+    self->fb_mmap_va = FB_MMAP_BASE;
+    return (long)FB_MMAP_BASE;
+}
+
 /* Cleanup: release a held registration on exit / exec (Decision D5, the per-exec-lifetime
  * scoping). A no-op when the process holds none. */
 static void fb_release_held(struct pcb *p) {
@@ -1640,6 +2256,18 @@ static void fb_release_held(struct pcb *p) {
  * (it was running, not blocked) and round-robin to the next runnable process. This is
  * what bounds a compute-bound process so it cannot starve the others. */
 void quesos_timer_tick(void) {
+    /* maize-238: sweep parked poll()/select() callers whose finite deadline has elapsed,
+     * waking each with a 0 (timeout) result; their revents/fd_sets were committed empty
+     * at call time and no recheck rewrote them, so a timeout returns a clean zero set. */
+    int i;
+    u64 now = sys_clock_ms();
+    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+        struct pcb *p = &g_proc[i];
+        if (p->state == P_BLOCKED && p->block_kind == BLK_POLL
+            && p->poll_deadline_ms != 0 && now >= p->poll_deadline_ms) {
+            wake_with(p, 0);
+        }
+    }
     if (g_current != 0) { g_current->state = P_RUNNABLE; }   /* 0 while idle-spinning */
     schedule();   /* noreturn */
 }
@@ -1672,6 +2300,9 @@ void quesos_console_irq(void) {
             if (con_ring_pop(&db)) { as_write8(r, r->block_buf, db); wake_with(r, 1); }
         }
     }
+    /* maize-238: a byte reaching g_con_count makes fd 0 readable; wake any poll()/select()
+     * caller watching it that a blocking BLK_CONSOLE reader did not already drain. */
+    poll_recheck_all();
     if (g_current != 0) { g_current->state = P_RUNNABLE; }
     schedule();   /* noreturn */
 }
@@ -1865,7 +2496,7 @@ static long do_getpgid(long pid) {
 void quesos_syscall(void) {
     u64 *r = (u64 *)g_current->saved_rs;
     u64 num = r[13];
-    u64 a0 = r[0], a1 = r[1], a2 = r[2];
+    u64 a0 = r[0], a1 = r[1], a2 = r[2], a3 = r[3], a4 = r[4];
     long result;
 
     switch (num) {
@@ -1904,6 +2535,18 @@ void quesos_syscall(void) {
         case SYS_fb_geometry: result = do_fb_geometry(a0);        break;
         case SYS_fb_register: result = do_fb_register(a0);        break;
         case SYS_fb_release:  result = do_fb_release();           break;
+        /* maize-238 Family A: unix-domain sockets. */
+        case SYS_socket:     result = do_socket((long)a0, (long)a1, (long)a2);  break;
+        case SYS_bind:       result = do_bind(a0, a1, a2);                      break;
+        case SYS_connect:    result = do_connect(a0, a1, a2);                   break;
+        case SYS_listen:     result = do_listen(a0, (long)a1);                  break;
+        case SYS_accept:     result = do_accept(a0, a1, a2);                    break;
+        case SYS_socketpair: result = do_socketpair((long)a0, (long)a1, (long)a2, a3); break;
+        /* maize-238 Family B: select/poll readiness multiplexing. */
+        case SYS_poll:       result = do_poll(a0, a1, (long)a2);                break;
+        case SYS_select:     result = do_select((long)a0, a1, a2, a3, a4);      break;
+        /* maize-238 Family C: framebuffer mmap. */
+        case SYS_fb_mmap:    result = do_fb_mmap();                             break;
         case SYS_kill:           result = do_kill((long)a0, (int)a1);          break;
         case SYS_rt_sigaction:   result = do_rt_sigaction((long)a0, a1, a2);   break;
         case SYS_rt_sigprocmask: result = do_rt_sigprocmask((long)a0, a1, a2); break;

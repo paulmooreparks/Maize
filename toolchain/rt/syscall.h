@@ -128,6 +128,21 @@ long sys_dup(long oldfd);
 long sys_chdir(const char *path);
 long sys_getcwd(char *buf, unsigned long size);
 
+/* maize-238 Phase 3 raw stubs (SYS $29/$31/$2A/$32/$2B/$35/$07/$17/$FC). Bodies in
+ * syscall.mazm; the sys/socket.h, poll.h, and sys/select.h POSIX wrappers (errno.c) call
+ * these. Guest-only: dispatched by quesOS. Type-erased pointer args (void*) match the
+ * other raw stubs; the typed public prototypes live in the RT headers. Each returns RV
+ * verbatim (a [-4095,-1] result is -errno). sys_fb_mmap takes no args (RV = VA or -errno). */
+long sys_socket(long domain, long type, long protocol);
+long sys_bind(long fd, const void *addr, unsigned long addrlen);
+long sys_connect(long fd, const void *addr, unsigned long addrlen);
+long sys_listen(long fd, long backlog);
+long sys_accept(long fd, void *addr, void *addrlen);
+long sys_socketpair(long domain, long type, long protocol, int sv[2]);
+long sys_poll(void *fds, unsigned long nfds, long timeout);
+long sys_select(long nfds, void *r, void *w, void *e, void *timeout);
+long sys_fb_mmap(void);
+
 /* --- errno + wrappers (errno.c) -------------------------------------------- */
 
 /* The musl error translator: a pure function of its input. A raw result in

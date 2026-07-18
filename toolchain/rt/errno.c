@@ -23,6 +23,9 @@
 #include "sys/stat.h"   /* mkdir() prototype + mode_t (maize-147/148) */
 #include "fcntl.h"      /* O_CREAT (maize-94: variadic open reads mode only when set) */
 #include "stdarg.h"     /* va_list for the variadic open (maize-94) */
+#include "sys/socket.h" /* maize-238: socket/bind/connect/listen/accept/socketpair */
+#include "poll.h"       /* maize-238: poll() */
+#include "sys/select.h" /* maize-238: select() */
 
 /* Single source of truth for errno (single-threaded VM; TLS reserved). */
 int errno = 0;
@@ -161,4 +164,57 @@ int
 lstat(const char *path, struct stat *st)
 {
     return stat(path, st);
+}
+
+/* maize-238 Phase 3: the AF_UNIX socket + poll/select POSIX wrappers over the raw stubs,
+ * each routed through __syscall_ret exactly like read/write. Type erasure is confined to
+ * this syscall boundary: the public prototypes (sys/socket.h, poll.h, sys/select.h) are
+ * typed; only here, at the raw-stub call, do we cast to the void* the type-erased stub
+ * takes. An unmodified Xlib unix-transport client links against these by name. */
+long
+socket(int domain, int type, int protocol)
+{
+    return __syscall_ret(sys_socket(domain, type, protocol));
+}
+
+long
+bind(int fd, const struct sockaddr *addr, socklen_t addrlen)
+{
+    return __syscall_ret(sys_bind(fd, (const void *)addr, addrlen));
+}
+
+long
+connect(int fd, const struct sockaddr *addr, socklen_t addrlen)
+{
+    return __syscall_ret(sys_connect(fd, (const void *)addr, addrlen));
+}
+
+long
+listen(int fd, int backlog)
+{
+    return __syscall_ret(sys_listen(fd, backlog));
+}
+
+long
+accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
+{
+    return __syscall_ret(sys_accept(fd, (void *)addr, (void *)addrlen));
+}
+
+long
+socketpair(int domain, int type, int protocol, int sv[2])
+{
+    return __syscall_ret(sys_socketpair(domain, type, protocol, sv));
+}
+
+long
+poll(struct pollfd *fds, nfds_t nfds, int timeout)
+{
+    return __syscall_ret(sys_poll((void *)fds, nfds, timeout));
+}
+
+long
+select(int nfds, fd_set *r, fd_set *w, fd_set *e, struct timeval *timeout)
+{
+    return __syscall_ret(sys_select(nfds, (void *)r, (void *)w, (void *)e, (void *)timeout));
 }
