@@ -42,11 +42,15 @@ int main(void) {
     if (r < 1 || !FD_ISSET(0, &rf) || FD_ISSET(p[0], &rf)) {
         printf("select-console-pipe: FAIL console-leg\n"); return 0;
     }
-    read(0, &c, 1);                   /* drain the console byte so fd 0 is clear next */
+    read(0, &c, 1);                   /* drain the console byte */
     write(sy[0], "a", 1);             /* ack1 -> peer writes the pipe */
 
-    /* Pipe leg: the pipe read fd becomes ready; fd 0 is clear (its byte was drained). */
-    FD_ZERO(&rf); FD_SET(0, &rf); FD_SET(p[0], &rf);
+    /* Pipe leg: the pipe read fd becomes ready. fd 0 is NOT in this set: once its byte is
+     * drained the piped console reaches EOF, and console EOF is now poll/select-readable
+     * (review cycle 1, the POSIX model -- a read returns 0), so a program still watching fd 0
+     * here would legitimately see it ready on EOF. This leg proves the pipe-write wake in
+     * isolation; the poll_fd0_eof fixture proves console EOF is itself readable. */
+    FD_ZERO(&rf); FD_SET(p[0], &rf);
     r = select(nfds, &rf, 0, 0, 0);
     if (r < 1 || !FD_ISSET(p[0], &rf)) {
         printf("select-console-pipe: FAIL pipe-leg\n"); return 0;

@@ -1814,11 +1814,12 @@ static short fd_ready(struct pcb *p, int fd, short events) {
     o = &g_ofd[p->fd[fd]];
     if (o->kind == OFD_NATIVE) {
         if (o->native_fd == 0) {
-            /* maize-238 Branch A (decision 9285): readable when a DATA byte is pending
-             * (CON_STAT_INPUT from the non-consuming probe), NOT merely at end-of-input --
-             * console EOF surfaces through a read returning 0, not as poll-readable, so a
-             * drained-then-EOF console does not spuriously wake a poll/select waiter. */
-            if ((events & POLLIN) && (quesos_con_status() & CON_STAT_INPUT)) { r |= POLLIN; }
+            /* maize-238 Branch A (decision 9285), review cycle 1: fd 0 is POLLIN-readable
+             * when a DATA byte is pending OR host stdin is at end-of-input -- EOF is data
+             * availability in the POSIX model (a read returns 0 without blocking), exactly as
+             * the pipe/socket rows treat writers==0 as readable. A parked poll()/select() on
+             * fd 0 therefore wakes on console EOF, not just on a keystroke. */
+            if ((events & POLLIN) && (quesos_con_status() & (CON_STAT_INPUT | CON_STAT_EOF))) { r |= POLLIN; }
         } else {
             if (events & POLLIN)  { r |= POLLIN; }
             if (events & POLLOUT) { r |= POLLOUT; }
@@ -1831,7 +1832,16 @@ static short fd_ready(struct pcb *p, int fd, short events) {
         if (g_pipe[pi].readers == 0) { r |= POLLERR; }
         else if ((events & POLLOUT) && g_pipe[pi].count < PIPE_CAP) { r |= POLLOUT; }
     } else if (o->kind == OFD_SOCK) {
-        int rr = o->pipe_idx, ww = o->peer_idx;
+        int rr, ww;
+        /* An unconnected OFD_SOCK (freshly socket()'d, not yet connect()ed/accept()ed)
+         * carries the sentinel pipe_idx == peer_idx == -1 (do_socket sets it), so indexing
+         * g_pipe[rr]/g_pipe[ww] below would read g_pipe[-1] -- a guest-reachable OOB of the
+         * static ring pool via socket()+poll(). Guard the sentinel first, mirroring the
+         * connectedness test do_bind/do_connect already use (-1 == unconnected): an
+         * unconnected socket is neither readable nor writable. (Convention counterexamples,
+         * Entry 9.) */
+        if (o->pipe_idx < 0) { return 0; }
+        rr = o->pipe_idx; ww = o->peer_idx;
         if ((events & POLLIN) && (g_pipe[rr].count > 0 || g_pipe[rr].writers == 0)) { r |= POLLIN; }
         if (g_pipe[ww].readers == 0) { r |= POLLERR; }
         else if ((events & POLLOUT) && g_pipe[ww].count < PIPE_CAP) { r |= POLLOUT; }

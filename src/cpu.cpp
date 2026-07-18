@@ -1533,17 +1533,17 @@ namespace maize {
                and is driven off-thread (push_event latches + raises; port_read drains). */
             input_device* active_input_ptr = nullptr;
 
-            /* maize-238 (Branch A, OQ 9204 / decision 9285): throttle counter for the input
+            /* maize-238 (Branch A, OQ 9204 / decision 9285): throttle gate for the input
                readiness poll. Branch A sets active_input_ptr on the DEFAULT invocation too, so
-               calling on_input_tick() every single instruction (a virtual dispatch plus a host
-               stdin poll on the interpreter hot path) measurably slowed bare-VM throughput
-               (doom_bench: ~9% worst case at a 512-tick stride). The readiness poll only needs
-               to sample host stdin at human-input timescales (milliseconds), so coarsen the
-               gate to once per INPUT_TICK_MASK+1 instructions: at interpreter speeds that is
-               sub-millisecond wake latency (well within AC 9199's bounded-wake requirement)
-               while dropping the per-tick cost into the noise for AC 9196's doom_bench. Applies
-               to every input source (headless keyboard injector too), bounding its
-               stdin-scancode pull latency identically. */
+               the on_input_tick() CALL (a virtual dispatch plus a host stdin poll) would fire
+               on every instruction of the common case. Phase 2 measured ~9% worst-case
+               ALU-tight overhead at a 512-instruction stride (decision 9285), so gate the call
+               to once per INPUT_TICK_MASK+1 instructions -- the readiness poll only needs to
+               sample host stdin at human-input timescales. At 16384 instructions the wake
+               latency stays well under human-input latency (AC 9199's bounded-wake
+               requirement) while the per-tick cost drops into the noise (AC 9196's doom_bench
+               verified within noise). Applies to every input source (headless keyboard
+               injector too), bounding its stdin-scancode pull latency identically. */
             std::uint64_t input_tick_ctr_ = 0;
             static constexpr std::uint64_t INPUT_TICK_MASK = 0x3FFFull;   // poll every 16384 ticks
         }

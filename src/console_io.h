@@ -81,17 +81,19 @@ namespace maize {
 			virtual void get_size(unsigned short* rows, unsigned short* cols) const = 0;
 		};
 
-		/* maize-238 (Branch A): the single-stdin-owner seam. When the console PORT device
-		   (src/devices.cpp console_device) is the active stdin injector on the default path,
-		   its on_input_tick eagerly pre-reads host stdin into a latch to drive the console
-		   IRQ / poll-readiness model. A bare-VM guest that reads fd 0 through SYS $00 (not the
-		   console ports) would then race that eager reader for the same host bytes -- byte
-		   theft. To keep exactly ONE reader of host stdin, sys.cpp routes SYS $00 read(0)
-		   through this interface when the injector is active: drain_stdin returns any latched
-		   pre-read bytes first, then blocks for more, so no byte is stranded in the latch.
-		   Kept here (not in devices.h) for the same reason console_io is: sys.cpp compiles
-		   into mazm, which never links devices.cpp, so it can hold this pointer (null in mazm)
-		   without pulling in the device models. */
+		/* maize-238 (Branch A, decision 9285): the single-stdin-owner seam. When the console
+		   PORT device (src/devices.cpp console_device) is the active stdin injector on the
+		   default path, its on_input_tick only SIGNALS host-stdin readiness (a non-consuming
+		   poll+FIONREAD probe, edge-triggered) and raises the console IRQ; it pre-reads NO
+		   byte (the readiness-signal model that superseded phase 2's eager pre-read-into-latch,
+		   which raced the oksh-to-child console handoff). Console bytes are consumed only at
+		   read time -- the data port for a quesOS guest, or this seam for a bare-VM guest's
+		   SYS $00 read(0). Routing SYS $00 read(0) through drain_stdin keeps the device the
+		   single host-stdin owner: since the readiness poll consumes nothing, drain_stdin is a
+		   plain on-demand consuming read (no latch to drain first). Kept here (not in
+		   devices.h) for the same reason console_io is: sys.cpp compiles into mazm, which never
+		   links devices.cpp, so it can hold this pointer (null in mazm) without pulling in the
+		   device models. */
 		class stdin_injector {
 		public:
 			virtual ~stdin_injector() = default;
@@ -99,9 +101,10 @@ namespace maize {
 			/* True when this device is the active stdin injector (default-path console). */
 			virtual bool stdin_is_active() const = 0;
 
-			/* Serve a synchronous fd-0 read: return any eagerly-latched bytes first, else
-			   block for at least one byte. Returns bytes delivered (>=1), 0 on end of input,
-			   or a negative -errno on error. sys.cpp marshals the host<->guest copy. */
+			/* Serve a synchronous fd-0 read: an on-demand consuming read of up to `count`
+			   bytes of host stdin (the readiness poll pre-reads nothing, so there is no latch
+			   to drain first). Returns bytes delivered (>=1), 0 on end of input, or a negative
+			   -errno on error. sys.cpp marshals the host<->guest copy. */
 			virtual long drain_stdin(unsigned char* buf, unsigned long count) = 0;
 		};
 

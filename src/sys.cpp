@@ -11,6 +11,7 @@
 #ifdef __linux__
 #include <poll.h>          /* maize-238 (Branch A): non-consuming stdin readiness for the console injector */
 #include <sys/ioctl.h>     /* maize-238 (Branch A): FIONREAD distinguishes a pending byte from EOF */
+#include <unistd.h>        /* maize-238 (Branch A): isatty distinguishes a pty/tty from a null-ish device */
 #endif
 
 /* This is all very broken right now, but I'm going to replace it with a sys_call architecture instead. */
@@ -89,11 +90,12 @@ namespace maize {
         /* maize-238 (Branch A, decision 9285): NON-CONSUMING host-stdin readiness probe.
            poll(fd0, POLLIN, 0) tests readiness without consuming; when readable, FIONREAD
            distinguishes a pending data byte (n > 0) from real end-of-input (readable with
-           0 bytes buffered: a closed pipe, a drained redirected file, or /dev/null), still
-           WITHOUT consuming anything. This never sets O_NONBLOCK on fd 0, so the ordinary
-           blocking read() path above is unaffected, and the data port stays the sole
-           consumer. Returns 1 (a data byte is pending), 0 (nothing pending yet), or -1
-           (end of input). */
+           0 bytes buffered: a closed pipe or a drained redirected file), still WITHOUT
+           consuming anything. When FIONREAD is unsupported (a /dev/null-style char device),
+           isatty splits a null-ish source (EOF) from a real terminal (fail-open to data).
+           This never sets O_NONBLOCK on fd 0, so the ordinary blocking read() path above is
+           unaffected, and the data port stays the sole consumer. Returns 1 (a data byte is
+           pending), 0 (nothing pending yet), or -1 (end of input). */
         int console_stdin_ready() {
             struct pollfd pfd;
             pfd.fd = 0;
@@ -110,13 +112,14 @@ namespace maize {
             if (::ioctl(0, FIONREAD, &navail) == 0) {
                 return (navail > 0) ? 1 : -1;   // readable with 0 bytes buffered == EOF
             }
-            // FIONREAD unsupported on this fd while poll reports it readable: cannot tell a
-            // pending byte from EOF here, so report "data pending". A subsequent data-port
-            // read yields the byte, or 0 (which the data port latches as EOF), so no byte is
-            // lost either way. (A /dev/null default-invocation stdin, where FIONREAD fails,
-            // then raises the console IRQ each throttle tick; quesos_console_irq resumes the
-            // interrupted process when that releases no waiter, so it is scheduling-neutral.)
-            return 1;
+            // FIONREAD unsupported on this fd while poll reports it readable. FIONREAD works
+            // on pipes, ptys, ttys, sockets and regular files, so the realistic case here is a
+            // null-ish char device (/dev/null), whose reads return 0 = end-of-input: report
+            // EOF so the data port never synthesizes a NUL byte from a zero-length read. A
+            // real terminal (pty/tty) IS a tty, so isatty distinguishes it -- keep those on the
+            // fail-open "data pending" path (a real byte is there when poll says readable, and
+            // a genuine tty EOF still surfaces at the data-port read).
+            return isatty(0) ? 1 : -1;
         }
 #elif _WIN32
         namespace {
@@ -419,7 +422,13 @@ namespace maize {
                 return (avail > 0) ? 1 : 0;   // buffered bytes == data pending; else nothing yet
             }
             if (type == FILE_TYPE_CHAR) {
-                return 1;   // interactive console (or NUL): defer to the blocking data-port read
+                // A char handle is either an interactive console or a null-ish device (NUL).
+                // GetConsoleMode succeeds only on a real console (the isatty analog): treat a
+                // real console as data pending (defer to the blocking data-port read), and a
+                // non-console char device (NUL, whose reads return 0) as EOF so the data port
+                // never synthesizes a NUL byte from a zero-length read.
+                DWORD mode {0};
+                return GetConsoleMode(h, &mode) ? 1 : -1;
             }
             if (type == FILE_TYPE_DISK) {
                 LARGE_INTEGER pos, size, zero;

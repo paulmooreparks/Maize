@@ -2088,7 +2088,7 @@ run_quesos_ac_fixtures() {
                fb_exit_cleanup \
                socketpair_echo unix_listen_connect unix_listen_close \
                poll_timeout poll_broken poll_multi select_console_pipe \
-               poll_fd0_default stdin_owner_probe \
+               poll_fd0_default stdin_owner_probe poll_unconnected_sock poll_fd0_eof \
                fb_mmap_paint fb_noncontig_reject fb_mmap_isolation fb_mmap_enomem; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
@@ -2201,6 +2201,7 @@ run_quesos_ac_fixtures() {
     quesos_ac_case quesos_unix_close     "unix-listen-close: PASS"    unix_listen_close
     quesos_ac_case quesos_poll_timeout   "poll-timeout: PASS"         poll_timeout
     quesos_ac_case quesos_poll_broken    "poll-broken: PASS"          poll_broken
+    quesos_ac_case quesos_poll_unconn    "poll-unconn-sock: PASS"     poll_unconnected_sock
     quesos_ac_case quesos_fb_mmap_paint  "fb-mmap-paint: PASS"        fb_mmap_paint
     quesos_ac_case quesos_fb_noncontig   "fb-noncontig: PASS"         fb_noncontig_reject
     quesos_ac_case quesos_fb_isolation   "fb-isolation: PASS"         fb_mmap_isolation
@@ -2278,6 +2279,25 @@ run_quesos_ac_fixtures() {
         echo "[PASS] quesos_poll_fd0_default (default-path poll/select on fd 0)"
     else
         echo "[FAIL] quesos_poll_fd0_default"
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # maize-238 Branch A (review cycle 1): a PARKED poll() on fd 0 wakes on console EOF, not
+    # only on a keystroke (console EOF is poll-readable, the POSIX model). The feeder holds
+    # stdin open and empty (a sleep that writes nothing) so the guest's poll(fd0,-1) genuinely
+    # parks, then closes it; the readiness IRQ wakes the parked poll and the follow-on read
+    # returns 0. `sleep 3` bounds the open window; the guest wakes and exits as soon as the
+    # feeder closes, so the case runs in about that long, not longer.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(sleep 3 | MSYS2_ARG_CONV_EXCL='/progs' timeout 30 "$MAIZE" --no-root \
+        --mount "${nat}=/progs:ro" "$quesos" /progs/poll_fd0_eof.mzx 2>/dev/null | grep -v '^$')
+    set -e
+    if printf '%s\n' "$out" | grep -qF "poll-fd0-eof: PASS"; then
+        echo "[PASS] quesos_poll_fd0_eof (parked poll wakes on console EOF)"
+    else
+        echo "[FAIL] quesos_poll_fd0_eof"
         printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
