@@ -94,7 +94,7 @@ bool claim_ownership(mapped_segment& seg);   // CAS presenter_pid 0 -> own pid; 
 void mark_presenter_ready(mapped_segment& seg);
 bool bump_heartbeat(mapped_segment& seg);    // read-check-write (D15): false (no bump) the instant presenter_pid stops matching
 void release_ownership_if_owner(mapped_segment& seg);   // graceful-exit CAS own-pid -> 0; NEVER on the D15 steal-detected path
-void push_input_scancode(mapped_segment& seg, std::uint8_t sc);   // producer; drops the oldest entry on ring overflow
+void push_input_scancode(mapped_segment& seg, std::uint8_t sc);   // producer; drops the NEWEST (this scancode) on ring overflow, never touches input_tail (session-owned)
 bool pop_input_scancode(mapped_segment& seg, std::uint8_t* out);  // consumer
 
 /* Shared frame addressing: the first pixel of `slot` in the mapped frame regions. */

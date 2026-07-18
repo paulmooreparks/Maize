@@ -157,6 +157,7 @@ namespace {
 bool ensure_presenter(pt::mapped_segment& seg, const std::string& session_id,
                       unsigned display_scale, unsigned refresh_hz) {
     if (!seg.ctl) { return false; }
+    std::chrono::steady_clock::time_point reg_start = std::chrono::steady_clock::now();
     /* Consult the shared single-owner authority first (OQ 9437 fix). It short-circuits
        to false immediately on a cold presenter_pid==0 (D15 secondary fix), so the common
        first-registration path does not burn the stale-sample window. */
@@ -170,7 +171,19 @@ bool ensure_presenter(pt::mapped_segment& seg, const std::string& session_id,
         std::cerr << "maize: could not launch presenter: " << err << std::endl;
         return false;
     }
-    return pt::wait_presenter_ready(seg, pt::kRegisterTimeoutMs);
+    /* D8 bounds the WHOLE registration hook (this function, called synchronously from
+       sys_fb_register on the CPU thread) to kRegisterTimeoutMs total, not
+       kRegisterTimeoutMs stacked on top of whatever the stale-owner check above already
+       spent. On the stale-owner-at-registration edge (a crashed presenter left a stale
+       nonzero presenter_pid), the check above already burns up to kStaleTimeoutMs;
+       subtract that from the ready-wait budget (floored at 0) so this call never blocks
+       past kRegisterTimeoutMs total, matching D8's stated 3000ms bound exactly instead
+       of the previous unbounded stacked ~4s worst case. */
+    int elapsed_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - reg_start).count());
+    int remaining_ms = pt::kRegisterTimeoutMs - elapsed_ms;
+    if (remaining_ms < 0) { remaining_ms = 0; }
+    return pt::wait_presenter_ready(seg, remaining_ms);
 }
 
 void start(pt::mapped_segment& seg, devices::framebuffer_device& fb,

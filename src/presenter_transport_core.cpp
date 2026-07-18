@@ -132,10 +132,15 @@ void push_input_scancode(mapped_segment& seg, std::uint8_t sc) {
     std::uint32_t tail = c->input_tail.load(std::memory_order_acquire);
     std::uint32_t next = (head + 1) % static_cast<std::uint32_t>(kInputRingCapacity);
     if (next == tail) {
-        /* Ring full: drop the oldest entry (documented, matches a real keyboard buffer
-           overrun; only on pathological overflow, since input is a true FIFO otherwise). */
-        c->input_tail.store((tail + 1) % static_cast<std::uint32_t>(kInputRingCapacity),
-                            std::memory_order_release);
+        /* Ring full: drop the NEWEST entry (this scancode) and leave input_tail untouched.
+           The producer (presenter side) must never write input_tail; that index is
+           session-owned (the SPSC single-writer invariant), and a producer write there
+           previously let a stale consumed entry be replayed under a pathological burst.
+           Drop-newest also matches a real keyboard buffer overrun better than
+           drop-oldest would: a stale keystroke silently resurfacing later is worse than
+           the newest one (still fresh in the burst) being lost. Only reachable under a
+           256-scancode burst with no drain in between; input is a true FIFO otherwise. */
+        return;
     }
     c->input_ring[head] = sc;
     c->input_head.store(next, std::memory_order_release);
