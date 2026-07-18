@@ -17,9 +17,9 @@
 #include "sdl_scancodes.h"   // shared map_scancode() (maize::devices::display)
 #endif
 
-#ifndef _WIN32
-#include <csignal>
-#endif
+#include <csignal>   // sig_atomic_t is needed unconditionally (used outside the
+                    // #ifndef _WIN32 signal()/handler block below); matches
+                    // host_tty.cpp's unconditional <csignal> include.
 
 namespace maize {
 namespace presenter_main {
@@ -94,7 +94,7 @@ namespace {
 
 #ifndef MAIZE_DISPLAY
 namespace {
-    volatile std::sig_atomic_t g_stub_term = 0;
+    volatile sig_atomic_t g_stub_term = 0;   // unqualified, matching host_tty.cpp:35 g_synth_byte
 #ifndef _WIN32
     void stub_sigterm(int) { g_stub_term = 1; }   // async-signal-safe flag write
 #endif
