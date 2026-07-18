@@ -2207,10 +2207,13 @@ run_quesos_ac_fixtures() {
 
     # maize-238 fb-mmap pool exhaustion: repeated fork+fb_mmap+exit until alloc_frames_contig
     # returns -ENOMEM gracefully (no PANIC/poweroff). Slower than the others (it drains the
-    # 64 MiB pool one ~63-page buffer per exited child), so it gets its own longer timeout.
+    # 64 MiB pool one ~63-page buffer per exited child, ~200 fork+eager-copy+wait cycles), so
+    # it gets its own longer timeout -- generous enough for the ASan/UBSan leg, whose ~5-10x
+    # instrumentation overhead pushed the exhaustion past the old 180s cap (the pre-existing
+    # linux-sanitizers red; the guest frame accounting is identical, so it PASSES given time).
     TOTAL=$((TOTAL + 1))
     set +e
-    out=$(MSYS2_ARG_CONV_EXCL='/progs' timeout 180 "$MAIZE" --no-root \
+    out=$(MSYS2_ARG_CONV_EXCL='/progs' timeout 480 "$MAIZE" --no-root \
         --mount "${nat}=/progs:ro" "$quesos" /progs/fb_mmap_enomem.mzx 2>/dev/null | grep -v '^$')
     set -e
     if printf '%s\n' "$out" | grep -qF "fb-enomem: PASS"; then
