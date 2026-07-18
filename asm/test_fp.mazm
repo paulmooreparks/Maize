@@ -4,9 +4,26 @@
 ; A self-checking program that exercises the FP op set at both widths (binary32
 ; via H0, binary64 via W0), all five rounding modes, the sticky FFLAGS, NaN
 ; handling, and the FCMP integer-flag / JP-predicate mapping. Any failed check
-; jumps to `fail`; reaching the end prints "fp: PASS". Bit patterns are IEEE-754
-; and were chosen so the value checks are rounding-independent except where a
-; rounding mode is the thing under test.
+; jumps to `fail`; reaching the end prints "fp: PASS".
+;
+; maize-242: per-check failure markers. Each check sets a one-character tag in
+; R7.B0 before its assertion; on any failure `fail` prints "fp: FAIL <tag>",
+; naming the divergent check so a release-only regression localizes without a
+; fresh truncation-bisect. The "fp: PASS" success string and every PASS-path
+; assertion value are unchanged, so run-tests.sh / run-tests.ps1's exact-match
+; against "fp: PASS" is unaffected. R7 is otherwise unused by the checks.
+;
+; Tag legend (check -> tag):
+;   a FADD32   b FSUB32   c FMUL32   d FDIV32   e FSQRT32  f FNEG32   g FABS32
+;   h FMIN32   i FMAX32   j FMADD32  k FMSUB32  l FADD64   m FMUL64
+;   n FCMP<    o FCMP>    p FCMP==   q FCMP qNaN unordered   r qNaN NV-clear
+;   s FCMP sNaN unordered   t sNaN NV-set   u FDIV/0 value  v DZ flag
+;   w RNE 1/3  x RTZ 1/3  y RDN 1/3  z RDN -1/3  A RUP 1/3  B RUP -1/3
+;   C RMM narrow tie   D RNE narrow tie   E subnormal add   F NX flag
+;   G OF value  H OF flag  I UF flag  J sqrt(-1) value  K sqrt(-1) NV flag
+;   L FCVTFS   M FCVTSF   N FCVTFF widen   O sNaN widen value  P sNaN widen NV
+;   Q FADD32 RMM tie   R FADD32 RNE tie   S FADD64 RMM tie   T FADD64 RNE tie
+;   U FCVTSF int RMM tie   V FCVTSF int RNE tie   W FSQRT32 RMM exact
 ;
 ; FP operand order follows the ALU convention: `FADD src dst` computes
 ; dst = dst + src (op1 = source, op2 = destination). FSETCSR writes the whole
@@ -17,6 +34,7 @@
 $0000`0000:
     ; ================= binary32 arithmetic (exact, RNE default) =================
     ; FADD: 1.5 + 2.25 = 3.75
+    CP $61 R7.B0
     CP $3FC00000 R0.H0
     CP $40100000 R1.H0
     FADD R0.H0 R1.H0
@@ -24,6 +42,7 @@ $0000`0000:
     JNZ fail
 
     ; FSUB: 3.75 - 1.5 = 2.25
+    CP $62 R7.B0
     CP $40700000 R1.H0
     CP $3FC00000 R0.H0
     FSUB R0.H0 R1.H0
@@ -31,6 +50,7 @@ $0000`0000:
     JNZ fail
 
     ; FMUL: 1.5 * 2.25 = 3.375
+    CP $63 R7.B0
     CP $3FC00000 R0.H0
     CP $40100000 R1.H0
     FMUL R0.H0 R1.H0
@@ -38,6 +58,7 @@ $0000`0000:
     JNZ fail
 
     ; FDIV: 3.0 / 2.0 = 1.5
+    CP $64 R7.B0
     CP $40400000 R1.H0
     CP $40000000 R0.H0
     FDIV R0.H0 R1.H0
@@ -45,32 +66,38 @@ $0000`0000:
     JNZ fail
 
     ; FSQRT: sqrt(4.0) = 2.0
+    CP $65 R7.B0
     CP $40800000 R0.H0
     FSQRT R0.H0 R1.H0
     CMP $40000000 R1.H0
     JNZ fail
 
     ; FNEG / FABS: -(1.5) = -1.5 ; |-1.5| = 1.5
+    CP $66 R7.B0
     CP $3FC00000 R0.H0
     FNEG R0.H0 R1.H0
     CMP $BFC00000 R1.H0
     JNZ fail
+    CP $67 R7.B0
     FABS R1.H0 R2.H0
     CMP $3FC00000 R2.H0
     JNZ fail
 
     ; FMIN / FMAX: min(2.25,1.5)=1.5 ; max(2.25,1.5)=2.25
+    CP $68 R7.B0
     CP $3FC00000 R0.H0
     CP $40100000 R1.H0
     FMIN R0.H0 R1.H0
     CMP $3FC00000 R1.H0
     JNZ fail
+    CP $69 R7.B0
     CP $40100000 R1.H0
     FMAX R0.H0 R1.H0
     CMP $40100000 R1.H0
     JNZ fail
 
     ; FMADD: 1.5*2.0 + 0.5 = 3.5   (c = a*b + c, c is op3/dst)
+    CP $6A R7.B0
     CP $3FC00000 R0.H0
     CP $40000000 R1.H0
     CP $3F000000 R2.H0
@@ -79,6 +106,7 @@ $0000`0000:
     JNZ fail
 
     ; FMSUB: 1.5*2.0 - 0.5 = 2.5
+    CP $6B R7.B0
     CP $3F000000 R2.H0
     FMSUB R0.H0 R1.H0 R2.H0
     CMP $40200000 R2.H0
@@ -86,6 +114,7 @@ $0000`0000:
 
     ; ================= binary64 arithmetic =================
     ; FADD double: 1.5 + 2.25 = 3.75
+    CP $6C R7.B0
     CP $3FF8000000000000 R0.W0
     CP $4002000000000000 R1.W0
     FADD R0.W0 R1.W0
@@ -93,6 +122,7 @@ $0000`0000:
     JNZ fail
 
     ; FMUL double: 1.5 * 2.0 = 3.0
+    CP $6D R7.B0
     CP $3FF8000000000000 R0.W0
     CP $4000000000000000 R1.W0
     FMUL R0.W0 R1.W0
@@ -101,6 +131,7 @@ $0000`0000:
 
     ; ================= FCMP + branch predicates (binary32) =================
     ; a < src : a=1.5, src=2.25 -> JB taken, JP not taken
+    CP $6E R7.B0
     CP $40100000 R0.H0
     CP $3FC00000 R1.H0
     FCMP R0.H0 R1.H0
@@ -110,6 +141,7 @@ $0000`0000:
 flt_ok:
 
     ; a > src : a=2.25, src=1.5 -> JA taken
+    CP $6F R7.B0
     CP $3FC00000 R0.H0
     CP $40100000 R1.H0
     FCMP R0.H0 R1.H0
@@ -118,6 +150,7 @@ flt_ok:
 fgt_ok:
 
     ; a == src : a=1.5, src=1.5 -> JZ taken
+    CP $70 R7.B0
     CP $3FC00000 R0.H0
     CP $3FC00000 R1.H0
     FCMP R0.H0 R1.H0
@@ -127,6 +160,7 @@ feq_ok:
 
     ; ================= NaN handling via FCMP =================
     ; quiet NaN operand -> unordered (JP), NO FFLAGS.NV
+    CP $71 R7.B0
     CLR R5
     FSETCSR R5.B0
     CP $7FC00000 R0.H0
@@ -135,12 +169,14 @@ feq_ok:
     JP qnan_ok
     JMP fail
 qnan_ok:
+    CP $72 R7.B0
     FGETCSR R5.B0
     AND $10 R5.B0
     CMP $00 R5.B0
     JNZ fail
 
     ; signaling NaN operand -> unordered (JP) AND FFLAGS.NV set
+    CP $73 R7.B0
     CLR R5
     FSETCSR R5.B0
     CP $7F800001 R0.H0
@@ -149,12 +185,14 @@ qnan_ok:
     JP snan_ok
     JMP fail
 snan_ok:
+    CP $74 R7.B0
     FGETCSR R5.B0
     AND $10 R5.B0
     CMP $10 R5.B0
     JNZ fail
 
     ; ================= divide-by-zero flag (DZ) =================
+    CP $75 R7.B0
     CLR R5
     FSETCSR R5.B0
     CP $3F800000 R0.H0
@@ -162,6 +200,7 @@ snan_ok:
     FDIV R1.H0 R0.H0
     CMP $7F800000 R0.H0
     JNZ fail
+    CP $76 R7.B0
     FGETCSR R5.B0
     AND $08 R5.B0
     CMP $08 R5.B0
@@ -169,6 +208,7 @@ snan_ok:
 
     ; ================= rounding modes (1.0 / 3.0) =================
     ; RNE (default 0): nearest = 0x3EAAAAAB
+    CP $77 R7.B0
     CLR R5
     FSETCSR R5.B0
     CP $3F800000 R0.H0
@@ -178,6 +218,7 @@ snan_ok:
     JNZ fail
 
     ; RTZ (FRM=1 -> FCSR byte 0x20): toward zero = 0x3EAAAAAA
+    CP $78 R7.B0
     CP $20 R5.B0
     FSETCSR R5.B0
     CP $3F800000 R0.H0
@@ -188,6 +229,7 @@ snan_ok:
 
     ; RDN (FRM=2 -> FCSR byte 0x40): toward -inf.
     ; 1/3 rounds down to 0x3EAAAAAA; -1/3 rounds away to 0xBEAAAAAB.
+    CP $79 R7.B0
     CP $40 R5.B0
     FSETCSR R5.B0
     CP $3F800000 R0.H0
@@ -195,6 +237,7 @@ snan_ok:
     FDIV R1.H0 R0.H0
     CMP $3EAAAAAA R0.H0
     JNZ fail
+    CP $7A R7.B0
     CP $BF800000 R0.H0
     CP $40400000 R1.H0
     FDIV R1.H0 R0.H0
@@ -203,6 +246,7 @@ snan_ok:
 
     ; RUP (FRM=3 -> FCSR byte 0x60): toward +inf.
     ; 1/3 rounds up to 0x3EAAAAAB; -1/3 rounds toward zero to 0xBEAAAAAA.
+    CP $41 R7.B0
     CP $60 R5.B0
     FSETCSR R5.B0
     CP $3F800000 R0.H0
@@ -210,6 +254,7 @@ snan_ok:
     FDIV R1.H0 R0.H0
     CMP $3EAAAAAB R0.H0
     JNZ fail
+    CP $42 R7.B0
     CP $BF800000 R0.H0
     CP $40400000 R1.H0
     FDIV R1.H0 R0.H0
@@ -219,12 +264,14 @@ snan_ok:
     ; ================= RMM tie (double -> float narrowing) =================
     ; 1 + 2^-24 is the exact midpoint between 1.0 (0x3F800000, even) and the next
     ; float. RNE ties-to-even -> 1.0 ; RMM ties-away -> 0x3F800001.
+    CP $43 R7.B0
     CP $80 R5.B0
     FSETCSR R5.B0
     CP $3FF0000010000000 R0.W0
     FCVTFF R0.W0 R1.H0
     CMP $3F800001 R1.H0
     JNZ fail
+    CP $44 R7.B0
     CLR R5
     FSETCSR R5.B0
     CP $3FF0000010000000 R0.W0
@@ -234,6 +281,7 @@ snan_ok:
 
     ; ================= subnormals (no flush-to-zero) =================
     ; smallest subnormal + itself = 2 * 2^-149, still subnormal, exact
+    CP $45 R7.B0
     CLR R5
     FSETCSR R5.B0
     CP $00000001 R0.H0
@@ -244,6 +292,7 @@ snan_ok:
 
     ; ================= sticky exception flags NX / OF / UF / NV =================
     ; NX (inexact): 1.0 / 3.0 is not exactly representable -> NX set.
+    CP $46 R7.B0
     CLR R5
     FSETCSR R5.B0
     CP $3F800000 R0.H0
@@ -255,6 +304,7 @@ snan_ok:
     JNZ fail
 
     ; OF (overflow) + NX: FLT_MAX * 2.0 overflows to +inf (RNE).
+    CP $47 R7.B0
     CLR R5
     FSETCSR R5.B0
     CP $7F7FFFFF R0.H0
@@ -262,12 +312,14 @@ snan_ok:
     FMUL R1.H0 R0.H0
     CMP $7F800000 R0.H0
     JNZ fail
+    CP $48 R7.B0
     FGETCSR R5.B0
     AND $04 R5.B0
     CMP $04 R5.B0
     JNZ fail
 
     ; UF (underflow): min-normal 2^-126 / 3.0 is a tiny inexact subnormal -> UF set.
+    CP $49 R7.B0
     CLR R5
     FSETCSR R5.B0
     CP $00800000 R0.H0
@@ -279,12 +331,14 @@ snan_ok:
     JNZ fail
 
     ; NV from an arithmetic op: sqrt(-1.0) -> canonical qNaN, NV set.
+    CP $4A R7.B0
     CLR R5
     FSETCSR R5.B0
     CP $BF800000 R0.H0
     FSQRT R0.H0 R1.H0
     CMP $7FC00000 R1.H0
     JNZ fail
+    CP $4B R7.B0
     FGETCSR R5.B0
     AND $10 R5.B0
     CMP $10 R5.B0
@@ -292,30 +346,109 @@ snan_ok:
 
     ; ================= conversions =================
     ; FCVTFS: 3.0f -> signed int 3
+    CP $4C R7.B0
     CP $40400000 R0.H0
     FCVTFS R0.H0 R1.B0
     CMP $03 R1.B0
     JNZ fail
     ; FCVTSF: signed int 3 -> 3.0f
+    CP $4D R7.B0
     CP $03 R0.B0
     FCVTSF R0.B0 R1.H0
     CMP $40400000 R1.H0
     JNZ fail
     ; FCVTFF widen: 1.5f -> 1.5d
+    CP $4E R7.B0
     CP $3FC00000 R0.H0
     FCVTFF R0.H0 R1.W0
     CMP $3FF8000000000000 R1.W0
     JNZ fail
     ; FCVTFF widen of a signaling NaN -> canonical qNaN64 AND NV set
+    CP $4F R7.B0
     CLR R5
     FSETCSR R5.B0
     CP $7F800001 R0.H0
     FCVTFF R0.H0 R1.W0
     CMP $7FF8000000000000 R1.W0
     JNZ fail
+    CP $50 R7.B0
     FGETCSR R5.B0
     AND $10 R5.B0
     CMP $10 R5.B0
+    JNZ fail
+
+    ; ================= RMM arithmetic ties (maize-242) =================
+    ; The RMM narrowing check above exercises only FCVTFF; the RMM-mode binop,
+    ; int-to-float, and sqrt call sites into round_ties_away were untested. These
+    ; add an exact tie for each remaining template instantiation:
+    ;   round_ties_away<float,double>       via FADD32 (Q)
+    ;   round_ties_away<double,long double>  via FADD64 (S)
+    ;   round_ties_away<float,long double>   via FCVTSF int->float (U)
+    ; plus a paired RNE control and an exact-result FSQRT under RMM.
+
+    ; FADD32 RMM tie: 1.0f + 2^-24 = exact midpoint -> ties-away 0x3F800001.
+    CP $51 R7.B0
+    CP $80 R5.B0
+    FSETCSR R5.B0
+    CP $33800000 R0.H0
+    CP $3F800000 R1.H0
+    FADD R0.H0 R1.H0
+    CMP $3F800001 R1.H0
+    JNZ fail
+    ; same operands under RNE ties-to-even -> 0x3F800000.
+    CP $52 R7.B0
+    CLR R5
+    FSETCSR R5.B0
+    CP $33800000 R0.H0
+    CP $3F800000 R1.H0
+    FADD R0.H0 R1.H0
+    CMP $3F800000 R1.H0
+    JNZ fail
+
+    ; FADD64 RMM tie: 1.0 + 2^-53 = exact midpoint -> ties-away 0x3FF0000000000001.
+    CP $53 R7.B0
+    CP $80 R5.B0
+    FSETCSR R5.B0
+    CP $3CA0000000000000 R0.W0
+    CP $3FF0000000000000 R1.W0
+    FADD R0.W0 R1.W0
+    CMP $3FF0000000000001 R1.W0
+    JNZ fail
+    ; same operands under RNE ties-to-even -> 0x3FF0000000000000.
+    CP $54 R7.B0
+    CLR R5
+    FSETCSR R5.B0
+    CP $3CA0000000000000 R0.W0
+    CP $3FF0000000000000 R1.W0
+    FADD R0.W0 R1.W0
+    CMP $3FF0000000000000 R1.W0
+    JNZ fail
+
+    ; FCVTSF int RMM tie: 2^24+1 (0x01000001) is the exact midpoint between
+    ; 2^24 (even) and 2^24+2 -> ties-away 0x4B800001.
+    CP $55 R7.B0
+    CP $80 R5.B0
+    FSETCSR R5.B0
+    CP $01000001 R0.H0
+    FCVTSF R0.H0 R1.H0
+    CMP $4B800001 R1.H0
+    JNZ fail
+    ; same under RNE ties-to-even -> 0x4B800000.
+    CP $56 R7.B0
+    CLR R5
+    FSETCSR R5.B0
+    CP $01000001 R0.H0
+    FCVTSF R0.H0 R1.H0
+    CMP $4B800000 R1.H0
+    JNZ fail
+
+    ; FSQRT32 under RMM, exact result: sqrt(4.0)=2.0 (round_ties_away diff==0 path).
+    CP $57 R7.B0
+    CP $80 R5.B0
+    FSETCSR R5.B0
+    CP $40800000 R0.H0
+    FSQRT R0.H0 R1.H0
+    CMP $40000000 R1.H0
     JNZ fail
 
     ; ---- all checks passed ----
@@ -328,13 +461,23 @@ snan_ok:
     SYS $01
     HALT
 
+; **********************************************************************************
+; Failure path: print "fp: FAIL <tag>" where <tag> is the R7.B0 marker set by the
+; check that failed (see the tag legend in the header). A scratch buffer past the
+; image holds the tag byte plus a newline for the second write.
 fail:
-    CLR R0
-    CLR R1
-    CLR R2
+    CP $8000 R6
+    ST R7.B0 @R6           ; scratch[0] = failing check's tag character
+    CP $0A R5.B0
+    CP $8001 R6
+    ST R5.B0 @R6           ; scratch[1] = newline
     CP $01 R0
     CP fail_string R1.H0
-    CP $09 R2
+    CP $09 R2              ; "fp: FAIL " (trailing space)
+    SYS $01
+    CP $01 R0
+    CP $8000 R1
+    CP $02 R2              ; tag + newline
     SYS $01
     HALT
 
@@ -343,4 +486,4 @@ pass_string:
     STRING "fp: PASS\n\0"
 
 fail_string:
-    STRING "fp: FAIL\n\0"
+    STRING "fp: FAIL \0"
