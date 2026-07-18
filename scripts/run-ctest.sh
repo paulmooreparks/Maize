@@ -113,6 +113,12 @@ MAZM=$(resolve_exe "${BUILD_DIR}/mazm") || {
     echo "run-ctest.sh: mazm not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 MAIZE=$(resolve_exe "${BUILD_DIR}/maize") || {   # maize-225/230: SDL-free console build (no WSLg window)
     echo "run-ctest.sh: maize (console build) not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+# maize-249: the graphical build. add_executable(maizeg ...) is unconditional (CMakeLists.txt:26)
+# and, with MAIZE_DISPLAY off (every CI preset), links no SDL and runs headless, so invoking it
+# directly is CI-safe on BOTH legs (Linux and Windows/MSYS2). Used by run_launcher_per_binary to
+# prove maizeg reads ~/.maize/maizeg.config while the console maize reads ~/.maize/maize.config.
+MAIZEG=$(resolve_exe "${BUILD_DIR}/maizeg") || {
+    echo "run-ctest.sh: maizeg (graphical build) not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 MZLD=$(resolve_exe "${BUILD_DIR}/mzld") || {
     echo "run-ctest.sh: mzld not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 
@@ -1997,6 +2003,211 @@ run_launcher_config_mount() {
 }
 
 run_launcher_config_mount
+# =============================================================================
+
+# =============================================================================
+# maize-249: per-binary launcher config overrides (~/.maize/maize.config for the
+# console `maize`, ~/.maize/maizeg.config for the graphical `maizeg`) layered on
+# top of the shared ~/.maize/config. Structural precedent: run_launcher_defaults
+# and run_launcher_config_mount above. Every sub-case redirects HOME to a fresh
+# throwaway dir so the operator's REAL ~/.maize is never read or written. Runs
+# UNCONDITIONALLY on both CI legs (Linux and Windows/MSYS2), with no OS-specific
+# skip, matching those precedents (AC 9269); $MAIZEG is resolved up front (headless,
+# SDL-free with MAIZE_DISPLAY off) so invoking it directly is CI-safe.
+#
+# Covers (see the card's acceptance criteria for the exact leg list):
+#   - shared-only regression, per-binary-only, and both-with-override root= landing
+#     (AC 9258/9259/9260): built-in < shared < per-binary precedence for a scalar key
+#   - cross-binary isolation (AC 9261): maize reads maize.config, maizeg reads
+#     maizeg.config, neither touches the other's root
+#   - mount-grant three-tier layering: distinct guest paths reachable simultaneously
+#     (AC 9262), same guest path per-binary-wins (AC 9263), CLI wins over both (AC 9264)
+#   - every load_config_file warning names its own file (AC 9265)
+#   - the maize-237 discard fires for a per-binary input=keyboard AND a bare-VM guest's
+#     own fd-0 read stays intact under the layered config, on the maize-238-landed
+#     default path (AC 9266, via the asm/test_sysread.mazm / "hello|EOF" pairing)
+#   - the OQ 9257 ruling: the console build WARNS when maize.config sets a graphical-only
+#     input default (its own file) and stays SILENT when the shared config sets it
+# =============================================================================
+run_launcher_per_binary() {
+    name="launcher_per_binary"
+    TOTAL=$((TOTAL + 1))
+
+    compile_c "hello" || return
+    hello_bin="$BIN"
+    compile_c "cat_hostfs" || return
+    cat_bin="$BIN"
+    compile_c "cat_home_hostfs" || return
+    cat_home_bin="$BIN"
+    # compile_c assigns the global `name` (no `local` in POSIX sh); restore our label.
+    name="launcher_per_binary"
+
+    # A bare-VM stdin fixture (AC 9266): assemble asm/test_sysread.mazm via $MAZM, the
+    # same guest run-tests.sh's run_sysread_test drives. Piped "hello" must round-trip
+    # to "hello|EOF" (the guest's own SYS $00 read of fd 0), proving no config-armed
+    # device stole the first byte under the layered load, on the maize-238 default path.
+    sysread_src="${REPO_ROOT}/asm/test_sysread.mazm"
+    sysread_asm="${WORK_DIR}/pb_test_sysread.mazm"
+    cp "$sysread_src" "$sysread_asm"
+    if ! "$MAZM" "$sysread_asm" >/dev/null 2>&1 || [ ! -f "${sysread_asm%.mazm}.mzb" ]; then
+        echo "[FAIL] ${name} (mazm failed to assemble test_sysread.mazm)"
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    sysread_bin="${sysread_asm%.mazm}.mzb"
+
+    fake_home="${WORK_DIR}/launcher_pb_home"
+    rm -rf "$fake_home"; mkdir -p "$fake_home/.maize"
+    nat_home=$(host_to_native "$fake_home")
+    cfg="$fake_home/.maize/config"
+    mcfg="$fake_home/.maize/maize.config"
+    mgcfg="$fake_home/.maize/maizeg.config"
+    # maize (a native exe under MSYS2) reports paths in its OWN native form; build the
+    # native views for substring checks against maize's own stderr.
+    nat_cfg=$(host_to_native "$cfg")
+    nat_mcfg=$(host_to_native "$mcfg")
+
+    dirA="${WORK_DIR}/pb_rootA"; nat_dirA=$(host_to_native "$dirA")
+    dirB="${WORK_DIR}/pb_rootB"; nat_dirB=$(host_to_native "$dirB")
+    dirX="${WORK_DIR}/pb_rootX"; nat_dirX=$(host_to_native "$dirX")
+    dirY="${WORK_DIR}/pb_rootY"; nat_dirY=$(host_to_native "$dirY")
+
+    ok=1
+
+    # (1) AC 9258 shared-only regression: shared config root=dirA, no per-binary file;
+    # the console maize builds the dirA skeleton (existing shared-only behavior).
+    rm -f "$cfg" "$mcfg" "$mgcfg"; rm -rf "$dirA"
+    printf 'root=%s\n' "$nat_dirA" > "$cfg"
+    set +e; HOME="$nat_home" "$MAIZE" "$hello_bin" >/dev/null 2>&1; set -e
+    [ -d "$dirA/home/user" ] || ok=0
+
+    # (2) AC 9259 per-binary-only: NO shared config, maize.config root=dirB; maize builds dirB.
+    rm -f "$cfg" "$mcfg" "$mgcfg"; rm -rf "$dirB"
+    printf 'root=%s\n' "$nat_dirB" > "$mcfg"
+    set +e; HOME="$nat_home" "$MAIZE" "$hello_bin" >/dev/null 2>&1; set -e
+    [ -d "$dirB/home/user" ] || ok=0
+
+    # (3) AC 9260 both-with-override: shared root=dirA, per-binary root=dirB; per-binary
+    # wins (skeleton lands in dirB) and dirA is NOT created for this run.
+    rm -f "$cfg" "$mcfg" "$mgcfg"; rm -rf "$dirA" "$dirB"
+    printf 'root=%s\n' "$nat_dirA" > "$cfg"
+    printf 'root=%s\n' "$nat_dirB" > "$mcfg"
+    set +e; HOME="$nat_home" "$MAIZE" "$hello_bin" >/dev/null 2>&1; set -e
+    [ -d "$dirB/home/user" ] || ok=0
+    [ ! -e "$dirA" ] || ok=0
+
+    # (4) AC 9261 cross-binary isolation: maize.config root=dirX, maizeg.config root=dirY.
+    # The console maize creates dirX only; the graphical maizeg creates dirY only.
+    rm -f "$cfg" "$mcfg" "$mgcfg"
+    printf 'root=%s\n' "$nat_dirX" > "$mcfg"
+    printf 'root=%s\n' "$nat_dirY" > "$mgcfg"
+    rm -rf "$dirX" "$dirY"
+    set +e; HOME="$nat_home" "$MAIZE" "$hello_bin" >/dev/null 2>&1; set -e
+    [ -d "$dirX/home/user" ] || ok=0
+    [ ! -e "$dirY" ] || ok=0
+    rm -rf "$dirX" "$dirY"
+    set +e; HOME="$nat_home" "$MAIZEG" "$hello_bin" >/dev/null 2>&1; set -e
+    [ -d "$dirY/home/user" ] || ok=0
+    [ ! -e "$dirX" ] || ok=0
+
+    # (5) AC 9262 mount layering, DISTINCT guest paths reachable at once: shared config
+    # grants /ro (from roA), maize.config grants /home/user (mount-home=true -> HOME).
+    rm -f "$cfg" "$mcfg" "$mgcfg"
+    roA="${WORK_DIR}/pb_roA"; rm -rf "$roA"; mkdir -p "$roA"
+    printf 'ro payload\n' > "$roA/payload.txt"; nat_roA=$(host_to_native "$roA")
+    printf 'home payload\n' > "$fake_home/payload.txt"   # mount-home=true maps /home/user -> HOME
+    printf 'mount=%s=/ro:ro\n' "$nat_roA" > "$cfg"
+    printf 'mount-home=true\n' > "$mcfg"
+    set +e; out5ro=$(HOME="$nat_home" "$MAIZE" --no-root "$cat_bin" 2>/dev/null); set -e
+    [ "$out5ro" = "ro payload" ] || ok=0
+    set +e; out5hm=$(HOME="$nat_home" "$MAIZE" --no-root "$cat_home_bin" 2>/dev/null); set -e
+    [ "$out5hm" = "home payload" ] || ok=0
+
+    # (6) AC 9263 mount layering, SAME guest path: shared grants roA at /ro, maize.config
+    # grants roB at /ro; the per-binary grant wins, exits 0, with no overlap diagnostic.
+    roB="${WORK_DIR}/pb_roB"; rm -rf "$roB"; mkdir -p "$roB"
+    printf 'per-binary payload\n' > "$roB/payload.txt"; nat_roB=$(host_to_native "$roB")
+    printf 'mount=%s=/ro:ro\n' "$nat_roA" > "$cfg"
+    printf 'mount=%s=/ro:ro\n' "$nat_roB" > "$mcfg"
+    set +e
+    out6=$(HOME="$nat_home" "$MAIZE" --no-root "$cat_bin" 2>"${WORK_DIR}/pb_sc6.err")
+    rc6=$?
+    set -e
+    err6=$(cat "${WORK_DIR}/pb_sc6.err")
+    [ "$out6" = "per-binary payload" ] || ok=0
+    [ "$rc6" -eq 0 ] || ok=0
+    if printf '%s' "$err6" | grep -qi 'overlap'; then ok=0; fi
+
+    # (7) AC 9264 CLI wins over BOTH file tiers: same shared/per-binary /ro grants as (6),
+    # plus a CLI --mount roC=/ro:rw for the same guest path; the CLI grant wins.
+    roC="${WORK_DIR}/pb_roC"; rm -rf "$roC"; mkdir -p "$roC"
+    printf 'cli payload\n' > "$roC/payload.txt"; nat_roC=$(host_to_native "$roC")
+    set +e
+    out7=$(HOME="$nat_home" "$MAIZE" --no-root --mount "${nat_roC}=/ro:rw" "$cat_bin" 2>/dev/null)
+    set -e
+    [ "$out7" = "cli payload" ] || ok=0
+
+    # (8) AC 9265 diagnostic file-naming: an out-of-range display-scale line names the
+    # file it came from. Leg a: only in maize.config -> names maize.config. Leg b: only
+    # in the shared config -> names the shared config (and NOT maize.config).
+    rm -f "$cfg" "$mcfg" "$mgcfg"
+    printf 'display-scale=99\n' > "$mcfg"
+    set +e; err8a=$(HOME="$nat_home" "$MAIZE" --no-root "$hello_bin" 2>&1 >/dev/null); set -e
+    printf '%s' "$err8a" | grep -qF 'display-scale' || ok=0
+    printf '%s' "$err8a" | grep -qF "$nat_mcfg" || ok=0
+    rm -f "$mcfg"
+    printf 'display-scale=99\n' > "$cfg"
+    set +e; err8b=$(HOME="$nat_home" "$MAIZE" --no-root "$hello_bin" 2>&1 >/dev/null); set -e
+    printf '%s' "$err8b" | grep -qF "$nat_cfg" || ok=0
+    if printf '%s' "$err8b" | grep -qF "$nat_mcfg"; then ok=0; fi
+
+    # (9) AC 9266(a) + OQ 9257 warn-leg: input=keyboard in the console's OWN maize.config.
+    # The maize-237 discard neutralizes it (the guest's piped stdin round-trips to
+    # "hello|EOF", no byte theft on the maize-238 default path) AND the console build warns,
+    # naming maize.config, that it ignored the graphical-only input default.
+    rm -f "$cfg" "$mcfg" "$mgcfg"
+    printf 'input=keyboard\n' > "$mcfg"
+    set +e
+    out9=$(printf 'hello' | HOME="$nat_home" "$MAIZE" --no-root "$sysread_bin" 2>"${WORK_DIR}/pb_sc9.err")
+    set -e
+    err9=$(cat "${WORK_DIR}/pb_sc9.err")
+    [ "$out9" = "hello|EOF" ] || ok=0
+    printf '%s' "$err9" | grep -qi 'ignoring input=' || ok=0
+    printf '%s' "$err9" | grep -qF "$nat_mcfg" || ok=0
+
+    # (10) OQ 9257 silent-leg: input=keyboard in the SHARED config stays silent (today's
+    # behavior), even though the console build still discards it.
+    rm -f "$cfg" "$mcfg" "$mgcfg"
+    printf 'input=keyboard\n' > "$cfg"
+    set +e; err10=$(HOME="$nat_home" "$MAIZE" --no-root "$hello_bin" 2>&1 >/dev/null); set -e
+    if printf '%s' "$err10" | grep -qi 'ignoring input='; then ok=0; fi
+
+    # (11) AC 9266(b) bare-VM default-invocation stdin under a LAYERED config (both files
+    # present, harmless keys): the guest's own fd-0 read still receives every byte intact,
+    # proving the second config load did not reintroduce the maize-237 stdin-theft hazard.
+    rm -f "$cfg" "$mcfg" "$mgcfg"
+    printf 'display-scale=5\n' > "$cfg"
+    printf 'refresh-hz=45\n' > "$mcfg"
+    set +e
+    out11=$(printf 'hello' | HOME="$nat_home" "$MAIZE" --no-root "$sysread_bin" 2>/dev/null)
+    set -e
+    [ "$out11" = "hello|EOF" ] || ok=0
+
+    if [ "$ok" -eq 1 ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        (1) shared-only rootA dir:      $([ -d "$dirA/home/user" ] && echo yes || echo no)"
+        echo "        (5) ro/home payloads:           \"${out5ro}\" / \"${out5hm}\""
+        echo "        (6) same-path per-binary win:   rc=${rc6} out=\"${out6}\" err=\"${err6}\""
+        echo "        (7) CLI-over-both:              \"${out7}\""
+        echo "        (9) sysread + warn:             out=\"${out9}\" err=\"${err9}\""
+        echo "        (10) shared-input silent err:   \"${err10}\""
+        echo "        (11) layered-config sysread:    \"${out11}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_launcher_per_binary
 # =============================================================================
 
 # maize-24 keystone (Piece 3): quesOS single-tasking exec/reap. Builds the two

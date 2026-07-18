@@ -377,6 +377,35 @@ never requires editing the config file. Two grants from the SAME source (two
 config lines, or two CLI flags) that merely overlap remain a hard fail-closed
 startup error, unchanged.
 
+#### Per-binary overrides (`~/.maize/maize.config`, `~/.maize/maizeg.config`)
+
+Some keys mean nothing on one binary: `input` and `display` are graphical-only,
+and the console `maize` ignores them. Rather than crowd the shared file with keys
+that only ever apply to one build, you can put per-binary overrides in an optional
+second file, read on top of the shared `~/.maize/config`:
+
+- The console `maize` reads `~/.maize/maize.config`.
+- The graphical `maizeg` reads `~/.maize/maizeg.config`.
+
+Both use the identical `key=value` format and honor every key the shared file does.
+The precedence becomes built-in default < `~/.maize/config` (shared) < the per-binary
+config < CLI flag: a key set in the per-binary file overrides the shared file, and a
+key it leaves unset keeps whatever the shared file (or the built-in default) set. Each
+file is independently optional; either, both, or neither may exist, and a shared-only
+config keeps working unchanged. Warnings from a bad line now name the file they came
+from, so you can tell a `maize.config` mistake from a shared-`config` one.
+
+Mount grants layer across the three tiers the same way scalar keys do: a `mount=`/
+`mount-home=` grant in the per-binary file for the exact same guest path silently
+replaces the shared file's grant, and a CLI `--mount`/`--mount-home` for that path
+still wins over both. Two grants that merely overlap WITHIN one tier (two lines in
+the same file) remain a hard fail-closed startup error, unchanged.
+
+Because the console build ignores graphical-only keys, an `input=keyboard` line in
+`maize.config` (the console's own file) is a likely mistake and is reported on stderr
+before it is dropped; the same key inherited from the shared `config` stays silent, as
+it always has.
+
 ```
 # ~/.maize/config
 display-scale=4

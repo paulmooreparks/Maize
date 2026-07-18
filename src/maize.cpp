@@ -203,19 +203,27 @@ static void print_usage(std::ostream &out) {
 		"optional standing default file ~/.maize/env (loaded first, then overridden by\n"
 		"any -e/--env/--env-file entry); the host's own environment is never inherited.\n"
 		"\n"
-		"Two optional operator files under ~/.maize (HOME/USERPROFILE) tune startup:\n"
+		"Optional operator files under ~/.maize (HOME/USERPROFILE) tune startup:\n"
 		"  ~/.maize/config   default values for the launcher flags, one key=value per\n"
 		"                    line (blank and #-comment lines ignored). Keys are the long\n"
 		"                    flag names without dashes: display-scale, refresh-hz,\n"
 		"                    resolution, console-size, root, show-perf, pause-on-halt,\n"
 		"                    vsync, display, input, no-root. (the console 'maize' ignores\n"
 		"                    the graphical-only keys.) console-size is <cols>x<rows> (e.g. 80x25).\n"
-		"                    Booleans accept true/false, 1/0, or yes/no. Precedence is\n"
-		"                    built-in default < ~/.maize/config < CLI flag (a CLI flag\n"
-		"                    always wins). A bad key or value is warned and ignored.\n"
+		"                    Booleans accept true/false, 1/0, or yes/no. A bad key or\n"
+		"                    value is warned and ignored.\n"
+		"  ~/.maize/maize.config, ~/.maize/maizeg.config\n"
+		"                    an OPTIONAL per-binary override layer read on top of the\n"
+		"                    shared ~/.maize/config: the console 'maize' reads maize.config,\n"
+		"                    the graphical 'maizeg' reads maizeg.config (same key=value\n"
+		"                    format). A key set here overrides the shared file; an unset\n"
+		"                    key keeps the shared (or built-in) value. Use it to keep\n"
+		"                    graphical-only keys (input, display) out of the console build.\n"
+		"                    Precedence is built-in default < ~/.maize/config < the\n"
+		"                    per-binary config < CLI flag (a CLI flag always wins).\n"
 		"  ~/.maize/env      a default guest environment (same KEY=VAL format as\n"
 		"                    --env-file) loaded into every guest before -e/--env entries.\n"
-		"Both files are optional; absent means the built-in defaults and an empty env.\n"
+		"All of these files are optional; absent means the built-in defaults and an empty env.\n"
 		"\n"
 		"By default the guest gets a persistent sandbox root filesystem: a dedicated\n"
 		"host directory (~/.maize/root, created on first run with /home/user and /tmp)\n"
@@ -596,7 +604,7 @@ static bool load_config_file(const std::string &path,
 			int s = std::atoi(val.c_str());
 			if (s < 1 || s > 16) {
 				std::cerr << "maize: ignoring config display-scale '" << val
-					<< "' (must be between 1 and 16)" << std::endl;
+					<< "' (must be between 1 and 16) in " << path << std::endl;
 				continue;
 			}
 			display_scale = static_cast<unsigned>(s);
@@ -604,7 +612,7 @@ static bool load_config_file(const std::string &path,
 			int hz = std::atoi(val.c_str());
 			if (hz < 1 || hz > 1000) {
 				std::cerr << "maize: ignoring config refresh-hz '" << val
-					<< "' (must be between 1 and 1000)" << std::endl;
+					<< "' (must be between 1 and 1000) in " << path << std::endl;
 				continue;
 			}
 			refresh_hz = static_cast<unsigned>(hz);
@@ -613,7 +621,7 @@ static bool load_config_file(const std::string &path,
 			maize::u_hword h = 0;
 			if (!parse_resolution(val, w, h)) {
 				std::cerr << "maize: ignoring config resolution '" << val
-					<< "' (expected <width>x<height>, e.g. 320x200)" << std::endl;
+					<< "' (expected <width>x<height>, e.g. 320x200) in " << path << std::endl;
 				continue;
 			}
 			fb_width = w;
@@ -624,21 +632,21 @@ static bool load_config_file(const std::string &path,
 			if (!parse_console_size(val, cw, ch)) {
 				std::cerr << "maize: ignoring config console-size '" << val
 					<< "' (expected <cols>x<rows>, e.g. 80x25; cols 20..500, rows 10..200)"
-					<< std::endl;
+					<< " in " << path << std::endl;
 				continue;
 			}
 			console_width = cw;
 			console_height = ch;
 		} else if (key == "root") {
 			if (val.empty()) {
-				std::cerr << "maize: ignoring config root (empty host path)" << std::endl;
+				std::cerr << "maize: ignoring config root (empty host path) in " << path << std::endl;
 				continue;
 			}
 			root_override = val;
 		} else if (key == "input") {
 			if (val != "sys" && val != "keyboard" && val != "console") {
 				std::cerr << "maize: ignoring config input '" << val
-					<< "' (expected sys, keyboard, or console)" << std::endl;
+					<< "' (expected sys, keyboard, or console) in " << path << std::endl;
 				continue;
 			}
 			input_source = (val == "sys") ? std::string() : val;
@@ -646,7 +654,7 @@ static bool load_config_file(const std::string &path,
 			bool b = false;
 			if (!parse_config_bool(val, b)) {
 				std::cerr << "maize: ignoring config show-perf '" << val
-					<< "' (expected true/false, 1/0, or yes/no)" << std::endl;
+					<< "' (expected true/false, 1/0, or yes/no) in " << path << std::endl;
 				continue;
 			}
 			show_perf = b;
@@ -654,7 +662,7 @@ static bool load_config_file(const std::string &path,
 			bool b = false;
 			if (!parse_config_bool(val, b)) {
 				std::cerr << "maize: ignoring config pause-on-halt '" << val
-					<< "' (expected true/false, 1/0, or yes/no)" << std::endl;
+					<< "' (expected true/false, 1/0, or yes/no) in " << path << std::endl;
 				continue;
 			}
 			pause_on_halt = b;
@@ -662,7 +670,7 @@ static bool load_config_file(const std::string &path,
 			bool b = false;
 			if (!parse_config_bool(val, b)) {
 				std::cerr << "maize: ignoring config vsync '" << val
-					<< "' (expected true/false, 1/0, or yes/no)" << std::endl;
+					<< "' (expected true/false, 1/0, or yes/no) in " << path << std::endl;
 				continue;
 			}
 			vsync = b;
@@ -670,7 +678,7 @@ static bool load_config_file(const std::string &path,
 			bool b = false;
 			if (!parse_config_bool(val, b)) {
 				std::cerr << "maize: ignoring config display '" << val
-					<< "' (expected true/false, 1/0, or yes/no)" << std::endl;
+					<< "' (expected true/false, 1/0, or yes/no) in " << path << std::endl;
 				continue;
 			}
 			display_requested = b;
@@ -678,7 +686,7 @@ static bool load_config_file(const std::string &path,
 			bool b = false;
 			if (!parse_config_bool(val, b)) {
 				std::cerr << "maize: ignoring config no-root '" << val
-					<< "' (expected true/false, 1/0, or yes/no)" << std::endl;
+					<< "' (expected true/false, 1/0, or yes/no) in " << path << std::endl;
 				continue;
 			}
 			no_root = b;
@@ -818,6 +826,19 @@ static void build_process_start_block(const std::vector<std::string> &guest_argv
 	regs::rs.w0 = rs;
 }
 
+/* maize-249: the per-binary launcher config filename, selected at COMPILE time off
+   the existing MAIZE_CONSOLE_ONLY define (set unconditionally on the `maize` target,
+   never on `maizeg`, CMakeLists.txt:35): the console build reads ~/.maize/maize.config,
+   every other build (the graphical `maizeg`, headless or windowed) reads
+   ~/.maize/maizeg.config. This reuses the same discriminator the maize-237 input-key
+   discard already keys off, so no argv[0] sniffing is needed. The file layers on TOP
+   of the shared ~/.maize/config (precedence built-in < shared < per-binary < CLI). */
+#ifdef MAIZE_CONSOLE_ONLY
+static const char *PER_BINARY_CONFIG_NAME = "maize.config";
+#else
+static const char *PER_BINARY_CONFIG_NAME = "maizeg.config";
+#endif
+
 int main(int argc, char *argv[]) {
 	using namespace cpu;
 
@@ -831,7 +852,14 @@ int main(int argc, char *argv[]) {
 	   the host's ambient environment is never inherited. */
 	std::vector<std::string> env_entries;
 	std::vector<mount_grant> grants;
-	std::size_t config_grant_count = 0;   // maize-252: grants.size() right after load_config_file
+	std::size_t config_grant_count = 0;   // maize-252: grants.size() right after the shared load_config_file
+	std::size_t per_binary_grant_count = 0;   // maize-249: grants.size() right after the per-binary load_config_file
+	/* maize-249 (OQ 9257 ruling): track whether the per-binary config file is the source of a
+	   graphical-only input default that the console build then discards, so the discard can WARN
+	   the operator for the per-binary file (their own maize.config) while staying silent for the
+	   shared file, as today. per_binary_config_path names the file for that diagnostic. */
+	bool input_source_from_per_binary = false;
+	std::string per_binary_config_path;
 	bool no_root = false;            // --no-root: disable the default sandbox root
 	std::string root_override;       // --root <hostpath>: redirect the sandbox root
 #ifdef MAIZE_DISPLAY
@@ -902,6 +930,34 @@ int main(int argc, char *argv[]) {
 				   second call from --show-perf is harmless). */
 				cpu::enable_perf_counter();
 			}
+
+			/* maize-249: layer the OPTIONAL per-binary config on top of the shared one.
+			   Same signature, same output references, so scalar keys layer for free: a
+			   key set here overwrites whatever the shared file (or the built-in default)
+			   left; an unset key is untouched. load_config_file treats an absent file as
+			   a no-op success, so either, both, or neither file may exist (decision 9253).
+			   Its mount=/mount-home= grants append AFTER the shared block's, forming the
+			   middle tier of the three-tier shadow merge below (decision 9254). */
+			per_binary_config_path = (base / PER_BINARY_CONFIG_NAME).string();
+			std::string input_before_per_binary = input_source;
+			if (!load_config_file(per_binary_config_path,
+				display_scale, refresh_hz, fb_width, fb_height,
+				console_width, console_height,
+				root_override, show_perf, display_requested, input_source, no_root,
+				pause_on_halt, vsync, grants)) {
+				return 2;   // diagnostic already printed by load_config_file
+			}
+			per_binary_grant_count = grants.size();
+			/* Did the per-binary file set input to a non-empty (graphical-only) value?
+			   If so, the console build's discard below warns naming this file; a value
+			   the shared file set (unchanged by the per-binary load) stays silent. */
+			if (!input_source.empty() && input_source != input_before_per_binary) {
+				input_source_from_per_binary = true;
+			}
+			if (show_perf) {
+				cpu::enable_perf_counter();   // idempotent; see the shared-config note above
+			}
+
 			std::error_code ec;
 			std::string env_path = (base / "env").string();
 			if (std::filesystem::exists(env_path, ec)) {
@@ -941,7 +997,19 @@ int main(int argc, char *argv[]) {
 	   SYS $00 read. Discard the config-seeded default here, before the CLI loop below,
 	   so only an EXPLICIT `--input=keyboard` on THIS invocation (as run_tests' own
 	   keyboard test passes) can arm the injector on the console build; the config
-	   default keeps applying to maizeg exactly as before. */
+	   default keeps applying to maizeg exactly as before.
+
+	   maize-249 (OQ 9257 ruling, "Yes, warn"): with two config files now live per
+	   binary, a graphical-only `input` default set in the console's OWN per-binary
+	   maize.config is almost certainly an operator mistake (that key belongs in
+	   maizeg.config), so warn when THIS file is the source. A value inherited from the
+	   SHARED ~/.maize/config stays silent, exactly as today (routine after using
+	   maizeg's injector; the operator did not target the console build with it). */
+	if (!input_source.empty() && input_source_from_per_binary) {
+		std::cerr << "maize: ignoring input='" << input_source << "' from "
+			<< per_binary_config_path << " (the console build has no scancode injector; "
+			<< "the 'input' key applies to the graphical maizeg build)" << std::endl;
+	}
 	input_source.clear();
 #endif
 
@@ -1303,20 +1371,33 @@ int main(int argc, char *argv[]) {
 		return 2;
 	}
 
-	/* maize-252: a CLI --mount/--mount-home for the SAME guest path as a config
-	   mount=/mount-home= default overrides it (config < CLI, same as every other
-	   launcher default). Two grants from the SAME source that merely overlap stay
+	/* maize-249: three-tier mount-grant shadow merge, a direct generalization of the
+	   maize-252 two-tier config<CLI rule (not a rewrite of its semantics). A grant is
+	   dropped when any grant in a STRICTLY HIGHER tier shares its EXACT guest path:
+	     tier 0 [0, config_grant_count):                   shared ~/.maize/config
+	     tier 1 [config_grant_count, per_binary_grant_count): per-binary <bin>.config
+	     tier 2 [per_binary_grant_count, grants.size()):    CLI --mount/--mount-home
+	   So a per-binary grant beats a shared grant for the same guest path, and a CLI
+	   grant beats both (precedence built-in < shared < per-binary < CLI). The drop is
+	   silent on a successful override (matching the existing config<CLI precedent);
+	   two grants in the SAME tier that merely OVERLAP (prefix, not exact match) remain
 	   a hard fail-closed error in build_mount_table, unchanged. Runs here, after the
-	   CLI loop has collected every CLI-sourced grant and before the sandbox-root
-	   block adds its own default grant, so root's presence/absence never
-	   participates in this merge. */
-	if (config_grant_count > 0) {
+	   CLI loop has collected every CLI-sourced grant and before the sandbox-root block
+	   adds its own default grant, so root's presence/absence never participates. */
+	if (!grants.empty()) {
+		auto tier_of = [&](std::size_t i) -> int {
+			if (i < config_grant_count) { return 0; }
+			if (i < per_binary_grant_count) { return 1; }
+			return 2;
+		};
 		std::vector<mount_grant> merged;
 		for (std::size_t i = 0; i < grants.size(); ++i) {
 			bool shadowed = false;
-			if (i < config_grant_count) {
-				for (std::size_t j = config_grant_count; j < grants.size(); ++j) {
-					if (grants[j].guest == grants[i].guest) { shadowed = true; break; }
+			int ti = tier_of(i);
+			for (std::size_t j = 0; j < grants.size(); ++j) {
+				if (tier_of(j) > ti && grants[j].guest == grants[i].guest) {
+					shadowed = true;
+					break;
 				}
 			}
 			if (!shadowed) { merged.push_back(grants[i]); }
