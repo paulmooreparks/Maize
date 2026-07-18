@@ -14,10 +14,27 @@
 #define HOSTFS_FD_BASE    3
 #define HOSTFS_MAX_MOUNTS 64
 
+/* Cap per cached top-level component name on a merge_root fd slot. Deliberately
+   smaller than build_root_names' local 256-byte stack buffer: build_root_names'
+   store lives on the stack of a single getdents_root call and costs nothing once
+   that call returns, while merge_names is fd-slot-resident (every one of
+   HOSTFS_MAX_FDS=256 slots carries this array whether or not it is a merge_root
+   fd), so its per-name budget is deliberately tighter. 64 bytes is ample for a
+   real mount's top-level guest component (top_component itself truncates any
+   component past this bound rather than overflowing). */
+#define HOSTFS_MERGE_NAME_MAX 64
+
 typedef struct {
     int          in_use;
     int          is_root;      /* synthetic-root fd (no backend handle) */
-    uint64_t     root_cursor;  /* next unique-mount index for root getdents */
+    int          merge_root;   /* "/" fd backed by a real root mount that also has
+                                   other granted mounts to merge into its listing */
+    uint64_t     root_cursor;  /* next unique-mount index for root getdents; for a
+                                   merge_root fd, indexes merge_names during the
+                                   mount-name phase */
+    int          merge_count;  /* count of deduped extra mount names, cached ONCE
+                                   at hostfs_open time (not recomputed per call) */
+    char         merge_names[HOSTFS_MAX_MOUNTS][HOSTFS_MERGE_NAME_MAX];
     hostfs_mount *mount;       /* owning mount (NULL for root) */
     void         *handle;      /* backend handle (NULL for root) */
 } hostfs_fd_slot;
@@ -340,6 +357,78 @@ static int64_t getdents_root(hostfs_fd_slot *s, hostfs_table *t,
     return (int64_t)off;
 }
 
+/* --- merged root (maize-255) ------------------------------------------------- */
+
+/* Called once, at hostfs_open time, for a fd matched to the literal root mount.
+   Computes the deduped extra-mount-name set and caches it on the fd slot so
+   getdents_merge_root never re-probes the host filesystem per call.
+
+   Existence probe uses ops->confine + ops->close, NOT ops->stat: both backends
+   stub stat as -ENOSYS today. confine is what every real open() already resolves
+   through, so opening the candidate name under the root mount's own anchor with
+   flags=0 (no O_CREAT, no write-intent bits) and immediately closing on success is
+   a correctness-equivalent, already-implemented existence check. A nonnegative rc
+   means a physical entry of that name already exists (skip it, physical wins); a
+   negative rc (ENOENT etc.) means no physical entry, so the candidate becomes a
+   merged listing entry. */
+static void cache_merge_extra_names(hostfs_table *t, hostfs_mount *root_mount,
+                                    hostfs_fd_slot *s) {
+    int n = 0;
+    for (unsigned i = 0; i < t->count && n < HOSTFS_MAX_MOUNTS; ++i) {
+        if (&t->mounts[i] == root_mount) {
+            continue;   /* the root mount is the physical listing itself; its own
+                           guest_prefix is "/" and top_component("/") would
+                           otherwise yield a spurious empty-string name */
+        }
+        char comp[HOSTFS_MERGE_NAME_MAX];
+        top_component(t->mounts[i].guest_prefix, comp, sizeof(comp));
+        int dup = 0;
+        for (int k = 0; k < n; ++k) {
+            if (strcmp(s->merge_names[k], comp) == 0) {
+                dup = 1;
+                break;
+            }
+        }
+        if (dup) {
+            continue;
+        }
+        void *probe = 0;
+        int64_t rc = t->ops->confine(root_mount, comp, 0, &probe);
+        if (rc >= 0) {
+            t->ops->close(probe);
+            continue;   /* a real physical entry of this name already exists: skip */
+        }
+        memcpy(s->merge_names[n], comp, strlen(comp) + 1);
+        ++n;
+    }
+    s->merge_count = n;
+}
+
+static int64_t getdents_merge_root(hostfs_fd_slot *s, hostfs_table *t,
+                                   uint8_t *buf, uint64_t count) {
+    uint64_t cursor = s->root_cursor;
+    if (cursor < (uint64_t)s->merge_count) {
+        uint64_t off = 0;
+        uint64_t k = cursor;
+        for (; k < (uint64_t)s->merge_count; ++k) {
+            if (!hostfs_emit_dirent(buf, count, &off,
+                                    HOSTFS_ROOT_INO + k + 1, (int64_t)(k + 1),
+                                    HOSTFS_DT_DIR, s->merge_names[k])) {
+                break;
+            }
+        }
+        if (off == 0) {
+            return -HOSTFS_EINVAL;
+        }
+        s->root_cursor = k;
+        return (int64_t)off;
+    }
+    /* Mount-name phase exhausted (possibly on an earlier call): delegate the rest
+       of the stream to the backend's own physical getdents on the already-open
+       handle. */
+    return t->ops->getdents(s->handle, buf, count);
+}
+
 static void encode_root_stat(uint8_t *out) {
     hostfs_stat st;
     memset(&st, 0, sizeof(st));
@@ -384,6 +473,18 @@ int64_t hostfs_open(hostfs_table *t, const char *path, int flags, int mode) {
         hostfs_fd_slot *s = slot_for_fd(fd);
         s->mount = m;
         s->handle = handle;
+        /* maize-255: a fd opened for the literal root mount ("/") also merges in
+           the top-level names of every other granted mount, deduped against this
+           mount's own physical entries. This is the same is_root_pfx test
+           match_mount already applies internally; it is duplicated here rather
+           than plumbed out through match_mount's signature to keep the diff to
+           the two call sites that need it. A fd opened for a deeper mount (e.g.
+           /bin, its own registered mount) never sets this. */
+        size_t plen = strlen(m->guest_prefix);
+        if (plen == 1 && m->guest_prefix[0] == '/') {
+            s->merge_root = 1;
+            cache_merge_extra_names(t, m, s);
+        }
         return fd;
     }
 
@@ -478,6 +579,33 @@ int64_t hostfs_lseek(hostfs_table *t, int fd, int64_t offset, int whence) {
         }
         return -HOSTFS_EINVAL;
     }
+    if (s->merge_root) {
+        if (whence == HOSTFS_SEEK_SET && offset == 0) {
+            s->root_cursor = 0;   /* rewind the mount-name phase */
+            /* Rewind the physical phase too. Both backends populate their
+               getdents cursor from a directory snapshot taken once at confine
+               time (posix_handle.cursor / win_handle.cursor); their lseek ops
+               forward to the host file-position API, which that snapshot-driven
+               getdents never consults, so a bare ops->lseek(handle, 0, SEEK_SET)
+               would not actually replay the physical entries on a second read.
+               Re-confining the root mount is the same call hostfs_open already
+               made to acquire this fd's handle in the first place, and yields a
+               fresh handle with a fresh snapshot at cursor 0, genuinely
+               reproducing the physical-phase portion of the merged set. */
+            void *fresh = 0;
+            int64_t rc = t->ops->confine(s->mount, ".", 0, &fresh);
+            if (rc < 0) {
+                return rc;
+            }
+            t->ops->close(s->handle);
+            s->handle = fresh;
+            return 0;
+        }
+        /* Matches is_root's posture: only rewind is supported on a directory fd,
+           no passthrough of arbitrary seeks to the backend's own (opaque,
+           cookie-based) physical stream. */
+        return -HOSTFS_EINVAL;
+    }
     return t->ops->lseek(s->handle, offset, whence);
 }
 
@@ -507,6 +635,9 @@ int64_t hostfs_getdents(hostfs_table *t, int fd, uint8_t *buf, uint64_t count) {
     }
     if (s->is_root) {
         return getdents_root(s, t, buf, count);
+    }
+    if (s->merge_root) {
+        return getdents_merge_root(s, t, buf, count);
     }
     return t->ops->getdents(s->handle, buf, count);
 }

@@ -775,6 +775,82 @@ run_hostfs_truncate() {
     fi
 }
 
+# maize-255 merged root directory listing: with a real "/" mount present (--root),
+# opening "/" merges the top-level names of every other granted mount into the
+# physical listing, deduped against any physical collision (D1-D5, D8). Grants
+# /bin (a new guest name, proves the merge) and /tmp (colliding with the
+# sandbox's own auto-created /tmp, proves dedup with zero extra fixture setup:
+# the physical /tmp already exists under every --root sandbox). root_merge_hostfs.c
+# uses a small read buffer to force multiple getdents64 calls across the
+# mount-name-phase-to-physical-phase boundary (AC 9292) and exercises the
+# lseek rewind (AC 9293) and lseek-EINVAL (AC 9303) postures in the same run.
+# stat_mountpoint_hostfs.c then runs against the same launch shape to confirm
+# fstat on the /bin mount (no physical counterpart under the sandbox) is
+# unaffected (D6, AC 9288).
+run_hostfs_root_merge() {
+    name="root_merge_hostfs"
+    TOTAL=$((TOTAL + 1))
+    compile_c "$name" || return
+    bin="$BIN"
+
+    root="${WORK_DIR}/hostfs_root_merge"
+    rm -rf "$root"; mkdir -p "$root/sandbox" "$root/bin" "$root/tmp_other"
+    nat_root=$(host_to_native "$root/sandbox")
+    nat_bin=$(host_to_native "$root/bin")
+    nat_tmp=$(host_to_native "$root/tmp_other")
+
+    set +e
+    # MSYS2_ARG_CONV_EXCL exempts the /bin, /tmp guest paths (embedded in the
+    # combined "host=guest:mode" --mount value) from the Windows-leg MSYS2
+    # POSIX->Windows argv rewrite (semicolon-separated per the run_doom_render /
+    # quesos94 fs_forward precedent, scripts/run-ctest.sh:1396/2170); the host
+    # side of each --mount value is already a native path via host_to_native and
+    # is left untouched.
+    out=$(MSYS2_ARG_CONV_EXCL='/bin;/tmp' "$MAIZE" --root "${nat_root}" \
+        --mount "${nat_bin}=/bin:ro" --mount "${nat_tmp}=/tmp:ro" "$bin" 2>/dev/null)
+    set -e
+
+    n1=$(printf '%s\n' "$out" | grep '^N1:' | sed 's/^N1://' | sort)
+    n2=$(printf '%s\n' "$out" | grep '^N2:' | sed 's/^N2://' | sort)
+    lseekbad=$(printf '%s\n' "$out" | grep '^lseekbad:')
+    expected=$(printf 'bin\nhome\ntmp\n' | sort)
+
+    ok=1
+    [ "$n1" = "$expected" ] || ok=0
+    [ "$n2" = "$expected" ] || ok=0
+    [ "$lseekbad" = "lseekbad: PASS" ] || ok=0
+
+    if [ "$ok" -eq 1 ]; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected N1/N2: \"${expected}\""
+        echo "        actual N1:      \"${n1}\""
+        echo "        actual N2:      \"${n2}\""
+        echo "        lseekbad:       \"${lseekbad}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    name2="stat_mountpoint_hostfs"
+    TOTAL=$((TOTAL + 1))
+    compile_c "$name2" || return
+    bin2="$BIN"
+
+    set +e
+    actual2=$(MSYS2_ARG_CONV_EXCL='/bin;/tmp' "$MAIZE" --root "${nat_root}" \
+        --mount "${nat_bin}=/bin:ro" --mount "${nat_tmp}=/tmp:ro" "$bin2" 2>/dev/null | grep -v '^$')
+    set -e
+
+    if [ "$actual2" = "statmount: PASS" ]; then
+        echo "[PASS] ${name2}"
+    else
+        echo "[FAIL] ${name2}"
+        echo "        expected: \"statmount: PASS\""
+        echo "        actual:   \"${actual2}\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
 # maize-138 multi-file compile/link. Builds N C sources into one .mzx through the
 # extended driver's multi-source path (an explicit -o over several positional
 # sources), runs the linked image, and diffs stdout against ctest/<name>.expected
@@ -1083,6 +1159,8 @@ run_hostfs_savefs
 run_hostfs_savefs_neg
 # maize-179 ftruncate over the confined hostfs (shrink/extend/EINVAL/EROFS).
 run_hostfs_truncate
+# maize-255 merged root listing when a real "/" mount coexists with other grants.
+run_hostfs_root_merge
 
 # maize-121 self-hosted framebuffer terminal headless self-check. The fixture is a
 # guest-C program under demos/terminal/ that additionally links the mzdev device-access
