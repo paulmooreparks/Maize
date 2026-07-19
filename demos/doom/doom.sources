@@ -77,7 +77,7 @@ demos/doom/doomgeneric/doomgeneric/p_tick.c
 demos/doom/doomgeneric/doomgeneric/p_user.c
 demos/doom/doomgeneric/doomgeneric/r_bsp.c
 demos/doom/doomgeneric/doomgeneric/r_data.c
-demos/doom/doomgeneric/doomgeneric/r_draw.c
+demos/doom/doom_r_draw.c
 demos/doom/doomgeneric/doomgeneric/r_main.c
 demos/doom/doomgeneric/doomgeneric/r_plane.c
 demos/doom/doomgeneric/doomgeneric/r_segs.c
