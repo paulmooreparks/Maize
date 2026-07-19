@@ -40,7 +40,7 @@ MAIZE, QUESOS, DOOM_CHILD, PROGS, WADDIR = sys.argv[1:6]
 
 # The pinned steady-state FNV-1a checksum of DOOM's 320x200 frame (empirically captured; see
 # the file header). An env override lets the harness capture the value on a fresh render.
-EXPECTED_CSUM = os.environ.get("MZ_DOOM_CSUM", "40fc7cf7")
+EXPECTED_CSUM = os.environ.get("MZ_DOOM_CSUM", "f61da9a5")
 
 CSUM_RE = re.compile(r"presenter-stub: slot=(\d+) seq=(\d+) checksum=([0-9a-f]{8}) t=(\d+)")
 SESSION_RE = re.compile(r"maizeg --presenter (\w+)")

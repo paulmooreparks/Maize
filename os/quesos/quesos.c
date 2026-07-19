@@ -76,6 +76,11 @@ unsigned long sys_clock_ms(void);   /* maize-94: native $F0, forwarded to guests
  * physical addresses (user_pa) BEFORE forwarding; see do_bulk_copy/do_bulk_set below. */
 long sys_bulk_copy(void *dst, const void *src, unsigned long n);   /* native $F4 */
 long sys_bulk_set(void *dst, int value, unsigned long n);          /* native $F5 */
+/* maize-251: the native palette-blit accelerator ($F3, src/sys.cpp, maize-213). Like the bulk
+ * accelerators it reads/writes FLAT PHYSICAL addresses, so quesOS translates the caller's user
+ * dst/src/lut VAs before forwarding; DOOM's i_video.c I_FinishUpdate drives it every frame
+ * (8bpp -> XRGB8888), so a quesOS-hosted DOOM needs this forwarded (see do_palette_blit). */
+long sys_palette_blit(void *dst, const void *src, const unsigned int *lut, unsigned long npixels); /* native $F3 */
 
 /* --- The metal half (quesos_boot.mazm). ---------------------------------------------
  * quesos_switch_to(pcb) loads the process's saved GP context, MOVTCRs its page-table
@@ -220,6 +225,7 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
  * An unmapped or kernel-owned (PTE_U=0) page in range is rejected with -EFAULT (QOS_EFAULT),
  * no byte touched. */
 #define SYS_clock_ms  0xF0
+#define SYS_palette_blit 0xF3   /* maize-251: forwarded for DOOM's i_video 8bpp->XRGB blit */
 #define SYS_bulk_copy 0xF4
 #define SYS_bulk_set  0xF5
 
@@ -2556,6 +2562,38 @@ static long do_bulk_set(u64 dst_uva, u64 value, u64 n) {
     return (long)n;
 }
 
+/* maize-251: SYS_palette_blit ($F3) forwarded under paging. DOOM's i_video.c I_FinishUpdate
+ * runs `dst[i] = lut[src[i]]` every frame (8bpp index buffer -> XRGB8888 framebuffer) via this
+ * accelerator; a bare-VM guest reaches the native $F3 directly, but a quesOS child's SYS $F3
+ * traps here and, unforwarded, would -ENOSYS (leaving the framebuffer black -- the observed
+ * all-black render). Like the bulk accelerators (maize-247), the native handler reads/writes
+ * FLAT PHYSICAL addresses, so translate the user VAs. Fast path: when dst/src/lut are each a
+ * single contiguous physical run, forward ONE native call at host memcpy speed. Fallback (any
+ * range scattered): do the blit per-pixel through the page table, correct across non-adjacent
+ * frames. R0=dst (npixels*4B XRGB), R1=src (npixels 8bpp), R2=lut (uint32[256]), R3=npixels. */
+static long do_palette_blit(u64 dst_uva, u64 src_uva, u64 lut_uva, u64 npixels) {
+    struct pcb *self = g_current;
+    int dc = 0, sc = 0, lc = 0;
+    u64 i;
+    if (npixels == 0) { return 0; }
+    if (bulk_validate_range(self, dst_uva, npixels * 4u, &dc) == 0
+        && bulk_validate_range(self, src_uva, npixels, &sc) == 0
+        && bulk_validate_range(self, lut_uva, 256u * 4u, &lc) == 0
+        && dc && sc && lc) {
+        /* All three ranges are single contiguous physical runs: forward one native $F3. */
+        return sys_palette_blit((void *)user_pa(self, dst_uva),
+                                (const void *)user_pa(self, src_uva),
+                                (const unsigned int *)user_pa(self, lut_uva), npixels);
+    }
+    /* Scattered fallback: per-pixel through the page table (as_read8/as_read32/as_write32). */
+    for (i = 0; i < npixels; ++i) {
+        u8  bidx = as_read8(self, src_uva + i);
+        u32 px   = as_read32(self, lut_uva + (u64)bidx * 4u);
+        as_write32(self, dst_uva + i * 4u, px);
+    }
+    return (long)npixels;
+}
+
 /* SYS_fb_mmap(): map a contiguous, page-aligned framebuffer buffer into the caller's
  * fb-mmap window (FB_MMAP_BASE, region 1) and return its VA. No arguments (geometry is
  * fixed per boot, maize-236 D2). Idempotent: a second call while one buffer is already
@@ -2980,6 +3018,8 @@ void quesos_syscall(void) {
          * contiguous dst run. An unmapped or kernel-owned page in range is -EFAULT. */
         case SYS_bulk_copy:      result = do_bulk_copy(a0, a1, a2);            break;
         case SYS_bulk_set:       result = do_bulk_set(a0, a1, a2);            break;
+        /* maize-251: forward the palette-blit accelerator (DOOM's i_video 8bpp->XRGB path). */
+        case SYS_palette_blit:   result = do_palette_blit(a0, a1, a2, a3);    break;
         default:
             /* maize-94 (operator reopen) unhandled-syscall POLICY: return -ENOSYS to the
              * caller (never strand the process) so a Linux-shaped userland degrades on an
