@@ -312,9 +312,10 @@ MZLD=$(resolve_exe "${BUILD_DIR}/mzld") \
 # toolchain/rt/syscall.h is preprocessed by the system cc/gcc first. Mirror
 # build-toolchain.sh's compiler pick.
 CPP="${CC:-}"
-CPP_FALLBACK=0    # maize-257 fix pass 2: 1 when $CPP is the vendored mingw-target
-                  # clang rather than a real cc/gcc, so compile_tu can restore the
-                  # host-identity predefines that fallback never sets (see below).
+CPP_FALLBACK=0    # maize-257: 1 when $CPP is the vendored mingw-target clang rather
+                  # than a real cc/gcc found on PATH. No longer gates the
+                  # host-identity predefines (fix pass 3 made those unconditional,
+                  # see below); still used for CPP-resolution logging/diagnostics.
 if [ -z "$CPP" ]; then
     if command -v cc >/dev/null 2>&1; then
         CPP=cc
@@ -334,24 +335,28 @@ fi
 command -v "$CPP" >/dev/null 2>&1 \
     || die "no C preprocessor (cc/gcc) found for #include expansion. On Windows, run scripts/bootstrap-toolchain.ps1 to fetch the vendored llvm-mingw clang."
 
-# maize-257 fix pass 2: the vendored fallback targets x86_64-w64-mingw32, so besides
-# predefining the mingw/_WIN32 family already neutralized below, it ALSO predefines
-# no Linux host identity at all, whereas the reference cc/gcc used on the Linux CI
-# leg and every operator's Linux/WSL box predefines __linux__ (and __gnu_linux__).
-# Several borrowed portable.h-style sources (oksh's portable.h; see its own header
-# comment and grp.h's "the host cpp defines __linux__") gate pulling in whole system
-# headers behind `#if defined(__linux__) || ...`, using __linux__'s presence as a
-# POSITIVE test for "system headers exist here", not as a branch to avoid the way
-# _WIN32 is. -U cannot restore a macro the fallback never defines, so the fix here
-# is the mirror-image of the -U list below: -D the reserved-namespace Linux-identity
-# pair a reference gcc predefines, so the SAME header-inclusion branches fire under
-# the fallback as under the Linux leg's real gcc. Scoped to CPP_FALLBACK only, so
-# the Linux/gcc and macOS/clang paths (which already carry their own genuine host
-# identity) are byte-identical.
-CPP_IDENTITY_DEFS=""
-if [ "$CPP_FALLBACK" -eq 1 ]; then
-    CPP_IDENTITY_DEFS="-D __linux__=1 -D __gnu_linux__=1"
-fi
+# maize-257 fix pass 3: the guest preprocess macro environment must be DETERMINISTIC
+# and HOST-INDEPENDENT, applied the same way regardless of which $CPP resolved
+# (system cc, system gcc, or the vendored fallback clang). Fix pass 2 scoped this
+# -D pair to CPP_FALLBACK only, on the assumption that any real cc/gcc on PATH
+# already predefines __linux__/__gnu_linux__ itself. That assumption broke on
+# windows-latest CI: the runner ships a Strawberry Perl mingw-w64 gcc on PATH, so
+# $CPP resolves to `gcc` (CPP_FALLBACK stays 0, the vendored-clang branch never
+# fires), but that mingw gcc is itself a mingw-target compiler with no __linux__
+# predefine, hitting the identical oksh/portable.h failure the fallback-clang case
+# was fixed for. There is no reliable way to distinguish "a real cc/gcc that
+# already defines __linux__" from "a mingw-flavored cc/gcc on PATH that doesn't"
+# without probing $CPP's own predefines, so the def is applied unconditionally
+# instead: every $CPP choice, on every host, sees the same canonical macro
+# environment. Several borrowed portable.h-style sources (oksh's portable.h; see
+# its own header comment and grp.h's "the host cpp defines __linux__") gate
+# pulling in whole system headers behind `#if defined(__linux__) || ...`, using
+# __linux__'s presence as a POSITIVE test for "system headers exist here", not as
+# a branch to avoid the way _WIN32 is; sh.h's `extern pid_t kshpid;` needs that
+# branch's <sys/types.h> for pid_t. On real Linux/macOS gcc/clang, `-D __linux__=1`
+# redefines the macro to the same value the compiler already predefines (a silent
+# no-op, not a redefinition warning), so this is byte-identical there.
+CPP_IDENTITY_DEFS="-D __linux__=1 -D __gnu_linux__=1"
 
 # Everything intermediate goes in a scratch dir so the source tree never sees .mzo
 # clutter, even with --emit (only the body .mazm and the linked .mzx are copied out).
@@ -427,15 +432,18 @@ compile_tu() {
     # hand-rolled enum's enumerators are a syntax error to cproc-qbe. Undefining these
     # restores the portable branch, matching what every non-mingw $CPP already does.
     #
-    # ${CPP_IDENTITY_DEFS} (maize-257 fix pass 2): the mirror-image gap. The mingw-
-    # target fallback predefines no __linux__/__gnu_linux__, unlike the reference
-    # cc/gcc a Linux CI leg or operator box uses, and some borrowed portable.h-style
-    # sources use __linux__'s PRESENCE (not absence) to decide whether to pull in a
-    # whole system-header slice (oksh's portable.h: `#if defined(__linux__) || ...`
-    # gates <sys/types.h>/<grp.h>/<stdint.h>/<stdlib.h>, which is where pid_t/uid_t/
-    # gid_t come from; skipping that block left sh.h's `extern pid_t kshpid;` with no
-    # type specifier). Empty for every non-fallback $CPP (real cc/gcc/clang already
-    # carries its own genuine host identity), so this is byte-identical there.
+    # ${CPP_IDENTITY_DEFS} (maize-257 fix pass 3): the mirror-image gap, applied
+    # UNCONDITIONALLY regardless of which $CPP resolved. A mingw-target compiler
+    # (the vendored clang fallback, or a mingw-flavored gcc found on PATH such as
+    # windows-latest CI's Strawberry Perl gcc) predefines no __linux__/__gnu_linux__,
+    # and some borrowed portable.h-style sources use __linux__'s PRESENCE (not
+    # absence) to decide whether to pull in a whole system-header slice (oksh's
+    # portable.h: `#if defined(__linux__) || ...` gates <sys/types.h>/<grp.h>/
+    # <stdint.h>/<stdlib.h>, which is where pid_t/uid_t/gid_t come from; skipping
+    # that block left sh.h's `extern pid_t kshpid;` with no type specifier). On a
+    # real Linux/macOS gcc/clang this is a same-value redefine of a macro the
+    # compiler already predefines, a silent no-op, so this is byte-identical there
+    # too: one canonical macro environment for every $CPP on every host.
     # native_path(): $CPP is a native Windows binary too on MINGW/MSYS/CYGWIN (either
     # the vendored llvm-mingw clang fallback or MSYS2's own mingw-w64 gcc; maize-257,
     # see native_path's definition above), so its path arguments need the same
