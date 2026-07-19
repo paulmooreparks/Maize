@@ -109,6 +109,21 @@ host_to_native() {
     esac
 }
 
+# maize-257 fix pass: the real-pty fixtures (userland94_oksh_keystrokes,
+# userland94_kilo_edit, userland94_kilo_kill) need a python3 whose stdlib pty
+# module actually works (pty.py imports tty, which imports termios). The old
+# `command -v python3` guard was only a proxy for that under CI's former MSYS2
+# bash step, where python3 resolved to MSYS2's own POSIX-layer build; under
+# native Git Bash on windows-latest, python3 resolves to the runner's system
+# CPython instead, which has no termios/pty at all, so the guard passed while
+# the probe crashed with ModuleNotFoundError before writing a single byte
+# (the kilo_edit saved="" symptom). Probe the actual capability instead of a
+# host-name proxy so this keeps working correctly on any host (Linux, macOS,
+# or a future POSIX-layer python) without hardcoding uname.
+python3_has_pty() {
+    command -v python3 >/dev/null 2>&1 && python3 -c 'import pty' >/dev/null 2>&1
+}
+
 # Build the C toolchain if the compilers are absent (fresh-clone one-command).
 if [ "$SKIP_BUILD" -eq 0 ]; then
     if ! resolve_exe "${QBE_DIR}/obj/qbe" >/dev/null \
@@ -3108,9 +3123,11 @@ run_userland94_fixtures() {
     # prompt, types "pwd" + an echo + "exit" as keystrokes, and asserts the shell echoed and
     # executed them. This is the acceptance bar the piped/-c fixtures missed twice: with the
     # default-path console input fixed (demand-driven con_data read) an interactive shell now
-    # works from a real terminal. Linux pty variant only (CI-safe, stdlib pty); the Windows
-    # ConPTY equivalent is operator/local. Skips loudly if python3 is unavailable.
-    if command -v python3 >/dev/null 2>&1; then
+    # works from a real terminal. Real-pty variant only (CI-safe, stdlib pty); the Windows
+    # ConPTY equivalent is operator/local. Skips loudly where python3's pty module does not
+    # actually work (python3_has_pty, maize-257: a native Windows python3 exists but its pty
+    # module raises ModuleNotFoundError on import, since it has no termios).
+    if python3_has_pty; then
         TOTAL=$((TOTAL + 1))
         set +e
         out=$(python3 "${REPO_ROOT}/scripts/pty_oksh_check.py" \
@@ -3123,7 +3140,7 @@ run_userland94_fixtures() {
             FAIL_COUNT=$((FAIL_COUNT + 1))
         fi
     else
-        echo "[SKIP] userland94_oksh_keystrokes (python3 unavailable for the pty driver)"
+        echo "[SKIP] userland94_oksh_keystrokes (no working python3 pty/termios on this host; real-pty leg is Linux/macOS/POSIX-python only)"
     fi
 
     # maize-250 (AC 9109/9110/9111/9112): full-screen kilo as a quesOS CHILD of oksh through a
@@ -3133,9 +3150,10 @@ run_userland94_fixtures() {
     # returns and a follow-on pwd round-trips; the harness then reads /rw/t.txt back from the
     # host and asserts the exact typed content. A second (kill) mode SIGTERMs the maize
     # process mid-edit and asserts a non-hang reap (the in-VM killed-TUI console restore is
-    # proven deterministically by quesos94_raw_reap_restore, not through the pty). Linux pty
-    # variant only, like userland94_oksh_keystrokes; skips loudly where python3 is absent.
-    if command -v python3 >/dev/null 2>&1; then
+    # proven deterministically by quesos94_raw_reap_restore, not through the pty). Real-pty
+    # variant only, like userland94_oksh_keystrokes; skips loudly where python3's pty module
+    # does not actually work (python3_has_pty, maize-257).
+    if python3_has_pty; then
         rm -f "${rwdir}/t.txt"
         TOTAL=$((TOTAL + 1))
         set +e
@@ -3168,7 +3186,7 @@ run_userland94_fixtures() {
             FAIL_COUNT=$((FAIL_COUNT + 1))
         fi
     else
-        echo "[SKIP] userland94_kilo (python3 unavailable for the pty driver)"
+        echo "[SKIP] userland94_kilo (no working python3 pty/termios on this host; real-pty leg is Linux/macOS/POSIX-python only)"
     fi
 
     # AC 8930 EOF (operator reopen #2, cycle 2): a piped default-path shell with NO explicit
