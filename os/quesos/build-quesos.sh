@@ -51,9 +51,24 @@ done
 
 BUILD_DIR="${REPO_ROOT}/build/${PRESET}"
 
+# Resolve an executable path, tolerating a .exe suffix on Windows. Host-aware
+# preference (maize-257 micro-fix): a tree can carry both a Linux ELF binary
+# (WSL-built) and its native .exe twin (Git-Bash-built) side by side, e.g.
+# toolchain/qbe/obj/qbe next to qbe.exe. Trying the wrong flavor first picks a
+# binary this host cannot execute, so try the host-matching flavor first and
+# fall back to the other only when the preferred one is absent; that fallback
+# keeps a single-flavor tree resolving exactly as before on every platform.
 resolve_exe() {
-    if [ -x "$1" ] || [ -f "$1" ]; then echo "$1"; return 0; fi
-    if [ -x "$1.exe" ] || [ -f "$1.exe" ]; then echo "$1.exe"; return 0; fi
+    case "$UNAME" in
+        MINGW*|MSYS*|CYGWIN*)
+            if [ -x "$1.exe" ] || [ -f "$1.exe" ]; then echo "$1.exe"; return 0; fi
+            if [ -x "$1" ] || [ -f "$1" ]; then echo "$1"; return 0; fi
+            ;;
+        *)
+            if [ -x "$1" ] || [ -f "$1" ]; then echo "$1"; return 0; fi
+            if [ -x "$1.exe" ] || [ -f "$1.exe" ]; then echo "$1.exe"; return 0; fi
+            ;;
+    esac
     return 1
 }
 
