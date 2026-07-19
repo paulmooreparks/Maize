@@ -312,10 +312,6 @@ MZLD=$(resolve_exe "${BUILD_DIR}/mzld") \
 # toolchain/rt/syscall.h is preprocessed by the system cc/gcc first. Mirror
 # build-toolchain.sh's compiler pick.
 CPP="${CC:-}"
-CPP_FALLBACK=0    # maize-257: 1 when $CPP is the vendored mingw-target clang rather
-                  # than a real cc/gcc found on PATH. No longer gates the
-                  # host-identity predefines (fix pass 3 made those unconditional,
-                  # see below); still used for CPP-resolution logging/diagnostics.
 if [ -z "$CPP" ]; then
     if command -v cc >/dev/null 2>&1; then
         CPP=cc
@@ -328,27 +324,21 @@ if [ -z "$CPP" ]; then
         _vendored_clang="${REPO_ROOT}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe"
         if [ -f "$_vendored_clang" ]; then
             CPP="$_vendored_clang"
-            CPP_FALLBACK=1
         fi
     fi
 fi
 command -v "$CPP" >/dev/null 2>&1 \
     || die "no C preprocessor (cc/gcc) found for #include expansion. On Windows, run scripts/bootstrap-toolchain.ps1 to fetch the vendored llvm-mingw clang."
 
-# maize-257 fix pass 3: the guest preprocess macro environment must be DETERMINISTIC
-# and HOST-INDEPENDENT, applied the same way regardless of which $CPP resolved
-# (system cc, system gcc, or the vendored fallback clang). Fix pass 2 scoped this
-# -D pair to CPP_FALLBACK only, on the assumption that any real cc/gcc on PATH
-# already predefines __linux__/__gnu_linux__ itself. That assumption broke on
-# windows-latest CI: the runner ships a Strawberry Perl mingw-w64 gcc on PATH, so
-# $CPP resolves to `gcc` (CPP_FALLBACK stays 0, the vendored-clang branch never
-# fires), but that mingw gcc is itself a mingw-target compiler with no __linux__
-# predefine, hitting the identical oksh/portable.h failure the fallback-clang case
-# was fixed for. There is no reliable way to distinguish "a real cc/gcc that
-# already defines __linux__" from "a mingw-flavored cc/gcc on PATH that doesn't"
-# without probing $CPP's own predefines, so the def is applied unconditionally
-# instead: every $CPP choice, on every host, sees the same canonical macro
-# environment. Several borrowed portable.h-style sources (oksh's portable.h; see
+# maize-257: the guest preprocess macro environment must be DETERMINISTIC and
+# HOST-INDEPENDENT, applied the same way regardless of which $CPP resolved
+# (system cc, system gcc, or the vendored fallback clang). A cc/gcc found on
+# PATH is no guarantee of a Linux-like macro environment (a mingw-flavored gcc,
+# e.g. the Strawberry Perl one on windows-latest CI, predefines no __linux__),
+# and there is no reliable way to distinguish that case without probing $CPP's
+# own predefines, so the def is applied unconditionally: every $CPP choice, on
+# every host, sees the same canonical macro environment.
+# Several borrowed portable.h-style sources (oksh's portable.h; see
 # its own header comment and grp.h's "the host cpp defines __linux__") gate
 # pulling in whole system headers behind `#if defined(__linux__) || ...`, using
 # __linux__'s presence as a POSITIVE test for "system headers exist here", not as
@@ -432,7 +422,7 @@ compile_tu() {
     # hand-rolled enum's enumerators are a syntax error to cproc-qbe. Undefining these
     # restores the portable branch, matching what every non-mingw $CPP already does.
     #
-    # ${CPP_IDENTITY_DEFS} (maize-257 fix pass 3): the mirror-image gap, applied
+    # ${CPP_IDENTITY_DEFS} (maize-257): the mirror-image gap, applied
     # UNCONDITIONALLY regardless of which $CPP resolved. A mingw-target compiler
     # (the vendored clang fallback, or a mingw-flavored gcc found on PATH such as
     # windows-latest CI's Strawberry Perl gcc) predefines no __linux__/__gnu_linux__,
