@@ -9,18 +9,25 @@
 # asm/ PASS/FAIL harness) so a codegen regression reports distinctly from a toolchain
 # build regression or an asm/ test regression.
 #
-# Runs on Linux/macOS directly (system compiler + POSIX make), on Windows under
-# MSYS2's POSIX environment when `make` is present (msys2/setup-msys2,
-# `shell: msys2 {0}`), and natively on Windows under plain Git Bash (maize-257):
-# when `make` is absent on a MINGW*/MSYS* uname, the two needed binaries are
-# compiled directly with the vendored llvm-mingw clang instead of via each tool's
-# Makefile. This works because the POSIX-only constraint is actually about cproc's
-# DRIVER (driver.c: posix_spawn/<sys/wait.h>/<unistd.h>, and cproc's configure
-# only recognizing POSIX target triples), not about qbe or cproc-qbe (the compiler
-# frontend proper): cc-maize.sh never invokes the driver binary, so the native
-# branch below builds qbe.exe and cproc-qbe.exe only, skipping driver.c and the
-# configure/config.h step entirely (config.h is used only by driver.c). See
+# Runs on Linux/macOS directly (system compiler + POSIX make), and natively on
+# Windows under Git Bash or MSYS2 (maize-257): on any MINGW*/MSYS* uname, the two
+# needed binaries are compiled directly with the vendored llvm-mingw clang instead
+# of via each tool's Makefile, unconditionally, as a matter of policy (a
+# Windows-shaped host always builds native PE binaries) rather than by sniffing
+# whether `make` happens to be on PATH; `make` presence is not a reliable signal
+# (windows-latest CI ships an ambient make unrelated to MSYS2). This works because
+# the POSIX-only constraint is actually about cproc's DRIVER (driver.c:
+# posix_spawn/<sys/wait.h>/<unistd.h>, and cproc's configure only recognizing
+# POSIX target triples), not about qbe or cproc-qbe (the compiler frontend
+# proper): cc-maize.sh never invokes the driver binary, so the native branch below
+# builds qbe.exe and cproc-qbe.exe only, skipping driver.c and the configure/
+# config.h step entirely (config.h is used only by driver.c). See
 # toolchain/VENDORING.md.
+#
+# Set MAIZE_TOOLCHAIN_USE_MAKE=1 to opt out of the native branch on a MINGW*/MSYS*
+# host and take the legacy make-based path instead (e.g. a genuine MSYS2 install
+# with its own gcc + make + patch/diffutils on PATH). Linux/macOS are unaffected
+# either way; their uname never matches MINGW*/MSYS*.
 #
 # Exit codes:
 #   0 - both tools built and their executables are present
@@ -59,14 +66,20 @@ maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
 
 : "${MAKE:=make}"
 
-# --- maize-257: native-Windows detection (Git Bash, no make on PATH) --------------
-# MSYS2 (msys2/setup-msys2, `gcc`+`make` installed) still takes the existing
-# make-based path below unchanged; only a bare Git-Bash environment (no `make`)
-# takes the native clang-direct branch.
+# --- maize-257: native-Windows detection (Git Bash / MSYS, explicit policy) -------
+# Any MINGW*/MSYS* uname takes the native clang-direct branch unconditionally: this
+# is a policy decision (a Windows-shaped host always builds native PE binaries),
+# not an environment sniff on whether `make` happens to be on PATH. The prior
+# make-absence heuristic missed CI: windows-latest ships an ambient `make` that has
+# nothing to do with MSYS2, so the gate never fired there and the legacy make path
+# ran instead, where cproc's POSIX-only driver.c fails to compile (no spawn.h).
+# MAIZE_TOOLCHAIN_USE_MAKE=1 is the explicit opt-out for anyone who genuinely wants
+# the legacy make-based path on a MINGW*/MSYS* host (e.g. a real MSYS2 gcc+make
+# install); document this in the header comment above.
 NATIVE_WINDOWS=0
 case "$(uname -s)" in
     MINGW*|MSYS*)
-        if ! command -v "${MAKE}" >/dev/null 2>&1; then
+        if [ "${MAIZE_TOOLCHAIN_USE_MAKE:-}" != "1" ]; then
             NATIVE_WINDOWS=1
         fi
         ;;
