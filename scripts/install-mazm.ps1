@@ -224,16 +224,24 @@ if ($displayOn) {
 # <gitroot>/bin/bash.exe three levels up. Standard install locations are the
 # fallback. Returns $null (never throws) so callers can warn-and-skip.
 function Resolve-GitBash {
-    $execPath = (git --exec-path 2>$null)
-    if ($LASTEXITCODE -eq 0 -and $execPath) {
-        $gitRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $execPath))
-        $candidate = Join-Path $gitRoot 'bin\bash.exe'
-        if (Test-Path $candidate) { return $candidate }
+    # Get-Command -ErrorAction SilentlyContinue is a non-terminating probe regardless
+    # of the script's EAP=Stop; invoking `git` directly when it is not on PATH throws
+    # a terminating CommandNotFoundException before $LASTEXITCODE is ever set, which
+    # 2>$null cannot catch (see the Convention counterexamples doc, Entry 12).
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($gitCmd) {
+        $execPath = (git --exec-path 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $execPath) {
+            $gitRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $execPath))
+            $candidate = Join-Path $gitRoot 'bin\bash.exe'
+            if (Test-Path $candidate) { return $candidate }
+        }
     }
-    foreach ($p in @(
-        (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
-        (Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe')
-    )) {
+    $candidates = @((Join-Path $env:ProgramFiles 'Git\bin\bash.exe'))
+    if (Test-Path 'env:ProgramFiles(x86)') {
+        $candidates += (Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe')
+    }
+    foreach ($p in $candidates) {
         if ($p -and (Test-Path $p)) { return $p }
     }
     return $null

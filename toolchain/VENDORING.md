@@ -88,7 +88,7 @@ asm/ PASS/FAIL harness (`scripts/run-tests.{sh,ps1}`).
 - Linux (`ubuntu-latest`): system GCC/Clang + POSIX `make`, already present.
 - macOS: system Clang + POSIX `make`, already present (supported, untested on
   real hardware).
-- Windows, native (Git Bash, maize-257): `scripts/build-toolchain.sh` detects a
+- Windows, native (Git Bash): `scripts/build-toolchain.sh` detects a
   MINGW*/MSYS* `uname` with no `make` on PATH and compiles qbe.exe + cproc-qbe.exe
   directly with the vendored llvm-mingw clang (`.toolchains/llvm-mingw`), mirroring
   each tool's own Makefile SRC/SRCALL list instead of running that Makefile. This

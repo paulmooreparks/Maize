@@ -39,9 +39,9 @@ The tools land in `build/<preset>/` (`maize`, plus `mazm`/`mzld`/`mzdis`).
 
 Skip this to use the committed `demos/doom/doom.mzx`. To rebuild it you also need
 the C cross-compiler (vendored cproc + QBE, which lower DOOM's C to Maize code)
-and the engine submodule. maize-257: this now builds natively on every supported
-host, including Windows (Git Bash, no WSL, no MSYS2 required); see
-`toolchain/VENDORING.md` for how the native-Windows build works.
+and the engine submodule. It builds natively on every supported host, including
+Windows (Git Bash, no WSL, no MSYS2 required); see `toolchain/VENDORING.md` for
+how the native-Windows build works.
 
 Windows (Git Bash), with the vendored llvm-mingw toolchain already bootstrapped
 (`scripts/bootstrap-toolchain.ps1`, or run once via `scripts/install-mazm.ps1`):
