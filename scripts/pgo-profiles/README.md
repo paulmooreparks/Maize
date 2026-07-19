@@ -24,13 +24,16 @@ see maize-259's A/B table).
 
 ## When to retrain
 
-A stale profile does not break the build: Clang tolerates a profile whose
-function hashes no longer match the current source (`-Wno-profile-instr-out-
-of-date` / `-Wno-profile-instr-unprofiled` on the `MAIZE_PGO=use` path silence
-the warning) and simply skips profile-guided optimization for any function
-whose hash no longer matches, falling back to ordinary -O2/-O3 codegen for
-just that function. Retrain (regenerate this file with `scripts/build-pgo.ps1`
-and commit the result) when either:
+A stale profile does not break the build when only function hashes have
+drifted from source edits: Clang tolerates a profile whose function hashes no
+longer match the current source (`-Wno-profile-instr-out-of-date` /
+`-Wno-profile-instr-unprofiled` on the `MAIZE_PGO=use` path silence the
+warning) and simply skips profile-guided optimization for any function whose
+hash no longer matches, falling back to ordinary -O2/-O3 codegen for just that
+function. A toolchain major-version bump is a different risk, see below: an
+incompatible profile *format* is typically a hard parse-time error, not a
+soft per-function skip. Retrain (regenerate this file with
+`scripts/build-pgo.ps1` and commit the result) when either:
 
 - the interpreter hot path changes meaningfully (`src/cpu.cpp` and anything it
   calls into: `src/sys.cpp`, `src/devices.cpp`), or

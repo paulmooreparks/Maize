@@ -145,15 +145,50 @@ else {
 Write-Host "Configuring preset '$Preset'$(if ($displayOn) { ' with SDL2 window backend' })$(if ($pgoArgs[0] -eq '-DMAIZE_PGO=use') { ' with Clang PGO' })..."
 & $Cmake --preset $Preset @displayArgs @pgoArgs
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "cmake configure failed for preset '$Preset' (exit $LASTEXITCODE)."
-    exit 2
+    if ($pgoArgs[0] -eq '-DMAIZE_PGO=use') {
+        # maize-259 cycle-1 fix: a stale/incompatible committed profile (e.g. after a
+        # llvm-mingw major-version bump; profile format/function hashing can shift
+        # across Clang versions, see scripts/pgo-profiles/README.md "When to
+        # retrain") can turn into a hard configure failure instead of a soft
+        # per-function skip. Don't leave the operator with a bare exit code: retry
+        # once without PGO and signpost the escape hatch either way.
+        Write-Warning "cmake configure failed for preset '$Preset' with Clang PGO active (exit $LASTEXITCODE); the committed profile at $PgoProfile may be incompatible with the current toolchain pin. Retrying once without PGO..."
+        $pgoArgs = @('-DMAIZE_PGO=')
+        & $Cmake --preset $Preset @displayArgs @pgoArgs
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "cmake configure failed for preset '$Preset' (exit $LASTEXITCODE), with and without PGO; not a PGO issue." -ErrorAction Continue
+            exit 2
+        }
+        Write-Warning "Configured '$Preset' WITHOUT Clang PGO after the PGO-enabled configure failed. Retrain the profile with scripts/build-pgo.ps1 (see scripts/pgo-profiles/README.md), or pass -NoPgo to silence this warning."
+    }
+    else {
+        Write-Error "cmake configure failed for preset '$Preset' (exit $LASTEXITCODE)." -ErrorAction Continue
+        exit 2
+    }
 }
 
 Write-Host "Building maize, maizeg, mazm, mzld, mzdis ($Preset)..."
 & $Cmake --build $BuildDir --target maize maizeg mazm mzld mzdis
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "cmake build failed (exit $LASTEXITCODE)."
-    exit 2
+    if ($pgoArgs[0] -eq '-DMAIZE_PGO=use') {
+        Write-Warning "cmake build failed for preset '$Preset' with Clang PGO active (exit $LASTEXITCODE); the committed profile at $PgoProfile may be incompatible with the current toolchain pin. Reconfiguring and retrying once without PGO..."
+        $pgoArgs = @('-DMAIZE_PGO=')
+        & $Cmake --preset $Preset @displayArgs @pgoArgs
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "cmake reconfigure without PGO failed (exit $LASTEXITCODE)." -ErrorAction Continue
+            exit 2
+        }
+        & $Cmake --build $BuildDir --target maize maizeg mazm mzld mzdis
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "cmake build failed for preset '$Preset' (exit $LASTEXITCODE), with and without PGO; not a PGO issue." -ErrorAction Continue
+            exit 2
+        }
+        Write-Warning "Built '$Preset' WITHOUT Clang PGO after the PGO-enabled build failed. Retrain the profile with scripts/build-pgo.ps1 (see scripts/pgo-profiles/README.md), or pass -NoPgo to silence this warning."
+    }
+    else {
+        Write-Error "cmake build failed (exit $LASTEXITCODE)." -ErrorAction Continue
+        exit 2
+    }
 }
 
 # --- Install ----------------------------------------------------------------------
