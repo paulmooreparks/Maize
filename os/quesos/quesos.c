@@ -2110,10 +2110,35 @@ static int fork_region_excluded(u64 l1_idx) {
  * the parent's fork returns the child pid. */
 static long do_fork(void) {
     struct pcb *parent = g_current;
-    struct pcb *child = alloc_pcb();
+    struct pcb *child;
     u64 idx;
     unsigned long k;
 
+    /* maize-251 addendum: graceful pool pre-check, BEFORE allocating the child or any frame.
+     * Count the user pages the eager copy will duplicate (same L1 filter as the copy below)
+     * plus a page-table slop, and if the pool cannot satisfy the whole fork, return -EAGAIN
+     * rather than PANIC mid-copy (alloc_frame's poweroff). The addendum's enlarged 256 KiB
+     * stack pushed each fork's frame demand above fb_mmap's, which tripped this on the
+     * fb_mmap_enomem exhaustion fixture; a fork that fails cleanly on an exhausted pool
+     * (instead of halting the whole VM) is the correct kernel behavior regardless. */
+    {
+        u64 l1_idx, needed = 16;   /* slop for build_address_space + per-region L0 frames */
+        for (l1_idx = 0; l1_idx < 512; ++l1_idx) {
+            u64 ppte1 = pte_get(parent->l1_pa, l1_idx);
+            u64 pl0, ii;
+            if ((ppte1 & PTE_V) == 0) { continue; }
+            if (ppte1 & (PTE_R | PTE_W | PTE_X)) { continue; }   /* leaf/superpage: not copied */
+            if (fork_region_excluded(l1_idx)) { continue; }
+            pl0 = ppte1 & ~0xFFFul;
+            for (ii = 0; ii < 512; ++ii) {
+                u64 p0 = pte_get(pl0, ii);
+                if ((p0 & PTE_V) && (p0 & PTE_U)) { ++needed; }
+            }
+        }
+        if (g_pool_next + needed * PAGE_SIZE > POOL_TOP) { return -11; }   /* -EAGAIN, graceful */
+    }
+
+    child = alloc_pcb();
     if (child == 0) { return -11; }   /* -EAGAIN */
     child->state = P_RUNNABLE;
     child->pid = g_next_pid++;

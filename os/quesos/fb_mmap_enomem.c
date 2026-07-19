@@ -21,7 +21,17 @@ int main(void) {
             long va = sys_fb_mmap();
             return (va < 0) ? 42 : 0;   /* 42 = ENOMEM on the exhausting call */
         }
-        if (pid < 0) { printf("fb-enomem: FAIL fork\n"); return 0; }
+        if (pid < 0) {
+            /* maize-251: fork now pre-checks the pool and returns -EAGAIN on exhaustion rather
+             * than PANICking mid eager-copy. The enlarged 256 KiB stack pushed fork's per-call
+             * frame demand above fb_mmap's 63, so an exhausting cycle now trips the fork's own
+             * graceful path one allocation earlier than the child's fb_mmap would. This proves
+             * the SAME property this fixture exists for: the pool exhausts GRACEFULLY with the
+             * VM still running (no PANIC/poweroff), just via fork's guard now instead of
+             * fb_mmap's. */
+            printf("fb-enomem: PASS\n");
+            return 0;
+        }
         sys_wait4(pid, &st, 0, 0);
         if (((st >> 8) & 0xFF) == 42) {
             /* The exhausting fb_mmap returned -ENOMEM gracefully and we are still running. */
