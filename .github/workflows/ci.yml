@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [master, next]
+    # merge-check/**: pre-master validation refs (maize-257). A card's fix
+    # branch gets pushed here so CI runs on the real runner before the card
+    # lands on master, ending the red-master fix-forward loop. These refs
+    # are deleted after the card that pushed them lands; they are not a
+    # long-lived branch class like master/next.
+    branches: [master, next, "merge-check/**"]
   pull_request:
     branches: [master, next]
 
