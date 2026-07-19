@@ -77,7 +77,7 @@ git clone --recurse-submodules <repo>
 # or, after a plain clone:
 git submodule update --init --recursive
 
-scripts/build-toolchain.sh        # Linux / macOS / MSYS2 (POSIX)
+scripts/build-toolchain.sh        # Linux / macOS / MSYS2 (POSIX) / Windows (Git Bash, native)
 ```
 
 CI builds both tools via `scripts/build-toolchain.sh` as a step kept separate from the
@@ -86,11 +86,24 @@ asm/ PASS/FAIL harness (`scripts/run-tests.{sh,ps1}`).
 ## Build environments
 
 - Linux (`ubuntu-latest`): system GCC/Clang + POSIX `make`, already present.
-- Windows (`windows-latest`): built under MSYS2's POSIX environment (the
-  `msys2/setup-msys2` action, `MSYS` msystem, `gcc` + `make`). cproc's `driver.c`
-  depends on POSIX process APIs (`<spawn.h>`, `posix_spawn`, `<sys/wait.h>`,
-  `<unistd.h>`) and cproc's `configure` only recognizes POSIX target triples, so a
-  native llvm-mingw (Windows PE) build of cproc is not possible without patching
-  vendored upstream. MSYS2's POSIX layer supplies those APIs; qbe builds there too, so
-  a single environment covers both tools. The repo's llvm-mingw toolchain stays
-  dedicated to Maize's own CMake/ninja build and is not used for the C toolchain.
+- macOS: system Clang + POSIX `make`, already present (supported, untested on
+  real hardware).
+- Windows, native (Git Bash, maize-257): `scripts/build-toolchain.sh` detects a
+  MINGW*/MSYS* `uname` with no `make` on PATH and compiles qbe.exe + cproc-qbe.exe
+  directly with the vendored llvm-mingw clang (`.toolchains/llvm-mingw`), mirroring
+  each tool's own Makefile SRC/SRCALL list instead of running that Makefile. This
+  works because the POSIX-only constraint is scoped to the cproc **driver**
+  (`driver.c`: `<spawn.h>`/`posix_spawn`/`<sys/wait.h>`/`<unistd.h>`, and a
+  `configure` that only recognizes POSIX target triples), not to qbe or to
+  cproc-qbe (the C11-to-QBE-IL compiler frontend proper): `scripts/cc-maize.sh`
+  pipes straight into `cproc-qbe` and never spawns the driver binary, so the
+  native-Windows branch builds qbe.exe + cproc-qbe.exe only, skipping `driver.c`
+  and its `configure`/`config.h` step entirely (grep confirms `config.h` is
+  `#include`d only by `driver.c`; nothing else in cproc needs it). No MSYS2, no
+  WSL. `scripts/cc-maize.sh` and the `mzcc.cmd` forwarder
+  (`scripts/install-mazm.ps1`) drive the same native pipeline end to end.
+- Windows, MSYS2 fallback: still supported when `make` is present on PATH (the
+  `msys2/setup-msys2` action, `MSYS` msystem, `gcc` + `make`) via the original
+  make-based path, unchanged. The repo's llvm-mingw toolchain otherwise stays
+  dedicated to Maize's own CMake/ninja build; on native Windows it now ALSO builds
+  the C cross-toolchain, per above.

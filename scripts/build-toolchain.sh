@@ -9,12 +9,18 @@
 # asm/ PASS/FAIL harness) so a codegen regression reports distinctly from a toolchain
 # build regression or an asm/ test regression.
 #
-# Runs on Linux/macOS directly (system compiler + POSIX make) and on Windows under
-# MSYS2's POSIX environment (msys2/setup-msys2, `shell: msys2 {0}`). It is NOT run
-# under native llvm-mingw: cproc's driver.c depends on POSIX process APIs
-# (<spawn.h>/posix_spawn/<sys/wait.h>/<unistd.h>) and cproc's configure only
-# recognizes POSIX target triples, so a native Windows PE build of cproc is not
-# possible without patching vendored upstream. See toolchain/VENDORING.md.
+# Runs on Linux/macOS directly (system compiler + POSIX make), on Windows under
+# MSYS2's POSIX environment when `make` is present (msys2/setup-msys2,
+# `shell: msys2 {0}`), and natively on Windows under plain Git Bash (maize-257):
+# when `make` is absent on a MINGW*/MSYS* uname, the two needed binaries are
+# compiled directly with the vendored llvm-mingw clang instead of via each tool's
+# Makefile. This works because the POSIX-only constraint is actually about cproc's
+# DRIVER (driver.c: posix_spawn/<sys/wait.h>/<unistd.h>, and cproc's configure
+# only recognizing POSIX target triples), not about qbe or cproc-qbe (the compiler
+# frontend proper): cc-maize.sh never invokes the driver binary, so the native
+# branch below builds qbe.exe and cproc-qbe.exe only, skipping driver.c and the
+# configure/config.h step entirely (config.h is used only by driver.c). See
+# toolchain/VENDORING.md.
 #
 # Exit codes:
 #   0 - both tools built and their executables are present
@@ -52,7 +58,30 @@ maize_precompute_submodule_keys "$REPO_ROOT"
 maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
 
 : "${MAKE:=make}"
-if [ -z "${CC:-}" ]; then
+
+# --- maize-257: native-Windows detection (Git Bash, no make on PATH) --------------
+# MSYS2 (msys2/setup-msys2, `gcc`+`make` installed) still takes the existing
+# make-based path below unchanged; only a bare Git-Bash environment (no `make`)
+# takes the native clang-direct branch.
+NATIVE_WINDOWS=0
+case "$(uname -s)" in
+    MINGW*|MSYS*)
+        if ! command -v "${MAKE}" >/dev/null 2>&1; then
+            NATIVE_WINDOWS=1
+        fi
+        ;;
+esac
+
+if [ "$NATIVE_WINDOWS" -eq 1 ]; then
+    # Vendored llvm-mingw clang (bootstrap-toolchain.ps1), the same compiler the
+    # windows-llvm-mingw-* CMake presets use for the VM itself.
+    : "${CC:=${REPO_ROOT}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe}"
+    if [ ! -f "$CC" ]; then
+        echo "build-toolchain.sh: vendored llvm-mingw clang not found at ${CC}." >&2
+        echo "  run: scripts/bootstrap-toolchain.ps1" >&2
+        exit 2
+    fi
+elif [ -z "${CC:-}" ]; then
     if command -v cc >/dev/null 2>&1; then CC=cc; else CC=gcc; fi
 fi
 
@@ -60,11 +89,76 @@ fi
 # `cc -dumpmachine` returns x86_64-pc-msys, which configure rejects with
 # "unknown target". Pin an explicit recognized host so config.h is generated;
 # this is a build-only gate, so the driver's runtime tool paths baked into
-# config.h are never exercised here.
+# config.h are never exercised here. Not needed on the native-Windows branch: it
+# never runs configure (see build_native_windows).
 CONFIGURE_HOST=""
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) CONFIGURE_HOST="--host=x86_64-linux-gnu" ;;
 esac
+
+# --- maize-257: native-Windows build (no make, no configure) ----------------------
+# Compiles qbe.exe and cproc-qbe.exe directly with $CC (the vendored llvm-mingw
+# clang), mirroring the SRC/SRCALL lists each tool's own Makefile enumerates
+# (toolchain/qbe/Makefile, toolchain/cproc/Makefile) so the object set stays in
+# lockstep with upstream's own build description. driver.c is never compiled here
+# (POSIX-only, unused by cc-maize.sh); config.h is skipped entirely for cproc since
+# only driver.c includes it (verified: `grep -rl config.h toolchain/cproc/*.c`
+# matches only driver.c). qbe's config.h IS needed (main.c includes it
+# unconditionally for its no-`-t`-flag default), so it is generated with the exact
+# case logic qbe's own Makefile `config.h:` target uses, just run directly instead
+# of through make.
+build_native_windows() {
+    echo "=== building qbe natively (${QBE_DIR}, ${CC}) ==="
+    mkdir -p "${QBE_DIR}/obj/amd64" "${QBE_DIR}/obj/arm64" "${QBE_DIR}/obj/maize"
+
+    # qbe's own config.h generation logic (toolchain/qbe/Makefile's `config.h:`
+    # target), run directly since there is no make here.
+    (
+        cd "${QBE_DIR}"
+        case "$(uname)" in
+            *Darwin*)
+                {
+                    echo "#define Defasm Gasmacho"
+                    echo "#define Deftgt T_amd64_sysv"
+                } > config.h
+                ;;
+            *)
+                {
+                    echo "#define Defasm Gaself"
+                    case "$(uname -m)" in
+                        *aarch64*) echo "#define Deftgt T_arm64" ;;
+                        *)         echo "#define Deftgt T_amd64_sysv" ;;
+                    esac
+                } > config.h
+                ;;
+        esac
+    )
+
+    _qbe_src="main.c util.c parse.c cfg.c mem.c ssa.c alias.c load.c copy.c fold.c live.c spill.c rega.c gas.c"
+    _qbe_amd64="amd64/targ.c amd64/sysv.c amd64/isel.c amd64/emit.c"
+    _qbe_arm64="arm64/targ.c arm64/abi.c arm64/isel.c arm64/emit.c"
+    _qbe_maize="maize/targ.c maize/abi.c maize/isel.c maize/emit.c maize/data.c"
+    (
+        cd "${QBE_DIR}"
+        for _f in ${_qbe_src} ${_qbe_amd64} ${_qbe_arm64} ${_qbe_maize}; do
+            "${CC}" -Wall -Wextra -std=c99 -g -pedantic -c "${_f}" -o "obj/${_f%.c}.o"
+        done
+        "${CC}" obj/*.o obj/amd64/*.o obj/arm64/*.o obj/maize/*.o -o obj/qbe.exe
+    )
+
+    echo "=== building cproc-qbe natively (${CPROC_DIR}, ${CC}) ==="
+    # NO driver.c: cc-maize.sh pipes into cproc-qbe directly and never spawns the
+    # POSIX-only driver. BACKEND=qbe, so qbe.c stands in for $(BACKEND).c.
+    _cproc_src="attr.c decl.c eval.c expr.c init.c main.c map.c pp.c scan.c scope.c stmt.c targ.c token.c tree.c type.c utf.c util.c qbe.c"
+    (
+        cd "${CPROC_DIR}"
+        mkdir -p obj
+        for _f in ${_cproc_src}; do
+            "${CC}" -Wall -Wpedantic -Wno-parentheses -Wno-switch -g -pipe -c "${_f}" -o "obj/${_f%.c}.o"
+        done
+        "${CC}" obj/*.o -o cproc-qbe.exe
+    )
+}
 
 # --- maize-263 C1: content-addressed toolchain binary cache ------------------------
 # cproc/qbe are pinned-submodule build products that every fresh worktree otherwise
@@ -114,16 +208,21 @@ if [ -n "$CACHE_KEY" ]; then
     CACHE_DIR="${TOOLCHAIN_CACHE_ROOT}/${CACHE_KEY}"
 fi
 
+# maize-257: the native-Windows branch never builds the cproc DRIVER (cproc.exe,
+# POSIX-only, unused by cc-maize.sh), only qbe + cproc-qbe, so the cache
+# hit/populate/verify checks below skip that one binary on that branch.
 TOOLCHAIN_FROM_CACHE=0
 if [ "${MAIZE_NO_TOOLCHAIN_CACHE:-}" != "1" ] && [ -n "$CACHE_DIR" ] \
     && [ -f "${CACHE_DIR}/.provenance" ] \
     && [ -n "$(tc_resolve "${CACHE_DIR}/qbe/obj/qbe")" ] \
-    && [ -n "$(tc_resolve "${CACHE_DIR}/cproc/cproc")" ] \
+    && { [ "$NATIVE_WINDOWS" -eq 1 ] || [ -n "$(tc_resolve "${CACHE_DIR}/cproc/cproc")" ]; } \
     && [ -n "$(tc_resolve "${CACHE_DIR}/cproc/cproc-qbe")" ]; then
     echo "=== toolchain cache hit ($(printf '%.8s' "$CACHE_KEY")) ==="
     mkdir -p "${QBE_DIR}/obj" "${CPROC_DIR}"
     _c=$(tc_resolve "${CACHE_DIR}/qbe/obj/qbe");     cp -p "$_c" "${QBE_DIR}/obj/$(basename "$_c")"
-    _c=$(tc_resolve "${CACHE_DIR}/cproc/cproc");     cp -p "$_c" "${CPROC_DIR}/$(basename "$_c")"
+    if [ "$NATIVE_WINDOWS" -ne 1 ]; then
+        _c=$(tc_resolve "${CACHE_DIR}/cproc/cproc"); cp -p "$_c" "${CPROC_DIR}/$(basename "$_c")"
+    fi
     _c=$(tc_resolve "${CACHE_DIR}/cproc/cproc-qbe"); cp -p "$_c" "${CPROC_DIR}/$(basename "$_c")"
     TOOLCHAIN_FROM_CACHE=1
 else
@@ -142,18 +241,22 @@ else
     echo "=== overlaying Maize qbe target ==="
     "${SCRIPT_DIR}/apply-maize-qbe-target.sh"
 
-    echo "=== building qbe (${QBE_DIR}) ==="
-    # shellcheck disable=SC2086
-    "${MAKE}" -C "${QBE_DIR}" CC="${CC}" ${MAKE_JOBS_FLAG}
+    if [ "$NATIVE_WINDOWS" -eq 1 ]; then
+        build_native_windows
+    else
+        echo "=== building qbe (${QBE_DIR}) ==="
+        # shellcheck disable=SC2086
+        "${MAKE}" -C "${QBE_DIR}" CC="${CC}" ${MAKE_JOBS_FLAG}
 
-    echo "=== building cproc (${CPROC_DIR}) ==="
-    (
-        cd "${CPROC_DIR}"
-        # shellcheck disable=SC2086
-        ./configure CC="${CC}" ${CONFIGURE_HOST}
-        # shellcheck disable=SC2086
-        "${MAKE}" CC="${CC}" ${MAKE_JOBS_FLAG}
-    )
+        echo "=== building cproc (${CPROC_DIR}) ==="
+        (
+            cd "${CPROC_DIR}"
+            # shellcheck disable=SC2086
+            ./configure CC="${CC}" ${CONFIGURE_HOST}
+            # shellcheck disable=SC2086
+            "${MAKE}" CC="${CC}" ${MAKE_JOBS_FLAG}
+        )
+    fi
 fi
 
 # --- Verify the expected executables exist (tolerating a .exe suffix) -------------
@@ -169,7 +272,9 @@ check_exe() {
 
 echo "=== verifying executables ==="
 check_exe "${QBE_DIR}/obj/qbe"
-check_exe "${CPROC_DIR}/cproc"
+if [ "$NATIVE_WINDOWS" -ne 1 ]; then
+    check_exe "${CPROC_DIR}/cproc"
+fi
 check_exe "${CPROC_DIR}/cproc-qbe"
 
 if [ "$missing" -ne 0 ]; then
@@ -194,12 +299,15 @@ fi
 if [ "$TOOLCHAIN_FROM_CACHE" -eq 0 ] && [ -n "$CACHE_DIR" ] \
     && [ "${MAIZE_NO_TOOLCHAIN_CACHE:-}" != "1" ]; then
     _q=$(tc_resolve "${QBE_DIR}/obj/qbe")
-    _c=$(tc_resolve "${CPROC_DIR}/cproc")
+    _c=""
+    if [ "$NATIVE_WINDOWS" -ne 1 ]; then
+        _c=$(tc_resolve "${CPROC_DIR}/cproc")
+    fi
     _cq=$(tc_resolve "${CPROC_DIR}/cproc-qbe")
-    if [ -n "$_q" ] && [ -n "$_c" ] && [ -n "$_cq" ] \
+    if [ -n "$_q" ] && { [ "$NATIVE_WINDOWS" -eq 1 ] || [ -n "$_c" ]; } && [ -n "$_cq" ] \
         && mkdir -p "${CACHE_DIR}/qbe/obj" "${CACHE_DIR}/cproc" \
         && cp -p "$_q"  "${CACHE_DIR}/qbe/obj/$(basename "$_q")" \
-        && cp -p "$_c"  "${CACHE_DIR}/cproc/$(basename "$_c")" \
+        && { [ "$NATIVE_WINDOWS" -eq 1 ] || cp -p "$_c"  "${CACHE_DIR}/cproc/$(basename "$_c")"; } \
         && cp -p "$_cq" "${CACHE_DIR}/cproc/$(basename "$_cq")"; then
         {
             echo "qbe:   ${MAIZE_KEY_QBE:-unknown}"

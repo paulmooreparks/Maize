@@ -62,22 +62,12 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set up MSYS2 (POSIX build env for cproc + qbe)
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MSYS
-          update: false
-          install: >-
-            gcc
-            make
-            git
-            patch
-            diffutils
-
-      - name: Build C toolchain (cproc + qbe + Maize target)
-        shell: msys2 {0}
-        run: scripts/build-toolchain.sh
-
+      # maize-257: the C toolchain (cproc-qbe + qbe) now builds natively via Git
+      # Bash (windows-latest ships it, `shell: bash`) + the vendored llvm-mingw
+      # clang, so llvm-mingw must be bootstrapped BEFORE that build step (it used
+      # to only gate the VM's own CMake build, further down). No MSYS2 setup at
+      # all: the msys2/setup-msys2 action and its gcc/make/patch/diffutils install
+      # are gone, replaced by the same native path a Windows operator runs.
       - name: Cache llvm-mingw toolchain
         uses: actions/cache@v4
         with:
@@ -86,6 +76,10 @@ jobs:
 
       - name: Bootstrap llvm-mingw toolchain
         run: scripts/bootstrap-toolchain.ps1
+
+      - name: Build C toolchain (cproc + qbe + Maize target, native)
+        shell: bash
+        run: scripts/build-toolchain.sh
 
       - name: Ensure ninja is available
         run: |
@@ -103,5 +97,5 @@ jobs:
         run: scripts/run-tests.ps1 -Preset windows-llvm-mingw-release
 
       - name: C hello world end-to-end (cproc -> qbe -t maize -> mazm -> maize)
-        shell: msys2 {0}
+        shell: bash
         run: scripts/run-ctest.sh --preset windows-llvm-mingw-debug --skip-build

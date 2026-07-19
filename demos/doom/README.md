@@ -39,9 +39,23 @@ The tools land in `build/<preset>/` (`maize`, plus `mazm`/`mzld`/`mzdis`).
 
 Skip this to use the committed `demos/doom/doom.mzx`. To rebuild it you also need
 the C cross-compiler (vendored cproc + QBE, which lower DOOM's C to Maize code)
-and the engine submodule. cproc/QBE are **POSIX-only**, so this half runs under
-Linux, macOS, WSL, or MSYS2 (never native Windows) even though the resulting
-bytecode then runs on the native `maize.exe`:
+and the engine submodule. maize-257: this now builds natively on every supported
+host, including Windows (Git Bash, no WSL, no MSYS2 required); see
+`toolchain/VENDORING.md` for how the native-Windows build works.
+
+Windows (Git Bash), with the vendored llvm-mingw toolchain already bootstrapped
+(`scripts/bootstrap-toolchain.ps1`, or run once via `scripts/install-mazm.ps1`):
+
+    git submodule update --init demos/doom/doomgeneric   # pinned engine source
+    bash scripts/build-toolchain.sh                      # cproc + QBE + Maize QBE target, native
+
+    bash scripts/cc-maize.sh --preset windows-llvm-mingw-release --dev \
+        -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 \
+        -o demos/doom/doom.mzx \
+        --sources demos/doom/doom.sources \
+        demos/doom/doom_main.c demos/doom/doomgeneric_maize.c
+
+Linux / macOS / WSL:
 
     git submodule update --init demos/doom/doomgeneric   # pinned engine source
     scripts/build-toolchain.sh                           # cproc + QBE + Maize QBE target
@@ -57,10 +71,13 @@ mazm and links them with the Maize C runtime into `demos/doom/doom.mzx` (about
 675 KB of Maize bytecode). `--dev` adds the device-access shim the
 framebuffer/keyboard platform layer needs; the `-D` flags pin the frame to a
 native 320x200 (see "Geometry" below). `--preset` picks which `build/<preset>/`
-`mazm`/`mzld` to drive, so build those tools for the same POSIX preset first
-(e.g. via `cmake --preset linux-release && cmake --build --preset linux-release`,
-or `scripts/run-tests.sh`). The image is portable, so you can build it under WSL
-and run it with the native Windows `maize.exe` from step 1.
+`mazm`/`mzld` to drive, so build those tools for the same preset first (e.g. via
+`cmake --preset linux-release && cmake --build --preset linux-release`, or
+`scripts/run-tests.sh`; on Windows, `scripts/install-mazm.ps1`). The image is
+portable across hosts (built on any platform, it runs on any platform's
+`maize.exe`), and does not need to be byte-identical between a Windows-native
+build and a WSL/Linux build (a few bytes of nondeterminism are expected; the gate
+is the fixtures and the render self-check, not byte equality).
 
 ### 3. Run it in a window
 

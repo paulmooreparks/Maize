@@ -55,8 +55,9 @@
 # `*.mazm` is gitignored only under ctest/ (.gitignore line 65); an --emit .mazm dropped
 # beside a non-ctest/ C source is an explicit, opt-in debug artifact the user cleans up.
 #
-# A source given as a Windows path (C:\... or C:/...) is translated with wslpath, so
-# the tool works from a Windows shell forwarder as well as from a WSL/Linux shell.
+# A source given as a Windows path (C:\... or C:/...) is translated with wslpath when
+# present (WSL), else cygpath (Git Bash / MSYS2, maize-257), so the tool works from a
+# Windows shell forwarder as well as from a WSL/Linux shell.
 #
 # cproc is strict C11: declare any libc-style function you call (e.g.
 # `int puts(const char *);`); the declaration only satisfies the front-end, the
@@ -75,6 +76,61 @@ QBE_DIR="${REPO_ROOT}/toolchain/qbe"
 CPROC_DIR="${REPO_ROOT}/toolchain/cproc"
 
 die() { echo "cc-maize.sh: $*" >&2; exit 2; }
+
+# Translate a Windows-style path (C:\... or C:/...) to a POSIX path this shell
+# understands: wslpath when present (WSL bash), else cygpath -u (Git Bash / MSYS2,
+# maize-257, neither of which ships wslpath).
+win_to_posix() {
+    if command -v wslpath >/dev/null 2>&1; then
+        wslpath "$1"
+    else
+        cygpath -u "$1"
+    fi
+}
+
+# maize-257: translate a POSIX path this shell understands into the form the
+# NATIVE Windows tool binaries (mazm/qbe/cproc-qbe/mzld/maize, all built for the
+# windows-llvm-mingw-* preset) need when passed as a COMMAND-LINE ARGUMENT (never
+# needed for stdin/stdout/file redirection: the shell opens those handles itself,
+# bypassing argv entirely). Bash/MSYS auto-converts POSIX-looking argv strings to
+# native windows exes IN AN INTERACTIVE OR ALREADY-MSYS-ROOTED shell, but that
+# conversion is NOT reliable when bash itself is a freshly-spawned child of a
+# non-MSYS parent (exactly mzcc.cmd's own shape: a .cmd batch file execs bash.exe,
+# which execs this script): verified empirically that the identical `mazm -c
+# /tmp/x/crt0.mazm` argv fails with "filesystem error: in canonical" (mazm.exe
+# receiving the raw, unconverted POSIX string) when bash is spawned from cmd.exe,
+# while the SAME command succeeds when bash is already the caller's shell. Rather
+# than depend on that ambient, context-dependent auto-conversion, every path handed
+# to a native .exe as an argument is explicitly converted here, mirroring
+# run-ctest.sh's host_to_native. A no-op (prints its argument unchanged) on
+# Linux/macOS, where mazm/mzld/maize/qbe/cproc-qbe are native ELF/Mach-O binaries
+# that need no translation.
+native_path() {
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            if command -v cygpath >/dev/null 2>&1; then
+                cygpath -w "$1"
+            elif command -v wslpath >/dev/null 2>&1; then
+                wslpath -w "$1"
+            else
+                printf '%s' "$1"
+            fi
+            ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# native_path() applied to each word of a space-separated path list (RT_OBJS /
+# USER_OBJS), for the mzld link line's object-file arguments. Assumes no embedded
+# spaces in any individual path, the same assumption RT_OBJS/USER_OBJS already make
+# via their own unquoted word-splitting.
+native_path_list() {
+    _npl_out=""
+    for _npl_p in $1; do
+        _npl_out="${_npl_out} $(native_path "$_npl_p")"
+    done
+    printf '%s' "$_npl_out"
+}
 
 # --- Default build preset, mirroring run-ctest.sh's platform switch ---------------
 UNAME=$(uname -s)
@@ -154,7 +210,7 @@ SRC_COUNT=0
 add_source() {
     _s="$1"
     case "$_s" in
-        *:\\*|[A-Za-z]:/*) _s=$(wslpath "$_s") ;;
+        *:\\*|[A-Za-z]:/*) _s=$(win_to_posix "$_s") ;;
     esac
     [ -f "$_s" ] || die "no such file: $_s"
     SRC_LIST="${SRC_LIST}${_s}
@@ -175,7 +231,7 @@ EOF
 while IFS= read -r _sf; do
     [ -n "$_sf" ] || continue
     case "$_sf" in
-        *:\\*|[A-Za-z]:/*) _sf=$(wslpath "$_sf") ;;
+        *:\\*|[A-Za-z]:/*) _sf=$(win_to_posix "$_sf") ;;
     esac
     [ -f "$_sf" ] || die "no such --sources listfile: $_sf"
     while IFS= read -r _entry || [ -n "$_entry" ]; do
@@ -243,10 +299,20 @@ MZLD=$(resolve_exe "${BUILD_DIR}/mzld") \
 # build-toolchain.sh's compiler pick.
 CPP="${CC:-}"
 if [ -z "$CPP" ]; then
-    if command -v cc >/dev/null 2>&1; then CPP=cc; else CPP=gcc; fi
+    if command -v cc >/dev/null 2>&1; then
+        CPP=cc
+    elif command -v gcc >/dev/null 2>&1; then
+        CPP=gcc
+    else
+        # maize-257: Git Bash ships neither cc nor gcc. Fall back to the vendored
+        # llvm-mingw clang (the same compiler build-toolchain.sh's native branch
+        # builds cproc-qbe/qbe with) for the -E preprocess step only.
+        _vendored_clang="${REPO_ROOT}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe"
+        [ -f "$_vendored_clang" ] && CPP="$_vendored_clang"
+    fi
 fi
 command -v "$CPP" >/dev/null 2>&1 \
-    || die "no C preprocessor (cc/gcc) found for #include expansion."
+    || die "no C preprocessor (cc/gcc) found for #include expansion. On Windows, run scripts/bootstrap-toolchain.ps1 to fetch the vendored llvm-mingw clang."
 
 # Everything intermediate goes in a scratch dir so the source tree never sees .mzo
 # clutter, even with --emit (only the body .mazm and the linked .mzx are copied out).
@@ -305,7 +371,32 @@ compile_tu() {
     # existing caller, so this cpp line is byte-identical unless a -D was passed (DOOM's
     # -D DOOMGENERIC_RESX=320 -D DOOMGENERIC_RESY=200 geometry override). Intentionally
     # unquoted so the accumulated `-D name=val` tokens word-split into separate args.
-    if ! "$CPP" -E -P -nostdinc -D '__attribute__(x)=' ${EXTRA_CPPDEFS} -I "$RT_DIR" -I "$(dirname -- "$_src")" "$_lf" > "$_pp" 2>"${WORK}/${_tag}.cpp.log"; then
+    #
+    # -U WIN32/_WIN32/_WIN64/__MINGW32__/... neutralizes host-OS-identity macros a
+    # mingw-target $CPP predefines (maize-257: the vendored llvm-mingw clang used as
+    # the native-Windows CPP fallback targets x86_64-w64-mingw32, so it predefines
+    # _WIN32 unlike a Linux-targeting cc/gcc). The Maize guest is a freestanding
+    # target with no host OS identity, so a borrowed source's `#ifdef _WIN32` must see
+    # the same "no host OS" view regardless of which system compiler performs this -E
+    # pass. Undefining a macro that was never defined (every non-mingw $CPP) is a
+    # silent no-op, so this is byte-identical on Linux/macOS/MSYS2-gcc. Concretely: DOOM's
+    # doomtype.h picks its `boolean` typedef via `#ifdef _WIN32` (skip stdbool.h,
+    # hand-roll `typedef enum { false = 0, true = 1, ... }`) vs the portable branch
+    # (`#include <stdbool.h>`, resolved by toolchain/rt/stdbool.h under -nostdinc,
+    # which sets `__bool_true_false_are_defined` and takes the `unsigned int` branch);
+    # cproc reserves `false`/`true` as keywords (tokens.h TFALSE/TTRUE), so the
+    # hand-rolled enum's enumerators are a syntax error to cproc-qbe. Undefining these
+    # restores the portable branch, matching what every non-mingw $CPP already does.
+    # native_path(): $CPP is a native Windows binary too on MINGW/MSYS/CYGWIN (either
+    # the vendored llvm-mingw clang fallback or MSYS2's own mingw-w64 gcc; maize-257,
+    # see native_path's definition above), so its path arguments need the same
+    # conversion as mazm/qbe/mzld/maize's. No-op (native_path returns its argument
+    # unchanged) on Linux/macOS, where $CPP is a native ELF/Mach-O binary.
+    if ! "$CPP" -E -P -nostdinc -D '__attribute__(x)=' \
+        -U WIN32 -U WIN64 -U _WIN32 -U _WIN64 \
+        -U __WIN32 -U __WIN32__ -U __WIN64 -U __WIN64__ \
+        -U __MINGW32__ -U __MINGW64__ \
+        ${EXTRA_CPPDEFS} -I "$(native_path "$RT_DIR")" -I "$(native_path "$(dirname -- "$_src")")" "$(native_path "$_lf")" > "$_pp" 2>"${WORK}/${_tag}.cpp.log"; then
         echo "cc-maize.sh: cpp failed for ${_tag}" >&2; cat "${WORK}/${_tag}.cpp.log" >&2; return 1
     fi
     if ! "$CPROC_QBE" < "$_pp" > "$_ssa" 2>"${WORK}/${_tag}.cproc.log"; then
@@ -316,10 +407,13 @@ compile_tu() {
     # THIS IS THE ONE NORMALIZE SED IN THE TREE (maize-96).
     sed -e 's/extern \$/$/g' \
         -e 's/\(=[wl]\) neg /\1 sub 0, /' "$_ssa" > "$_norm"
-    if ! "$QBE" -t maize "$_norm" > "$_body" 2>"${WORK}/${_tag}.qbe.log"; then
+    # native_path(): mazm/qbe are native Windows binaries under the windows-llvm-mingw
+    # preset (maize-257; see the native_path definition above for why this cannot rely
+    # on ambient MSYS argv auto-conversion). No-op on Linux/macOS.
+    if ! "$QBE" -t maize "$(native_path "$_norm")" > "$_body" 2>"${WORK}/${_tag}.qbe.log"; then
         echo "cc-maize.sh: qbe -t maize failed for ${_tag}" >&2; cat "${WORK}/${_tag}.qbe.log" >&2; return 1
     fi
-    if ! "$MAZM" -c "$_body" >"${WORK}/${_tag}.mazm.log" 2>&1 || [ ! -f "$_mzo" ]; then
+    if ! "$MAZM" -c "$(native_path "$_body")" >"${WORK}/${_tag}.mazm.log" 2>&1 || [ ! -f "$_mzo" ]; then
         echo "cc-maize.sh: mazm -c failed for ${_tag}" >&2; cat "${WORK}/${_tag}.mazm.log" >&2; return 1
     fi
     echo "$_mzo"
@@ -337,7 +431,7 @@ compile_tu() {
 RT_OBJS=""
 for rt in crt0 syscall setjmp; do
     cp "${RT_DIR}/${rt}.mazm" "${WORK}/${rt}.mazm"
-    if ! "$MAZM" -c "${WORK}/${rt}.mazm" >"${WORK}/${rt}.mazm.log" 2>&1 || [ ! -f "${WORK}/${rt}.mzo" ]; then
+    if ! "$MAZM" -c "$(native_path "${WORK}/${rt}.mazm")" >"${WORK}/${rt}.mazm.log" 2>&1 || [ ! -f "${WORK}/${rt}.mzo" ]; then
         echo "cc-maize.sh: failed to assemble runtime object ${rt}.mazm:" >&2
         cat "${WORK}/${rt}.mazm.log" >&2
         exit 2
@@ -351,7 +445,7 @@ done
 # (no --dev) is byte-for-byte unchanged, so every existing ctest fixture is unaffected.
 if [ "$DEV" -eq 1 ]; then
     cp "${RT_DIR}/mzdev.mazm" "${WORK}/mzdev.mazm"
-    if ! "$MAZM" -c "${WORK}/mzdev.mazm" >"${WORK}/mzdev.mazm.log" 2>&1 || [ ! -f "${WORK}/mzdev.mzo" ]; then
+    if ! "$MAZM" -c "$(native_path "${WORK}/mzdev.mazm")" >"${WORK}/mzdev.mazm.log" 2>&1 || [ ! -f "${WORK}/mzdev.mzo" ]; then
         echo "cc-maize.sh: failed to assemble device shim mzdev.mazm:" >&2
         cat "${WORK}/mzdev.mazm.log" >&2
         exit 2
@@ -396,7 +490,9 @@ ${SRC_LIST}
 EOF
 
     MZX="${WORK}/prog.mzx"
-    if ! "$MZLD" -o "$MZX" ${RT_OBJS} ${USER_OBJS} >"${WORK}/prog.mzld.log" 2>&1 || [ ! -f "$MZX" ]; then
+    # native_path()/native_path_list(): mzld/maize are native Windows binaries under
+    # the windows-llvm-mingw preset (maize-257; see native_path's definition above).
+    if ! "$MZLD" -o "$(native_path "$MZX")" $(native_path_list "$RT_OBJS") $(native_path_list "$USER_OBJS") >"${WORK}/prog.mzld.log" 2>&1 || [ ! -f "$MZX" ]; then
         echo "cc-maize.sh: mzld failed linking the multi-source image" >&2
         cat "${WORK}/prog.mzld.log" >&2; exit 1
     fi
@@ -410,7 +506,7 @@ EOF
 
     if [ "$RUN" -eq 1 ]; then
         set +e
-        "$MAIZE" "$MZX"
+        "$MAIZE" "$(native_path "$MZX")"
         rc=$?
         set -e
         exit "$rc"
@@ -429,9 +525,11 @@ BODY_MZO=$(compile_tu "$SRC" "$base") || exit 1
 
 # Link crt0 syscall errno string ctype stdio stdlib body -> <base>.mzx (default entry
 # _start; W^X + per-section alignment via mzld). RT_OBJS already carries the
-# crt0 syscall + C-runtime order; the body goes last.
+# crt0 syscall + C-runtime order; the body goes last. native_path()/native_path_list():
+# mzld is a native Windows binary under the windows-llvm-mingw preset (maize-257; see
+# native_path's definition above).
 MZX="${WORK}/${base}.mzx"
-if ! "$MZLD" -o "$MZX" ${RT_OBJS} "$BODY_MZO" >"${WORK}/${base}.mzld.log" 2>&1 || [ ! -f "$MZX" ]; then
+if ! "$MZLD" -o "$(native_path "$MZX")" $(native_path_list "$RT_OBJS") "$(native_path "$BODY_MZO")" >"${WORK}/${base}.mzld.log" 2>&1 || [ ! -f "$MZX" ]; then
     echo "cc-maize.sh: mzld failed for ${base}" >&2; cat "${WORK}/${base}.mzld.log" >&2; exit 1
 fi
 
@@ -462,7 +560,7 @@ fi
 # captured status, so the guest exit code propagates unchanged.
 if [ "$RUN" -eq 1 ]; then
     set +e
-    "$MAIZE" "$MZX"
+    "$MAIZE" "$(native_path "$MZX")"
     rc=$?
     set -e
     exit "$rc"

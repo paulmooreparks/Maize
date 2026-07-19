@@ -2081,9 +2081,13 @@ installed `mzcc` command both exec it, so what CI tests is exactly what the tool
 - `mzcc -o out.mzx file.c` writes the linked image to an explicit path.
 - `mzcc --build` rebuilds the vendored cproc/qbe toolchain.
 
-cproc and QBE are POSIX-only, so on Windows `mzcc` is a small forwarder (`mzcc.cmd`,
-installed by `scripts/install-mazm.ps1`) that translates the source path and runs the
-pipeline under WSL; on Linux and WSL `mzcc` runs it directly.
+maize-257: the whole pipeline builds and runs natively on Windows under Git Bash, no
+WSL and no MSYS2 required (`scripts/build-toolchain.sh` compiles cproc-qbe/qbe
+directly with the vendored llvm-mingw clang, skipping only the POSIX-only cproc
+driver binary, which `mzcc` never uses anyway). On Windows `mzcc` is a small
+forwarder (`mzcc.cmd`, installed by `scripts/install-mazm.ps1`) that invokes Git
+Bash to run `scripts/cc-maize.sh` directly; on Linux, macOS, and WSL `mzcc` runs it
+directly from the shell.
 
 cproc is strict C11: declare any libc-style function you call. Aggregates
 (struct-by-value) and floating point are not implemented yet; the ABI lowering reports an
