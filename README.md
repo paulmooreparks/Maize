@@ -176,6 +176,15 @@ The bootstrap script downloads a pinned llvm-mingw release into `.toolchains\llv
 (gitignored) and verifies it against a pinned SHA256 checksum. Re-running it is a no-op
 once the pinned version is already present.
 
+A plain clang release build interprets ~26-28% slower than the same source built with
+gcc/Linux (host codegen quality on the interpreter loop, not ISA flags). `maize-259`
+closes that gap with Clang PGO (Profile-Guided Optimization) instead of switching
+compilers: `scripts/install-mazm.ps1` (and the Ctrl+Shift+B build task) apply a
+profile committed at `scripts/pgo-profiles/windows-llvm-mingw-release/` automatically,
+so the shipped `maize.exe`/`maizeg.exe` are profile-guided with no extra step on a
+fresh clone. See `CMakeLists.txt`'s `MAIZE_PGO` option and `scripts/build-pgo.ps1` if
+you need to regenerate the profile.
+
 ### Windows, fallback: MSYS2 UCRT64 GCC
 
 Install MSYS2 (msys2.org) to its default location (C:\msys64), then from an MSYS2

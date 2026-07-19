@@ -114,6 +114,40 @@ if (NOT MAIZE_SANITIZE)
     target_compile_options(maizeg PRIVATE "$<$<CONFIG:Release>:-march=${MAIZE_ARCH}>")
     target_compile_options(maize  PRIVATE "$<$<CONFIG:Release>:-march=${MAIZE_ARCH}>")
   endif()
+
+  # maize-259: opt-in Clang PGO (Profile-Guided Optimization) for the interpreter hot
+  # path, two-phase like Clang's own IR-based PGO ("-fprofile-generate"/"-fprofile-use",
+  # distinct from Clang's source-based "-fprofile-instr-generate"). MAIZE_PGO=generate
+  # builds an instrumented maize/maizeg that write raw profile counters under
+  # MAIZE_PGO_DIR on exit; MAIZE_PGO=use rebuilds against the merged default.profdata in
+  # that same directory. scripts/build-pgo.ps1 drives both phases plus the
+  # llvm-profdata merge; the default (empty) build is unchanged either way. Clang-only:
+  # GCC's profile format and merge tooling differ and are not wired here. Applies to
+  # `maize`/`maizeg` only (the same perf-critical targets MAIZE_ARCH targets),
+  # Release-only.
+  set(MAIZE_PGO "" CACHE STRING "Clang PGO phase for the maize VM: empty (off), generate, or use")
+  set(MAIZE_PGO_DIR "${CMAKE_BINARY_DIR}/pgo-data" CACHE PATH "Directory holding PGO raw profiles (generate) or the merged default.profdata (use)")
+
+  if (MAIZE_PGO)
+    if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+      message(WARNING "MAIZE_PGO='${MAIZE_PGO}' requested but the compiler is not Clang; ignoring.")
+    elseif (MAIZE_PGO STREQUAL "generate")
+      foreach(_t maizeg maize)
+        target_compile_options(${_t} PRIVATE "$<$<CONFIG:Release>:-fprofile-generate=${MAIZE_PGO_DIR}>")
+        target_link_options(${_t}    PRIVATE "$<$<CONFIG:Release>:-fprofile-generate=${MAIZE_PGO_DIR}>")
+      endforeach()
+    elseif (MAIZE_PGO STREQUAL "use")
+      foreach(_t maizeg maize)
+        target_compile_options(${_t} PRIVATE
+          "$<$<CONFIG:Release>:-fprofile-use=${MAIZE_PGO_DIR}>"
+          "$<$<CONFIG:Release>:-Wno-profile-instr-out-of-date>"
+          "$<$<CONFIG:Release>:-Wno-profile-instr-unprofiled>")
+        target_link_options(${_t} PRIVATE "$<$<CONFIG:Release>:-fprofile-use=${MAIZE_PGO_DIR}>")
+      endforeach()
+    else()
+      message(FATAL_ERROR "MAIZE_PGO must be empty, 'generate', or 'use' (got '${MAIZE_PGO}')")
+    endif()
+  endif()
 endif()
 
 # Opt-in SDL2 window backend for the framebuffer + keyboard (device set). OFF by default:

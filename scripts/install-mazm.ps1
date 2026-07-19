@@ -17,17 +17,32 @@
 
     Never prompts; safe for non-interactive use.
 
+    maize-259: when a committed Clang PGO profile exists for the chosen preset
+    (scripts/pgo-profiles/<Preset>/default.profdata), the build applies it via
+    -DMAIZE_PGO=use: this is what closes the ~26-28% clang-vs-gcc interpreter gap
+    on the shipped Windows binary (measured: clang baseline ~18700-19300 us/frame
+    on demos/doom's doom_bench workload, clang+PGO ~14333-14366 us/frame, matching
+    gcc/Linux's ~14330 us/frame on the same workload). The profile ships in the
+    repo, so a fresh clone reproduces this without a separate training pass; pass
+    -NoPgo to opt out (e.g. profiling a change to the interpreter itself before a
+    retrain). See scripts/build-pgo.ps1 to regenerate the profile and
+    scripts/pgo-profiles/README.md for provenance / retrain triggers.
+
 .PARAMETER Preset
     CMake preset to build. Defaults to windows-llvm-mingw-release (optimized).
 
 .PARAMETER InstallDir
     Destination directory. Defaults to $HOME\bin.
+
+.PARAMETER NoPgo
+    Build without Clang PGO even when a committed profile exists for this preset.
 #>
 [CmdletBinding()]
 param(
     [string]$Preset = 'windows-llvm-mingw-release',
     [string]$InstallDir = (Join-Path $HOME 'bin'),
-    [switch]$Headless
+    [switch]$Headless,
+    [switch]$NoPgo
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,6 +104,28 @@ else {
     $displayArgs = @('-DMAIZE_DISPLAY=ON', "-DSDL2_DIR=$(($Sdl2CmakeDir) -replace '\\','/')")
 }
 
+# --- Clang PGO (maize-259) --------------------------------------------------------
+# A committed, merged profile ships per preset at scripts/pgo-profiles/<Preset>/
+# default.profdata (see that directory's README.md for provenance/retrain triggers).
+# When present, build against it (-DMAIZE_PGO=use): this is what makes the shipped
+# Windows maize/maizeg competitive with the gcc/Linux build (~26-28% faster
+# interpreter than a plain clang build). -NoPgo opts out; a missing profile for this
+# preset (e.g. windows-msys2-release, which is GCC and MAIZE_PGO ignores) also
+# degrades to a plain build, with a warning, rather than failing the install.
+$PgoProfileDir = Join-Path $RepoRoot "scripts/pgo-profiles/$Preset"
+$PgoProfile    = Join-Path $PgoProfileDir 'default.profdata'
+if ($NoPgo) {
+    Write-Host "-NoPgo: building '$Preset' WITHOUT Clang PGO."
+    $pgoArgs = @('-DMAIZE_PGO=')
+}
+elseif (Test-Path $PgoProfile) {
+    $pgoArgs = @('-DMAIZE_PGO=use', "-DMAIZE_PGO_DIR=$(($PgoProfileDir) -replace '\\','/')")
+}
+else {
+    Write-Warning "No committed PGO profile for preset '$Preset' at $PgoProfile; building without PGO. Run scripts/build-pgo.ps1 to produce one (see scripts/pgo-profiles/README.md)."
+    $pgoArgs = @('-DMAIZE_PGO=')
+}
+
 # --- Resolve cmake the same way run-tests.ps1 does ------------------------------
 $cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
 if ($cmakeCmd) {
@@ -103,10 +140,10 @@ else {
 }
 
 # --- Configure and build ----------------------------------------------------------
-# Always reconfigure (idempotent, ~1s with Ninja) so the display cache vars are applied
-# even to a build directory first configured without them.
-Write-Host "Configuring preset '$Preset'$(if ($displayOn) { ' with SDL2 window backend' })..."
-& $Cmake --preset $Preset @displayArgs
+# Always reconfigure (idempotent, ~1s with Ninja) so the display/PGO cache vars are
+# applied even to a build directory first configured without them.
+Write-Host "Configuring preset '$Preset'$(if ($displayOn) { ' with SDL2 window backend' })$(if ($pgoArgs[0] -eq '-DMAIZE_PGO=use') { ' with Clang PGO' })..."
+& $Cmake --preset $Preset @displayArgs @pgoArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Error "cmake configure failed for preset '$Preset' (exit $LASTEXITCODE)."
     exit 2
