@@ -189,13 +189,25 @@ build_native_windows() {
 QBE_MAIZE_DIR="${REPO_ROOT}/toolchain/qbe-maize"
 TOOLCHAIN_CACHE_ROOT="${MAIZE_TOOLCHAIN_CACHE:-$HOME/.cache/maize/toolchain}"
 
-# Resolve a cached/produced binary tolerating a .exe suffix; echo the real path or "".
+# Resolve a cached/produced binary tolerating a .exe suffix; echo the real path
+# or "". Host-aware preference (maize-257 micro-fix): a shared worktree can
+# carry both a Linux ELF binary (WSL-built) and its native .exe twin
+# (Git-Bash-built) side by side, e.g. toolchain/qbe/obj/qbe next to qbe.exe.
+# Preferring the wrong flavor here would cache (or copy into the tree) a
+# binary this host cannot execute, so try the host-matching flavor first and
+# fall back to the other only when the preferred one is absent; that fallback
+# keeps a single-flavor tree resolving exactly as before on every platform.
 tc_resolve() {
-    if [ -f "$1" ]; then
-        echo "$1"
-    elif [ -f "$1.exe" ]; then
-        echo "$1.exe"
-    fi
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            if [ -f "$1.exe" ]; then echo "$1.exe"; return; fi
+            if [ -f "$1" ]; then echo "$1"; return; fi
+            ;;
+        *)
+            if [ -f "$1" ]; then echo "$1"; return; fi
+            if [ -f "$1.exe" ]; then echo "$1.exe"; return; fi
+            ;;
+    esac
 }
 
 toolchain_cache_key() {
@@ -296,8 +308,24 @@ if [ "$missing" -ne 0 ]; then
 fi
 
 # --- Verify `qbe -t maize` is a recognized target (maize-62 AC 6626) --------------
-QBE_EXE="${QBE_DIR}/obj/qbe"
-[ -f "${QBE_EXE}" ] || QBE_EXE="${QBE_DIR}/obj/qbe.exe"
+# Host-aware preference (maize-257 micro-fix): a shared worktree can carry
+# both the Linux ELF qbe (WSL-built) and the native qbe.exe (Git-Bash-built)
+# side by side. Picking the wrong flavor here executes a binary this host
+# cannot run at all, which produced the misleading "qbe does not recognize
+# the 'maize' target" failure (the real cause was "cannot execute binary
+# file", masked because $CC's own error text never reached this check). Try
+# the host-matching flavor first; fall back to the other only when the
+# preferred one is absent, so a single-flavor tree resolves unchanged.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        QBE_EXE="${QBE_DIR}/obj/qbe.exe"
+        [ -f "${QBE_EXE}" ] || QBE_EXE="${QBE_DIR}/obj/qbe"
+        ;;
+    *)
+        QBE_EXE="${QBE_DIR}/obj/qbe"
+        [ -f "${QBE_EXE}" ] || QBE_EXE="${QBE_DIR}/obj/qbe.exe"
+        ;;
+esac
 echo "=== verifying qbe -t maize target ==="
 if printf 'export function w $t() {\n@s\n\tret 0\n}\n' | "${QBE_EXE}" -t maize - >/dev/null 2>&1; then
     echo "  OK: qbe -t maize"
