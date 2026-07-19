@@ -109,4 +109,4 @@ loop:
     SECTION BSS
 ;           ^^^ constant.language.section-kind.mazm
     SECTION .BSS
-;            ^^^ constant.language.section-kind.mazm
+;           ^^^^ constant.language.section-kind.mazm

@@ -68,7 +68,7 @@
             "name": "keyword.control.directive.mazm"
         },
         "section-kind": {
-            "match": "(?i)\\b(CODE|TEXT|\\.TEXT|RODATA|\\.RODATA|DATA|\\.DATA|BSS|\\.BSS)\\b",
+            "match": "(?i)(?:\\.(?:TEXT|RODATA|DATA|BSS)|\\b(?:CODE|TEXT|RODATA|DATA|BSS))\\b",
             "name": "constant.language.section-kind.mazm"
         },
         "opcode": {
