@@ -21,7 +21,7 @@ As of 13 July 2026, Maize can run a version of DOOM compiled to Maize bytecode f
 
 <img src="doom.png" alt="DOOM running on Maize">
 
-It now averages around ``45fps`` **65fps** on my workstation, peaking at 71fps. Considering that the Maize bytecode is still completely interpreted, that's pretty good. I just made a couple of small changes to the DOOM source to take advantage of an optimization inside Maize, and the FPS jumped from around 15 to 70. Once JIT is implemented, it should be considerably faster.
+It now averages around ``45fps`` **65fps** on my workstation, peaking at 72fps. Considering that the Maize bytecode is still completely interpreted, that's pretty good. I just made a couple of small changes to the DOOM source to take advantage of an optimization inside Maize, and the FPS jumped from around 15 to 70. Once JIT is implemented, it should be considerably faster.
 
 If you want to try it yourself, you just need to build a `maize` VM with display enabled and
 provide your own DOOM WAD (the shareware `doom1.wad` works).
