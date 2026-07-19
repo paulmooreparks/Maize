@@ -298,6 +298,9 @@ MZLD=$(resolve_exe "${BUILD_DIR}/mzld") \
 # toolchain/rt/syscall.h is preprocessed by the system cc/gcc first. Mirror
 # build-toolchain.sh's compiler pick.
 CPP="${CC:-}"
+CPP_FALLBACK=0    # maize-257 fix pass 2: 1 when $CPP is the vendored mingw-target
+                  # clang rather than a real cc/gcc, so compile_tu can restore the
+                  # host-identity predefines that fallback never sets (see below).
 if [ -z "$CPP" ]; then
     if command -v cc >/dev/null 2>&1; then
         CPP=cc
@@ -308,11 +311,33 @@ if [ -z "$CPP" ]; then
         # llvm-mingw clang (the same compiler build-toolchain.sh's native branch
         # builds cproc-qbe/qbe with) for the -E preprocess step only.
         _vendored_clang="${REPO_ROOT}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe"
-        [ -f "$_vendored_clang" ] && CPP="$_vendored_clang"
+        if [ -f "$_vendored_clang" ]; then
+            CPP="$_vendored_clang"
+            CPP_FALLBACK=1
+        fi
     fi
 fi
 command -v "$CPP" >/dev/null 2>&1 \
     || die "no C preprocessor (cc/gcc) found for #include expansion. On Windows, run scripts/bootstrap-toolchain.ps1 to fetch the vendored llvm-mingw clang."
+
+# maize-257 fix pass 2: the vendored fallback targets x86_64-w64-mingw32, so besides
+# predefining the mingw/_WIN32 family already neutralized below, it ALSO predefines
+# no Linux host identity at all, whereas the reference cc/gcc used on the Linux CI
+# leg and every operator's Linux/WSL box predefines __linux__ (and __gnu_linux__).
+# Several borrowed portable.h-style sources (oksh's portable.h; see its own header
+# comment and grp.h's "the host cpp defines __linux__") gate pulling in whole system
+# headers behind `#if defined(__linux__) || ...`, using __linux__'s presence as a
+# POSITIVE test for "system headers exist here", not as a branch to avoid the way
+# _WIN32 is. -U cannot restore a macro the fallback never defines, so the fix here
+# is the mirror-image of the -U list below: -D the reserved-namespace Linux-identity
+# pair a reference gcc predefines, so the SAME header-inclusion branches fire under
+# the fallback as under the Linux leg's real gcc. Scoped to CPP_FALLBACK only, so
+# the Linux/gcc and macOS/clang paths (which already carry their own genuine host
+# identity) are byte-identical.
+CPP_IDENTITY_DEFS=""
+if [ "$CPP_FALLBACK" -eq 1 ]; then
+    CPP_IDENTITY_DEFS="-D __linux__=1 -D __gnu_linux__=1"
+fi
 
 # Everything intermediate goes in a scratch dir so the source tree never sees .mzo
 # clutter, even with --emit (only the body .mazm and the linked .mzx are copied out).
@@ -387,6 +412,16 @@ compile_tu() {
     # cproc reserves `false`/`true` as keywords (tokens.h TFALSE/TTRUE), so the
     # hand-rolled enum's enumerators are a syntax error to cproc-qbe. Undefining these
     # restores the portable branch, matching what every non-mingw $CPP already does.
+    #
+    # ${CPP_IDENTITY_DEFS} (maize-257 fix pass 2): the mirror-image gap. The mingw-
+    # target fallback predefines no __linux__/__gnu_linux__, unlike the reference
+    # cc/gcc a Linux CI leg or operator box uses, and some borrowed portable.h-style
+    # sources use __linux__'s PRESENCE (not absence) to decide whether to pull in a
+    # whole system-header slice (oksh's portable.h: `#if defined(__linux__) || ...`
+    # gates <sys/types.h>/<grp.h>/<stdint.h>/<stdlib.h>, which is where pid_t/uid_t/
+    # gid_t come from; skipping that block left sh.h's `extern pid_t kshpid;` with no
+    # type specifier). Empty for every non-fallback $CPP (real cc/gcc/clang already
+    # carries its own genuine host identity), so this is byte-identical there.
     # native_path(): $CPP is a native Windows binary too on MINGW/MSYS/CYGWIN (either
     # the vendored llvm-mingw clang fallback or MSYS2's own mingw-w64 gcc; maize-257,
     # see native_path's definition above), so its path arguments need the same
@@ -396,6 +431,7 @@ compile_tu() {
         -U WIN32 -U WIN64 -U _WIN32 -U _WIN64 \
         -U __WIN32 -U __WIN32__ -U __WIN64 -U __WIN64__ \
         -U __MINGW32__ -U __MINGW64__ \
+        ${CPP_IDENTITY_DEFS} \
         ${EXTRA_CPPDEFS} -I "$(native_path "$RT_DIR")" -I "$(native_path "$(dirname -- "$_src")")" "$(native_path "$_lf")" > "$_pp" 2>"${WORK}/${_tag}.cpp.log"; then
         echo "cc-maize.sh: cpp failed for ${_tag}" >&2; cat "${WORK}/${_tag}.cpp.log" >&2; return 1
     fi
