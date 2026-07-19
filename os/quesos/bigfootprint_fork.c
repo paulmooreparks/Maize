@@ -22,11 +22,11 @@ long sys_wait4(long pid, int *status, long options, long rusage);
 
 static unsigned char g_bss[BSS_SIZE];
 
-static void fill_region(volatile unsigned char *p, unsigned long n, unsigned seed) {
+static void fill_region(unsigned char *p, unsigned long n, unsigned seed) {
     unsigned long i;
     for (i = 0; i < n; ++i) { p[i] = (unsigned char)(seed + (unsigned)(i * 31u)); }
 }
-static int check_region(volatile unsigned char *p, unsigned long n, unsigned seed) {
+static int check_region(unsigned char *p, unsigned long n, unsigned seed) {
     unsigned long i;
     for (i = 0; i < n; ++i) {
         if (p[i] != (unsigned char)(seed + (unsigned)(i * 31u))) { return 0; }
@@ -37,7 +37,7 @@ static int check_region(volatile unsigned char *p, unsigned long n, unsigned see
 /* The 80 KiB buffer lives on the stack in this frame (deep, below main's), so it is LIVE
  * across fork(): the child must observe a byte-identical copy of the relocated stack region. */
 static int run(void) {
-    volatile unsigned char sbuf[STK_SIZE];
+    unsigned char sbuf[STK_SIZE];
     long pid;
     int status = 0, rc, pok;
 

@@ -7,7 +7,7 @@
  */
 int printf(const char *, ...);
 
-static volatile unsigned char huge[0x120000];   /* ~1.13 MiB BSS: image end > USER_BRK_MAX */
+static unsigned char huge[0x120000];   /* ~1.13 MiB BSS: image end > USER_BRK_MAX */
 
 int main(void) {
     huge[0] = 1;
