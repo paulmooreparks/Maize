@@ -2313,7 +2313,8 @@ run_quesos_ac_fixtures() {
                poll_fd0_default stdin_owner_probe poll_unconnected_sock poll_fd0_eof \
                fb_mmap_paint fb_noncontig_reject fb_mmap_isolation fb_mmap_enomem \
                bulk_forward bulk_noncontig bulk_bounds bulk_kernel_range \
-               bigalloc fb_present kbd_acl bigfootprint_fork loader_guard bigimage; do
+               bigalloc fb_present kbd_acl bigfootprint_fork loader_guard bigimage \
+               palette_blit_guard; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
             echo "[FAIL] quesos_ac: ${src}.c compile failed"; cat "$log" >&2
@@ -2466,6 +2467,11 @@ run_quesos_ac_fixtures() {
     # oversized target (built to /progs, never on the worklist).
     quesos_ac_case quesos_bigfootprint_fork "bigfootprint-fork: PASS" bigfootprint_fork
     quesos_ac_case quesos_loader_guard      "loader-guard: PASS"      loader_guard
+
+    # maize-251 (Code Review #2961): do_palette_blit's ($F3) memory-safety guards. A crafted
+    # kernel/unmapped VA or a base+len/npixels*4 wrap must return -EFAULT up front (never reach
+    # the unguarded user_pa/as_write translation path), with no corruption (sentinel-checked).
+    quesos_ac_case quesos_palette_guard     "palette-guard: PASS"     palette_blit_guard
 
     # maize-247: forward the bulk-memory accelerators ($F4 sys_bulk_copy / $F5 sys_bulk_set)
     # under quesOS paging. bulk_forward proves the raw contiguous forward (rv == n) for both

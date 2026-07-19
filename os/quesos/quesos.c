@@ -2592,25 +2592,53 @@ static long do_bulk_set(u64 dst_uva, u64 value, u64 n) {
  * accelerator; a bare-VM guest reaches the native $F3 directly, but a quesOS child's SYS $F3
  * traps here and, unforwarded, would -ENOSYS (leaving the framebuffer black -- the observed
  * all-black render). Like the bulk accelerators (maize-247), the native handler reads/writes
- * FLAT PHYSICAL addresses, so translate the user VAs. Fast path: when dst/src/lut are each a
- * single contiguous physical run, forward ONE native call at host memcpy speed. Fallback (any
- * range scattered): do the blit per-pixel through the page table, correct across non-adjacent
- * frames. R0=dst (npixels*4B XRGB), R1=src (npixels 8bpp), R2=lut (uint32[256]), R3=npixels. */
+ * FLAT PHYSICAL addresses, so quesOS must translate the user VAs FIRST -- and, exactly as
+ * do_bulk_copy does, VALIDATE every guest range through the PTE_U/PTE_V-gated walk BEFORE any
+ * translation, because user_pa / as_read* / as_write* do NO PTE gating and would otherwise let
+ * a crafted kernel VA drive a write into quesOS's own memory (Convention counterexamples
+ * Entry 11). Structure (mirrors do_bulk_copy verbatim): wrap/overflow guard -> validate ALL
+ * three ranges to -EFAULT on any failure -> then choose fast-path vs. fallback on CONTIGUITY
+ * ONLY (validity is already proven). Fast path forwards one native $F3 at host memcpy speed;
+ * the fallback blits per-pixel through the page table over the now-known-valid ranges.
+ * R0=dst (npixels*4B XRGB), R1=src (npixels 8bpp), R2=lut (uint32[256]), R3=npixels. */
 static long do_palette_blit(u64 dst_uva, u64 src_uva, u64 lut_uva, u64 npixels) {
     struct pcb *self = g_current;
-    int dc = 0, sc = 0, lc = 0;
-    u64 i;
-    if (npixels == 0) { return 0; }
-    if (bulk_validate_range(self, dst_uva, npixels * 4u, &dc) == 0
-        && bulk_validate_range(self, src_uva, npixels, &sc) == 0
-        && bulk_validate_range(self, lut_uva, 256u * 4u, &lc) == 0
-        && dc && sc && lc) {
+    int dc, sc, lc;
+    u64 dst_bytes, i;
+
+    if (npixels == 0) { return 0; }                                  /* benign no-op */
+
+    /* Overflow/wrap guards up front (mirrors do_bulk_copy's base+len wrap check). npixels*4
+     * must not overflow, and no [base, base+len) may wrap the 64-bit space -- otherwise a
+     * wrapped-small validated window would let the fast path forward the full unwrapped count
+     * (an OOB physical write). dst = npixels*4 XRGB bytes, src = npixels 8bpp bytes, lut =
+     * 256*4 = 1024 bytes. Any wrap -> -EFAULT with nothing touched. */
+    if (npixels > (~0ul / 4ul)) { return -(long)QOS_EFAULT; }        /* npixels*4 would overflow */
+    dst_bytes = npixels * 4ul;
+    if (dst_uva + dst_bytes < dst_uva
+        || src_uva + npixels < src_uva
+        || lut_uva + 1024ul  < lut_uva) {
+        return -(long)QOS_EFAULT;
+    }
+
+    /* Validate ALL THREE ranges (every page PTE_V AND PTE_U) BEFORE any translation or
+     * dereference; -EFAULT on the first unmapped or kernel-owned page, no byte touched. This
+     * is the maize-247-class gate: user_pa / as_read* / as_write* below do no PTE check, so an
+     * invalid input must be rejected HERE and never reach a translation path. */
+    if (bulk_validate_range(self, dst_uva, dst_bytes, &dc) != 0
+        || bulk_validate_range(self, src_uva, npixels, &sc) != 0
+        || bulk_validate_range(self, lut_uva, 1024ul, &lc) != 0) {
+        return -(long)QOS_EFAULT;
+    }
+
+    /* Validity is now proven; the choice below turns ONLY on physical contiguity. */
+    if (dc && sc && lc) {
         /* All three ranges are single contiguous physical runs: forward one native $F3. */
         return sys_palette_blit((void *)user_pa(self, dst_uva),
                                 (const void *)user_pa(self, src_uva),
                                 (const unsigned int *)user_pa(self, lut_uva), npixels);
     }
-    /* Scattered fallback: per-pixel through the page table (as_read8/as_read32/as_write32). */
+    /* Scattered but KNOWN-VALID: blit per-pixel through the page table. */
     for (i = 0; i < npixels; ++i) {
         u8  bidx = as_read8(self, src_uva + i);
         u32 px   = as_read32(self, lut_uva + (u64)bidx * 4u);
