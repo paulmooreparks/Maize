@@ -2718,7 +2718,11 @@ run_doom_quesos() {
             if command -v python3 >/dev/null 2>&1; then
                 TOTAL=$((TOTAL + 1))
                 set +e
-                ptyout=$(timeout 90 python3 "${REPO_ROOT}/scripts/pty_presenter_doom_check.py" \
+                # Budget covers the fixture's content-based stabilization wait (maize-251): it
+                # polls until DOOM's frame settles by content rather than sampling after a fixed
+                # delay. With the selfcheck's deterministic clock the render settles fast on both
+                # legs, but keep headroom for the slow asan/ubsan engine boot; 240s is ample.
+                ptyout=$(timeout 240 python3 "${REPO_ROOT}/scripts/pty_presenter_doom_check.py" \
                     "$MAIZE" "$quesos" "$child" "$progs" "$waddir" 2>&1)
                 set -e
                 if printf '%s\n' "$ptyout" | grep -qF "pty-presenter-doom: PASS"; then

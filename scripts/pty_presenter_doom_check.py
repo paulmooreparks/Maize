@@ -15,10 +15,15 @@
 # fixtures never exercised. It asserts:
 #   (a) the session announces `maizeg --presenter <session-id>` (the launch-or-attach hook
 #       fired for a quesOS child's registration);
-#   (b) after the SAMPLE_TICKS stabilization window, the presenter stub's printed FNV-1a
-#       checksum for DOOM's rendered 320x200 frame matches a pinned expected value, captured
-#       empirically at Implement/Test time (mirroring doom_render_selfcheck.c's SAMPLE_TICKS=90
-#       empirical-stability-pinning precedent).
+#   (b) once DOOM's rendered frame has STABILIZED BY CONTENT (the presenter stub's printed
+#       FNV-1a checksum holds identical across several consecutive DISTINCT presents, i.e. the
+#       melt-wipe has finished and the frame is static), that stabilized checksum matches a
+#       pinned expected value captured empirically at Implement/Test time (mirroring
+#       doom_render_selfcheck.c's SAMPLE_TICKS=90 empirical-stability-pinning precedent).
+#       Stabilization is detected by CONTENT, not by a wall-clock window: keying off "the
+#       picture stopped changing" is invariant to per-tick execution speed. Paired with the
+#       selfcheck child's deterministic clock (maize-251), linux-debug and linux-asan-ubsan
+#       render byte-identical present streams and settle on the same pinned checksum.
 #
 # Doorbell/latest-frame semantics, respawn/stale-steal resilience, and teardown are already
 # covered generically by maize-264's own fixtures (ACs 9410/9411/9441/9487) and are deliberately
@@ -40,7 +45,28 @@ MAIZE, QUESOS, DOOM_CHILD, PROGS, WADDIR = sys.argv[1:6]
 
 # The pinned steady-state FNV-1a checksum of DOOM's 320x200 frame (empirically captured; see
 # the file header). An env override lets the harness capture the value on a fresh render.
-EXPECTED_CSUM = os.environ.get("MZ_DOOM_CSUM", "f61da9a5")
+#
+# maize-251 re-pin: was f61da9a5, captured under the OLD wall-clock render where the settled
+# frame depended on how many real milliseconds a fixed tick count happened to span (so it
+# differed per build config; f61da9a5 was the linux-debug value and was never reachable under
+# linux-asan-ubsan). The selfcheck child now runs a deterministic tick-derived clock
+# (DG_MaizeDeterministicClock, doomgeneric_maize.c), so a fixed tick count always produces the
+# same animation state. The settled checksum re-derived from that deterministic render is
+# fae9e8a5, captured identically on linux-debug AND linux-asan-ubsan (held 72 consecutive
+# presents on each, 3x per leg). The pin moved because the clock became deterministic, not
+# because the gate was relaxed: the assertion is unchanged (the stabilized frame must EQUAL
+# this pin).
+EXPECTED_CSUM = os.environ.get("MZ_DOOM_CSUM", "fae9e8a5")
+
+# Content-based stabilization gate (maize-251). The presenter stub prints one line per DISTINCT
+# present (it emits only when present_sequence advances; see src/presenter_main.cpp), so the
+# checksum list is the ordered stream of rendered frames. DOOM's melt-wipe changes the frame every
+# tick; only the settled post-wipe frame repeats. We require the pinned checksum to HOLD across
+# STABLE_FRAMES consecutive distinct presents before accepting it, with a generous overall
+# STABLE_DEADLINE cap (with the deterministic clock the render settles quickly on both legs; the
+# cap only bites on a genuine failure).
+STABLE_FRAMES = int(os.environ.get("MZ_DOOM_STABLE_FRAMES", "5"))
+STABLE_DEADLINE = float(os.environ.get("MZ_DOOM_STABLE_DEADLINE", "150"))
 
 CSUM_RE = re.compile(r"presenter-stub: slot=(\d+) seq=(\d+) checksum=([0-9a-f]{8}) t=(\d+)")
 SESSION_RE = re.compile(r"maizeg --presenter (\w+)")
@@ -143,38 +169,72 @@ def main():
             QUESOS, "/progs/%s" % os.path.basename(DOOM_CHILD)]
     sess = Session(argv)
 
-    # (a) the launch-or-attach hook fired for the quesOS child's registration.
-    m = sess.wait_for(SESSION_RE, 30)
+    # (a) the launch-or-attach hook fired for the quesOS child's registration. fb_register fires
+    # early in DG_Init, well before the tick loop, but give it ample margin for the slow
+    # asan/ubsan leg's engine boot (returns as soon as it matches, so the cap only bites on a
+    # genuine no-announcement failure).
+    m = sess.wait_for(SESSION_RE, 60)
     if not m:
         fail(sess, "session never announced 'maizeg --presenter <id>' "
                    "(quesOS child's fb_register did not trigger the launch hook)")
     sid = m.group(1)
 
-    # (b) the stub's steady-state checksum for DOOM's 320x200 frame. Give it ample time: the
-    # first graphical registration blocks the VM up to ~3s (kRegisterTimeoutMs) while the stub
-    # spawns, then DOOM ticks the SAMPLE_TICKS stabilization window before the frame settles.
+    # (b) the stub's CONTENT-STABILIZED checksum for DOOM's 320x200 frame. The first graphical
+    # registration blocks the VM up to ~3s (kRegisterTimeoutMs) while the stub spawns, then DOOM
+    # ticks its fixed SAMPLE_TICKS count; the melt-wipe changes the frame every tick and only the
+    # settled post-wipe frame holds steady. Rather than sampling after a fixed wall-clock delay
+    # (which, under ASan/UBSan's slower per-tick execution, could catch a still-animating frame),
+    # poll the present stream and wait for the pinned checksum to HOLD across STABLE_FRAMES
+    # consecutive distinct presents. This cannot false-positive on an in-flight frame for two
+    # independent reasons: we accept only a run whose checksum EQUALS the pin, AND we require the
+    # match to persist across STABLE_FRAMES distinct presents. With the selfcheck's deterministic
+    # clock both legs produce the identical present stream, so this is robust by construction.
+    def trailing_run(cs):
+        """(length, checksum) of the trailing run of distinct presents sharing the last one's
+        checksum. Each entry is a distinct present (the stub prints one line per present_sequence
+        advance), so a run of identical checksums here means identical CONSECUTIVE frames, not a
+        re-read of a single frame while the render is merely slow to advance."""
+        if not cs:
+            return 0, None
+        last = cs[-1][2]
+        n = 0
+        for c in reversed(cs):
+            if c[2] != last:
+                break
+            n += 1
+        return n, last
+
     seen = None
-    end = time.time() + 40
+    settled = None
+    end = time.time() + STABLE_DEADLINE
     while time.time() < end:
         cs = sess.checksums()
         if cs:
             seen = cs[-1][2]   # latest reported checksum
-            if EXPECTED_CSUM and any(c[2] == EXPECTED_CSUM for c in cs):
-                sys.stdout.write("pty-presenter-doom: PASS (session=%s checksum=%s)\n"
-                                 % (sid, EXPECTED_CSUM))
-                sess.close()
-                sys.exit(0)
+            run, held = trailing_run(cs)
+            if run >= STABLE_FRAMES:
+                settled = held
+                if EXPECTED_CSUM and held == EXPECTED_CSUM:
+                    sys.stdout.write("pty-presenter-doom: PASS (session=%s checksum=%s "
+                                     "stable-run=%d)\n" % (sid, EXPECTED_CSUM, run))
+                    sess.close()
+                    sys.exit(0)
         time.sleep(0.2)
 
     if not EXPECTED_CSUM:
-        # Capture mode: print every distinct steady-state checksum for pinning, then FAIL so
-        # the operator/implementer records the value in EXPECTED_CSUM.
+        # Capture mode: print the content-stabilized checksum (plus every distinct one seen) for
+        # pinning, then FAIL so the operator/implementer records the value in EXPECTED_CSUM.
         distinct = sorted({c[2] for c in sess.checksums()})
-        sys.stdout.write("pty-presenter-doom: CAPTURE distinct-checksums=%r (last=%s)\n"
-                         % (distinct, seen))
-        fail(sess, "capture mode: pin one of the distinct checksums into EXPECTED_CSUM")
+        sys.stdout.write("pty-presenter-doom: CAPTURE stabilized=%s distinct-checksums=%r "
+                         "(last=%s)\n" % (settled, distinct, seen))
+        fail(sess, "capture mode: pin the stabilized checksum into EXPECTED_CSUM")
 
-    fail(sess, "expected checksum %s never seen (last observed %s)" % (EXPECTED_CSUM, seen))
+    if settled is not None and settled != EXPECTED_CSUM:
+        fail(sess, "frame stabilized on %s across >=%d consecutive presents but expected %s "
+                   "(last observed %s)" % (settled, STABLE_FRAMES, EXPECTED_CSUM, seen))
+
+    fail(sess, "expected checksum %s never stabilized within %.0fs (last observed %s)"
+               % (EXPECTED_CSUM, STABLE_DEADLINE, seen))
 
 
 if __name__ == "__main__":

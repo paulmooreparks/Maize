@@ -28,6 +28,15 @@
 extern uint32_t *DG_MaizeFB;
 extern int       DG_MaizeInitError;
 
+/* Deterministic-clock switch (maize-251), defined by the platform TU. A headless selfcheck
+ * ticks a FIXED count and checksums the whole presented frame, so the render must be a pure
+ * function of the tick count. Setting this makes DOOM's timing advance on a virtual clock keyed
+ * off tick/sleep count instead of real host time, so the melt-wipe and game tics settle in the
+ * same animation state (hence the same full-frame checksum) regardless of how slow each tick
+ * runs (linux-debug vs linux-asan-ubsan). Interactive doom_main.c leaves this 0 for real-time
+ * play. Must be set BEFORE doomgeneric_Create, since D_DoomMain's first frame already wipes. */
+extern int       DG_MaizeDeterministicClock;
+
 /* Same empirical-stability pin as doom_render_selfcheck.c (see that file's SAMPLE_TICKS note). */
 #define SAMPLE_TICKS   90
 
@@ -47,6 +56,11 @@ int main(void)
     static char a_m[]     = "1";
     static char a_nomon[] = "-nomonsters";
     static char *av[]     = { a_doom, a_iwad, a_wad, a_warp, a_e, a_m, a_nomon, 0 };
+
+    /* Deterministic render: advance DOOM's clock on tick/sleep count, not real host time, so N
+     * ticks always produce the same animation state and the pinned full-frame checksum is
+     * reachable AND stable on both linux-debug and linux-asan-ubsan (maize-251). */
+    DG_MaizeDeterministicClock = 1;
 
     /* Runs DG_Init (world probe -> fb-mmap + fb-register under quesOS) + D_DoomMain. */
     doomgeneric_Create(7, av);

@@ -221,11 +221,38 @@ void DG_DrawFrame(void)
 }
 
 /*
- * DG_SleepMs: busy-wait on the monotonic ms clock. sys_clock_ms is real host time and
- * advances independent of guest activity, so the loop always terminates.
+ * Deterministic virtual clock (maize-251). A headless selfcheck ticks a FIXED count and then
+ * checksums the WHOLE presented frame, so the render has to be a pure function of the tick
+ * count, not of how long each tick takes in real time. DOOM derives every timing decision (how
+ * many game tics TryRunTics runs, how far the melt-wipe advances per frame) from I_GetTime ->
+ * DG_GetTicksMs, which normally reads real host time (sys_clock_ms). Under a slow build config
+ * (asan/ubsan) a fixed number of doomgeneric_Tick calls then spans far more real milliseconds,
+ * so more game tics run and the animation settles in a DIFFERENT state, producing a different
+ * full-frame checksum per build config even though the static 3-point viewport still matches.
+ *
+ * When DG_MaizeDeterministicClock is set (the selfcheck harness sets it before
+ * doomgeneric_Create; the interactive doom_main.c leaves it 0, so real play keeps its real-time
+ * feel), DG_GetTicksMs returns a VIRTUAL monotonic ms counter that advances ONLY through
+ * DG_SleepMs. Every DOOM wait loop (TryRunTics' tic wait, the melt-wipe's per-frame spin) yields
+ * via I_Sleep -> DG_SleepMs, so the virtual clock advances by exactly the milliseconds the engine
+ * asked to sleep, identically on every build config. N ticks then always produce the same
+ * animation state, so debug and asan render byte-identical present streams.
+ */
+int DG_MaizeDeterministicClock = 0;
+static uint32_t dg_virtual_ms = 0;
+
+/*
+ * DG_SleepMs: real builds busy-wait on the monotonic ms clock (sys_clock_ms is real host time
+ * and advances independent of guest activity, so the loop always terminates). Under the
+ * deterministic clock, "sleeping" just advances the virtual clock by the requested ms with no
+ * real wait, which is also why a deterministic selfcheck runs as fast as the host allows.
  */
 void DG_SleepMs(uint32_t ms)
 {
+    if (DG_MaizeDeterministicClock) {
+        dg_virtual_ms += ms;
+        return;
+    }
     unsigned long start = sys_clock_ms();
     while ((unsigned long)(sys_clock_ms() - start) < (unsigned long)ms) {
         /* spin */
@@ -233,11 +260,15 @@ void DG_SleepMs(uint32_t ms)
 }
 
 /*
- * DG_GetTicksMs: low-32 truncation of the 64-bit monotonic ms clock. DOOM uses ms
- * deltas, so the ~49.7-day wrap is irrelevant.
+ * DG_GetTicksMs: the virtual clock under the deterministic selfcheck, otherwise the low-32
+ * truncation of the 64-bit monotonic ms clock. DOOM uses ms deltas, so the ~49.7-day wrap is
+ * irrelevant.
  */
 uint32_t DG_GetTicksMs(void)
 {
+    if (DG_MaizeDeterministicClock) {
+        return dg_virtual_ms;
+    }
     return (uint32_t)sys_clock_ms();
 }
 
