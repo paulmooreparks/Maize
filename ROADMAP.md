@@ -21,16 +21,18 @@ around 65fps, peaking above 70, with the bytecode still fully
 interpreted, before an optimizing compiler backend or a JIT. This matters
 for positioning because speed costs Maize none of its defining
 properties: a semantics-preserving JIT changes how fast the machine runs,
-not what it computes, and the cost model is defined in cycles by the ISA,
-not in wall-clock, so Maize can be fast and still bit-identical,
-cycle-metered, and deterministic, a combination most fast VMs give up.
-The honest ceiling grows: not only a specification, teaching, and
-evaluation artifact, but a small, fully-specified, deterministic computer
-that is also fast enough to run real software. Determinism,
-cost-metering, comprehensibility, and a small trust base stop being
-interesting properties of a slow toy and become production-relevant
-properties of a runtime you could deploy, wherever those properties
-matter more than ecosystem gravity.
+not what it computes, so Maize is fast and still bit-identical and
+deterministic today. The cost model, when it lands (Milestone 2's open
+half), will be defined in cycles by the ISA rather than in wall-clock,
+which means cycle-metering joins that list without trading any of it
+away, a combination most fast VMs give up. The honest ceiling grows: not
+only a specification, teaching, and evaluation artifact, but a small,
+fully-specified, deterministic computer that is also fast enough to run
+real software. Determinism, comprehensibility, a small trust base, and
+cost-metering once it is specified, stop being interesting properties of
+a slow toy and become production-relevant properties of a runtime you
+could deploy, wherever those properties matter more than ecosystem
+gravity.
 
 Success criteria: the right few hundred people, independent third-party VM
 implementations, someone teaching with it, possibly a paper using it as an
