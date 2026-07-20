@@ -73,7 +73,11 @@ add_executable(mzcc
   "src/mzcc.c"
   "src/mzcc_proc_core.c"
   "src/mzcc_proc_posix.c"
-  "src/mzcc_proc_win32.c")
+  "src/mzcc_proc_win32.c"
+  "src/mzcc_fs.c"
+  "src/mzcc_userland.c"
+  "src/mzcc_demos.c"
+  "src/mzcc_quesos.c")
 set_property(TARGET mzcc PROPERTY C_STANDARD 11)
 
 find_package(Threads REQUIRED)

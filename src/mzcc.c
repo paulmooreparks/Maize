@@ -20,6 +20,8 @@
    a shell/native boundary, the boundary does not exist. Native paths pass to
    native exes directly, as discrete argv entries. */
 #include "mzcc_proc.h"
+#include "mzcc_internal.h"
+#include "mzcc_fs.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -53,7 +55,7 @@ static const int IS_WINDOWS = 0;
 
 /* ---- small utilities ---------------------------------------------------- */
 
-static void die(const char *fmt, ...) {
+void die(const char *fmt, ...) {
     va_list ap;
     fprintf(stderr, "mzcc: ");
     va_start(ap, fmt);
@@ -63,7 +65,7 @@ static void die(const char *fmt, ...) {
     exit(2); /* usage / environment failure, matching cc-maize.sh */
 }
 
-static void *xmalloc(size_t n) {
+void *xmalloc(size_t n) {
     void *p = malloc(n ? n : 1);
     if (!p) {
         die("out of memory");
@@ -71,7 +73,7 @@ static void *xmalloc(size_t n) {
     return p;
 }
 
-static char *xstrdup(const char *s) {
+char *xstrdup(const char *s) {
     size_t n = strlen(s) + 1;
     char *p = (char *)xmalloc(n);
     memcpy(p, s, n);
@@ -79,7 +81,7 @@ static char *xstrdup(const char *s) {
 }
 
 /* Concatenate up to 4 fragments into a fresh allocation. */
-static char *joinstr(const char *a, const char *b, const char *c, const char *d) {
+char *joinstr(const char *a, const char *b, const char *c, const char *d) {
     size_t la = a ? strlen(a) : 0;
     size_t lb = b ? strlen(b) : 0;
     size_t lc = c ? strlen(c) : 0;
@@ -94,11 +96,11 @@ static char *joinstr(const char *a, const char *b, const char *c, const char *d)
     return r;
 }
 
-static char *path_join(const char *dir, const char *leaf) {
+char *path_join(const char *dir, const char *leaf) {
     return joinstr(dir, "/", leaf, NULL);
 }
 
-static int is_regular_file(const char *p) {
+int is_regular_file(const char *p) {
     struct stat st;
     if (stat(p, &st) != 0) {
         return 0;
@@ -106,7 +108,7 @@ static int is_regular_file(const char *p) {
     return (st.st_mode & S_IFMT) == S_IFREG;
 }
 
-static int path_exists(const char *p) {
+int path_exists(const char *p) {
     struct stat st;
     return stat(p, &st) == 0;
 }
@@ -114,7 +116,7 @@ static int path_exists(const char *p) {
 /* Normalize backslashes to forward slashes in place (Windows GetModuleFileNameA
    yields backslashes; every native tool and clang accepts forward slashes, and
    paths never enter the .mzx image, so this is cosmetic uniformity only). */
-static void to_slashes(char *s) {
+void to_slashes(char *s) {
     for (; *s; ++s) {
         if (*s == '\\') {
             *s = '/';
@@ -131,7 +133,7 @@ static void strip_last_component(char *s) {
 }
 
 /* dirname as a fresh allocation; "." when there is no slash. */
-static char *dir_of(const char *path) {
+char *dir_of(const char *path) {
     char *copy = xstrdup(path);
     to_slashes(copy);
     char *slash = strrchr(copy, '/');
@@ -230,7 +232,7 @@ static char *resolve_exe(const char *base) {
 
 /* Is `name` resolvable on PATH? (existence probe only; the bare name is then
    handed to run_proc, whose execvp/CreateProcess re-resolves it.) */
-static int which_exists(const char *name) {
+int which_exists(const char *name) {
     const char *path = getenv("PATH");
     if (!path || !path[0]) {
         return 0;
@@ -254,7 +256,7 @@ static int which_exists(const char *name) {
     return found;
 }
 
-static int read_file(const char *path, ByteBuf *out) {
+int read_file(const char *path, ByteBuf *out) {
     byte_buf_init(out);
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -272,7 +274,7 @@ static int read_file(const char *path, ByteBuf *out) {
     return 0;
 }
 
-static int write_file(const char *path, const char *data, size_t len) {
+int write_file(const char *path, const char *data, size_t len) {
     FILE *f = fopen(path, "wb");
     if (!f) {
         return -1;
@@ -285,7 +287,7 @@ static int write_file(const char *path, const char *data, size_t len) {
     return 0;
 }
 
-static int copy_file(const char *src, const char *dst) {
+int copy_file(const char *src, const char *dst) {
     ByteBuf b;
     if (read_file(src, &b) != 0) {
         byte_buf_free(&b);
@@ -297,7 +299,7 @@ static int copy_file(const char *src, const char *dst) {
 }
 
 /* mkdir -p: create every missing component of `path`. */
-static void mkdir_p(const char *path) {
+void mkdir_p(const char *path) {
     char *copy = xstrdup(path);
     to_slashes(copy);
     for (char *p = copy + 1; *p; ++p) {
@@ -311,21 +313,15 @@ static void mkdir_p(const char *path) {
     free(copy);
 }
 
-/* ---- growable argv builder --------------------------------------------- */
+/* ---- growable argv builder (type in mzcc_internal.h) ------------------- */
 
-typedef struct {
-    char **v;
-    int    n;
-    int    cap;
-} Argv;
-
-static void av_init(Argv *a) {
+void av_init(Argv *a) {
     a->v = NULL;
     a->n = 0;
     a->cap = 0;
 }
 
-static void av_add(Argv *a, const char *s) {
+void av_add(Argv *a, const char *s) {
     if (a->n + 2 > a->cap) {
         a->cap = a->cap ? a->cap * 2 : 8;
         a->v = (char **)realloc(a->v, (size_t)a->cap * sizeof(char *));
@@ -335,7 +331,7 @@ static void av_add(Argv *a, const char *s) {
     a->v[a->n] = NULL;
 }
 
-static void av_free(Argv *a) {
+void av_free(Argv *a) {
     for (int i = 0; i < a->n; ++i) {
         free(a->v[i]);
     }
@@ -343,27 +339,29 @@ static void av_free(Argv *a) {
     av_init(a);
 }
 
-/* ---- growable string list ---------------------------------------------- */
+/* ---- growable string list (type in mzcc_internal.h) -------------------- */
 
-typedef struct {
-    char **v;
-    int    n;
-    int    cap;
-} StrList;
-
-static void sl_init(StrList *s) {
+void sl_init(StrList *s) {
     s->v = NULL;
     s->n = 0;
     s->cap = 0;
 }
 
-static void sl_push(StrList *s, const char *item) {
+void sl_push(StrList *s, const char *item) {
     if (s->n + 1 > s->cap) {
         s->cap = s->cap ? s->cap * 2 : 8;
         s->v = (char **)realloc(s->v, (size_t)s->cap * sizeof(char *));
         if (!s->v) { die("out of memory"); }
     }
     s->v[s->n++] = xstrdup(item);
+}
+
+void sl_free(StrList *s) {
+    for (int i = 0; i < s->n; ++i) {
+        free(s->v[i]);
+    }
+    free(s->v);
+    sl_init(s);
 }
 
 /* ---- in-process transforms (formerly shell / sed) ----------------------- */
@@ -468,9 +466,9 @@ static void normalize_buffer(const char *in, size_t n, ByteBuf *out) {
 
 /* ---- driver-wide resolved state ---------------------------------------- */
 
-static char *REPO_ROOT = NULL;
+char *REPO_ROOT = NULL;         /* extern (mzcc_internal.h): subcommands read it */
 static char *BUILD_DIR = NULL;
-static char *RT_DIR = NULL;
+char *RT_DIR = NULL;            /* extern (mzcc_internal.h): quesos reads syscall.mazm from here */
 static char *OBJ_DIR = NULL;   /* scratch dir the .mzo objects land in */
 static char *CPP_CWD = NULL;   /* empty scratch dir = cpp's quote-include base */
 static char *SCRATCH_ROOT = NULL;
@@ -484,11 +482,26 @@ static char *MZLD = NULL;
 
 static Argv EXTRA_CPPDEFS; /* -D tokens in command-line order (empty for every existing caller) */
 
+/* argv[0] captured at main() entry, so ensure_repo_root() can self-locate even
+   when reached from a subcommand entry point (which is handed argv+2). */
+static const char *g_argv0 = "mzcc";
+
 static void cleanup_scratch(void) {
     if (SCRATCH_ROOT) {
         mzcc_remove_tree(SCRATCH_ROOT);
     }
 }
+
+/* ---- RT object set (section 8): the single point of truth. RT asm objects
+   first (crt0, syscall, setjmp[, mzdev]), then the libc C modules; the user
+   body/bodies link last (build order below). mzld resolves by name so order is
+   layout-only, preserved byte-identical to cc-maize.sh:574-582. Shared by the
+   single-file path in main() and by build_default_c_image (maize-280). */
+static const char *RT_ASM[] = { "crt0", "syscall", "setjmp" };
+static const char *RT_C[] = {
+    "errno", "string", "strings", "ctype", "math",
+    "stdio", "stdlib", "unistd", "dirent", "termios", "time"
+};
 
 /* ---- per-TU pipeline ---------------------------------------------------- */
 
@@ -536,8 +549,15 @@ static char *assemble_stdin(const char *bytes, size_t len, const char *tag) {
    This is the DI9 pure-function seam: the result is determined solely by the
    preprocessed bytes, the tool identities, and the flags; no shared mutable
    driver state. maize-274 wraps a content-addressed object cache and a work
-   queue around this with zero pipeline rearchitecture. */
-static char *compile_tu(const char *src, const char *tag, ByteBuf *emit_body) {
+   queue around this with zero pipeline rearchitecture.
+
+   `extra_defines` (maize-280) are per-build cpp -D tokens applied in ADDITION to
+   the process-global EXTRA_CPPDEFS, at the same argv position, so a batch build
+   (oksh's -D EMACS -D volatile=, doom's -D DOOMGENERIC_RES*) reproduces the exact
+   cpp line cc-maize.sh emits for the same command-line -D flags. NULL means none,
+   which makes compile_tu_ex behavior-identical to the old compile_tu. */
+char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
+                    ByteBuf *emit_body) {
     ByteBuf raw;
     if (read_file(src, &raw) != 0) {
         fprintf(stderr, "mzcc: cannot read source %s\n", src);
@@ -574,6 +594,11 @@ static char *compile_tu(const char *src, const char *tag, ByteBuf *emit_body) {
     av_add(&cpp, "-D"); av_add(&cpp, "__gnu_linux__=1");
     for (int i = 0; i < EXTRA_CPPDEFS.n; ++i) {
         av_add(&cpp, EXTRA_CPPDEFS.v[i]);
+    }
+    if (extra_defines) {
+        for (int i = 0; i < extra_defines->n; ++i) {
+            av_add(&cpp, extra_defines->v[i]);
+        }
     }
     av_add(&cpp, "-I"); av_add(&cpp, RT_DIR);
     av_add(&cpp, "-I"); av_add(&cpp, src_dir);
@@ -658,23 +683,327 @@ static char *compile_tu(const char *src, const char *tag, ByteBuf *emit_body) {
     return mzo;
 }
 
-/* Assemble a freestanding asm runtime module (crt0/syscall/setjmp/mzdev) to a
-   .mzo. Read the .mazm and feed it through the same mazm stdin-to-object path
-   (no copy into scratch needed, cc-maize.sh:479-488). Returns a fresh .mzo
-   path, or NULL. */
-static char *assemble_rt_asm(const char *name) {
-    char *src = joinstr(RT_DIR, "/", name, ".mazm");
+/* The single/multi-source default compile path: compile_tu_ex with no per-build
+   -D tokens. Behavior-identical to the pre-maize-280 compile_tu. */
+static char *compile_tu(const char *src, const char *tag, ByteBuf *emit_body) {
+    return compile_tu_ex(src, tag, NULL, emit_body);
+}
+
+/* Assemble a .mazm file at `mazm_path` to a .mzo tagged `tag` (maize-280
+   generalization of assemble_rt_asm, which hardcoded RT_DIR/<name>.mazm). Read
+   the .mazm and feed it through the same mazm stdin-to-object path (no copy into
+   scratch needed, cc-maize.sh:479-488). Returns a fresh .mzo path, or NULL. */
+char *assemble_mazm_file(const char *mazm_path, const char *tag) {
     ByteBuf b;
-    if (read_file(src, &b) != 0) {
-        fprintf(stderr, "mzcc: cannot read runtime asm %s\n", src);
+    if (read_file(mazm_path, &b) != 0) {
+        fprintf(stderr, "mzcc: cannot read asm module %s\n", mazm_path);
         byte_buf_free(&b);
-        free(src);
         return NULL;
     }
-    free(src);
-    char *mzo = assemble_stdin(b.data, b.len, name);
+    char *mzo = assemble_stdin(b.data, b.len, tag);
     byte_buf_free(&b);
     return mzo;
+}
+
+/* Assemble a freestanding RT asm module (crt0/syscall/setjmp/mzdev) to a .mzo. */
+static char *assemble_rt_asm(const char *name) {
+    char *src = joinstr(RT_DIR, "/", name, ".mazm");
+    char *mzo = assemble_mazm_file(src, name);
+    free(src);
+    return mzo;
+}
+
+/* ---- reusable build core (maize-280) ----------------------------------- */
+
+/* Compile the RT object set (section 8) into `rt_objs` (already sl_init'd), in
+   the single-point-of-truth link order. `extra_defines` (nullable) is applied to
+   the libc C modules exactly as cc-maize.sh applies its command-line -D flags to
+   every compile. Returns 0 on success, 1 on any RT build failure. */
+static int build_rt_objects(int dev, const Argv *extra_defines, StrList *rt_objs) {
+    for (size_t i = 0; i < sizeof(RT_ASM) / sizeof(RT_ASM[0]); ++i) {
+        char *mzo = assemble_rt_asm(RT_ASM[i]);
+        if (!mzo) { return 1; }
+        sl_push(rt_objs, mzo);
+        free(mzo);
+    }
+    if (dev) {
+        char *mzo = assemble_rt_asm("mzdev");
+        if (!mzo) { return 1; }
+        sl_push(rt_objs, mzo);
+        free(mzo);
+    }
+    for (size_t i = 0; i < sizeof(RT_C) / sizeof(RT_C[0]); ++i) {
+        char *cpath = joinstr(RT_DIR, "/", RT_C[i], ".c");
+        char *tag = joinstr("rt_", RT_C[i], NULL, NULL);
+        char *mzo = compile_tu_ex(cpath, tag, extra_defines, NULL);
+        free(cpath);
+        free(tag);
+        if (!mzo) {
+            fprintf(stderr, "mzcc: failed to compile C runtime object %s.c\n", RT_C[i]);
+            return 1;
+        }
+        sl_push(rt_objs, mzo);
+        free(mzo);
+    }
+    return 0;
+}
+
+/* Compile the user sources into `user_objs` (already sl_init'd). multi is
+   (n>=2)||used_sources (cc-maize.sh's own rule): multi-source objects carry the
+   u<i>_<base> tag, a single source carries its bare base. `emit_body` (nullable,
+   single-source only) receives the qbe body; *out_have_emit is set accordingly.
+   `extra_defines` (nullable) applies to every source. Returns 0/1. */
+static int compile_user_sources(const StrList *sources, int used_sources,
+                                const Argv *extra_defines, ByteBuf *emit_body,
+                                int *out_have_emit, StrList *user_objs) {
+    int multi = (sources->n >= 2) || used_sources;
+    if (out_have_emit) { *out_have_emit = 0; }
+    if (multi) {
+        for (int i = 0; i < sources->n; ++i) {
+            char *base = base_noext_c(sources->v[i]);
+            char pfx[32];
+            snprintf(pfx, sizeof(pfx), "u%d_", i);
+            char *tag = joinstr(pfx, base, NULL, NULL);
+            char *mzo = compile_tu_ex(sources->v[i], tag, extra_defines, NULL);
+            free(base);
+            free(tag);
+            if (!mzo) { return 1; }
+            sl_push(user_objs, mzo);
+            free(mzo);
+        }
+    } else {
+        char *base = base_noext_c(sources->v[0]);
+        char *mzo = compile_tu_ex(sources->v[0], base, extra_defines, emit_body);
+        if (out_have_emit && emit_body) { *out_have_emit = 1; }
+        free(base);
+        if (!mzo) { return 1; }
+        sl_push(user_objs, mzo);
+        free(mzo);
+    }
+    return 0;
+}
+
+/* Resolve REPO_ROOT + RT_DIR once (idempotent). MAIZE_ROOT override, else two
+   directory levels up from the mzcc exe (built to build/<preset>/mzcc), mirroring
+   cc-maize.sh's script-relative self-location (decision DI9). */
+void ensure_repo_root(void) {
+    if (REPO_ROOT) { return; }
+    const char *root_env = getenv("MAIZE_ROOT");
+    if (root_env && root_env[0]) {
+        REPO_ROOT = xstrdup(root_env);
+        to_slashes(REPO_ROOT);
+    } else {
+        char selfpath[4096];
+        if (mzcc_self_path(g_argv0, selfpath, sizeof(selfpath)) != 0) {
+            die("cannot locate the mzcc executable; set MAIZE_ROOT to the repo root");
+        }
+        to_slashes(selfpath);
+        REPO_ROOT = xstrdup(selfpath);
+        strip_last_component(REPO_ROOT);   /* drop /mzcc[.exe] -> build/<preset> */
+        strip_last_component(REPO_ROOT);   /* drop /<preset>   -> build */
+        strip_last_component(REPO_ROOT);   /* drop /build      -> repo root */
+    }
+    RT_DIR = joinstr(REPO_ROOT, "/toolchain/rt", NULL, NULL);
+}
+
+/* Resolve every toolchain binary + the preprocessor for `preset`, exactly as
+   main()'s tool-discovery block does. Prints the same actionable messages and
+   returns 2 on the first tool-not-found; 0 on success. Idempotent: re-resolving
+   the same preset frees and re-sets the tool globals (a batch loop calls this
+   once per program, as cc-maize.sh re-resolves per invocation). */
+int resolve_toolchain(const char *preset) {
+    ensure_repo_root();
+
+    free(BUILD_DIR);
+    BUILD_DIR = joinstr(REPO_ROOT, "/build/", preset, NULL);
+
+    /* Tool discovery (host-aware .exe resolution, maize-257). */
+    free(CPROC_QBE);
+    CPROC_QBE = resolve_exe(joinstr(REPO_ROOT, "/toolchain/cproc/cproc-qbe", NULL, NULL));
+    if (!CPROC_QBE) { fprintf(stderr, "mzcc: cproc-qbe not found; run 'mzcc --build' (cproc/qbe).\n"); return 2; }
+    free(QBE);
+    QBE = resolve_exe(joinstr(REPO_ROOT, "/toolchain/qbe/obj/qbe", NULL, NULL));
+    if (!QBE) { fprintf(stderr, "mzcc: qbe not found; run 'mzcc --build' (cproc/qbe).\n"); return 2; }
+    free(MAZM);
+    MAZM = resolve_exe(path_join(BUILD_DIR, "mazm"));
+    if (!MAZM) { fprintf(stderr, "mzcc: mazm not found in %s; run scripts/install-mazm.sh (or run-tests.sh) first.\n", BUILD_DIR); return 2; }
+    free(MAIZE);
+    MAIZE = resolve_exe(path_join(BUILD_DIR, "maize"));
+    if (!MAIZE) { fprintf(stderr, "mzcc: maize not found in %s; run scripts/install-mazm.sh (or run-tests.sh) first.\n", BUILD_DIR); return 2; }
+    free(MZLD);
+    MZLD = resolve_exe(path_join(BUILD_DIR, "mzld"));
+    if (!MZLD) { fprintf(stderr, "mzcc: mzld not found in %s; run scripts/install-mazm.sh (or run-tests.sh) first.\n", BUILD_DIR); return 2; }
+
+    /* Preprocessor discovery (cc-maize.sh:314-331, decision D4): $CC, else cc,
+       else gcc, else (Windows) the vendored llvm-mingw clang. The section-3c
+       macro matrix is applied identically regardless of which candidate wins. */
+    free(CPP);
+    CPP = NULL;
+    const char *cc_env = getenv("CC");
+    if (cc_env && cc_env[0]) {
+        CPP = xstrdup(cc_env);
+    } else if (which_exists("cc")) {
+        CPP = xstrdup("cc");
+    } else if (which_exists("gcc")) {
+        CPP = xstrdup("gcc");
+    } else {
+        char *vc = joinstr(REPO_ROOT, "/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe", NULL, NULL);
+        if (IS_WINDOWS && path_exists(vc)) {
+            CPP = vc;
+        } else {
+            free(vc);
+            fprintf(stderr, "mzcc: no C preprocessor (cc/gcc) found for #include expansion. On Windows,\n"
+                            "       run scripts/bootstrap-toolchain.ps1 to fetch the vendored llvm-mingw clang.\n");
+            return 2;
+        }
+    }
+    return 0;
+}
+
+/* Create the scratch dirs once (idempotent): OBJ_DIR holds the .mzo objects and
+   the linked image; CPP_CWD is an empty dir that becomes cpp's implicit
+   quote-include base (DI6). Registers the exit-time cleanup. */
+void ensure_scratch(void) {
+    if (SCRATCH_ROOT) { return; }
+    char troot[4096];
+    if (mzcc_make_temp_dir(troot, sizeof(troot)) != 0) {
+        die("could not create a scratch directory");
+    }
+    to_slashes(troot);
+    SCRATCH_ROOT = xstrdup(troot);
+    atexit(cleanup_scratch);
+    OBJ_DIR = path_join(SCRATCH_ROOT, "obj");
+    CPP_CWD = path_join(SCRATCH_ROOT, "cwd");
+    mkdir_p(OBJ_DIR);
+    mkdir_p(CPP_CWD);
+}
+
+/* MZX-magic + minimum-size validation (the verify_mzx equivalent, applied
+   uniformly across all three subcommands including build-quesos, decision
+   DI 9624). Returns 0 when `path` is a well-formed .mzx image, 1 otherwise. */
+int verify_mzx_image(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0 || (st.st_mode & S_IFMT) != S_IFREG) {
+        fprintf(stderr, "mzcc: MISSING output %s\n", path);
+        return 1;
+    }
+    if (st.st_size < 24) {
+        fprintf(stderr, "mzcc: output %s too small (%ld bytes, need >= 24-byte header)\n",
+                path, (long)st.st_size);
+        return 1;
+    }
+    char magic[3] = {0, 0, 0};
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "mzcc: MISSING output %s\n", path);
+        return 1;
+    }
+    size_t got = fread(magic, 1, 3, f);
+    fclose(f);
+    if (got != 3 || magic[0] != 'M' || magic[1] != 'Z' || magic[2] != 'X') {
+        fprintf(stderr, "mzcc: output %s is not a .mzx image (bad magic)\n", path);
+        return 1;
+    }
+    return 0;
+}
+
+/* The link-profile seam (section 8 / DI9): link `objects[0..n_objects)` (in link
+   order) to `out_path`. `base_hex` NULL uses mzld's default base; non-NULL is
+   passed as `mzld -b <base_hex>`. This is the ENTIRE link-profile mechanism: a
+   profile is (base address, object list), not a registry. Returns 0/1. */
+int mzld_link(const char *base_hex, const char *out_path, char **objects, int n_objects) {
+    Argv lav;
+    av_init(&lav);
+    av_add(&lav, MZLD);
+    if (base_hex) {
+        av_add(&lav, "-b");
+        av_add(&lav, base_hex);
+    }
+    av_add(&lav, "-o");
+    av_add(&lav, out_path);
+    for (int i = 0; i < n_objects; ++i) {
+        av_add(&lav, objects[i]);
+    }
+    ProcResult lr;
+    int ran = run_proc(MZLD, lav.v, lav.n, "", 0, NULL, &lr);
+    av_free(&lav);
+    if (!ran || lr.exit_code != 0 || !path_exists(out_path)) {
+        fprintf(stderr, "mzcc: mzld failed linking the image\n");
+        if (lr.stderr_bytes.len) { fwrite(lr.stderr_bytes.data, 1, lr.stderr_bytes.len, stderr); }
+        if (lr.stdout_bytes.len) { fwrite(lr.stdout_bytes.data, 1, lr.stdout_bytes.len, stderr); }
+        byte_buf_free(&lr.stdout_bytes);
+        byte_buf_free(&lr.stderr_bytes);
+        return 1;
+    }
+    byte_buf_free(&lr.stdout_bytes);
+    byte_buf_free(&lr.stderr_bytes);
+    return 0;
+}
+
+/* Resolve tools, compile every source in `spec` through the default C link
+   profile (RT asm + libc + body, entry _start, default base), link, and copy the
+   result to `out_path`. Never runs the produced image. Returns 0/1/2 per mzcc's
+   exit-code convention (2 = toolchain-resolve failure, 1 = compile/link). */
+int build_default_c_image(const char *preset, const BuildSpec *spec, const char *out_path) {
+    int trc = resolve_toolchain(preset);
+    if (trc != 0) { return trc; }
+    ensure_scratch();
+
+    StrList rt_objs;
+    sl_init(&rt_objs);
+    if (build_rt_objects(spec->dev, &spec->extra_defines, &rt_objs) != 0) {
+        sl_free(&rt_objs);
+        return 1;
+    }
+
+    StrList user_objs;
+    sl_init(&user_objs);
+    if (compile_user_sources(&spec->sources, spec->used_sources, &spec->extra_defines,
+                             NULL, NULL, &user_objs) != 0) {
+        sl_free(&rt_objs);
+        sl_free(&user_objs);
+        return 1;
+    }
+
+    /* Assemble the full object list (RT then user) and link the default profile
+       to the scratch image, then copy to out_path (mirroring the single-file
+       path's link-to-scratch-then-copy, the maize-278 byte-parity shape). */
+    Argv objs;
+    av_init(&objs);
+    for (int i = 0; i < rt_objs.n; ++i) { av_add(&objs, rt_objs.v[i]); }
+    for (int i = 0; i < user_objs.n; ++i) { av_add(&objs, user_objs.v[i]); }
+    sl_free(&rt_objs);
+    sl_free(&user_objs);
+
+    char *mzx = path_join(SCRATCH_ROOT, "prog.mzx");
+    int lrc = mzld_link(NULL, mzx, objs.v, objs.n);
+    av_free(&objs);
+    if (lrc != 0) { free(mzx); return 1; }
+
+    char *odir = dir_of(out_path);
+    if (!path_exists(odir)) { mkdir_p(odir); }
+    free(odir);
+    if (copy_file(mzx, out_path) != 0) {
+        fprintf(stderr, "mzcc: could not write %s\n", out_path);
+        free(mzx);
+        return 1;
+    }
+    free(mzx);
+    return 0;
+}
+
+/* Per-platform default RELEASE preset for the batch subcommands (section 3),
+   matching each .sh script's own `case "$UNAME"` block. Note: Darwin maps to
+   macos-debug, exactly as the three scripts do today (build-userland.sh:65 etc.),
+   NOT macos-release; matching the scripts is what the byte-parity gate requires. */
+const char *default_batch_preset(void) {
+#if defined(_WIN32)
+    return "windows-llvm-mingw-release";
+#elif defined(__APPLE__)
+    return "macos-debug";
+#else
+    return "linux-release";
+#endif
 }
 
 /* ---- CLI --------------------------------------------------------------- */
@@ -698,6 +1027,21 @@ static const char *USAGE =
     "       mzcc --build";
 
 int main(int argc, char **argv) {
+    g_argv0 = argv[0];
+
+    /* Subcommand dispatch (maize-280, decision DI 9614): a bare argv[1] verb
+       token (no leading '-') is checked FIRST, before the existing option scan.
+       A verb has no leading dash so it cannot collide with any flag, and the
+       three fixed strings take precedence over the file-existence positional
+       resolution below (git/cargo-style), so a stray file named build-userland
+       in the CWD is never ambiguous. Everything else (including a bare `foo.c`)
+       falls through to the single-file/multi-source compile path unchanged. */
+    if (argc > 1 && argv[1][0] != '-') {
+        if (strcmp(argv[1], "build-userland") == 0) { return cmd_build_userland(argc - 2, argv + 2); }
+        if (strcmp(argv[1], "build-demos") == 0)    { return cmd_build_demos(argc - 2, argv + 2); }
+        if (strcmp(argv[1], "build-quesos") == 0)   { return cmd_build_quesos(argc - 2, argv + 2); }
+    }
+
     Options opt;
     memset(&opt, 0, sizeof(opt));
     opt.preset = xstrdup(DEFAULT_PRESET);
@@ -757,26 +1101,10 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* REPO_ROOT: MAIZE_ROOT override, else two directory levels up from the
-       mzcc exe (built to build/<preset>/mzcc), mirroring cc-maize.sh's
-       script-relative self-location (decision DI9). */
-    const char *root_env = getenv("MAIZE_ROOT");
-    if (root_env && root_env[0]) {
-        REPO_ROOT = xstrdup(root_env);
-        to_slashes(REPO_ROOT);
-    } else {
-        char selfpath[4096];
-        if (mzcc_self_path(argv[0], selfpath, sizeof(selfpath)) != 0) {
-            die("cannot locate the mzcc executable; set MAIZE_ROOT to the repo root");
-        }
-        to_slashes(selfpath);
-        REPO_ROOT = xstrdup(selfpath);
-        strip_last_component(REPO_ROOT);   /* drop /mzcc[.exe] -> build/<preset> */
-        strip_last_component(REPO_ROOT);   /* drop /<preset>   -> build */
-        strip_last_component(REPO_ROOT);   /* drop /build      -> repo root */
-    }
-
-    RT_DIR = joinstr(REPO_ROOT, "/toolchain/rt", NULL, NULL);
+    /* REPO_ROOT + RT_DIR (extracted to ensure_repo_root, maize-280): MAIZE_ROOT
+       override, else two directory levels up from the mzcc exe, mirroring
+       cc-maize.sh's script-relative self-location (decision DI9). */
+    ensure_repo_root();
 
     /* --build: spawn scripts/build-toolchain.sh and exit with its status
        (decision DI8, the same delegation cc-maize.sh:200 does). On Windows this
@@ -840,33 +1168,22 @@ int main(int argc, char **argv) {
         if (!is_regular_file(lf)) {
             die("no such --sources listfile: %s", lf);
         }
-        ByteBuf lb;
-        if (read_file(lf, &lb) != 0) {
-            byte_buf_free(&lb);
+        /* One path per line; blank/# lines skipped, CR stripped (read_list_file,
+           mzcc_fs.c, maize-280: the same parser the userland/oksh .list files
+           use). Existence-check each entry here, as before. */
+        StrList entries;
+        sl_init(&entries);
+        if (read_list_file(lf, &entries) != 0) {
+            sl_free(&entries);
             die("cannot read --sources listfile: %s", lf);
         }
-        size_t p = 0;
-        while (p < lb.len) {
-            size_t q = p;
-            while (q < lb.len && lb.data[q] != '\n') { ++q; }
-            /* line lb[p..q), strip CR */
-            ByteBuf line;
-            byte_buf_init(&line);
-            for (size_t k = p; k < q; ++k) {
-                if (lb.data[k] != '\r') { byte_buf_append(&line, &lb.data[k], 1); }
+        for (int k = 0; k < entries.n; ++k) {
+            if (!is_regular_file(entries.v[k])) {
+                die("no such file: %s", entries.v[k]);
             }
-            byte_buf_append(&line, "\0", 1);
-            const char *entry = line.data;
-            if (entry[0] != '\0' && entry[0] != '#') {
-                if (!is_regular_file(entry)) {
-                    die("no such file: %s", entry);
-                }
-                sl_push(&src_list, entry);
-            }
-            byte_buf_free(&line);
-            p = (q < lb.len) ? q + 1 : q;
+            sl_push(&src_list, entries.v[k]);
         }
-        byte_buf_free(&lb);
+        sl_free(&entries);
     }
 
     if (src_list.n == 0) {
@@ -888,149 +1205,50 @@ int main(int argc, char **argv) {
         }
     }
 
-    BUILD_DIR = joinstr(REPO_ROOT, "/build/", opt.preset, NULL);
+    /* Tool discovery + preprocessor (extracted to resolve_toolchain, maize-280).
+       On any tool-not-found this prints the same actionable message and returns
+       2; propagate that as the process exit code. */
+    int trc = resolve_toolchain(opt.preset);
+    if (trc != 0) { return trc; }
 
-    /* Tool discovery (host-aware .exe resolution, maize-257). */
-    CPROC_QBE = resolve_exe(joinstr(REPO_ROOT, "/toolchain/cproc/cproc-qbe", NULL, NULL));
-    if (!CPROC_QBE) { die("cproc-qbe not found; run 'mzcc --build' (cproc/qbe)."); }
-    QBE = resolve_exe(joinstr(REPO_ROOT, "/toolchain/qbe/obj/qbe", NULL, NULL));
-    if (!QBE) { die("qbe not found; run 'mzcc --build' (cproc/qbe)."); }
-    MAZM = resolve_exe(path_join(BUILD_DIR, "mazm"));
-    if (!MAZM) { die("mazm not found in %s; run scripts/install-mazm.sh (or run-tests.sh) first.", BUILD_DIR); }
-    MAIZE = resolve_exe(path_join(BUILD_DIR, "maize"));
-    if (!MAIZE) { die("maize not found in %s; run scripts/install-mazm.sh (or run-tests.sh) first.", BUILD_DIR); }
-    MZLD = resolve_exe(path_join(BUILD_DIR, "mzld"));
-    if (!MZLD) { die("mzld not found in %s; run scripts/install-mazm.sh (or run-tests.sh) first.", BUILD_DIR); }
+    /* Scratch dirs (extracted to ensure_scratch, maize-280): OBJ_DIR holds the
+       .mzo objects and the linked image; CPP_CWD is cpp's empty quote-include
+       base (DI6). */
+    ensure_scratch();
 
-    /* Preprocessor discovery (cc-maize.sh:314-331, decision D4): $CC, else cc,
-       else gcc, else (Windows) the vendored llvm-mingw clang. The section-3c
-       macro matrix is applied identically regardless of which candidate wins. */
-    const char *cc_env = getenv("CC");
-    if (cc_env && cc_env[0]) {
-        CPP = xstrdup(cc_env);
-    } else if (which_exists("cc")) {
-        CPP = xstrdup("cc");
-    } else if (which_exists("gcc")) {
-        CPP = xstrdup("gcc");
-    } else {
-        char *vc = joinstr(REPO_ROOT, "/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe", NULL, NULL);
-        if (IS_WINDOWS && path_exists(vc)) {
-            CPP = vc;
-        } else {
-            free(vc);
-            die("no C preprocessor (cc/gcc) found for #include expansion. On Windows,\n"
-                "       run scripts/bootstrap-toolchain.ps1 to fetch the vendored llvm-mingw clang.");
-        }
-    }
-
-    /* Scratch dirs: OBJ_DIR holds the .mzo objects and the linked image;
-       CPP_CWD is an empty dir that becomes cpp's implicit quote-include base
-       (DI6). Both under one temp root cleaned on exit. */
-    char troot[4096];
-    if (mzcc_make_temp_dir(troot, sizeof(troot)) != 0) {
-        die("could not create a scratch directory");
-    }
-    to_slashes(troot);
-    SCRATCH_ROOT = xstrdup(troot);
-    atexit(cleanup_scratch);
-    OBJ_DIR = path_join(SCRATCH_ROOT, "obj");
-    CPP_CWD = path_join(SCRATCH_ROOT, "cwd");
-    mkdir_p(OBJ_DIR);
-    mkdir_p(CPP_CWD);
-
-    /* ---- RT object set and link order (section 8): the single point of truth.
-       RT asm objects first (crt0, syscall, setjmp[, mzdev]), then the libc C
-       modules, then the user body/bodies last. mzld resolves by name so order
-       is layout-only; it is preserved byte-identical to cc-maize.sh:574-582. */
+    /* ---- RT object set + user sources through the shared build core (the same
+       functions build_default_c_image calls, maize-280). The RT set / tagging /
+       link order stay the single point of truth in build_rt_objects /
+       compile_user_sources; the single-file path differs only in the emit /
+       produce-beside / run tail below. --------------------------------------- */
     StrList rt_objs;
     sl_init(&rt_objs);
+    if (build_rt_objects(opt.dev, NULL, &rt_objs) != 0) { return 1; }
 
-    static const char *RT_ASM[] = { "crt0", "syscall", "setjmp" };
-    for (size_t i = 0; i < sizeof(RT_ASM) / sizeof(RT_ASM[0]); ++i) {
-        char *mzo = assemble_rt_asm(RT_ASM[i]);
-        if (!mzo) { return 1; }
-        sl_push(&rt_objs, mzo);
-        free(mzo);
-    }
-    if (opt.dev) {
-        char *mzo = assemble_rt_asm("mzdev");
-        if (!mzo) { return 1; }
-        sl_push(&rt_objs, mzo);
-        free(mzo);
-    }
-
-    static const char *RT_C[] = {
-        "errno", "string", "strings", "ctype", "math",
-        "stdio", "stdlib", "unistd", "dirent", "termios", "time"
-    };
-    for (size_t i = 0; i < sizeof(RT_C) / sizeof(RT_C[0]); ++i) {
-        char *cpath = joinstr(RT_DIR, "/", RT_C[i], ".c");
-        char *tag = joinstr("rt_", RT_C[i], NULL, NULL);
-        char *mzo = compile_tu(cpath, tag, NULL);
-        free(cpath);
-        free(tag);
-        if (!mzo) {
-            fprintf(stderr, "mzcc: failed to compile C runtime object %s.c\n", RT_C[i]);
-            return 1;
-        }
-        sl_push(&rt_objs, mzo);
-        free(mzo);
-    }
-
-    /* ---- compile user sources ------------------------------------------- */
     StrList user_objs;
     sl_init(&user_objs);
     ByteBuf emit_body;
     int have_emit_body = 0;
     byte_buf_init(&emit_body);
-
-    if (multi) {
-        for (int i = 0; i < src_list.n; ++i) {
-            char *base = base_noext_c(src_list.v[i]);
-            char pfx[32];
-            snprintf(pfx, sizeof(pfx), "u%d_", i);
-            char *tag = joinstr(pfx, base, NULL, NULL);
-            char *mzo = compile_tu(src_list.v[i], tag, NULL);
-            free(base);
-            free(tag);
-            if (!mzo) { return 1; }
-            sl_push(&user_objs, mzo);
-            free(mzo);
-        }
-    } else {
-        char *base = base_noext_c(src_list.v[0]);
-        char *mzo = compile_tu(src_list.v[0], base, opt.emit ? &emit_body : NULL);
-        have_emit_body = opt.emit;
-        free(base);
-        if (!mzo) { return 1; }
-        sl_push(&user_objs, mzo);
-        free(mzo);
+    if (compile_user_sources(&src_list, opt.used_sources, NULL,
+                             opt.emit ? &emit_body : NULL, &have_emit_body,
+                             &user_objs) != 0) {
+        return 1;
     }
 
-    /* ---- link (default C profile: RT + libc + body, entry _start). The
-       link-profile seam is the object set; build-quesos's minimal profile
-       slots in at maize-280 without a second pipeline (section 8). ---------- */
+    /* ---- link (default C profile: RT + libc + body, entry _start, default
+       base). The link-profile seam is the object set + base; build-quesos's
+       minimal profile slots into the same mzld_link (section 8). ------------- */
     char *mzx = path_join(SCRATCH_ROOT, "prog.mzx");
     Argv lav;
     av_init(&lav);
-    av_add(&lav, MZLD);
-    av_add(&lav, "-o");
-    av_add(&lav, mzx);
     for (int i = 0; i < rt_objs.n; ++i) { av_add(&lav, rt_objs.v[i]); }
     for (int i = 0; i < user_objs.n; ++i) { av_add(&lav, user_objs.v[i]); }
-    ProcResult lr;
-    int ran = run_proc(MZLD, lav.v, lav.n, "", 0, NULL, &lr);
-    av_free(&lav);
-    if (!ran || lr.exit_code != 0 || !path_exists(mzx)) {
-        fprintf(stderr, "mzcc: mzld failed linking the image\n");
-        if (lr.stderr_bytes.len) { fwrite(lr.stderr_bytes.data, 1, lr.stderr_bytes.len, stderr); }
-        if (lr.stdout_bytes.len) { fwrite(lr.stdout_bytes.data, 1, lr.stdout_bytes.len, stderr); }
-        byte_buf_free(&lr.stdout_bytes);
-        byte_buf_free(&lr.stderr_bytes);
+    if (mzld_link(NULL, mzx, lav.v, lav.n) != 0) {
+        av_free(&lav);
         return 1;
     }
-    byte_buf_free(&lr.stdout_bytes);
-    byte_buf_free(&lr.stderr_bytes);
+    av_free(&lav);
 
     /* ---- ordering (load-bearing, D6): emit + produce happen BEFORE run, so
        the artifacts land even on a nonzero guest exit. ---------------------- */
