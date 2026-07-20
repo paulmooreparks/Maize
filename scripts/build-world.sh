@@ -67,33 +67,48 @@ START_TS=$(date +%s)
 # scripts/refresh-c-toolchain.sh, which already runs the same command as its own first
 # step.
 echo "=== [1/5] git submodule init ==="
-if ! git -C "${REPO_ROOT}" submodule update --init --recursive; then
-    echo "build-world.sh: stage [1/5] 'git submodule init' failed. Fix the submodule error above, then re-run; no later stage ran." >&2
-    exit 1
+if git -C "${REPO_ROOT}" submodule update --init --recursive; then
+    :
+else
+    rc=$?
+    echo "build-world.sh: stage [1/5] 'git submodule init' failed (exit ${rc}). Fix the submodule error above, then re-run; no later stage ran." >&2
+    exit "$rc"
 fi
 
 echo "=== [2/5] native binaries + C toolchain (install-mazm.sh) ==="
-if ! "${SCRIPT_DIR}/install-mazm.sh" "${PRESET}" "${INSTALL_DIR}"; then
-    echo "build-world.sh: stage [2/5] 'native binaries + C toolchain' failed. See install-mazm.sh's own error above; no later stage ran." >&2
-    exit 1
+if "${SCRIPT_DIR}/install-mazm.sh" "${PRESET}" "${INSTALL_DIR}"; then
+    :
+else
+    rc=$?
+    echo "build-world.sh: stage [2/5] 'native binaries + C toolchain' failed (exit ${rc}). See install-mazm.sh's own error above; no later stage ran." >&2
+    exit "$rc"
 fi
 
 echo "=== [3/5] quesOS (build-quesos.sh) ==="
-if ! "${REPO_ROOT}/os/quesos/build-quesos.sh" --preset "${PRESET}" -o "${QUESOS_OUT}"; then
-    echo "build-world.sh: stage [3/5] 'quesOS' failed. See build-quesos.sh's own error above; no later stage ran." >&2
-    exit 1
+if "${REPO_ROOT}/os/quesos/build-quesos.sh" --preset "${PRESET}" -o "${QUESOS_OUT}"; then
+    :
+else
+    rc=$?
+    echo "build-world.sh: stage [3/5] 'quesOS' failed (exit ${rc}). See build-quesos.sh's own error above; no later stage ran." >&2
+    exit "$rc"
 fi
 
 echo "=== [4/5] wave-1 userland (build-userland.sh) ==="
-if ! "${REPO_ROOT}/userland/build-userland.sh" --preset "${PRESET}" --out "${USERLAND_OUT}"; then
-    echo "build-world.sh: stage [4/5] 'wave-1 userland' failed. See build-userland.sh's own error above; no later stage ran." >&2
-    exit 1
+if "${REPO_ROOT}/userland/build-userland.sh" --preset "${PRESET}" --out "${USERLAND_OUT}"; then
+    :
+else
+    rc=$?
+    echo "build-world.sh: stage [4/5] 'wave-1 userland' failed (exit ${rc}). See build-userland.sh's own error above; no later stage ran." >&2
+    exit "$rc"
 fi
 
 echo "=== [5/5] demos (build-demos.sh) ==="
-if ! "${REPO_ROOT}/demos/build-demos.sh" --preset "${PRESET}" --out "${DEMOS_OUT}"; then
-    echo "build-world.sh: stage [5/5] 'demos' failed. See build-demos.sh's own error above; no later stage ran." >&2
-    exit 1
+if "${REPO_ROOT}/demos/build-demos.sh" --preset "${PRESET}" --out "${DEMOS_OUT}"; then
+    :
+else
+    rc=$?
+    echo "build-world.sh: stage [5/5] 'demos' failed (exit ${rc}). See build-demos.sh's own error above; no later stage ran." >&2
+    exit "$rc"
 fi
 
 END_TS=$(date +%s)

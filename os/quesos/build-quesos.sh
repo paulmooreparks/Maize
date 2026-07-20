@@ -101,6 +101,22 @@ fi
 command -v "$CPP" >/dev/null 2>&1 \
     || die "no C preprocessor (cc/gcc) found for #include expansion. On Windows, run scripts/bootstrap-toolchain.ps1 to fetch the vendored llvm-mingw clang."
 
+# maize-258 fix pass 2 (Convention counterexamples Entry 17): the resolution CHAIN
+# above already mirrors cc-maize.sh's (Entry 16), but the invocation-site macro
+# canonicalization cc-maize.sh applies to every $CPP choice was not carried over,
+# so the two files' CPP usage was resolution-chain-identical but not
+# invariant-for-invariant identical. Mirror cc-maize.sh's own -E line exactly
+# (cc-maize.sh's compile_tu, the -U host-macro family plus CPP_IDENTITY_DEFS),
+# applied UNCONDITIONALLY regardless of which $CPP resolved: a mingw-target
+# compiler (the vendored clang fallback, or a mingw-flavored gcc on PATH)
+# predefines _WIN32/__MINGW32__ and no __linux__/__gnu_linux__, so without this
+# canonicalization a borrowed portable.h-style source reachable via -I "$RT_DIR"
+# that later gains a `#ifdef _WIN32` / `#if defined(__linux__)` branch would
+# silently compile the wrong branch under the vendored-clang tier. On a real
+# Linux/macOS gcc/clang this is a same-value redefine of a macro the compiler
+# already predefines, a silent no-op, so this is byte-identical there too.
+CPP_IDENTITY_DEFS="-D __linux__=1 -D __gnu_linux__=1"
+
 WORK=$(mktemp -d)
 cleanup() { _rc=$?; rm -rf "$WORK"; exit "$_rc"; }
 trap cleanup EXIT
@@ -108,7 +124,12 @@ trap cleanup EXIT
 # --- Compile quesos.c to a .mzo through the exact cc-maize.sh C pipeline. ----------
 SRC="${SCRIPT_DIR}/quesos.c"
 tr -d '\r' < "$SRC" > "${WORK}/quesos.lf.c"
-if ! "$CPP" -E -P -nostdinc -D '__attribute__(x)=' -I "$RT_DIR" -I "$SCRIPT_DIR" \
+if ! "$CPP" -E -P -nostdinc -D '__attribute__(x)=' \
+        -U WIN32 -U WIN64 -U _WIN32 -U _WIN64 \
+        -U __WIN32 -U __WIN32__ -U __WIN64 -U __WIN64__ \
+        -U __MINGW32__ -U __MINGW64__ \
+        ${CPP_IDENTITY_DEFS} \
+        -I "$RT_DIR" -I "$SCRIPT_DIR" \
         "${WORK}/quesos.lf.c" > "${WORK}/quesos.pp.c" 2>"${WORK}/quesos.cpp.log"; then
     echo "cpp failed:" >&2; cat "${WORK}/quesos.cpp.log" >&2; exit 1
 fi
