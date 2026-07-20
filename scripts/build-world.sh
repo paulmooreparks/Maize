@@ -18,6 +18,15 @@
 # This is the documented "I pulled, now what" answer; run it after a fresh clone or
 # pull to build everything in one call.
 #
+# Each composed script is invoked through an explicit interpreter (bash for
+# install-mazm.sh, which is bash-specific; sh for the three POSIX-sh build scripts)
+# rather than executed directly by path, matching scripts/run-ctest.sh's own
+# established call shape for build-quesos.sh / build-userland.sh. This is
+# belt-and-suspenders alongside the scripts' own git-tracked executable bit: a
+# future re-add at mode 644, or any checkout mechanism that does not preserve the
+# tracked mode, cannot silently regress this composer's stage 2-5 into a
+# Permission-denied exit 126.
+#
 # Usage: scripts/build-world.sh [--preset <name>] [--install-dir <dir>]
 #                                [--userland-out <dir>] [--demos-out <dir>]
 #                                [--quesos-out <path>]
@@ -76,7 +85,7 @@ else
 fi
 
 echo "=== [2/5] native binaries + C toolchain (install-mazm.sh) ==="
-if "${SCRIPT_DIR}/install-mazm.sh" "${PRESET}" "${INSTALL_DIR}"; then
+if bash "${SCRIPT_DIR}/install-mazm.sh" "${PRESET}" "${INSTALL_DIR}"; then
     :
 else
     rc=$?
@@ -85,7 +94,7 @@ else
 fi
 
 echo "=== [3/5] quesOS (build-quesos.sh) ==="
-if "${REPO_ROOT}/os/quesos/build-quesos.sh" --preset "${PRESET}" -o "${QUESOS_OUT}"; then
+if sh "${REPO_ROOT}/os/quesos/build-quesos.sh" --preset "${PRESET}" -o "${QUESOS_OUT}"; then
     :
 else
     rc=$?
@@ -94,7 +103,7 @@ else
 fi
 
 echo "=== [4/5] wave-1 userland (build-userland.sh) ==="
-if "${REPO_ROOT}/userland/build-userland.sh" --preset "${PRESET}" --out "${USERLAND_OUT}"; then
+if sh "${REPO_ROOT}/userland/build-userland.sh" --preset "${PRESET}" --out "${USERLAND_OUT}"; then
     :
 else
     rc=$?
@@ -103,7 +112,7 @@ else
 fi
 
 echo "=== [5/5] demos (build-demos.sh) ==="
-if "${REPO_ROOT}/demos/build-demos.sh" --preset "${PRESET}" --out "${DEMOS_OUT}"; then
+if sh "${REPO_ROOT}/demos/build-demos.sh" --preset "${PRESET}" --out "${DEMOS_OUT}"; then
     :
 else
     rc=$?
