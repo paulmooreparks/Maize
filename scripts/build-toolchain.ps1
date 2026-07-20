@@ -58,6 +58,11 @@ $cmd = "'$repoPosix/scripts/build-toolchain.sh'"
 # NativeCommandError while ErrorActionPreference is 'Stop'; the build writes progress to
 # stderr, so relax it for exactly the Git Bash call and restore it after (pwsh 7 is
 # unaffected either way).
+#
+# INTERIM DEPENDENCY NOTE (maize-266 tracks the end state): Git Bash ships with Git
+# for Windows itself, so this call adds no dependency beyond Git plus what the repo
+# vendors, but calling out to bash at all is a tolerated interim shape, not the
+# target; maize-266 designs that dependency out.
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 & $BashExe -lc $cmd
