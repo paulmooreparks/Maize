@@ -126,9 +126,11 @@ Exit: met, and overshot. The bar was a C hello world plus one real
 program. The toolchain now builds a 52-program C conformance corpus and
 a complete C-compiled userland.
 
-## Milestone 2: Specification v1.0 and cost model
+## Milestone 2: Specification v1.0
 
-**Status: complete. v1.0 is the behavioral freeze point.**
+**Status: the specification is complete and v1.0 is the behavioral
+freeze point. The cost model is deliberately NOT part of it and remains
+open.**
 
 The flagship artifact. MMIX-grade rigor is the differentiator.
 
@@ -137,9 +139,6 @@ The flagship artifact. MMIX-grade rigor is the differentiator.
   violations), sub-register merge semantics, the memory model, and the
   interrupt model. Published as a 21-chapter reference under
   `docs/spec/`.
-- Cost model: defined cycle costs per instruction, with the VM
-  reporting cycles executed, so algorithm analysis and fewest-cycles
-  play are possible.
 - Spec versioning policy. v1.0 is a freeze: binaries assembled against
   v1.0 run forever on v1.x VMs.
 - Floating point ships **in** v1.0 rather than being deferred to v1.1.
@@ -148,13 +147,27 @@ The flagship artifact. MMIX-grade rigor is the differentiator.
   float branch idioms built on it. The C toolchain uses hardware float,
   not soft-float.
 
-Exit: met. Someone who has never seen the C++ source can answer
-behavioral questions from the spec alone.
+Exit: met for the behavioral specification. Someone who has never seen
+the C++ source can answer behavioral questions from the spec alone.
+
+### The cost model is a separate deliverable, still open
+
+v1.0 freezes *behavior*, not timing, and that separation is deliberate:
+a behavioral conformance claim must never depend on a timing model, and
+the performance model has to be free to evolve without touching the
+behavioral contract. So there is no architectural cycle counter in the
+v1.0 instruction set, the VM does not currently report cycles executed,
+and no program's result depends on cycle cost. Any such facility arrives
+later as a reserved-space extension with its own contract. The details
+are in `docs/spec/cycle-cost.md`.
+
+This is the piece that unlocks algorithm analysis and fewest-cycles
+play, and it is the remaining half of this milestone's original title.
 
 ## Milestone 3: Conformance suite
 
-**Status: open. The only Phase 1 engineering milestone still
-outstanding.**
+**Status: open. Along with Milestone 2's cost model, one of the two
+Phase 1 engineering deliverables still outstanding.**
 
 The portability story, and the uxn lesson: independent reimplementation
 is the strongest signal an ISA project can earn, and it only happens
@@ -303,9 +316,11 @@ what remains is optimization rather than rescue.
 - A fast path for address translation. Every process under quesOS runs
   under paging, and the translation walk is the gap that none of the
   smaller levers address.
-- Keep the cost model honest: cycles are defined by the ISA rather than
-  by wall-clock, so a JITted Maize stays bit-identical, cycle-metered,
-  and deterministic.
+- Keep determinism intact: a JIT must stay bit-identical and
+  deterministic. And when the cost model lands (Milestone 2's open
+  half), it must be defined in cycles by the ISA rather than in
+  wall-clock, precisely so that a JITted Maize can be fast and still
+  cycle-metered.
 
 Exit: borrowed software feels native, and the cost model still holds.
 
