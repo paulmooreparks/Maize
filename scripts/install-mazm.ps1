@@ -219,33 +219,10 @@ if ($displayOn) {
 }
 
 # --- Resolve Git Bash (maize-257): the native mzcc forwarder and the C cross- -----
-# toolchain build below both need bash.exe, not WSL. `git --exec-path` gives the
-# mingw64/libexec/git-core dir inside the Git install; bash.exe sits at
-# <gitroot>/bin/bash.exe three levels up. Standard install locations are the
-# fallback. Returns $null (never throws) so callers can warn-and-skip.
-function Resolve-GitBash {
-    # Get-Command -ErrorAction SilentlyContinue is a non-terminating probe regardless
-    # of the script's EAP=Stop; invoking `git` directly when it is not on PATH throws
-    # a terminating CommandNotFoundException before $LASTEXITCODE is ever set, which
-    # 2>$null cannot catch (see the Convention counterexamples doc, Entry 12).
-    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
-    if ($gitCmd) {
-        $execPath = (git --exec-path 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $execPath) {
-            $gitRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $execPath))
-            $candidate = Join-Path $gitRoot 'bin\bash.exe'
-            if (Test-Path $candidate) { return $candidate }
-        }
-    }
-    $candidates = @((Join-Path $env:ProgramFiles 'Git\bin\bash.exe'))
-    if (Test-Path 'env:ProgramFiles(x86)') {
-        $candidates += (Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe')
-    }
-    foreach ($p in $candidates) {
-        if ($p -and (Test-Path $p)) { return $p }
-    }
-    return $null
-}
+# toolchain build below both need bash.exe, not WSL. Resolve-GitBash lives in
+# scripts/lib/gitbash.ps1 (maize-258 Decision 3), the sole definition site shared by
+# install-mazm.ps1, build-quesos.ps1, build-userland.ps1, and build-demos.ps1.
+. (Join-Path $ScriptDir 'lib\gitbash.ps1')
 $BashExe = Resolve-GitBash
 
 # --- Windows forwarder: refresh <InstallDir>\mzcc.cmd from the repo template --------

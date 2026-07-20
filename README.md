@@ -165,6 +165,23 @@ Windows: `winget install Kitware.CMake` and `winget install Ninja-build.Ninja` (
 install per-user, no admin required). Linux: `sudo apt install cmake ninja-build`.
 macOS: `brew install cmake ninja`.
 
+### Build everything in one command
+
+    scripts\build-world.ps1        Windows
+    scripts/build-world.sh         Linux / WSL / macOS
+
+Builds the native binaries and tools, the C cross toolchain, quesOS
+(quesos.mzx), the wave-1 userland set, and the demos (kilo, doom), in one
+call, leaving every artifact where the per-piece scripts below already put
+it. This is the "I pulled, now what" answer; the sections below cover each
+piece individually (a partial build, or understanding what build-world
+composes).
+
+Prerequisites, explicit and minimal: CMake and Ninja (above) on every
+platform; on Windows, Git for Windows (git-scm.com), which also ships Git
+Bash and is what the C-toolchain stages call natively. No WSL, no MSYS2,
+and no other separate install is required.
+
 ### Windows, primary path: llvm-mingw
 
     scripts\bootstrap-toolchain.ps1

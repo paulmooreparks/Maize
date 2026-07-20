@@ -53,13 +53,36 @@
             }
         },
         {
-            "label": "Install maize + maizeg + mazm + mzld + mzdis to ~/bin",
-            "detail": "Build maize (console) + maizeg (graphical/SDL) + mazm, mzld, and mzdis and copy them to the user bin directory so editors find stable copies on PATH, then refresh the C cross-toolchain (cproc/qbe + Maize target) so mzcc stays current. On Windows the toolchain refresh runs under WSL.",
+            "label": "Build everything (build-world)",
+            "detail": "Build the native binaries + tools, the C cross toolchain, quesOS, the wave-1 userland, and the demos, all in one call. Slower than the binaries-only install task below; run it after a fresh clone or pull. On Windows this runs natively via Git Bash, no WSL involved.",
             "type": "shell",
             "group": {
                 "kind": "build",
                 "isDefault": true
             },
+            "windows": {
+                "command": "powershell",
+                "args": [
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    "${workspaceFolder}/scripts/build-world.ps1"
+                ]
+            },
+            "linux": {
+                "command": "${workspaceFolder}/scripts/build-world.sh"
+            },
+            "osx": {
+                "command": "${workspaceFolder}/scripts/build-world.sh"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Install maize + maizeg + mazm + mzld + mzdis to ~/bin",
+            "detail": "Build maize (console) + maizeg (graphical/SDL) + mazm, mzld, and mzdis and copy them to the user bin directory so editors find stable copies on PATH, then refresh the C cross-toolchain (cproc/qbe + Maize target) so mzcc stays current. Fast binaries-only loop; use Build everything (build-world) for the full \"I pulled\" rebuild. On Windows this runs natively via Git Bash, no WSL involved.",
+            "type": "shell",
+            "group": "build",
             "windows": {
                 "command": "powershell",
                 "args": [

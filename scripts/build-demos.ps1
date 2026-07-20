@@ -6,8 +6,9 @@
 
 .DESCRIPTION
     Compiles the operator-facing demo guest programs into .mzx images using the Maize C
-    toolchain. The compile runs inside WSL (the cproc/QBE C toolchain is POSIX-only), but
-    you drive it entirely from PowerShell.
+    toolchain. The compile runs natively via Git Bash (maize-258; the cproc/QBE C
+    toolchain is POSIX-only but runs under the vendored llvm-mingw toolchain through Git
+    Bash, no WSL involved), but you drive it entirely from PowerShell.
 
     With no demo names, the full default set is built: kilo (a terminal text editor) and
     doom. Name one or more demos to build just those. By default the images are staged into
@@ -20,8 +21,9 @@
     just the engine, and you provide your own WAD (see demos\doom\README.md) at
     %USERPROFILE%\.maize\root\home\user\doom\doom1.wad or via a mount at run time.
 
-    Requires WSL with the Maize C cross-toolchain provisioned (run scripts\install-mazm.ps1
-    once to set that up). If WSL is not installed the script stops with a clear message.
+    Requires Git for Windows (ships Git Bash) with the Maize C cross-toolchain
+    provisioned (run scripts\install-mazm.ps1 once to set that up). If Git Bash is not
+    found the script stops with a clear message.
 
 .PARAMETER Preset
     Build preset to compile against. When omitted, the underlying build picks the
@@ -56,6 +58,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'lib\gitbash.ps1')
 
 # Track whether the caller overrode -Out: the default-destination reminder and the
 # missing-root warning below only apply when the default guest-/bin staging is in effect.
@@ -78,41 +81,51 @@ $OutDir = [System.IO.Path]::GetFullPath($OutDir)
 $RootDir = Join-Path $HOME '.maize\root'
 $RootMissingBefore = (-not $OutOverridden) -and (-not (Test-Path $RootDir))
 
-# WSL is required: the cproc/QBE C toolchain is POSIX-only. Fail fast with a clear
-# message rather than a raw .NET exception when wsl.exe is not on PATH.
-$wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
-if (-not $wsl) {
+# Git Bash is required: the cproc/QBE C toolchain is POSIX-only. maize-258 repoints
+# this forwarder from WSL to Git Bash (mzcc.cmd's already-shipped pattern,
+# install-mazm.ps1:250-292): the WSL-native-mirror the underlying .sh script applies
+# on a /mnt/* repo excludes /build, so cc-maize.sh could not find mazm inside the
+# mirror (maize-265's blast radius). A Git-Bash-resolved repo root is never /mnt/*,
+# so the mirror guard never engages. Fail fast with a clear message rather than a
+# raw .NET exception when bash.exe cannot be found.
+$BashExe = Resolve-GitBash
+if (-not $BashExe) {
     # -ErrorAction Continue: Set-StrictMode/EAP='Stop' would otherwise make Write-Error
     # terminating, so the process would die on the throw (exit 1) before reaching exit 2.
-    Write-Error 'WSL is required to build the demos (the C toolchain is POSIX-only) but wsl.exe was not found on PATH. Install WSL, or build from an MSYS2 shell instead.' -ErrorAction Continue
+    Write-Error 'Git Bash (bash.exe) not found; install Git for Windows (ships Git Bash) to build the demos (the C toolchain is POSIX-only).' -ErrorAction Continue
     exit 2
 }
 
-# Translate the repo root and the output directory to WSL paths BEFORE building the bash
-# command, so the command is a single fully-resolved literal with no bash-side variable
-# expansion (forward-slash first: a backslash Windows path handed to wslpath collapses).
-$wslRepo = (& wsl.exe wslpath ($RepoRoot -replace '\\', '/')).Trim()
-$wslOut = (& wsl.exe wslpath ($OutDir -replace '\\', '/')).Trim()
+# No path translation is needed: mzcc.cmd already proves a forward-slashed absolute
+# Windows path (C:/Users/.../repo) resolves natively under Git Bash / MSYS without
+# cygpath, because MSYS bash understands drive-letter paths directly.
+$repoPosix = ($RepoRoot -replace '\\', '/')
+$outPosix = ($OutDir -replace '\\', '/')
 
 # One bash statement, nothing chained after it, so $LASTEXITCODE is exactly the build
 # script's own exit code. The demo names (if any) forward through as trailing positional
 # args; with none, build-demos.sh applies its own default set (kilo doom).
-$cmd = "'$wslRepo/demos/build-demos.sh'"
+$cmd = "'$repoPosix/demos/build-demos.sh'"
 if ($Preset -ne '') {
     $cmd += " --preset '$Preset'"
 }
-$cmd += " --out '$wslOut'"
+$cmd += " --out '$outPosix'"
 foreach ($d in $Demo) {
     $cmd += " '$d'"
 }
 
 # Windows PowerShell 5.1 turns any native-command stderr into a terminating
 # NativeCommandError while ErrorActionPreference is 'Stop'; the build writes progress to
-# stderr, so relax it for exactly the wsl.exe call and restore it after (pwsh 7 is
+# stderr, so relax it for exactly the Git Bash call and restore it after (pwsh 7 is
 # unaffected either way).
+#
+# INTERIM DEPENDENCY NOTE (maize-266 tracks the end state): Git Bash ships with Git
+# for Windows itself, so this call adds no dependency beyond Git plus what the repo
+# vendors, but calling out to bash at all is a tolerated interim shape, not the
+# target; maize-266 designs that dependency out.
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
-& wsl.exe -e bash -lc $cmd
+& $BashExe -lc $cmd
 $code = $LASTEXITCODE
 $ErrorActionPreference = $prevEap
 

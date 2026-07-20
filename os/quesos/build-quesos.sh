@@ -31,9 +31,9 @@ die() { echo "build-quesos.sh: $*" >&2; exit 2; }
 
 UNAME=$(uname -s)
 case "$UNAME" in
-    Linux)  PRESET='linux-debug' ;;
+    Linux)  PRESET='linux-release' ;;
     Darwin) PRESET='macos-debug' ;;
-    MINGW*|MSYS*|CYGWIN*) PRESET='windows-llvm-mingw-debug' ;;
+    MINGW*|MSYS*|CYGWIN*) PRESET='windows-llvm-mingw-release' ;;
     *) die "unsupported platform: ${UNAME}" ;;
 esac
 
@@ -77,11 +77,29 @@ QBE=$(resolve_exe "${QBE_DIR}/obj/qbe")           || die "qbe not found; run scr
 MAZM=$(resolve_exe "${BUILD_DIR}/mazm")           || die "mazm not found in ${BUILD_DIR}; run scripts/run-tests.sh first."
 MZLD=$(resolve_exe "${BUILD_DIR}/mzld")           || die "mzld not found in ${BUILD_DIR}; run scripts/run-tests.sh first."
 
+# maize-258: mirrors cc-maize.sh's own CPP resolution (cc-maize.sh:310-331) exactly.
+# The prior cc/gcc-only fallback left build-quesos.sh unable to find a preprocessor
+# on native Windows, where Git Bash ships neither: a sibling copy of the SAME gap
+# maize-257 already fixed in cc-maize.sh, missed here because it was never grepped
+# for (Convention counterexamples, Entry 14).
 CPP="${CC:-}"
 if [ -z "$CPP" ]; then
-    if command -v cc >/dev/null 2>&1; then CPP=cc; else CPP=gcc; fi
+    if command -v cc >/dev/null 2>&1; then
+        CPP=cc
+    elif command -v gcc >/dev/null 2>&1; then
+        CPP=gcc
+    else
+        # maize-257: Git Bash ships neither cc nor gcc. Fall back to the vendored
+        # llvm-mingw clang (the same compiler build-toolchain.sh's native branch
+        # builds cproc-qbe/qbe with) for the -E preprocess step only.
+        _vendored_clang="${REPO_ROOT}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe"
+        if [ -f "$_vendored_clang" ]; then
+            CPP="$_vendored_clang"
+        fi
+    fi
 fi
-command -v "$CPP" >/dev/null 2>&1 || die "no C preprocessor (cc/gcc) found."
+command -v "$CPP" >/dev/null 2>&1 \
+    || die "no C preprocessor (cc/gcc) found for #include expansion. On Windows, run scripts/bootstrap-toolchain.ps1 to fetch the vendored llvm-mingw clang."
 
 WORK=$(mktemp -d)
 cleanup() { _rc=$?; rm -rf "$WORK"; exit "$_rc"; }

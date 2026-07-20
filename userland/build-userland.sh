@@ -61,9 +61,9 @@ USERLAND_STAGE_CACHE_ROOT="${MAIZE_USERLAND_STAGE_CACHE:-$HOME/.cache/maize/user
 
 UNAME=$(uname -s)
 case "$UNAME" in
-    Linux)  PRESET='linux-debug' ;;
+    Linux)  PRESET='linux-release' ;;
     Darwin) PRESET='macos-debug' ;;
-    MINGW*|MSYS*|CYGWIN*) PRESET='windows-llvm-mingw-debug' ;;
+    MINGW*|MSYS*|CYGWIN*) PRESET='windows-llvm-mingw-release' ;;
     *) die "unsupported platform: ${UNAME}" ;;
 esac
 
