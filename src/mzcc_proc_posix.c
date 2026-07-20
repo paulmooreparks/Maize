@@ -20,6 +20,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,22 +98,38 @@ int run_proc(const char *exe, char *const *argv, int argc,
     int in_pipe[2]  = { -1, -1 };
     int out_pipe[2] = { -1, -1 };
     int err_pipe[2] = { -1, -1 };
-    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+    /* Self-pipe (review #3052 finding 3): fork()+exec() splits "spawn" across
+       two OS calls, so a plain execvp/execvp failure happens in the CHILD,
+       invisible to the parent's return value; the documented "0 = spawn
+       failure" contract (mzcc_proc.h) was only honored on Win32, where
+       CreateProcessA's own return code covers it. The child writes its errno
+       here and exits 127 on a pre-exec chdir/exec failure; FD_CLOEXEC on both
+       ends means a SUCCESSFUL exec closes the write end for free, so the
+       parent's read() returns 0 (EOF) with nothing written. Either way the
+       read returns promptly: it never blocks on stdout/stderr traffic. */
+    int spawn_err_pipe[2] = { -1, -1 };
+    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0 ||
+        pipe(spawn_err_pipe) != 0) {
         close_fd(&in_pipe[0]);  close_fd(&in_pipe[1]);
         close_fd(&out_pipe[0]); close_fd(&out_pipe[1]);
         close_fd(&err_pipe[0]); close_fd(&err_pipe[1]);
+        close_fd(&spawn_err_pipe[0]); close_fd(&spawn_err_pipe[1]);
         return 0;
     }
+    fcntl(spawn_err_pipe[0], F_SETFD, FD_CLOEXEC);
+    fcntl(spawn_err_pipe[1], F_SETFD, FD_CLOEXEC);
 
     pid_t pid = fork();
     if (pid < 0) {
         close_fd(&in_pipe[0]);  close_fd(&in_pipe[1]);
         close_fd(&out_pipe[0]); close_fd(&out_pipe[1]);
         close_fd(&err_pipe[0]); close_fd(&err_pipe[1]);
+        close_fd(&spawn_err_pipe[0]); close_fd(&spawn_err_pipe[1]);
         return 0;
     }
     if (pid == 0) {
         /* Child: wire the pipe ends onto stdin/stdout/stderr, then exec. */
+        close(spawn_err_pipe[0]);
         dup2(in_pipe[0], 0);
         dup2(out_pipe[1], 1);
         dup2(err_pipe[1], 2);
@@ -121,6 +138,9 @@ int run_proc(const char *exe, char *const *argv, int argc,
         close(err_pipe[0]); close(err_pipe[1]);
         if (cwd && cwd[0]) {
             if (chdir(cwd) != 0) {
+                int e = errno;
+                ssize_t wr = write(spawn_err_pipe[1], &e, sizeof(e));
+                (void)wr;
                 _exit(127);
             }
         }
@@ -129,6 +149,11 @@ int run_proc(const char *exe, char *const *argv, int argc,
         } else {
             execvp(exe, argv);
         }
+        {
+            int e = errno;
+            ssize_t wr = write(spawn_err_pipe[1], &e, sizeof(e));
+            (void)wr;
+        }
         _exit(127); /* exec failed */
     }
 
@@ -136,6 +161,23 @@ int run_proc(const char *exe, char *const *argv, int argc,
     close_fd(&in_pipe[0]);
     close_fd(&out_pipe[1]);
     close_fd(&err_pipe[1]);
+    close_fd(&spawn_err_pipe[1]);
+
+    int spawn_errno = 0;
+    ssize_t spawn_err_n = read(spawn_err_pipe[0], &spawn_errno, sizeof(spawn_errno));
+    close_fd(&spawn_err_pipe[0]);
+    if (spawn_err_n > 0) {
+        /* Pre-exec failure: reap the zombie, tear down the still-open ends,
+           and report spawn failure per the documented contract. */
+        close_fd(&in_pipe[1]);
+        close_fd(&out_pipe[0]);
+        close_fd(&err_pipe[0]);
+        int status;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+            /* retry */
+        }
+        return 0;
+    }
 
     stdin_pump_arg spa;
     spa.fd = in_pipe[1];
@@ -190,17 +232,46 @@ int run_proc(const char *exe, char *const *argv, int argc,
 
 int run_inherit(const char *exe, char *const *argv, int argc, int *exit_code) {
     (void)argc;
+    /* Same self-pipe contract fix as run_proc (review #3052 finding 3): this
+       primitive documents "0 on spawn failure" too (mzcc_proc.h), and
+       run_inherit's own callers (--build, -r) need it just as much. */
+    int spawn_err_pipe[2] = { -1, -1 };
+    if (pipe(spawn_err_pipe) != 0) {
+        return 0;
+    }
+    fcntl(spawn_err_pipe[0], F_SETFD, FD_CLOEXEC);
+    fcntl(spawn_err_pipe[1], F_SETFD, FD_CLOEXEC);
+
     pid_t pid = fork();
     if (pid < 0) {
+        close_fd(&spawn_err_pipe[0]);
+        close_fd(&spawn_err_pipe[1]);
         return 0;
     }
     if (pid == 0) {
+        close(spawn_err_pipe[0]);
         if (strchr(exe, '/')) {
             execv(exe, argv);
         } else {
             execvp(exe, argv);
         }
+        {
+            int e = errno;
+            ssize_t wr = write(spawn_err_pipe[1], &e, sizeof(e));
+            (void)wr;
+        }
         _exit(127);
+    }
+    close_fd(&spawn_err_pipe[1]);
+    int spawn_errno = 0;
+    ssize_t spawn_err_n = read(spawn_err_pipe[0], &spawn_errno, sizeof(spawn_errno));
+    close_fd(&spawn_err_pipe[0]);
+    if (spawn_err_n > 0) {
+        int status;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+            /* retry */
+        }
+        return 0;
     }
     int status = 0;
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {

@@ -30,10 +30,13 @@
 #if defined(_WIN32)
 #include <direct.h>
 #define MZCC_MKDIR(p) _mkdir(p)
+#define MZCC_GETCWD(buf, n) _getcwd((buf), (n))
 #define PATH_SEP_LIST ";"
 #else
 #include <sys/types.h>
+#include <unistd.h>
 #define MZCC_MKDIR(p) mkdir((p), 0777)
+#define MZCC_GETCWD(buf, n) getcwd((buf), (n))
 #define PATH_SEP_LIST ":"
 #endif
 
@@ -142,6 +145,55 @@ static char *dir_of(const char *path) {
         *slash = '\0';
     }
     return copy;
+}
+
+/* Is `path` absolute? POSIX: starts with '/'. Windows additionally accepts a
+   drive-letter form ("C:/..." or "C:\\...", already slash-normalized by the
+   callers below). */
+static int is_abs_path(const char *path) {
+    if (path[0] == '/') {
+        return 1;
+    }
+#if defined(_WIN32)
+    if (((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+        path[1] == ':' && (path[2] == '/' || path[2] == '\\')) {
+        return 1;
+    }
+#endif
+    return 0;
+}
+
+/* Absolute path of the process's real working directory, as a fresh
+   allocation with forward slashes. The mzcc process itself never chdir's
+   (only spawned children do, via run_proc's `cwd`), so this is safe to call
+   at any point and always reflects the caller's real location. */
+static char *get_real_cwd(void) {
+    char buf[4096];
+    if (!MZCC_GETCWD(buf, sizeof(buf))) {
+        die("cannot determine the current working directory");
+    }
+    to_slashes(buf);
+    return xstrdup(buf);
+}
+
+/* dir_of(), absolutized against the process's REAL working directory (review
+   #3052 finding 1). compile_tu spawns cpp with cwd = the empty CPP_CWD
+   scratch dir (DI6) so a source given by a RELATIVE path resolves its own
+   `-I <source-dir>` against that scratch dir instead of the caller's real
+   location, breaking a sibling #include ("sibling.h") that cc-maize.sh (which
+   runs cpp in the caller's real CWD) resolves fine. Absolutizing here, before
+   cpp is spawned, keeps the two drivers byte-identical on relative-path
+   sources with sibling headers. Returns a fresh allocation. */
+static char *abs_dir_of(const char *src) {
+    char *d = dir_of(src);
+    if (is_abs_path(d)) {
+        return d;
+    }
+    char *cwd = get_real_cwd();
+    char *abs = (strcmp(d, ".") == 0) ? xstrdup(cwd) : joinstr(cwd, "/", d, NULL);
+    free(cwd);
+    free(d);
+    return abs;
 }
 
 /* basename with a trailing ".c" stripped, as a fresh allocation. */
@@ -496,7 +548,7 @@ static char *compile_tu(const char *src, const char *tag, ByteBuf *emit_body) {
     crlf_strip(raw.data, raw.len, &lf);
     byte_buf_free(&raw);
 
-    char *src_dir = dir_of(src);
+    char *src_dir = abs_dir_of(src);
 
     /* Stage: cpp. Reproduces cc-maize.sh:442-449 EXACTLY (the maize-257
        host-canonicalization invariant); flags in this order, as discrete argv
@@ -587,8 +639,21 @@ static char *compile_tu(const char *src, const char *tag, ByteBuf *emit_body) {
         byte_buf_append(emit_body, body.stdout_bytes.data, body.stdout_bytes.len);
     }
 
-    /* Stage: mazm -c (body -> the ONE temp file, the .mzo). */
-    char *mzo = assemble_stdin(body.stdout_bytes.data, body.stdout_bytes.len, tag);
+    /* Stage: mazm -c (body -> the ONE temp file, the .mzo). The ".body" infix
+       mirrors cc-maize.sh's own "${_tag}.body.mzo" naming (compile_tu, sed
+       456-457's neighbor at cc-maize.sh:374) and is load-bearing: without it a
+       single-source user object shares OBJ_DIR with the bare-named RT asm
+       objects (crt0.mzo/syscall.mzo/setjmp.mzo/mzdev.mzo), so a user source
+       literally named crt0.c collides with the RT crt0 object (review #3052
+       finding 2). RT_C libc objects (tag "rt_<name>") and multi-source user
+       objects (tag "u<i>_<base>") already carry a distinguishing prefix, but
+       apply the infix uniformly here so every compile_tu-produced object is
+       namespaced away from the bare RT-asm set the same way cc-maize.sh keeps
+       them apart. Object names are internal (mzld resolves by symbol, not
+       filename), so this does not change the linked .mzx. */
+    char *obj_tag = joinstr(tag, ".body", NULL, NULL);
+    char *mzo = assemble_stdin(body.stdout_bytes.data, body.stdout_bytes.len, obj_tag);
+    free(obj_tag);
     byte_buf_free(&body.stdout_bytes);
     return mzo;
 }
@@ -945,7 +1010,7 @@ int main(int argc, char **argv) {
     /* ---- link (default C profile: RT + libc + body, entry _start). The
        link-profile seam is the object set; build-quesos's minimal profile
        slots in at maize-280 without a second pipeline (section 8). ---------- */
-    char *mzx = path_join(SCRATCH_ROOT, multi ? "prog.mzx" : "prog.mzx");
+    char *mzx = path_join(SCRATCH_ROOT, "prog.mzx");
     Argv lav;
     av_init(&lav);
     av_add(&lav, MZLD);
