@@ -61,10 +61,26 @@ add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp" "src/host_tty.cpp
 add_executable(mzld "src/mzld.cpp")
 add_executable(mzdis "src/mzdis.cpp")
 
+# maize-278: mzcc, the compiled cross-platform C guest-build driver (replaces the
+# ctest / one-shot compile path of scripts/cc-maize.sh). C (C11), not C++
+# (decision DI10: cproc compiles C only, so mzcc-in-C is the prerequisite for
+# maize-277 self-hosting the driver, and C links only libc). The
+# core/posix/win32 process-spawn split mirrors the presenter_transport seam; both
+# backend TUs are listed here and each is internally #ifdef-guarded so the
+# non-matching one compiles to nothing. No new external dependency (decision D5):
+# links only libc + Threads (the stdin-pump thread).
+add_executable(mzcc
+  "src/mzcc.c"
+  "src/mzcc_proc_core.c"
+  "src/mzcc_proc_posix.c"
+  "src/mzcc_proc_win32.c")
+set_property(TARGET mzcc PROPERTY C_STANDARD 11)
+
 find_package(Threads REQUIRED)
 target_link_libraries(maizeg PRIVATE Threads::Threads)
 target_link_libraries(maize  PRIVATE Threads::Threads)
 target_link_libraries(mazm PRIVATE Threads::Threads)
+target_link_libraries(mzcc PRIVATE Threads::Threads)
 
 if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET maizeg PROPERTY CXX_STANDARD 20)
@@ -86,7 +102,7 @@ if (MAIZE_SANITIZE)
     -fsanitize=address,undefined
     -fno-sanitize-recover=all
     -fno-omit-frame-pointer)
-  foreach(_t maizeg maize mazm mzld mzdis)
+  foreach(_t maizeg maize mazm mzld mzdis mzcc)
     target_compile_options(${_t} PRIVATE ${_maize_san_flags})
     target_link_options(${_t}    PRIVATE -fsanitize=address,undefined)
   endforeach()

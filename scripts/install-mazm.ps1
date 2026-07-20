@@ -168,8 +168,8 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-Write-Host "Building maize, maizeg, mazm, mzld, mzdis ($Preset)..."
-& $Cmake --build $BuildDir --target maize maizeg mazm mzld mzdis
+Write-Host "Building maize, maizeg, mazm, mzld, mzdis, mzcc ($Preset)..."
+& $Cmake --build $BuildDir --target maize maizeg mazm mzld mzdis mzcc
 if ($LASTEXITCODE -ne 0) {
     if ($pgoArgs[0] -eq '-DMAIZE_PGO=use') {
         Write-Warning "cmake build failed for preset '$Preset' with Clang PGO active (exit $LASTEXITCODE); the committed profile at $PgoProfile may be incompatible with the current toolchain pin. Reconfiguring and retrying once without PGO..."
@@ -179,7 +179,7 @@ if ($LASTEXITCODE -ne 0) {
             Write-Error "cmake reconfigure without PGO failed (exit $LASTEXITCODE)." -ErrorAction Continue
             exit 2
         }
-        & $Cmake --build $BuildDir --target maize maizeg mazm mzld mzdis
+        & $Cmake --build $BuildDir --target maize maizeg mazm mzld mzdis mzcc
         if ($LASTEXITCODE -ne 0) {
             Write-Error "cmake build failed for preset '$Preset' (exit $LASTEXITCODE), with and without PGO; not a PGO issue." -ErrorAction Continue
             exit 2
@@ -196,7 +196,8 @@ if ($LASTEXITCODE -ne 0) {
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 # maize-217/230: `maize` is the console-subsystem VM (terminal I/O); `maizeg` is the graphical
 # one (SDL window). Both are installed; console programs run under maize, the screen under maizeg.
-foreach ($tool in 'maize', 'maizeg', 'mazm', 'mzld', 'mzdis') {
+# maize-278: mzcc is the compiled C guest-build driver (the native cc-maize.sh replacement).
+foreach ($tool in 'maize', 'maizeg', 'mazm', 'mzld', 'mzdis', 'mzcc') {
     $builtExe = Join-Path $BuildDir "$tool.exe"
     if (-not (Test-Path $builtExe)) {
         Write-Error "build reported success but $builtExe does not exist."
@@ -339,5 +340,5 @@ else {
     }
 }
 
-Write-Host 'maize, maizeg, mazm, mzld, mzdis installed and smoke-checked.'
+Write-Host 'maize, maizeg, mazm, mzld, mzdis, mzcc installed and smoke-checked.'
 exit 0

@@ -138,8 +138,15 @@ fi
 # run-ctest therefore no longer resolves cproc-qbe / qbe / the system cpp itself: the
 # driver owns those. It still needs mazm (to re-assemble the W^X probe's crt0.mzo),
 # maize (to run each linked image), and mzld (the W^X negative case).
-CC_MAIZE="${SCRIPT_DIR}/cc-maize.sh"
-[ -f "$CC_MAIZE" ] || { echo "run-ctest.sh: driver ${CC_MAIZE} not found." >&2; exit 2; }
+# maize-278: MAIZE_CC selects the guest-build driver. Unset keeps cc-maize.sh
+# (the shell driver, the default until the parity gate is green on both
+# platforms, then this flips to mzcc, still a one-line change). Set it to
+# <REPO_ROOT>/build/<preset>/mzcc to point the whole harness at the compiled
+# native driver: compile_c, run_default_produce_test and run_driver_run_mode_test
+# all invoke the driver through this ONE binding, so they exercise mzcc unchanged.
+# Additive; no script is retired here (that is maize-281).
+CC_MAIZE="${MAIZE_CC:-${SCRIPT_DIR}/cc-maize.sh}"
+[ -f "$CC_MAIZE" ] || [ -x "$CC_MAIZE" ] || { echo "run-ctest.sh: driver ${CC_MAIZE} not found." >&2; exit 2; }
 MAZM=$(resolve_exe "${BUILD_DIR}/mazm") || {
     echo "run-ctest.sh: mazm not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 MAIZE=$(resolve_exe "${BUILD_DIR}/maize") || {   # maize-225/230: SDL-free console build (no WSLg window)

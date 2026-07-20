@@ -3444,7 +3444,8 @@ namespace {
             "  --check               validate only: run the full assembly pipeline with\n"
             "                        no filesystem effects (nothing written or removed)\n"
             "  --stdin               read source from standard input instead of a file;\n"
-            "                        requires --check and --base-path\n"
+            "                        requires --base-path, plus either --check (validate\n"
+            "                        only) or -c (emit <base-path>/<source-name>.mzo)\n"
             "  --base-path <dir>     directory INCLUDE paths resolve against\n"
             "                        (default: the input file's directory)\n"
             "  --source-name <name>  name reported in diagnostics for --stdin input\n"
@@ -3496,17 +3497,36 @@ int main(int argc, char* argv[]) {
     }
 
     if (stdin_mode) {
-        /* Stdin is a check-only surface: there is no input path to derive a
-           .mzb target from, and no file directory to resolve INCLUDEs
-           against, so both must be explicit. */
-        if (!check_only) {
-            std::cerr << "mazm: error: --stdin requires --check" << std::endl;
+        /* Stdin has no input path to derive a target from and no file directory
+           to resolve INCLUDEs against, so --base-path is always required. It was
+           historically a --check-only surface (editor diagnostics); maize-278
+           relaxes that so -c/--emit-object can ALSO emit a relocatable object
+           from a piped body, which is the mzcc pipe terminus: the qbe body pipes
+           straight into `mazm -c --stdin --base-path <dir> --source-name <tag>`
+           and lands <dir>/<tag>.mzo as the ONE temp file per TU. This reuses the
+           existing tokenize path, --base-path/--source-name, and the .mzo writer
+           unchanged; only the "requires --check" guard is relaxed and the object
+           base name is taken from --source-name under stdin. It is a CLI/tooling
+           change, NOT an ISA/encoding/.mzo-format change (the four-surface
+           discipline does not apply), so hello.mzb stays md5-pinned. */
+        if (!check_only && !emit_object) {
+            std::cerr << "mazm: error: --stdin requires --check or -c/--emit-object" << std::endl;
             return 1;
         }
 
         if (base_path_arg.empty()) {
             std::cerr << "mazm: error: --stdin requires --base-path" << std::endl;
             return 1;
+        }
+
+        /* The stdin object target is <base-path>/<source-name>.mzo. Remove any
+           stale output up front (the maize-13 rule) so a failed assembly never
+           leaves a previously-good object looking like a fresh build. */
+        std::filesystem::path stdin_obj_path;
+        if (emit_object) {
+            stdin_obj_path = std::filesystem::path(base_path_arg) / (source_name + ".mzo");
+            std::error_code remove_ec;
+            std::filesystem::remove(stdin_obj_path, remove_ec);
         }
 
         try {
@@ -3543,6 +3563,16 @@ int main(int argc, char* argv[]) {
         if (!diags.empty()) {
             flush_diags();
             return 1;
+        }
+
+        /* Object emission from stdin (maize-278): success is the only state that
+           writes bytes, matching the file path's post-compile ordering. The
+           emitted object is byte-identical to the file-input path's (same
+           tokenizer, same serializer; only the input source and the output-path
+           derivation differ). --check stays a no-op (nothing written). */
+        if (emit_object) {
+            std::cout << "Output to " << stdin_obj_path.string() << std::endl;
+            write_object(stdin_obj_path.string());
         }
 
         return 0;
