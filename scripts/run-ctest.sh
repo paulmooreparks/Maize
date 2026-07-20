@@ -1028,7 +1028,18 @@ run_multi_link_reject_test() {
     TOTAL=$((TOTAL + 1))
 
     listfile="${WORK_DIR}/${name}.sources"
-    printf '%s\n' "${CTEST_DIR}/multifile_main.c" > "$listfile"
+    # maize-278 coexistence seam: a --sources listfile is FILE CONTENTS read
+    # directly by the driver, not an argv the shell can convert. Under MSYS/Git
+    # Bash, CTEST_DIR is a POSIX /c/... path; argv paths get auto-mangled to
+    # native form for a native exe, but paths written into a file do not. The
+    # native mzcc (design D6: no path-translation layer) fopen()s the line
+    # verbatim and reports "no such file" on /c/..., the wrong failure mode for
+    # this negative test. cc-maize.sh absorbed this via its native_path/cygpath
+    # layer; mzcc deliberately deleted it. Write the native form here so BOTH
+    # drivers resolve the entry: host_to_native is a no-op off MSYS (Linux keeps
+    # the POSIX path unchanged) and cc-maize.sh's win_to_posix re-normalizes the
+    # native form back, so this is safe for either MAIZE_CC selection.
+    printf '%s\n' "$(host_to_native "${CTEST_DIR}/multifile_main.c")" > "$listfile"
     mzx="${WORK_DIR}/${name}.mzx"
     rm -f "$mzx"
     log="${WORK_DIR}/${name}.cc.log"
