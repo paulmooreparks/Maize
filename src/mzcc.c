@@ -201,6 +201,42 @@ static char *abs_dir_of(const char *src) {
     return abs;
 }
 
+/* A stable, host-independent identity for `src`, used to tell cpp what
+   __FILE__ should expand to (maize-290). cpp is fed the source via stdin
+   (decision DI6, no named input file), so without this, __FILE__ would
+   otherwise take whatever placeholder value a bare "-" stdin feed implies;
+   TUs that embed __FILE__ in a string literal (doom's w_wad.c, via
+   z_zone.h's Z_ChangeTag macro) need that value to be the SAME string on
+   every host and every run, not a per-invocation scratch path.
+
+   Absolutizes `src` against the real CWD (same construction as
+   abs_dir_of), then strips the REPO_ROOT prefix so the result is the
+   source's repo-relative path (forward slashes): deterministic regardless
+   of host, temp-dir placement, or invocation cwd, and still a meaningful
+   diagnostic value. Falls back to the bare basename for a source living
+   outside the repo tree. Returns a fresh allocation. */
+static char *stable_file_identity(const char *src) {
+    char *abs = xstrdup(src);
+    to_slashes(abs);
+    if (!is_abs_path(abs)) {
+        char *cwd = get_real_cwd();
+        char *joined = joinstr(cwd, "/", abs, NULL);
+        free(cwd);
+        free(abs);
+        abs = joined;
+    }
+    size_t root_len = REPO_ROOT ? strlen(REPO_ROOT) : 0;
+    if (REPO_ROOT && strncmp(abs, REPO_ROOT, root_len) == 0 && abs[root_len] == '/') {
+        char *rel = xstrdup(abs + root_len + 1);
+        free(abs);
+        return rel;
+    }
+    char *slash = strrchr(abs, '/');
+    char *base = xstrdup(slash ? slash + 1 : abs);
+    free(abs);
+    return base;
+}
+
 /* basename with a trailing ".c" stripped, as a fresh allocation. */
 static char *base_noext_c(const char *path) {
     char *copy = xstrdup(path);
@@ -642,11 +678,30 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
     crlf_strip(raw.data, raw.len, &lf);
     byte_buf_free(&raw);
 
+    /* Prepend a `# 1 "<identity>"` line-marker (maize-290): the standard
+       mechanism every cpp implementation (gcc, clang) uses to name its
+       current input when it isn't a real file. It tells cpp "the next
+       physical line is logical line 1 of <identity>", so __FILE__/__LINE__
+       inside the TU expand exactly as if <identity> had been passed as a
+       real path, with no line-number shift from the inserted marker line
+       itself. `-P` (below) only suppresses line markers in cpp's OUTPUT;
+       this input-side marker is a separate, well-supported mechanism. */
+    char *file_id = stable_file_identity(src);
+    ByteBuf fed;
+    byte_buf_init(&fed);
+    byte_buf_append(&fed, "# 1 \"", 5);
+    byte_buf_append(&fed, file_id, strlen(file_id));
+    byte_buf_append(&fed, "\"\n", 2);
+    byte_buf_append(&fed, lf.data, lf.len);
+    free(file_id);
+    byte_buf_free(&lf);
+
     char *src_dir = abs_dir_of(src);
 
     /* Stage: cpp. Reproduces cc-maize.sh:442-449 EXACTLY (the maize-257
        host-canonicalization invariant); flags in this order, as discrete argv
-       entries, fed the CRLF-stripped source via stdin (`-`) with cwd = the
+       entries, fed the CRLF-stripped source (with the stable __FILE__
+       identity marker line prepended above) via stdin (`-`) with cwd = the
        empty scratch dir so the implicit quote-include base matches
        cc-maize.sh's empty-WORK base (decision DI6). */
     Argv cpp;
@@ -679,9 +734,9 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
     av_add(&cpp, "-");
 
     ProcResult pp;
-    int ran = run_proc(CPP, cpp.v, cpp.n, lf.data, lf.len, CPP_CWD, &pp);
+    int ran = run_proc(CPP, cpp.v, cpp.n, fed.data, fed.len, CPP_CWD, &pp);
     av_free(&cpp);
-    byte_buf_free(&lf);
+    byte_buf_free(&fed);
     free(src_dir);
     if (!ran || pp.exit_code != 0) {
         diag_printf(diag, "mzcc: cpp failed for %s\n", tag);
