@@ -344,7 +344,7 @@ done with it.
 
 # Beyond 1.0: Linux on Maize
 
-The completeness proof, and the reason the milestones above are ordered
+Running Linux on Maize is a completeness proof and is the reason the milestones above are ordered
 the way they are. Everything Linux demands of the machine, including
 block storage, complete MMU behavior, a network device, real signals,
 and timers, gets built and proven first against a kernel I control and
