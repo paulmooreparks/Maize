@@ -10,8 +10,8 @@ does not hide the parts of a real machine that are awkward to explain.
 nand2tetris comes at this subject from the hardware side and MMIX from
 the algorithm side, and neither one covers the middle, which is where
 flags, segments, privilege, interrupts, and port I/O live. That is the
-x86 toolkit, cleaned up and made regular. The machine x86 should have
-been.
+x86 toolkit, cleaned up and made regular: "the machine x86 should have
+been."
 
 What ships is the specification. The C++ VM in this repo is one
 implementation of it. When I say Maize is portable I mean somebody can
@@ -50,17 +50,18 @@ the language reach described above.
 
 # Phase 1: the teaching computer
 
-Milestones 0 through 5. The foundation, and the public on-ramp.
-Everything here is done except the conformance suite, the cost model,
-and the launch itself.
+Phase 1 covers Milestones 0 through 5, which built the foundation and
+serve as the public on-ramp. Everything here is done except the
+conformance suite, the cost model, and the launch itself.
 
 ## Milestone 0: ISA repairs
 
 **Status: complete.**
 
-Fixing the known unsoundness before anything else got built on top of
-it. Cheap to do early, and expensive once binaries and third-party VMs
-exist.
+This milestone fixed the known unsoundness in the instruction set
+before anything else got built on top of it. That work was cheap to do
+early and would have been expensive once binaries and third-party VMs
+existed.
 
 - C (unsigned carry/borrow) and V (signed overflow) are separate now,
   defined per operand width, which makes the documented JLT/JGT
@@ -193,7 +194,8 @@ language.
 **Status: complete, and overshot by a lot. Phase 2 is where the
 overshoot went.**
 
-The systems curriculum that justifies the CISC design choices.
+Milestone 4 is the systems curriculum that justifies the CISC design
+choices.
 
 - Devices, covering console, keyboard, framebuffer, timer, and a
   host-filesystem mount layer, with interrupts.
@@ -252,8 +254,8 @@ than any amount of design work would have.
 
 ## Milestone 6: Storage
 
-A block device and a real filesystem, so the machine has a disk instead
-of a mounted host directory.
+Maize needs a block device and a real filesystem so that the machine has
+a disk of its own instead of a mounted host directory.
 
 - A block device in the VM, documented in the spec's device surface.
 - A filesystem using a format that already exists, either ext2 or FAT.
@@ -330,8 +332,8 @@ Exit: a borrowed network program runs unmodified.
 
 ## Milestone 11: quesOS 1.0
 
-The release. Everything above, assembled into something a person can
-install and use.
+This is the release, where everything above gets assembled into
+something a person can install and use.
 
 - The kernel, the borrowed userland, and the graphical session, on a
   disk image.
@@ -344,11 +346,12 @@ done with it.
 
 # Beyond 1.0: Linux on Maize
 
-Running Linux on Maize is a completeness proof and is the reason the milestones above are ordered
-the way they are. Everything Linux demands of the machine, including
-block storage, complete MMU behavior, a network device, real signals,
-and timers, gets built and proven first against a kernel I control and
-can actually debug, which is what Milestones 6 through 10 amount to.
+Running Linux on Maize is a completeness proof and is the reason the
+milestones above are ordered the way they are. Everything Linux demands
+of the machine, including block storage, complete MMU behavior, a
+network device, real signals, and timers, gets built and proven first
+against a kernel I control and can actually debug, which is what
+Milestones 6 through 10 amount to.
 Bringing Linux up on devices nothing has ever exercised is the worst
 possible position to debug from. Doing quesOS first means Linux arrives
 on hardware that already works.
