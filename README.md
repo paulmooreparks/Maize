@@ -10,7 +10,7 @@
 This project implements a 64-bit virtual machine called "Maize." This is an outgrowth of my [Tortilla](https://github.com/paulmooreparks/Tortilla)
 project, which began life as an x86 emulator implemented in C# on .NET and then later became a virtual CPU of my own making.
 
-Maize today is a working computer, not just a byte-code interpreter. The instruction set is
+Maize today is a working computer, not just a byte-code interpreter. The [instruction set](https://paulmooreparks.github.io/Maize/) is
 frozen at v1.0 and fully specified, the toolchain (assembler, linker, disassembler, C compiler)
 is complete end to end, and the machine runs its own operating system: **quesOS**, a
 multi-process kernel on a paging MMU, booting a borrowed Unix userland. It plays DOOM at around
