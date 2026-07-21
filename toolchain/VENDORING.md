@@ -95,13 +95,14 @@ asm/ PASS/FAIL harness (`scripts/run-tests.{sh,ps1}`).
   works because the POSIX-only constraint is scoped to the cproc **driver**
   (`driver.c`: `<spawn.h>`/`posix_spawn`/`<sys/wait.h>`/`<unistd.h>`, and a
   `configure` that only recognizes POSIX target triples), not to qbe or to
-  cproc-qbe (the C11-to-QBE-IL compiler frontend proper): `scripts/cc-maize.sh`
+  cproc-qbe (the C11-to-QBE-IL compiler frontend proper): the Maize C pipeline
   pipes straight into `cproc-qbe` and never spawns the driver binary, so the
   native-Windows branch builds qbe.exe + cproc-qbe.exe only, skipping `driver.c`
   and its `configure`/`config.h` step entirely (grep confirms `config.h` is
   `#include`d only by `driver.c`; nothing else in cproc needs it). No MSYS2, no
-  WSL. `scripts/cc-maize.sh` and the `mzcc.cmd` forwarder
-  (`scripts/install-mazm.ps1`) drive the same native pipeline end to end.
+  WSL. `build-toolchain.sh` is invoked by `mzcc --build` and by
+  `scripts/install-mazm.ps1`; the compiled `mzcc` binary then drives the C
+  compile pipeline itself, natively, with no further shell involvement.
 - Windows, MSYS2 fallback: still supported when `make` is present on PATH (the
   `msys2/setup-msys2` action, `MSYS` msystem, `gcc` + `make`) via the original
   make-based path, unchanged. The repo's llvm-mingw toolchain otherwise stays

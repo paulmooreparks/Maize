@@ -75,7 +75,7 @@ The same run on Linux:
 build/linux-release/maizeg --display --display-scale 4 --refresh-hz 20 --input=keyboard demos/doom/doom.mzx -iwad /doom/doom1.wad
 ```
 
-Saves just work: DOOM writes them to a relative path (`./.savegame/...`), which
+DOOM writes saved games to a relative path (`./.savegame/...`), which
 resolves against the guest's `/home/user` working directory in that same persistent
 sandbox root, so no writable mount is needed and your saves and config survive
 across runs.
@@ -225,7 +225,9 @@ composes).
 
 Prerequisites, explicit and minimal: CMake and Ninja (above) on every
 platform; on Windows, Git for Windows (git-scm.com), which also ships Git
-Bash and is what the C-toolchain stages call natively. No WSL, no MSYS2,
+Bash, used to build the vendored cproc/QBE compiler (the one build step that
+needs a POSIX shell). The per-piece quesOS, userland, and demo builds run
+through the native `mzcc` binary and shell out to nothing. No WSL, no MSYS2,
 and no other separate install is required.
 
 ### Windows, primary path: llvm-mingw
@@ -890,8 +892,10 @@ into every program. The pipeline is:
     file.c -> cpp -> cproc (C11 -> QBE IL) -> qbe -t maize (IL -> .mazm)
            -> mazm -c (.mzo) -> mzld (+ C runtime) -> file.mzx
 
-`scripts/cc-maize.sh` is the single canonical driver: CI (`scripts/run-ctest.sh`) and the
-installed `mzcc` command both exec it, so what CI tests is exactly what the tool runs.
+`mzcc` is a compiled tool, built and installed alongside `maize`, `mazm`, `mzld`, and
+`mzdis`. It drives that whole pipeline itself, spawning `cproc-qbe`, `qbe`, `mazm`, and
+`mzld` as needed and threading the intermediates through in memory, with a
+content-addressed object cache so an unchanged translation unit is not recompiled.
 
 - `mzcc file.c` compiles and links to `file.mzx` beside the source.
 - `mzcc file.c -r` compiles and runs, propagating the guest exit code.
@@ -900,13 +904,14 @@ installed `mzcc` command both exec it, so what CI tests is exactly what the tool
 - `mzcc -o out.mzx file.c` writes the linked image to an explicit path.
 - `mzcc --build` rebuilds the vendored cproc/qbe toolchain.
 
-The whole pipeline builds and runs natively on Windows under Git Bash, no
-WSL and no MSYS2 required (`scripts/build-toolchain.sh` compiles cproc-qbe/qbe
-directly with the vendored llvm-mingw clang, skipping only the POSIX-only cproc
-driver binary, which `mzcc` never uses anyway). On Windows `mzcc` is a small
-forwarder (`mzcc.cmd`, installed by `scripts/install-mazm.ps1`) that invokes Git
-Bash to run `scripts/cc-maize.sh` directly; on Linux, macOS, and WSL `mzcc` runs it
-directly from the shell.
+The whole pipeline builds and runs natively on Windows, no WSL and no MSYS2 required:
+`mzcc` itself is a native binary, and the one piece it still shells out for is building
+the vendored compiler. `mzcc --build` (and `scripts/install-mazm.ps1`, which calls the
+same path) runs `scripts/build-toolchain.sh` to compile `cproc-qbe`/`qbe` directly with
+the vendored llvm-mingw clang, skipping only the POSIX-only cproc driver binary (which
+`mzcc` never uses anyway). That toolchain build is the sole place a POSIX shell is
+needed on Windows, and Git Bash, which ships with Git for Windows, satisfies it; the
+day-to-day `mzcc file.c` compile path invokes no shell at all.
 
 cproc is strict C11: declare any libc-style function you call. Floating point is
 supported, passing and returning through the general-purpose registers under the Zfinx
