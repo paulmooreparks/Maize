@@ -11,11 +11,24 @@
 #                                "$@"), to re-root the run on WSL-native storage
 #   maize_bounded_jobs           at each real parallel-build site, to cap ninja/make
 #   maize_is_ci                  to skip the cap + niceness under CI
+#   maize_gate_acquire <name>    around a heavy, fork-dense section that must not run
+#   maize_gate_release           concurrently with the SAME section in another
+#                                invocation on the same host (maize-304); mkdir-based,
+#                                machine-wide, with bounded wait + stale-lock recovery
 #
 # The three problems this addresses (maize-263 diagnosis): a repo living on the
 # Windows drive makes every WSL file operation cross the 9P bridge (and get
 # Defender-scanned); ninja/make run with unbounded parallelism on every core; and
 # each fresh agent worktree cold-rebuilds the toolchain. See the maize-263 spec.
+#
+# maize-304 adds a fourth, narrower problem: on Windows/MSYS git-bash, TWO independent
+# heavy builds (e.g. two agent-worktree `run-ctest.sh` invocations, each compiling
+# dozens of quesOS fixtures through the fork-heavy cc-maize.sh pipeline) running at the
+# same time can exhaust the host's MSYS fork-emulation resource pool (`dofork ...
+# Resource temporarily unavailable`), stalling one of them for 35+ minutes with no
+# bound. `maize_gate_acquire`/`maize_gate_release` give callers a machine-wide mutex to
+# serialize around exactly those sections; see the maize-304 spec for the ground-truth
+# read that led here.
 #
 # All functions are written to be safe under `set -eu`, which every calling script
 # enables: no bare command whose failure should not abort the caller is left
@@ -296,4 +309,146 @@ maize_native_mirror_run() {
         || echo "WARNING: artifact sync-back failed; build/toolchain binaries under ${_repo_root} may be stale." >&2
 
     exit "$_rc"
+}
+
+# --- maize-304: machine-wide build gate (mkdir lock, bounded wait, stale recovery) ---
+#
+# maize_lock_root: echo the lock root directory, honoring MAIZE_LOCK_DIR. Deliberately
+# NOT under the repo/worktree (each agent worktree is its own checkout under
+# .claude/worktrees/*): the whole point is serializing ACROSS independently-cloned
+# worktrees on the same host, so the root must be machine-wide, keyed by nothing
+# repo-specific.
+maize_lock_root() {
+    printf '%s' "${MAIZE_LOCK_DIR:-${TMPDIR:-/tmp}/maize-locks}"
+}
+
+# maize_gate_acquire <name>
+#   Acquire a machine-wide, named mutex before entering a heavy, fork-dense section
+#   (e.g. a quesOS-fixture compile loop) that must not run concurrently with the SAME
+#   section in another `run-ctest.sh` invocation on this host (maize-304: two such
+#   invocations can exhaust the Windows/MSYS git-bash fork-emulation resource pool at
+#   once, `dofork ... Resource temporarily unavailable`, stalling one 35+ minutes with
+#   no bound).
+#
+#   Mechanism: `mkdir` is the lock primitive (atomic on both POSIX and MSYS, no
+#   `flock` dependency, since neither a stock MSYS git-bash nor a stock Linux box is
+#   guaranteed to ship it). The winner records its PID and acquire-time UNIX timestamp
+#   inside the lock directory (the "holder" file) so a contending waiter can tell a
+#   LIVE holder from a STALE one, left behind by a holder that was SIGKILL'd (or
+#   crashed) before it reached its release path:
+#     - holder PID no longer running (`kill -0` fails)              -> stale, reclaim now
+#     - holder PID alive but older than MAIZE_GATE_STALE_SECONDS     -> stale, reclaim now
+#     - lock dir present with no holder file past a short grace window (a crash between
+#       `mkdir` and writing the holder file) -> stale, reclaim now
+#   A live, fresh holder is waited out with a short poll interval and periodic ("every
+#   30s") progress output, so a long wait reads as a wait, not a second silent stall.
+#   The total wait is bounded by MAIZE_GATE_WAIT_SECONDS (default 300); exceeding it
+#   fails fast with a clear diagnostic (return 1) rather than blocking forever, so a
+#   genuinely wedged holder cannot deadlock every other invocation on the host.
+#
+#   On success, installs an EXIT/INT/TERM trap that force-releases the lock even if the
+#   caller is killed or errors out before calling maize_gate_release itself (belt and
+#   suspenders: this is also exactly what lets THIS invocation clean up after ITSELF
+#   if it is later the one that gets SIGKILL'd, so the NEXT invocation reclaims a fresh
+#   holder record rather than an ambiguous one). Callers MUST still call
+#   maize_gate_release on every normal exit path from the guarded section (including
+#   early `return`s on a failure inside it): the trap is the backstop for an abnormal
+#   exit, not a substitute for releasing promptly on a normal one, since a lock held
+#   until the WHOLE SCRIPT exits blocks every other section (and every other host
+#   invocation waiting on the same name) far longer than the guarded section itself
+#   runs.
+#
+#   Returns 0 with the lock held, or 1 (after the diagnostic) when the wait budget is
+#   exceeded. Not reentrant: a second maize_gate_acquire for the SAME name from the
+#   SAME process before releasing the first would deadlock against itself exactly
+#   like any other non-reentrant mutex; callers should not nest gates of the same name.
+maize_gate_acquire() {
+    _gate_name="$1"
+    _gate_root=$(maize_lock_root)
+    _gate_dir="${_gate_root}/${_gate_name}.lock"
+    _gate_wait="${MAIZE_GATE_WAIT_SECONDS:-300}"
+    _gate_stale="${MAIZE_GATE_STALE_SECONDS:-1800}"
+    _gate_poll=2
+    _gate_elapsed=0
+    _gate_last_progress=0
+
+    mkdir -p "$_gate_root" 2>/dev/null || true
+
+    while true; do
+        if mkdir "$_gate_dir" 2>/dev/null; then
+            printf '%s %s\n' "$$" "$(date +%s)" > "${_gate_dir}/holder" 2>/dev/null || true
+            MAIZE_GATE_HELD_DIR="$_gate_dir"
+            trap 'maize_gate_release' EXIT INT TERM
+            return 0
+        fi
+
+        _holder_pid=""
+        _holder_time=""
+        if [ -f "${_gate_dir}/holder" ]; then
+            _holder_pid=$(cut -d' ' -f1 "${_gate_dir}/holder" 2>/dev/null) || _holder_pid=""
+            _holder_time=$(cut -d' ' -f2 "${_gate_dir}/holder" 2>/dev/null) || _holder_time=""
+        fi
+
+        _stale=0
+        if [ -n "$_holder_pid" ]; then
+            if ! kill -0 "$_holder_pid" 2>/dev/null; then
+                _stale=1
+            else
+                # Only trust _holder_time for arithmetic once it is confirmed to be a
+                # plain non-negative integer (mirrors maize_bounded_jobs's own
+                # non-numeric-input guard above): a corrupted/partial holder-file write
+                # (e.g. a crash mid-write) must not reach `$((...))` with a non-numeric
+                # operand, which is a hard arithmetic error under `set -eu`. Treat it the
+                # same as "no timestamp recorded" (a live, un-aged holder; not reclaimed
+                # on age, only on the pid-liveness check above).
+                case "$_holder_time" in
+                    ''|*[!0-9]*) : ;;
+                    *)
+                        _now=$(date +%s)
+                        _age=$((_now - _holder_time))
+                        if [ "$_age" -gt "$_gate_stale" ]; then
+                            _stale=1
+                        fi
+                        ;;
+                esac
+            fi
+        elif [ "$_gate_elapsed" -ge 5 ]; then
+            # Lock dir exists but no holder file appeared within a 5s grace window:
+            # the winner crashed between mkdir and the holder-file write. Reclaim
+            # rather than wait out the full budget on a lock nobody will ever finish
+            # writing.
+            _stale=1
+        fi
+
+        if [ "$_stale" -eq 1 ]; then
+            echo "run-ctest.sh: reclaiming stale ${_gate_name} lock (${_gate_dir}, holder pid ${_holder_pid:-unknown} gone or older than ${_gate_stale}s)" >&2
+            rm -rf "$_gate_dir" 2>/dev/null || true
+            continue
+        fi
+
+        if [ "$_gate_elapsed" -ge "$_gate_wait" ]; then
+            echo "run-ctest.sh: [FAIL] could not acquire the ${_gate_name} build gate after ${_gate_wait}s; another concurrent heavy build (pid ${_holder_pid:-unknown}) may be stuck." >&2
+            return 1
+        fi
+
+        if [ $((_gate_elapsed - _gate_last_progress)) -ge 30 ]; then
+            echo "run-ctest.sh: waiting for the ${_gate_name} build gate (${_gate_elapsed}s elapsed, holder pid ${_holder_pid:-unknown})..." >&2
+            _gate_last_progress="$_gate_elapsed"
+        fi
+
+        sleep "$_gate_poll"
+        _gate_elapsed=$((_gate_elapsed + _gate_poll))
+    done
+}
+
+# maize_gate_release: release the lock most recently acquired by maize_gate_acquire in
+# THIS process and clear the EXIT/INT/TERM trap it installed. Idempotent (a second call
+# with no held lock is a silent no-op), so it is safe to call both explicitly at the
+# end of a guarded section AND let the EXIT trap fire harmlessly afterward.
+maize_gate_release() {
+    if [ -n "${MAIZE_GATE_HELD_DIR:-}" ]; then
+        rm -rf "${MAIZE_GATE_HELD_DIR}" 2>/dev/null || true
+        MAIZE_GATE_HELD_DIR=""
+    fi
+    trap - EXIT INT TERM
 }
