@@ -80,9 +80,7 @@ resolves against the guest's `/home/user` working directory in that same persist
 sandbox root, so no writable mount is needed and your saves and config survive
 across runs.
 
-That `~/.maize` directory is also how these commands get shorter: a `~/.maize/config`
-file sets default values for the launcher flags, written one `key=value` per line
-with the dashes dropped (`display-scale=4`, `refresh-hz=20`, `input=keyboard`), so
+A `~/.maize/config` file sets default values for the launcher flags, written one `key=value` per line with the dashes dropped (`display-scale=4`, `refresh-hz=20`, `input=keyboard`), so
 you set them once instead of on every command line, and `~/.maize/env` supplies a
 default guest environment. The sandbox root, the
 config file, and the environment file are all explained in detail further below,
