@@ -25,6 +25,7 @@
 #include "mzcc_cache.h"
 #include "mzcc_sched.h"
 
+#include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -780,20 +781,41 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
     return mzo;
 }
 
+/* Case-fold one ASCII byte to upper-case (matching the ::toupper mazm's own
+   tokenizer applies at src/mazm.cpp:922; see mazm_has_include below). Plain
+   ASCII is enough: mazm's keyword scan is ASCII-only. */
+static char ascii_toupper(char c) {
+    return (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
+}
+
 /* Does a to-be-cached .mazm carry an INCLUDE directive (maize-37)? The asm
    cache keys on the RAW .mazm bytes, which do NOT capture an included file's
    contents, so a cached object built from an INCLUDE-using .mazm could be served
    stale when the included file changes. Resolved OQ 9662: DETECT INCLUDE and
    bypass the cache for that TU (never store or serve), rather than fold the
-   include closure into the key (deferred). Detection is a conservative
-   whole-word scan for the uppercase INCLUDE token; a false positive (the word
-   in a comment) only forgoes caching for that TU, which is always safe. The
-   include-free RT set (crt0/syscall/setjmp/mzdev) caches normally. */
+   include closure into the key (deferred). Detection is a case-INSENSITIVE
+   whole-word scan (cycle-1 review fix, Convention counterexamples Entry 20):
+   mazm's own directive dispatch upper-cases the candidate keyword before the
+   table lookup (src/mazm.cpp:922, `std::transform(..., ::toupper)`), so
+   `include`, `Include`, and `INCLUDE` are all honored as the same directive.
+   A scan for only the upper-case literal would miss every other spelling,
+   letting a lower/mixed-case include splice bypass detection and serve a
+   stale object. A false positive (the word inside a comment, in any case)
+   only forgoes caching for that TU, which is always safe: over-matching here
+   has no downside. The include-free RT set (crt0/syscall/setjmp/mzdev)
+   caches normally regardless of case. */
 static int mazm_has_include(const char *bytes, size_t len) {
     const char *kw = "INCLUDE";
     size_t klen = 7;
     for (size_t i = 0; i + klen <= len; ++i) {
-        if (bytes[i] != 'I' || memcmp(bytes + i, kw, klen) != 0) {
+        int match = 1;
+        for (size_t k = 0; k < klen; ++k) {
+            if (ascii_toupper(bytes[i + k]) != kw[k]) {
+                match = 0;
+                break;
+            }
+        }
+        if (!match) {
             continue;
         }
         char before = (i == 0) ? ' ' : bytes[i - 1];
@@ -1001,11 +1023,18 @@ static int build_objects_parallel(int dev, const Argv *extra_defines,
     int cap = resolve_job_cap(njobs);
     int rc = mzcc_run_jobs(run_one_job, jobs, njobs, cap);
 
-    /* Flush every failed job's captured diagnostics in canonical order (spec
-       3d): un-garbled and deterministic regardless of completion order. */
+    /* Flush ONLY the lowest-index failed job's captured diagnostics (spec 3d:
+       "the driver reports the LOWEST-index failed job's captured stderr").
+       Cycle-1 review fix: this used to flush every failed job's diagnostics,
+       which is deterministic (canonical order) but not what the spec asks
+       for and noisier than the single deterministic report the spec wants
+       when several jobs happen to fail together. */
     for (int i = 0; i < njobs; ++i) {
-        if (!jobs[i].ok && jobs[i].diag.len) {
-            fwrite(jobs[i].diag.data, 1, jobs[i].diag.len, stderr);
+        if (!jobs[i].ok) {
+            if (jobs[i].diag.len) {
+                fwrite(jobs[i].diag.data, 1, jobs[i].diag.len, stderr);
+            }
+            break;
         }
     }
 
@@ -1273,6 +1302,18 @@ static const char *USAGE =
 
 int main(int argc, char **argv) {
     g_argv0 = argv[0];
+
+    /* SHA-256 in-tree known-answer check (maize-274 cycle-1 review nit 4):
+       the object cache's whole correctness rests on this hash actually being
+       SHA-256 (a wrong transform would silently serve a wrong .mzo for the
+       same key), a property this cycle only verified by hand. Assert the
+       FIPS 180-4 "abc" vector at every debug-build startup so a transform
+       regression is caught in-tree going forward. Debug builds are exactly
+       what run-tests.sh / run-ctest.sh build and exercise locally and in CI
+       (CMakePresets.json debug-common), so this runs on every unit-
+       verification pass with no separate harness hook; NDEBUG (release
+       builds) compiles the check away, matching assert()'s own convention. */
+    assert(mzcc_sha256_selfcheck() && "SHA-256 self-check failed: FIPS 180-4 'abc' KAT mismatch");
 
     /* Subcommand dispatch (maize-280, decision DI 9614): a bare argv[1] verb
        token (no leading '-') is checked FIRST, before the existing option scan.

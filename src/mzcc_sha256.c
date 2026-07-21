@@ -116,3 +116,21 @@ void mzcc_sha256_hex(const uint8_t digest[MZCC_SHA256_DIGEST_LEN],
     }
     out[MZCC_SHA256_HEX_LEN] = '\0';
 }
+
+int mzcc_sha256_selfcheck(void) {
+    /* FIPS 180-4 Appendix B.1: SHA-256("abc"). */
+    static const char kat_input[] = "abc";
+    static const char kat_hex[] =
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    mzcc_sha256_ctx c;
+    uint8_t digest[MZCC_SHA256_DIGEST_LEN];
+    char hex[MZCC_SHA256_HEX_LEN + 1];
+
+    mzcc_sha256_init(&c);
+    mzcc_sha256_update(&c, kat_input, sizeof(kat_input) - 1);
+    mzcc_sha256_final(&c, digest);
+    mzcc_sha256_hex(digest, hex);
+
+    return strcmp(hex, kat_hex) == 0;
+}

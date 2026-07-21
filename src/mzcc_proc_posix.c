@@ -119,6 +119,31 @@ int run_proc(const char *exe, char *const *argv, int argc,
     fcntl(spawn_err_pipe[0], F_SETFD, FD_CLOEXEC);
     fcntl(spawn_err_pipe[1], F_SETFD, FD_CLOEXEC);
 
+    /* CLOEXEC on every data-pipe fd too (found during maize-274 cycle-1
+       verification: a genuine hang under the new parallel scheduler, not one
+       of the four review findings, but blocking enough to fix in the same
+       pass rather than ship a known-broken build). Without this, fork()+exec()
+       from one worker THREAD duplicates the WHOLE process's fd table,
+       including every OTHER in-flight job's still-open in_pipe[1]/out_pipe[0]/
+       err_pipe[0]; those leaked copies survive that unrelated child's own
+       exec() (nothing marks them close-on-exec), so a pipe never reaches EOF
+       from the true reader's point of view even after its real owner closes
+       its own copy: a real, reachable deadlock the moment more than one job
+       runs concurrently (unreachable before maize-274, which is the first
+       caller to fork from multiple threads at once). The Win32 backend
+       already gets this right per-handle via
+       SetHandleInformation(..., HANDLE_FLAG_INHERIT, 0) (mzcc_proc_win32.c);
+       this brings the POSIX backend to the same invariant. Harmless on the
+       child side: dup2 always yields a fresh, non-CLOEXEC fd 0/1/2 regardless
+       of the source fd's flag, and the child explicitly closes the original
+       numbered ends right after dup2'ing anyway. */
+    fcntl(in_pipe[0],  F_SETFD, FD_CLOEXEC);
+    fcntl(in_pipe[1],  F_SETFD, FD_CLOEXEC);
+    fcntl(out_pipe[0], F_SETFD, FD_CLOEXEC);
+    fcntl(out_pipe[1], F_SETFD, FD_CLOEXEC);
+    fcntl(err_pipe[0], F_SETFD, FD_CLOEXEC);
+    fcntl(err_pipe[1], F_SETFD, FD_CLOEXEC);
+
     pid_t pid = fork();
     if (pid < 0) {
         close_fd(&in_pipe[0]);  close_fd(&in_pipe[1]);

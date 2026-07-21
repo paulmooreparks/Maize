@@ -23,6 +23,14 @@ static char   *g_fp_self  = NULL;
 static uint8_t g_fingerprint[MZCC_SHA256_DIGEST_LEN];
 static int     g_fp_valid = 0;
 
+/* The atomic-store mutex (defined in full further down, next to
+   mzcc_cache_store) and the cache-root resolver (defined further down, next
+   to entry_path). Forward-declared here so mzcc_cache_configure can warm-init
+   both on the calling thread before any worker exists (cycle-1 review, THE
+   BLOCK finding 1: see mzcc_cache.h). */
+static MzMutex *g_store_mtx = NULL;
+static const char *cache_root(void);
+
 /* Hash one file's raw bytes into the running SHA-256, length-prefixed so two
    tools cannot alias by a boundary shift. A tool that fails to read hashes as a
    zero-length contribution (with its own length prefix), which still rolls the
@@ -50,6 +58,21 @@ static int str_eq(const char *a, const char *b) {
 }
 
 void mzcc_cache_configure(const char *cproc_qbe, const char *qbe, const char *mazm) {
+    /* Warm-init, unconditionally, before the fingerprint memoization check
+       below (cycle-1 review, THE BLOCK finding 1): this function is called
+       exactly once per resolve_toolchain, on the main thread, before
+       build_objects_parallel spawns a single worker, so this is the one place
+       that can guarantee both globals exist before any concurrent reader/
+       writer shows up. cache_root() resolves and memoizes its static
+       root/resolved pair; the mutex is allocated if not already. Both were
+       previously left to lazy-init on first cache lookup/store, which happens
+       concurrently from scheduler workers the moment the parallel object
+       build starts. */
+    (void)cache_root();
+    if (!g_store_mtx) {
+        g_store_mtx = mz_mutex_new();
+    }
+
     char self[4096];
     if (mzcc_self_path(NULL, self, sizeof(self)) != 0) {
         self[0] = '\0';
@@ -92,7 +115,11 @@ int mzcc_cache_enabled(void) {
    ratified override, decision 9649), then MAIZE_OBJECT_CACHE (the spec-prose
    alias, section 2b), then the shared per-user default: %LOCALAPPDATA%/maize/
    objects on Windows, ${XDG_CACHE_HOME:-$HOME/.cache}/maize/objects on POSIX.
-   Returns NULL when no usable location can be resolved (cache silently off). */
+   Returns NULL when no usable location can be resolved (cache silently off).
+   Forward-declared above: mzcc_cache_configure calls this once, serially, to
+   force the memoization before any worker thread exists (THE BLOCK finding
+   1), rather than leaving the first call to race in from a scheduler
+   worker. */
 static const char *cache_root(void) {
     static char *root = NULL;
     static int resolved = 0;
@@ -189,8 +216,9 @@ int mzcc_cache_lookup(const char *key, const char *dst_path) {
 }
 
 /* ---- atomic store ------------------------------------------------------ */
+/* g_store_mtx itself is declared up top (forward-declared for the
+   mzcc_cache_configure warm-init); only the write-counter is local here. */
 
-static MzMutex *g_store_mtx = NULL;
 static unsigned long g_store_ctr = 0;
 
 int mzcc_cache_store(const char *key, const char *src_path) {
@@ -217,10 +245,14 @@ int mzcc_cache_store(const char *key, const char *src_path) {
     }
 
     /* Unique temp name: <pid>.<counter>.tmp under the same shard dir, so the
-       rename is same-directory (atomic on NTFS and ext4). */
-    if (!g_store_mtx) {
-        g_store_mtx = mz_mutex_new();
-    }
+       rename is same-directory (atomic on NTFS and ext4). g_store_mtx is
+       warm-initialized by mzcc_cache_configure before any worker is spawned
+       (THE BLOCK finding 1); no lazy create-on-first-use here, so no worker
+       thread can race to publish the mutex pointer. A defensive fallback for
+       a caller that stores WITHOUT ever configuring (unreached on any current
+       call path: compile_tu_ex/assemble_mazm_file/mzcc_quesos.c all run after
+       resolve_toolchain) is deliberately NOT re-added here; that lazy check
+       was the race. */
     unsigned long ctr;
     mz_mutex_lock(g_store_mtx);
     ctr = ++g_store_ctr;

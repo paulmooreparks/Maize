@@ -33,4 +33,12 @@ void mzcc_sha256_final(mzcc_sha256_ctx *c, uint8_t out[MZCC_SHA256_DIGEST_LEN]);
 void mzcc_sha256_hex(const uint8_t digest[MZCC_SHA256_DIGEST_LEN],
                      char out[MZCC_SHA256_HEX_LEN + 1]);
 
+/* In-tree known-answer test (maize-274 cycle-1 review nit 4): hashes the
+   FIPS 180-4 Appendix B.1 "abc" test vector and compares the hex digest
+   against the standard's published value. The cache key IS this hash, so a
+   transform bug here silently serves wrong objects; guard it in-tree rather
+   than resting on one cycle's manual verification. Returns 1 on match, 0 on
+   mismatch. Callers (mzcc's startup, in debug builds) assert on this. */
+int mzcc_sha256_selfcheck(void);
+
 #endif /* MZCC_SHA256_H */

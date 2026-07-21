@@ -19,9 +19,20 @@
 
 /* Register the post-cpp tool paths whose raw bytes form the toolchain
    fingerprint (cproc-qbe, qbe, mazm; the running mzcc binary is added
-   internally via mzcc_self_path). Call after resolve_toolchain. Idempotent: the
-   fingerprint is memoized and only recomputed when a path changes (a batch loop
-   re-resolving the same preset pays the ~10ms binary hash once). */
+   internally via mzcc_self_path). Called from resolve_toolchain, once, on the
+   main thread, before build_objects_parallel ever spawns a worker. Idempotent:
+   the fingerprint is memoized and only recomputed when a path changes (a batch
+   loop re-resolving the same preset pays the ~10ms binary hash once).
+
+   THIS IS ALSO THE ONE WARM-INIT POINT (maize-274 cycle-1 review, THE BLOCK
+   finding 1) for the cache's other lazily-memoized process globals: the
+   cache-root resolution and the atomic-store mutex are both forced here,
+   serially, so no worker thread is ever the first writer of either. Before
+   this fix, cache_root()'s resolved-flag/pointer pair and the store mutex's
+   create-on-first-use pointer were both first written from whichever worker
+   happened to call mzcc_cache_lookup/store first, a genuine data race (an
+   unsynchronized mutex-pointer publish is unsafe on a relaxed-memory host such
+   as macOS/arm64). */
 void mzcc_cache_configure(const char *cproc_qbe, const char *qbe, const char *mazm);
 
 /* 1 when the object cache is active. Disabled by MAIZE_NO_OBJECT_CACHE=1, which
