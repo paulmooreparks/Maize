@@ -1,0 +1,3 @@
+cksum.c
+libutil/eprintf.c
+libutil/fshut.c

@@ -1,0 +1,6 @@
+sha512-256sum.c
+libutil/crypt.c
+libutil/eprintf.c
+libutil/fshut.c
+libutil/sha512-256.c
+libutil/sha512.c

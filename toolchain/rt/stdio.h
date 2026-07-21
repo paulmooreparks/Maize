@@ -24,6 +24,11 @@
  * MINIMUM digit count (zero-filled after the sign, "0" flag suppressed) and the
  * string MAXIMUM character count (truncation). Float printf (%f/%e/%g) is still
  * unsupported: the formatter has no float conversion.
+ *
+ * stdin (maize-292): a real FILE* object over fd 0, backed by a real BUFSIZ static
+ * buffer (unlike stdout/stderr's NULL, unbuffered buf), because fread/fill_rbuf have
+ * no unbuffered-read fast path and always read into stream->buf. Read-only; not
+ * threaded onto the atexit flush list, which exists for buffered WRITE streams only.
  */
 #ifndef MAIZE_STDIO_H
 #define MAIZE_STDIO_H
@@ -65,6 +70,7 @@ typedef struct _FILE FILE;
 
 extern FILE *stdout;
 extern FILE *stderr;
+extern FILE *stdin;
 
 /* fileno (maize-94): the underlying descriptor of a stream, for borrowed oksh's
  * history.c / io.c. Body in stdio.c (returns stream->fd). */

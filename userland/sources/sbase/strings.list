@@ -1,0 +1,12 @@
+strings.c
+libutil/ealloc.c
+libutil/eprintf.c
+libutil/fshut.c
+libutil/reallocarray.c
+libutil/strtonum.c
+libutf/fgetrune.c
+libutf/fputrune.c
+libutf/iscntrlrune.c
+libutf/isprintrune.c
+libutf/rune.c
+libutf/runetype.c

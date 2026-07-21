@@ -1,0 +1,4 @@
+tee.c
+libutil/ealloc.c
+libutil/eprintf.c
+libutil/writeall.c

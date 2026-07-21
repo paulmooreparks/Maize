@@ -1,0 +1,8 @@
+join.c
+libutil/eprintf.c
+libutil/fshut.c
+libutil/linecmp.c
+libutil/memmem.c
+libutil/reallocarray.c
+libutil/strtonum.c
+libutil/unescape.c

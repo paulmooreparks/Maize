@@ -1,0 +1,7 @@
+fold.c
+libutil/eprintf.c
+libutil/fshut.c
+libutil/strtonum.c
+libutf/isblankrune.c
+libutf/rune.c
+libutf/runetype.c

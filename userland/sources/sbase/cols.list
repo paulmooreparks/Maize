@@ -1,0 +1,7 @@
+cols.c
+libutil/ealloc.c
+libutil/eprintf.c
+libutil/fshut.c
+libutil/getlines.c
+libutil/reallocarray.c
+libutil/strtonum.c

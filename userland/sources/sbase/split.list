@@ -1,0 +1,6 @@
+split.c
+libutil/eprintf.c
+libutil/fshut.c
+libutil/parseoffset.c
+libutil/strlcpy.c
+libutil/strtonum.c

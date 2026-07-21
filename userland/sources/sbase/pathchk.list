@@ -1,0 +1,3 @@
+pathchk.c
+libutil/ealloc.c
+libutil/eprintf.c

@@ -1,0 +1,46 @@
+maize-292: kill -0 (process-existence check) is honestly unsupported, not faked.
+
+Upstream file/function: kill.c, main().
+Why: quesOS's do_kill (os/quesos/quesos.c) rejects any signal outside 1..31, so the
+stock kill -0 pid / kill 0 pid existence check (POSIX: send signal 0, no real
+signal delivered, success/failure reflects whether the pid exists) now returns
+EINVAL unconditionally instead of the correct existence-check result. Sending a
+real, state-mutating signal (e.g. SIGCONT) as a substitute would be worse than the
+honest gap, so this overlay makes the deviation explicit: sig == 0 prints a clear
+"process-existence check is not supported on this platform" message and returns
+the same nonzero status stock kill -0 would return on failure. Every other signal
+(1-31, the whole sigs[] table minus its "0" entry) is unaffected and works exactly
+as upstream. A second, unrelated fix rides the same overlay: kill.c calls kill()
+without including <unistd.h> (POSIX declares kill() in <signal.h>; the Maize RT
+declares it only in <unistd.h>, matching decision 9695's stdin-only RT-change
+scope for this card, so the fix lands here in the userland patch instead of
+widening signal.h).
+diff --git a/kill.c b/kill.c
+index e69de29..1111111 100644
+--- a/kill.c
++++ b/kill.c
+@@ -7,6 +7,7 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <strings.h>
++#include <unistd.h>
+
+ #include "util.h"
+
+@@ -120,6 +121,16 @@
+
+ 	for (; *argv; argc--, argv++) {
+ 		pid = estrtonum(*argv, INT_MIN, INT_MAX);
++		if (sig == 0) {
++			/* maize-292: quesOS's do_kill rejects sig outside 1..31, so the
++			 * POSIX existence-check idiom (kill -0 / kill 0) cannot be honored
++			 * here; sending a real signal as a substitute would mutate process
++			 * state, so this says so plainly instead of the misleading stock
++			 * "Invalid argument" text. Every signal 1-31 is unaffected. */
++			weprintf("kill %d: process-existence check (signal 0) is not supported on this platform\n", pid);
++			ret = 1;
++			continue;
++		}
+ 		if (kill(pid, sig) < 0) {
+ 			weprintf("kill %d:", pid);
+ 			ret = 1;

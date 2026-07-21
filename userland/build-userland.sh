@@ -87,7 +87,41 @@ mkdir -p "$OUT"
 # maize-243), so the wave ships the other 10 sbase utils + oksh and AC 8935 lands at
 # 10/11 with ed explicitly deferred. The operator-confirmed list is OQ 8949.
 SBASE_WAVE1="true false echo printf pwd cat cp mv rm ls"
-if [ -z "$PROGS" ]; then PROGS="${SBASE_WAVE1} oksh"; fi
+
+# Wave-2 default set (maize-292): every sbase tool confirmed by an actual build AND
+# a real quesOS smoke run (not static inspection alone) to compile, link, and behave
+# correctly against the current guest RT, plus the patched `kill`. The spec's own
+# Group-A/Group-B triage (18 + 28 tools) turned out to be a spec-time estimate, not a
+# build/run-time fact: empirical verification of every listed tool found 15 real gaps
+# the spec did not anticipate, each one out of THIS card's scope per decision 9695
+# (the stdin fix is the only RT change this card makes):
+#   dd (strtoumax), env/nohup (_exit not visible via <unistd.h>, only <syscall.h>),
+#   pathchk (_POSIX_PATH_MAX), tail (llabs), test (faccessat/AT_FDCWD, the same *at()
+#   family already excluded elsewhere in this card's spec section 7) -- 6 of Group A;
+#   sort (strtod), split (SSIZE_MAX), strings/wc (bsearch, transitively via the
+#   isXXXrune classifier files), uudecode (chmod) -- 4 of Group B; tr fails separately
+#   on a pre-existing qbe-maize backend limit (aggregate/struct arguments are not
+#   supported), unrelated to any libc gap. expand/unexpand BUILD and LINK clean but
+#   fail their smoke run: both call parselist(), whose
+#   `estrtonum(p, 1, MIN(LLONG_MAX, SIZE_MAX))` trips a genuine, pre-existing
+#   cproc/qbe backend defect (MIN(LLONG_MAX, SIZE_MAX) evaluates to -1 instead of
+#   LLONG_MAX, a 64-bit signed/unsigned ternary mis-promotion, reproduced minimally
+#   and confirmed to affect other in-tree call sites of the same macro pairing too),
+#   so their default (no -t) invocation exits 1 instead of passing text through.
+#   uuencode ALSO builds and links clean but crashes the whole VM ("unhandled
+#   interrupt: vector 8", a page fault quesOS has no user-mode recovery for yet) on
+#   even the most trivial invocation, reproduced as the SOLE check in its own
+#   single-tool smoke fixture (ruling out a fixture-shape artifact); the exact root
+#   cause (uuencode.c's own fstat/fread interaction, or another pinned-backend
+#   codegen defect) is not chased down here. None of these 15 ship; each is a
+#   candidate for its own future card (see maize-292's card comments), not a defect
+#   in this list. kill needed its own patch (0007-kill-sig0-existence.patch) for a
+#   related but distinct reason: kill() is declared only in <unistd.h> here, but
+#   kill.c (like every POSIX C library) expects <signal.h> to declare it; the patch
+#   adds the include rather than widening a shared RT header.
+SBASE_WAVE2="basename cal cksum dirname logname mkdir printenv sleep sponge tee unlink yes cmp cols comm cut fold head join md5sum paste rev sha1sum sha224sum sha256sum sha384sum sha512sum sha512-224sum sha512-256sum tsort uniq kill"
+
+if [ -z "$PROGS" ]; then PROGS="${SBASE_WAVE1} ${SBASE_WAVE2} oksh"; fi
 
 # maize-263 C2: content-addressed staged-source cache key for a project. sha256 over
 # the pinned submodule SHA + the whole applied patch series + the shim-header set

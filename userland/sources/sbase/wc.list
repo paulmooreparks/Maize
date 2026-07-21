@@ -1,0 +1,6 @@
+wc.c
+libutil/eprintf.c
+libutil/fshut.c
+libutf/fgetrune.c
+libutf/isspacerune.c
+libutf/runetype.c

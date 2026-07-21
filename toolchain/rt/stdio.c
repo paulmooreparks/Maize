@@ -38,6 +38,15 @@ static FILE _stderr = { STDERR_FILENO, _F_WRITE | _F_UNBUF, 0, NULL, 0, 0, 0, NU
 FILE *stdout = &_stdout;
 FILE *stderr = &_stderr;
 
+/* stdin (maize-292): unlike stdout/stderr, fread/fill_rbuf have no unbuffered-read
+ * fast path (they always read into stream->buf sized stream->bufcap), so stdin needs
+ * a REAL backing buffer, not NULL. Read-only: not threaded onto g_streams (that list
+ * exists for buffered WRITE streams; __stdio_flush_all only flushes mode == 2
+ * entries), matching the precedent stdout/stderr already set by staying off it too. */
+static unsigned char _stdin_buf[BUFSIZ];
+static FILE _stdin = { STDIN_FILENO, _F_READ, 0, _stdin_buf, BUFSIZ, 0, 0, NULL };
+FILE *stdin = &_stdin;
+
 /* Head of the open (fopen'd) buffered-stream list, and the one-shot guard that arms
  * the atexit flush hook the first time a buffered stream is created (maize-120). */
 static FILE *g_streams = NULL;
@@ -1229,8 +1238,9 @@ rewind(FILE *stream)
 }
 
 /* fgetc / getc / getchar (maize-94): single-byte reads. fgetc/getc go through the
- * buffered fread path; getchar reads fd 0 directly (there is no stdin FILE* object in
- * this slice). Return the byte (0..255) or EOF at end/error. */
+ * buffered fread path; getchar still reads fd 0 directly rather than routing through
+ * the maize-292 stdin FILE* (its own long-standing direct-fd contract, unchanged by
+ * that card). Return the byte (0..255) or EOF at end/error. */
 int
 fgetc(FILE *stream)
 {

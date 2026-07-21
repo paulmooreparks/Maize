@@ -3253,6 +3253,149 @@ run_userland94_fixtures() {
 
 run_userland94_fixtures
 
+# maize-292: wave-2 userland (34 additional sbase tools + patched kill, on top of
+# wave-1). Mirrors run_userland94_fixtures' shape (build the /bin set, compile the
+# launcher fixtures as quesOS worklist entries, boot + check). build-userland.sh's
+# no-explicit-progs default is now the FULL union (wave-1 + wave-2 + kill + oksh,
+# build-userland.sh:90), so no explicit prog list is needed here.
+run_userland_wave2_fixtures() {
+    builder="${REPO_ROOT}/os/quesos/build-quesos.sh"
+    ubuild="${REPO_ROOT}/userland/build-userland.sh"
+    progs="${WORK_DIR}/ul292-progs"
+    bindir="${WORK_DIR}/ul292-bin"
+    rwdir="${WORK_DIR}/ul292-rw"
+    tmpdir="${WORK_DIR}/ul292-tmp"
+    quesos="${WORK_DIR}/ul292-quesos.mzx"
+    log="${WORK_DIR}/ul292.log"
+    rm -rf "$progs" "$bindir" "$rwdir" "$tmpdir"; mkdir -p "$progs" "$bindir" "$rwdir" "$tmpdir"
+
+    if ! command -v find >/dev/null 2>&1 || ! command -v cp >/dev/null 2>&1; then
+        echo "[SKIP] userland292: cp/find unavailable (cannot stage the sbase scratch tree)"
+        return
+    fi
+
+    if ! sh "$builder" --preset "$PRESET" -o "$quesos" >"$log" 2>&1 || [ ! -f "$quesos" ]; then
+        echo "[FAIL] userland292: quesOS link failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    # No explicit prog list: build-userland.sh's default is the full wave-1 + wave-2
+    # + kill + oksh union (AC 9691 both-drivers-same-default-set discipline).
+    if ! sh "$ubuild" --preset "$PRESET" --out "$bindir" >>"$log" 2>&1; then
+        echo "[FAIL] userland292: build-userland.sh failed to build the default (wave-1+wave-2+kill+oksh) set"
+        cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    for _drv in wave2_launch_a wave2_launch_b wave2_launch_c wave2_launch_d kill_launch wave2_stdin_pipe; do
+        if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${_drv}.mzx" \
+                "${REPO_ROOT}/os/quesos/${_drv}.c" >>"$log" 2>&1; then
+            echo "[FAIL] userland292: ${_drv}.c compile failed"; cat "$log" >&2
+            TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+        fi
+    done
+    pnat=$(host_to_native "$progs")
+    bnat=$(host_to_native "$bindir")
+    rnat=$(host_to_native "$rwdir")
+    tnat=$(host_to_native "$tmpdir")
+
+    # /tmp:rw is required for sponge.mzx (sponge.c's mkstemp target is hardcoded to
+    # /tmp regardless of its own file argument; --no-root means no path exists at all
+    # without an explicit --mount grant).
+    ul292_run() {
+        MSYS2_ARG_CONV_EXCL='/progs;/bin;/rw;/tmp' timeout 90 "$MAIZE" --no-root \
+            --mount "${pnat}=/progs:ro" --mount "${bnat}=/bin:ro" \
+            --mount "${rnat}=/rw:rw" --mount "${tnat}=/tmp:rw" \
+            "$quesos" "$1" 2>/dev/null
+    }
+
+    # AC 9683/9684: every wave-2 tool this card ships (31 of 46 the spec's own
+    # triage listed; see build-userland.sh's SBASE_WAVE2 comment for the 15 that
+    # this card's own build/run discovered cannot ship, and why) responds to a
+    # trivial smoke invocation with the expected exit code. Split four ways
+    # (part A: 12 tools; part B: 10; part C: 5; part D: 4), each its own quesOS
+    # boot: an earlier, larger single-fixture draft crashed the whole VM partway
+    # through (an uncaught page fault; quesOS has no user-mode fault recovery
+    # yet), and smaller boots stay well under whatever fork/pipe/stack-shape
+    # threshold triggered it. Every tool is independently confirmed via a
+    # standalone single-check harness during this card's own implementation.
+    # uuencode is excluded entirely (not just moved to another part): even as the
+    # SOLE check in its own single-tool fixture it reproducibly crashed the VM the
+    # same way, so this is a real defect in that tool's own execution path (or its
+    # interaction with the RT/quesOS), not a fixture-shape artifact; out of scope
+    # to root-cause further here (decision 9695's stdin-only RT change), flagged
+    # as a candidate for its own dedicated card.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul292_run /progs/wave2_launch_a.mzx); set -e
+    if printf '%s\n' "$out" | grep -qF "wave2-launch-a: PASS"; then
+        echo "[PASS] userland292_wave2_launch_a (12 sbase tools, trivial smoke)"
+    else
+        echo "[FAIL] userland292_wave2_launch_a"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul292_run /progs/wave2_launch_b.mzx); set -e
+    if printf '%s\n' "$out" | grep -qF "wave2-launch-b: PASS"; then
+        echo "[PASS] userland292_wave2_launch_b (10 sbase tools, trivial smoke)"
+    else
+        echo "[FAIL] userland292_wave2_launch_b"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul292_run /progs/wave2_launch_c.mzx); set -e
+    if printf '%s\n' "$out" | grep -qF "wave2-launch-c: PASS"; then
+        echo "[PASS] userland292_wave2_launch_c (5 sbase tools, trivial smoke)"
+    else
+        echo "[FAIL] userland292_wave2_launch_c"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul292_run /progs/wave2_launch_d.mzx); set -e
+    if printf '%s\n' "$out" | grep -qF "wave2-launch-d: PASS"; then
+        echo "[PASS] userland292_wave2_launch_d (4 sbase tools, trivial smoke)"
+    else
+        echo "[FAIL] userland292_wave2_launch_d"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # AC 9685/9686: real stdin through oksh's own pipeline machinery (uniq dedup)
+    # and libutil/crypt.c's stdin path specifically (md5sum's known "abc" digest).
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul292_run /progs/wave2_stdin_pipe.mzx); set -e
+    if printf '%s\n' "$out" | grep -qF "wave2-stdin-pipe: PASS"; then
+        echo "[PASS] userland292_stdin_pipe (uniq dedup + md5sum digest, real oksh pipe)"
+    else
+        echo "[FAIL] userland292_stdin_pipe"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # AC 9687: the patched kill against real target pids (signals 1/9/15) plus the
+    # documented, honest kill -0 deviation.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul292_run /progs/kill_launch.mzx); set -e
+    if printf '%s\n' "$out" | grep -qF "kill-launch: PASS"; then
+        echo "[PASS] userland292_kill (TERM/KILL/HUP against real pids + honest sig-0 deviation)"
+    else
+        echo "[FAIL] userland292_kill"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # AC 9688: wave-1 unaffected in the sense that matters operationally (build
+    # success + verify_mzx + correct execution). NOTE (found during this card's own
+    # implementation): the literal "byte-identical .mzx" half of AC 9688 is
+    # structurally impossible for ANY stdin-fix shape, because mzld links the whole
+    # fixed RT object set into every image with no dead-code elimination (verified:
+    # a build-only, code-comment-free RT diff still perturbs every wave-1 binary's
+    # bytes). Re-running true/false/pwd/oksh here (already exercised above by
+    # run_userland94_fixtures against THIS SAME build) is the behavioral half of
+    # that AC; a byte-diff against a pre-stdin-fix baseline is a one-time Implement-
+    # stage check (recorded on the card), not a standing CI assertion, since after
+    # this card lands there IS no pre-stdin-fix baseline left to diff against.
+}
+
+run_userland_wave2_fixtures
+
 echo "-----------------------------------------------------------------------"
 if [ "$FAIL_COUNT" -eq 0 ]; then
     echo "C toolchain: ${TOTAL} passed, 0 failed."

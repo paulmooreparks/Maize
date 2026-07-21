@@ -29,11 +29,34 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The wave-1 default set (build-userland.sh:89 SBASE_WAVE1 + oksh): the 10 sbase
-   utils that do not require POSIX regex, plus oksh. ed is deferred (needs regcomp/
-   regexec). Single point of truth for the wave-1 set, moved into the driver. */
+/* The wave-1 default set (build-userland.sh:89 SBASE_WAVE1): the 10 sbase utils
+   that do not require POSIX regex. ed is deferred (needs regcomp/regexec). oksh is
+   appended separately below (cmd_build_userland), matching build-userland.sh:90. */
 static const char *WAVE1[] = {
-    "true", "false", "echo", "printf", "pwd", "cat", "cp", "mv", "rm", "ls", "oksh"
+    "true", "false", "echo", "printf", "pwd", "cat", "cp", "mv", "rm", "ls"
+};
+
+/* The wave-2 default set (maize-292, build-userland.sh's SBASE_WAVE2): every sbase
+   tool an actual build AND a real quesOS smoke run confirmed compiles, links, and
+   BEHAVES correctly against the current guest RT, plus the patched `kill`. 15 tools
+   the card's spec expected to be build-ready turned out, empirically, to need an
+   RT/toolchain surface out of this card's stdin-only scope (decision 9695) and are
+   NOT in this list: dd, env, nohup, pathchk, tail, test (Group A) and sort, split,
+   strings, tr, uudecode, wc (Group B) fail to build or link; expand and unexpand
+   build and link clean but fail their smoke run (a pre-existing cproc/qbe 64-bit
+   signed/unsigned ternary mis-promotion in parselist()'s
+   MIN(LLONG_MAX, SIZE_MAX), unrelated to any libc gap); uuencode ALSO builds and
+   links clean but crashes the whole VM (an uncaught page fault) even as the sole
+   check in its own single-tool smoke fixture. See build-userland.sh's SBASE_WAVE2
+   comment for the per-tool reason. Single point of truth for both waves, moved
+   into the driver (mirrors the wave-1 comment this replaces). */
+static const char *WAVE2[] = {
+    "basename", "cal", "cksum", "dirname", "logname", "mkdir", "printenv", "sleep",
+    "sponge", "tee", "unlink", "yes",
+    "cmp", "cols", "comm", "cut", "fold", "head", "join", "md5sum",
+    "paste", "rev", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum",
+    "sha512-224sum", "sha512-256sum", "tsort", "uniq",
+    "kill"
 };
 
 /* The stage scratch root (its own temp dir, distinct from the compile scratch),
@@ -357,11 +380,17 @@ int cmd_build_userland(int argc, char **argv) {
     mkdir_p(out);
     ensure_repo_root();
 
-    /* Wave-1 default set when no programs are named. */
+    /* Wave-1 + wave-2 + oksh default set when no programs are named (build-
+       userland.sh:90's `${SBASE_WAVE1} ${SBASE_WAVE2} oksh`, maize-292 AC 9691:
+       both drivers build the same union with no explicit prog names). */
     if (progs.n == 0) {
         for (size_t i = 0; i < sizeof(WAVE1) / sizeof(WAVE1[0]); ++i) {
             sl_push(&progs, WAVE1[i]);
         }
+        for (size_t i = 0; i < sizeof(WAVE2) / sizeof(WAVE2[0]); ++i) {
+            sl_push(&progs, WAVE2[i]);
+        }
+        sl_push(&progs, "oksh");
     }
 
     /* Stage sbase once up front (matching the script); oksh is staged lazily on

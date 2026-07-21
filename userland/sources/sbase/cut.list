@@ -1,0 +1,7 @@
+cut.c
+libutil/eprintf.c
+libutil/fshut.c
+libutil/memmem.c
+libutil/reallocarray.c
+libutil/unescape.c
+libutf/rune.c

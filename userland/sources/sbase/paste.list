@@ -1,0 +1,10 @@
+paste.c
+libutil/eprintf.c
+libutil/fshut.c
+libutil/reallocarray.c
+libutil/unescape.c
+libutf/fgetrune.c
+libutf/fputrune.c
+libutf/rune.c
+libutf/utf.c
+libutf/utftorunestr.c
