@@ -961,6 +961,19 @@ fopen(const char *path, const char *mode)
     return f;
 }
 
+/* True for the three static stream objects (stdin/stdout/stderr, maize-292 cycle 2
+ * fix): none of them is heap-allocated, so fclose must never free their buffer or
+ * the FILE object itself. Before maize-292 this was a safe no-op only because
+ * stdout/stderr's buf was NULL (free(NULL) is a no-op) and the process typically
+ * exited right after; stdin's new real backing buffer (_stdin_buf) turned the same
+ * unconditional free() pair into live memory corruption, since fshut(stdin, ...) is
+ * called unconditionally by every stdin-consuming sbase tool on a normal run. */
+static int
+is_static_stream(FILE *stream)
+{
+    return stream == &_stdin || stream == &_stdout || stream == &_stderr;
+}
+
 int
 fclose(FILE *stream)
 {
@@ -983,8 +996,10 @@ fclose(FILE *stream)
 
     if (close(stream->fd) != 0)
         rc = -1;
-    free(stream->buf);
-    free(stream);
+    if (!is_static_stream(stream)) {
+        free(stream->buf);
+        free(stream);
+    }
     return rc;
 }
 

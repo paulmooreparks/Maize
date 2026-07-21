@@ -8,10 +8,9 @@
  * real target file; the split is a fixture-shape mitigation, not evidence of a
  * defect in any of these tools.
  *
- * AC 9683/9684 substrate, part D: sha512-224sum, sha512-256sum, tsort, uniq
- * (uuencode moved to part E after this exact five-tool grouping reproducibly
- * crashed while every other tested subset of four did not; the split isolates it
- * without asserting root cause).
+ * AC 9683/9684 substrate, part D: sha512-224sum, sha512-256sum, tsort, uniq.
+ * uuencode is excluded entirely (maize-298: reproducible VM page-fault crash), not
+ * merely moved to another part; no "part E" fixture exists.
  *
  * Requires /bin mounted and a writable /rw mount seeded with a few small fixture
  * files (seed(), below). Every execve passes a real, valid (if empty) envp array.

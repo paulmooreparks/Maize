@@ -3253,11 +3253,12 @@ run_userland94_fixtures() {
 
 run_userland94_fixtures
 
-# maize-292: wave-2 userland (34 additional sbase tools + patched kill, on top of
-# wave-1). Mirrors run_userland94_fixtures' shape (build the /bin set, compile the
-# launcher fixtures as quesOS worklist entries, boot + check). build-userland.sh's
-# no-explicit-progs default is now the FULL union (wave-1 + wave-2 + kill + oksh,
-# build-userland.sh:90), so no explicit prog list is needed here.
+# maize-292: wave-2 userland (31 additional sbase tools, 12 Group-A + 19 Group-B,
+# plus patched kill, on top of wave-1). Mirrors run_userland94_fixtures' shape
+# (build the /bin set, compile the launcher fixtures as quesOS worklist entries,
+# boot + check). build-userland.sh's no-explicit-progs default is now the FULL
+# union (wave-1 + wave-2 + kill + oksh, build-userland.sh:90), so no explicit prog
+# list is needed here.
 run_userland_wave2_fixtures() {
     builder="${REPO_ROOT}/os/quesos/build-quesos.sh"
     ubuild="${REPO_ROOT}/userland/build-userland.sh"
@@ -3285,7 +3286,7 @@ run_userland_wave2_fixtures() {
         cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
-    for _drv in wave2_launch_a wave2_launch_b wave2_launch_c wave2_launch_d kill_launch wave2_stdin_pipe; do
+    for _drv in wave2_launch_a wave2_launch_b wave2_launch_c wave2_launch_d kill_launch wave2_stdin_pipe wave2_stdin_reuse; do
         if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${_drv}.mzx" \
                 "${REPO_ROOT}/os/quesos/${_drv}.c" >>"$log" 2>&1; then
             echo "[FAIL] userland292: ${_drv}.c compile failed"; cat "$log" >&2
@@ -3367,6 +3368,21 @@ run_userland_wave2_fixtures() {
         echo "[PASS] userland292_stdin_pipe (uniq dedup + md5sum digest, real oksh pipe)"
     else
         echo "[FAIL] userland292_stdin_pipe"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # Cycle-2 fix (code-review push-back): fclose(stdin) freed a static buffer and a
+    # static FILE object onto the RT allocator's free-list, corrupting memory. This
+    # is the read-back regression check the smoke tests above cannot catch, since
+    # every process they drive exits immediately after its own fshut(stdin, ...): one
+    # process reads real piped stdin, calls fclose(stdin), then allocates and reads
+    # back a batch of heap blocks to confirm the free-list is still sound.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(ul292_run /progs/wave2_stdin_reuse.mzx); set -e
+    if printf '%s\n' "$out" | grep -qF "wave2-stdin-reuse: PASS"; then
+        echo "[PASS] userland292_stdin_reuse (fclose(stdin) does not corrupt the heap)"
+    else
+        echo "[FAIL] userland292_stdin_reuse"; printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 
