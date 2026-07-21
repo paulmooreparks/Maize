@@ -219,18 +219,33 @@ compile_c() {
 # then cats the accumulated log to stderr (unchanged from the prior per-call-site
 # behavior) and returns 1; callers bump TOTAL/FAIL_COUNT and return/continue exactly as
 # they did around the old bare call.
+#
+# Code-review fix (maize-304 cycle 2): plain `timeout N cmd` sends ONE SIGTERM and then
+# WAITS for the child to exit; a compile wedged in the exact `dofork ... Resource
+# temporarily unavailable` condition this card targets may not respond to SIGTERM (the
+# stuck fork can leave the process in a state where its normal signal handling never
+# runs), so an unwrapped `timeout` can silently reproduce the original unbounded stall.
+# `-k GRACE` arms a SIGKILL that fires GRACE seconds after the SIGTERM if the child is
+# still alive, which is the actual backstop for a child that ignores TERM. Confirmed
+# `-k` is supported by this host's `timeout` (GNU coreutils 8.32 via git-bash). Per
+# `timeout`'s own documented exit-status contract, a plain TERM-caused timeout exits
+# 124, but when the KILL escalation actually has to fire (the child ignored TERM) the
+# exit status becomes 128+9=137 (the "died from SIGKILL" status) instead of 124;
+# confirmed directly against a SIGTERM-ignoring stub on this host. Both codes are
+# treated as the same "timed out" diagnostic below.
 MAIZE_FIXTURE_COMPILE_TIMEOUT="${MAIZE_FIXTURE_COMPILE_TIMEOUT:-120}"
+MAIZE_FIXTURE_COMPILE_KILL_GRACE="${MAIZE_FIXTURE_COMPILE_KILL_GRACE:-10}"
 cc_maize_compile_bounded() {
     _cmb_label="$1"; _cmb_out="$2"; _cmb_src="$3"; _cmb_log="$4"
     set +e
-    timeout "$MAIZE_FIXTURE_COMPILE_TIMEOUT" "$CC_MAIZE" --preset "$PRESET" \
-        -o "$_cmb_out" "$_cmb_src" >>"$_cmb_log" 2>&1
+    timeout -k "$MAIZE_FIXTURE_COMPILE_KILL_GRACE" "$MAIZE_FIXTURE_COMPILE_TIMEOUT" \
+        "$CC_MAIZE" --preset "$PRESET" -o "$_cmb_out" "$_cmb_src" >>"$_cmb_log" 2>&1
     _cmb_rc=$?
     set -e
     if [ "$_cmb_rc" -eq 0 ]; then
         return 0
     fi
-    if [ "$_cmb_rc" -eq 124 ]; then
+    if [ "$_cmb_rc" -eq 124 ] || [ "$_cmb_rc" -eq 137 ]; then
         echo "[FAIL] ${_cmb_label} compile timed out after ${MAIZE_FIXTURE_COMPILE_TIMEOUT}s (possible fork-resource exhaustion)"
     elif grep -qiE 'dofork.*Resource temporarily unavailable' "$_cmb_log" 2>/dev/null; then
         echo "[FAIL] ${_cmb_label} compile failed (fork-resource exhaustion: dofork Resource temporarily unavailable)"
@@ -3058,14 +3073,23 @@ run_userland94_fixtures() {
     # plus the oksh shell). oksh is the wave's central deliverable (ACs 8929-8934).
     # maize-304: bounded by `timeout` (build-userland.sh's own internal cc-maize.sh
     # calls are the same fork-dense pipeline the quesOS loops use, over 11 tools).
+    # `-k GRACE` (cycle-2 review fix, see cc_maize_compile_bounded's comment above):
+    # a plain `timeout` only sends SIGTERM and waits, which a compile wedged in the
+    # actual dofork resource-exhaustion condition may never honor; SIGKILL after the
+    # grace window is the real backstop.
     UBUILD_TIMEOUT="${MAIZE_UBUILD_TIMEOUT:-300}"
+    UBUILD_KILL_GRACE="${MAIZE_UBUILD_KILL_GRACE:-10}"
     set +e
-    timeout "$UBUILD_TIMEOUT" sh "$ubuild" --preset "$PRESET" --out "$bindir" \
-            true false echo cat pwd printf cp mv rm ls oksh >>"$log" 2>&1
+    timeout -k "$UBUILD_KILL_GRACE" "$UBUILD_TIMEOUT" sh "$ubuild" --preset "$PRESET" \
+            --out "$bindir" true false echo cat pwd printf cp mv rm ls oksh >>"$log" 2>&1
     _ubuild_rc=$?
     set -e
     if [ "$_ubuild_rc" -ne 0 ]; then
-        if [ "$_ubuild_rc" -eq 124 ]; then
+        # 124: timeout's normal "I killed it with TERM" code. 137 (128+9): the -k
+        # grace's SIGKILL actually fired because the child ignored TERM (this is
+        # `timeout`'s own documented exit-status contract, confirmed directly against
+        # a SIGTERM-ignoring stub); both mean the same thing here, a timed-out build.
+        if [ "$_ubuild_rc" -eq 124 ] || [ "$_ubuild_rc" -eq 137 ]; then
             echo "[FAIL] userland94: build-userland.sh timed out after ${UBUILD_TIMEOUT}s (possible fork-resource exhaustion)"
         elif grep -qiE 'dofork.*Resource temporarily unavailable' "$log" 2>/dev/null; then
             echo "[FAIL] userland94: build-userland.sh failed (fork-resource exhaustion: dofork Resource temporarily unavailable)"

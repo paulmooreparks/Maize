@@ -346,6 +346,28 @@ maize_lock_root() {
 #   fails fast with a clear diagnostic (return 1) rather than blocking forever, so a
 #   genuinely wedged holder cannot deadlock every other invocation on the host.
 #
+#   Cycle-2 code-review fixes (both closing the SAME class of bug: a waiter reclaiming
+#   a lock whose holder is still very much alive, i.e. a double critical-section entry):
+#     - The holder-identity write is now FORK-FREE for the part that matters (the PID):
+#       `printf` and `$$` are shell builtins, so the PID lands on disk with nothing
+#       able to fork/stall between `mkdir` succeeding and that write completing. The
+#       PREVIOUS code forked `date` for the timestamp BEFORE the first write ever hit
+#       disk; on a fork-starved host (exactly the condition maize-304 exists to handle)
+#       that fork could itself stall past the grace window below, so a waiter would
+#       reclaim a lock whose holder had not yet gotten around to proving it was there.
+#       The timestamp (which does need a `date +%s` fork; POSIX sh has no fork-free
+#       clock) is written in a second, separate pass, after the PID is already visible.
+#     - The decide-and-evict step is now fenced behind its OWN atomic mkdir (see the
+#       `.reclaiming` marker directory below) so at most one waiter ever acts on a given
+#       stale determination, and that waiter re-verifies the holder PID is UNCHANGED
+#       immediately before deleting anything. Without this fence, two waiters that both
+#       judge the same lock stale in the same iteration could interleave as: A deletes
+#       the lock dir, loops, wins the real `mkdir`, and starts writing its own holder
+#       file; B (already past its own stale check on the OLD state) then deletes the
+#       dir out from under A and also wins a `mkdir` -- two holders. The fence closes
+#       that: a waiter that loses the `.reclaiming` mkdir does not touch the directory
+#       at all, it just loops and re-reads fresh state.
+#
 #   On success, installs an EXIT/INT/TERM trap that force-releases the lock even if the
 #   caller is killed or errors out before calling maize_gate_release itself (belt and
 #   suspenders: this is also exactly what lets THIS invocation clean up after ITSELF
@@ -376,6 +398,12 @@ maize_gate_acquire() {
 
     while true; do
         if mkdir "$_gate_dir" 2>/dev/null; then
+            # Fork-free PID write FIRST (see the maize_gate_acquire doc comment above):
+            # printf and $$ are shell builtins, so nothing can fork/stall between mkdir
+            # granting the lock and the holder file proving it. The timestamp (which
+            # does need a `date` fork) is appended in a second write right after; the
+            # presence-based grace window below only cares that the PID landed fast.
+            printf '%s\n' "$$" > "${_gate_dir}/holder" 2>/dev/null || true
             printf '%s %s\n' "$$" "$(date +%s)" > "${_gate_dir}/holder" 2>/dev/null || true
             MAIZE_GATE_HELD_DIR="$_gate_dir"
             trap 'maize_gate_release' EXIT INT TERM
@@ -386,7 +414,19 @@ maize_gate_acquire() {
         _holder_time=""
         if [ -f "${_gate_dir}/holder" ]; then
             _holder_pid=$(cut -d' ' -f1 "${_gate_dir}/holder" 2>/dev/null) || _holder_pid=""
-            _holder_time=$(cut -d' ' -f2 "${_gate_dir}/holder" 2>/dev/null) || _holder_time=""
+            # `-s` (POSIX cut: suppress lines containing no delimiter) is required
+            # here, not optional: the fork-free write above lands the PID-only line
+            # FIRST, then a second write appends " <timestamp>". During the (normally
+            # sub-millisecond) window between those two writes, this file has ONE
+            # field and NO space. Plain `cut -d' ' -f2` on a delimiter-less line
+            # passes the WHOLE line through unchanged (POSIX-mandated, confirmed on
+            # this host), so without `-s` this would read back the PID itself as
+            # "_holder_time", and the age arithmetic below (`now - holder_time`) would
+            # then compute a huge bogus age against a live holder and misreport it
+            # stale. Caught while writing this cycle's self-test (test 4: a live,
+            # delayed-write holder was getting reclaimed); `-s` makes an in-flight
+            # PID-only line read back as an empty (not-yet-aged) timestamp instead.
+            _holder_time=$(cut -s -d' ' -f2 "${_gate_dir}/holder" 2>/dev/null) || _holder_time=""
         fi
 
         _stale=0
@@ -421,8 +461,30 @@ maize_gate_acquire() {
         fi
 
         if [ "$_stale" -eq 1 ]; then
-            echo "run-ctest.sh: reclaiming stale ${_gate_name} lock (${_gate_dir}, holder pid ${_holder_pid:-unknown} gone or older than ${_gate_stale}s)" >&2
-            rm -rf "$_gate_dir" 2>/dev/null || true
+            # Fence the decide-and-evict step behind its OWN atomic mkdir so at most
+            # one waiter ever touches "$_gate_dir" here (see the doc comment above).
+            # Losing this mkdir means another waiter is already handling (or has
+            # already handled) the reclaim; just loop and re-read fresh state rather
+            # than acting on a decision that may already be stale itself.
+            _gate_reclaim="${_gate_dir}.reclaiming"
+            if mkdir "$_gate_reclaim" 2>/dev/null; then
+                # Re-verify under the fence: the holder must still be the one we
+                # judged stale (same PID, or still no holder file in the
+                # crashed-before-first-write case) before deleting anything. If a
+                # legitimate new holder acquired the lock while we were deciding,
+                # this leaves it alone.
+                _recheck_pid=""
+                if [ -d "$_gate_dir" ]; then
+                    if [ -f "${_gate_dir}/holder" ]; then
+                        _recheck_pid=$(cut -d' ' -f1 "${_gate_dir}/holder" 2>/dev/null) || _recheck_pid=""
+                    fi
+                    if [ "$_recheck_pid" = "$_holder_pid" ]; then
+                        echo "run-ctest.sh: reclaiming stale ${_gate_name} lock (${_gate_dir}, holder pid ${_holder_pid:-unknown} gone or older than ${_gate_stale}s)" >&2
+                        rm -rf "$_gate_dir" 2>/dev/null || true
+                    fi
+                fi
+                rmdir "$_gate_reclaim" 2>/dev/null || true
+            fi
             continue
         fi
 
