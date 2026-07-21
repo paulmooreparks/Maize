@@ -333,6 +333,80 @@ int mzcc_make_temp_dir(char *out, size_t cap) {
     return 0;
 }
 
+/* ---- portable thread / mutex / nproc primitives (maize-274) ------------- */
+
+struct MzThread {
+    pthread_t     tid;
+    void       *(*fn)(void *);
+    void         *arg;
+};
+
+struct MzMutex {
+    pthread_mutex_t m;
+};
+
+static void *mz_thread_trampoline(void *p) {
+    struct MzThread *t = (struct MzThread *)p;
+    return t->fn(t->arg);
+}
+
+MzThread *mz_thread_start(void *(*fn)(void *), void *arg) {
+    struct MzThread *t = (struct MzThread *)malloc(sizeof(*t));
+    if (!t) {
+        return NULL;
+    }
+    t->fn = fn;
+    t->arg = arg;
+    if (pthread_create(&t->tid, NULL, mz_thread_trampoline, t) != 0) {
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
+void mz_thread_join(MzThread *t) {
+    if (!t) {
+        return;
+    }
+    pthread_join(t->tid, NULL);
+    free(t);
+}
+
+MzMutex *mz_mutex_new(void) {
+    struct MzMutex *m = (struct MzMutex *)malloc(sizeof(*m));
+    if (!m) {
+        return NULL;
+    }
+    if (pthread_mutex_init(&m->m, NULL) != 0) {
+        free(m);
+        return NULL;
+    }
+    return m;
+}
+
+void mz_mutex_lock(MzMutex *m)   { if (m) { pthread_mutex_lock(&m->m); } }
+void mz_mutex_unlock(MzMutex *m) { if (m) { pthread_mutex_unlock(&m->m); } }
+
+void mz_mutex_free(MzMutex *m) {
+    if (m) {
+        pthread_mutex_destroy(&m->m);
+        free(m);
+    }
+}
+
+int mzcc_nproc(void) {
+#if defined(_SC_NPROCESSORS_ONLN)
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return (n > 0) ? (int)n : 0;
+#else
+    return 0;
+#endif
+}
+
+unsigned long mzcc_pid(void) {
+    return (unsigned long)getpid();
+}
+
 void mzcc_remove_tree(const char *path) {
     DIR *d = opendir(path);
     if (d) {

@@ -309,6 +309,79 @@ int mzcc_make_temp_dir(char *out, size_t cap) {
     return -1;
 }
 
+/* ---- portable thread / mutex / nproc primitives (maize-274) ------------- */
+
+struct MzThread {
+    HANDLE        h;
+    void       *(*fn)(void *);
+    void         *arg;
+    void         *ret;
+};
+
+struct MzMutex {
+    CRITICAL_SECTION cs;
+};
+
+static DWORD WINAPI mz_thread_trampoline(LPVOID p) {
+    struct MzThread *t = (struct MzThread *)p;
+    t->ret = t->fn(t->arg);
+    return 0;
+}
+
+MzThread *mz_thread_start(void *(*fn)(void *), void *arg) {
+    struct MzThread *t = (struct MzThread *)malloc(sizeof(*t));
+    if (!t) {
+        return NULL;
+    }
+    t->fn = fn;
+    t->arg = arg;
+    t->ret = NULL;
+    t->h = CreateThread(NULL, 0, mz_thread_trampoline, t, 0, NULL);
+    if (!t->h) {
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
+void mz_thread_join(MzThread *t) {
+    if (!t) {
+        return;
+    }
+    WaitForSingleObject(t->h, INFINITE);
+    CloseHandle(t->h);
+    free(t);
+}
+
+MzMutex *mz_mutex_new(void) {
+    struct MzMutex *m = (struct MzMutex *)malloc(sizeof(*m));
+    if (!m) {
+        return NULL;
+    }
+    InitializeCriticalSection(&m->cs);
+    return m;
+}
+
+void mz_mutex_lock(MzMutex *m)   { if (m) { EnterCriticalSection(&m->cs); } }
+void mz_mutex_unlock(MzMutex *m) { if (m) { LeaveCriticalSection(&m->cs); } }
+
+void mz_mutex_free(MzMutex *m) {
+    if (m) {
+        DeleteCriticalSection(&m->cs);
+        free(m);
+    }
+}
+
+int mzcc_nproc(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (si.dwNumberOfProcessors > 0) ? (int)si.dwNumberOfProcessors : 0;
+}
+
+unsigned long mzcc_pid(void) {
+    return (unsigned long)GetCurrentProcessId();
+}
+
 void mzcc_remove_tree(const char *path) {
     char pattern[MAX_PATH * 2];
     int w = snprintf(pattern, sizeof(pattern), "%s\\*", path);

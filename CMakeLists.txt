@@ -77,7 +77,13 @@ add_executable(mzcc
   "src/mzcc_fs.c"
   "src/mzcc_userland.c"
   "src/mzcc_demos.c"
-  "src/mzcc_quesos.c")
+  "src/mzcc_quesos.c"
+  # maize-274: the content-addressed object cache (SHA-256 key + atomic store)
+  # and the parallel TU scheduler (a worker pool over the mzcc_proc thread
+  # primitives). No new external dependency: still libc + Threads.
+  "src/mzcc_sha256.c"
+  "src/mzcc_cache.c"
+  "src/mzcc_sched.c")
 set_property(TARGET mzcc PROPERTY C_STANDARD 11)
 
 find_package(Threads REQUIRED)

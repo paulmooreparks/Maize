@@ -125,6 +125,10 @@ int cmd_build_demos(int argc, char **argv) {
         } else if (strncmp(a, "--out=", 6) == 0) {
             free(out);
             out = xstrdup(a + 6);
+        } else if (strcmp(a, "-j") == 0) {
+            mzcc_set_jobs_override((i + 1 < argc) ? atoi(argv[++i]) : 0);
+        } else if (strncmp(a, "-j", 2) == 0) {
+            mzcc_set_jobs_override(atoi(a + 2));
         } else if (a[0] == '-') {
             die("unknown option: %s", a);
         } else {

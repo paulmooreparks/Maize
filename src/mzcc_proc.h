@@ -85,6 +85,34 @@ int mzcc_make_temp_dir(char *out, size_t cap);
    native analog of cc-maize.sh's `rm -rf "$WORK"`). Never fails loudly. */
 void mzcc_remove_tree(const char *path);
 
+/* ---- portable thread / mutex / nproc primitives (maize-274) -------------
+   The parallel TU scheduler (mzcc_sched.c) needs a worker pool over a
+   mutex-guarded shared job index. Rather than introduce a second threading
+   layer, these reuse the same DI2 core/posix/win32 backend seam every other
+   spawn primitive uses: the posix backend is pthread, the win32 backend is the
+   Win32 thread API, each internally #ifdef-guarded so the non-matching TU
+   compiles to nothing. Handles are opaque heap objects. */
+typedef struct MzThread MzThread; /* opaque; heap handle */
+typedef struct MzMutex  MzMutex;  /* opaque; heap handle */
+
+/* Start a thread running fn(arg). Returns a heap handle (join + free with
+   mz_thread_join), or NULL on failure. */
+MzThread *mz_thread_start(void *(*fn)(void *), void *arg);
+/* Join `t`, then free its handle. NULL is a no-op. */
+void      mz_thread_join(MzThread *t);
+
+MzMutex  *mz_mutex_new(void);
+void      mz_mutex_lock(MzMutex *m);
+void      mz_mutex_unlock(MzMutex *m);
+void      mz_mutex_free(MzMutex *m);
+
+/* Online processor count (sysconf(_SC_NPROCESSORS_ONLN) / GetSystemInfo).
+   Returns 0 when the count cannot be determined. */
+int mzcc_nproc(void);
+
+/* Current process id, for unique cache temp-file names. */
+unsigned long mzcc_pid(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -22,6 +22,8 @@
 #include "mzcc_proc.h"
 #include "mzcc_internal.h"
 #include "mzcc_fs.h"
+#include "mzcc_cache.h"
+#include "mzcc_sched.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -364,6 +366,67 @@ void sl_free(StrList *s) {
     sl_init(s);
 }
 
+/* ---- failure-diagnostic sink (maize-274) -------------------------------
+   Every per-TU failure message and captured child stderr goes through these two
+   helpers. With `diag == NULL` (the serial single-file path, quesos, --build)
+   the text reaches the process stderr inline exactly as before. Under the
+   parallel scheduler each job passes its own `diag` ByteBuf, so concurrent
+   failures never interleave on stderr; the driver flushes each failed job's
+   captured diagnostics in canonical order after join (spec 3d). */
+static void diag_printf(ByteBuf *diag, const char *fmt, ...) {
+    va_list ap;
+    if (!diag) {
+        va_start(ap, fmt);
+        vfprintf(stderr, fmt, ap);
+        va_end(ap);
+        return;
+    }
+    char buf[2048];
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n > 0) {
+        byte_buf_append(diag, buf, (size_t)n < sizeof(buf) ? (size_t)n : sizeof(buf) - 1);
+    }
+}
+
+static void diag_bytes(ByteBuf *diag, const char *data, size_t len) {
+    if (len == 0) {
+        return;
+    }
+    if (!diag) {
+        fwrite(data, 1, len, stderr);
+    } else {
+        byte_buf_append(diag, data, len);
+    }
+}
+
+/* MAIZE_CACHE_STATS=1 turns on a per-TU HIT/MISS line to stderr (spec 2d / AC
+   9633: a cache-hit log is the observable that proves cproc-qbe/qbe/mazm were
+   skipped on a hit). Resolved once. */
+static int cache_stats_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("MAIZE_CACHE_STATS");
+        v = (e && e[0] && !(e[0] == '0' && e[1] == '\0')) ? 1 : 0;
+    }
+    return v;
+}
+
+static void cache_log(const char *verb, const char *tag) {
+    if (cache_stats_on()) {
+        fprintf(stderr, "mzcc: cache %s %s\n", verb, tag);
+    }
+}
+
+/* Process-wide -j override (maize-274), 0 = unset. Set by main()'s scan or a
+   batch subcommand via mzcc_set_jobs_override. */
+static int g_jobs_override = 0;
+
+void mzcc_set_jobs_override(int n) {
+    g_jobs_override = (n > 0) ? n : 0;
+}
+
 /* ---- in-process transforms (formerly shell / sed) ----------------------- */
 
 /* 3a. CRLF strip (replaces `tr -d '\r'`): copy dropping every 0x0D byte. */
@@ -509,7 +572,7 @@ static const char *RT_C[] = {
    via the mazm stdin-to-object extension (7a): mazm -c --stdin --base-path
    <OBJ_DIR> --source-name <tag>. Returns a fresh path to the .mzo on success,
    NULL on failure (message already printed). */
-static char *assemble_stdin(const char *bytes, size_t len, const char *tag) {
+static char *assemble_stdin(const char *bytes, size_t len, const char *tag, ByteBuf *diag) {
     Argv av;
     av_init(&av);
     av_add(&av, MAZM);
@@ -525,9 +588,9 @@ static char *assemble_stdin(const char *bytes, size_t len, const char *tag) {
     av_free(&av);
     char *mzo = joinstr(OBJ_DIR, "/", tag, ".mzo");
     if (!ran || r.exit_code != 0 || !path_exists(mzo)) {
-        fprintf(stderr, "mzcc: mazm -c failed for %s\n", tag);
-        if (r.stderr_bytes.len) { fwrite(r.stderr_bytes.data, 1, r.stderr_bytes.len, stderr); }
-        if (r.stdout_bytes.len) { fwrite(r.stdout_bytes.data, 1, r.stdout_bytes.len, stderr); }
+        diag_printf(diag, "mzcc: mazm -c failed for %s\n", tag);
+        diag_bytes(diag, r.stderr_bytes.data, r.stderr_bytes.len);
+        diag_bytes(diag, r.stdout_bytes.data, r.stdout_bytes.len);
         byte_buf_free(&r.stdout_bytes);
         byte_buf_free(&r.stderr_bytes);
         free(mzo);
@@ -557,10 +620,10 @@ static char *assemble_stdin(const char *bytes, size_t len, const char *tag) {
    cpp line cc-maize.sh emits for the same command-line -D flags. NULL means none,
    which makes compile_tu_ex behavior-identical to the old compile_tu. */
 char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
-                    ByteBuf *emit_body) {
+                    ByteBuf *emit_body, ByteBuf *diag) {
     ByteBuf raw;
     if (read_file(src, &raw) != 0) {
-        fprintf(stderr, "mzcc: cannot read source %s\n", src);
+        diag_printf(diag, "mzcc: cannot read source %s\n", src);
         byte_buf_free(&raw);
         return NULL;
     }
@@ -610,13 +673,37 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
     byte_buf_free(&lf);
     free(src_dir);
     if (!ran || pp.exit_code != 0) {
-        fprintf(stderr, "mzcc: cpp failed for %s\n", tag);
-        if (pp.stderr_bytes.len) { fwrite(pp.stderr_bytes.data, 1, pp.stderr_bytes.len, stderr); }
+        diag_printf(diag, "mzcc: cpp failed for %s\n", tag);
+        diag_bytes(diag, pp.stderr_bytes.data, pp.stderr_bytes.len);
         byte_buf_free(&pp.stdout_bytes);
         byte_buf_free(&pp.stderr_bytes);
         return NULL;
     }
     byte_buf_free(&pp.stderr_bytes);
+
+    /* ---- content-addressed object cache (maize-274, spec 2d) -------------
+       The cpp boundary is the key boundary: the preprocessed bytes are the
+       flattened #include closure, so a header/-D/-I/source change all roll the
+       key. The object tag carries the ".body" infix (the same obj_tag the mazm
+       stage names below), and is folded into the key so a served object is
+       bit-identical to a fresh compile for that exact tag. cpp already ran (its
+       output IS the key), so only cproc-qbe/normalize/qbe/mazm are skipped on a
+       hit. --emit bypasses the cache (the qbe body is a side output the cache
+       does not store). */
+    char *obj_tag = joinstr(tag, ".body", NULL, NULL);
+    char *mzo_dst = joinstr(OBJ_DIR, "/", obj_tag, ".mzo");
+    int cache_on = mzcc_cache_enabled() && emit_body == NULL;
+    char key[MZCC_SHA256_HEX_LEN + 1];
+    if (cache_on) {
+        mzcc_cache_key(pp.stdout_bytes.data, pp.stdout_bytes.len, obj_tag, key);
+        if (mzcc_cache_lookup(key, mzo_dst)) {
+            cache_log("hit", obj_tag);
+            byte_buf_free(&pp.stdout_bytes);
+            free(obj_tag);
+            return mzo_dst; /* cproc-qbe / qbe / mazm all skipped */
+        }
+        cache_log("miss", obj_tag);
+    }
 
     /* Stage: cproc-qbe (C11 -> QBE IL), stdin = cpp stdout. */
     Argv cq;
@@ -627,10 +714,11 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
     av_free(&cq);
     byte_buf_free(&pp.stdout_bytes);
     if (!ran || ssa.exit_code != 0) {
-        fprintf(stderr, "mzcc: cproc-qbe failed for %s\n", tag);
-        if (ssa.stderr_bytes.len) { fwrite(ssa.stderr_bytes.data, 1, ssa.stderr_bytes.len, stderr); }
+        diag_printf(diag, "mzcc: cproc-qbe failed for %s\n", tag);
+        diag_bytes(diag, ssa.stderr_bytes.data, ssa.stderr_bytes.len);
         byte_buf_free(&ssa.stdout_bytes);
         byte_buf_free(&ssa.stderr_bytes);
+        free(obj_tag); free(mzo_dst);
         return NULL;
     }
     byte_buf_free(&ssa.stderr_bytes);
@@ -651,10 +739,11 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
     av_free(&qb);
     byte_buf_free(&norm);
     if (!ran || body.exit_code != 0) {
-        fprintf(stderr, "mzcc: qbe -t maize failed for %s\n", tag);
-        if (body.stderr_bytes.len) { fwrite(body.stderr_bytes.data, 1, body.stderr_bytes.len, stderr); }
+        diag_printf(diag, "mzcc: qbe -t maize failed for %s\n", tag);
+        diag_bytes(diag, body.stderr_bytes.data, body.stderr_bytes.len);
         byte_buf_free(&body.stdout_bytes);
         byte_buf_free(&body.stderr_bytes);
+        free(obj_tag); free(mzo_dst);
         return NULL;
     }
     byte_buf_free(&body.stderr_bytes);
@@ -676,110 +765,266 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
        namespaced away from the bare RT-asm set the same way cc-maize.sh keeps
        them apart. Object names are internal (mzld resolves by symbol, not
        filename), so this does not change the linked .mzx. */
-    char *obj_tag = joinstr(tag, ".body", NULL, NULL);
-    char *mzo = assemble_stdin(body.stdout_bytes.data, body.stdout_bytes.len, obj_tag);
-    free(obj_tag);
+    char *mzo = assemble_stdin(body.stdout_bytes.data, body.stdout_bytes.len, obj_tag, diag);
     byte_buf_free(&body.stdout_bytes);
+
+    /* Store on a fully-successful .mzo only (spec 2c): a failed pipeline above
+       returned early and never reaches here, so the cache never holds a torn or
+       partial object. Store is best-effort; a failure just means the next build
+       recompiles. */
+    if (mzo && cache_on) {
+        mzcc_cache_store(key, mzo);
+    }
+    free(obj_tag);
+    free(mzo_dst);
     return mzo;
 }
 
-/* The single/multi-source default compile path: compile_tu_ex with no per-build
-   -D tokens. Behavior-identical to the pre-maize-280 compile_tu. */
-static char *compile_tu(const char *src, const char *tag, ByteBuf *emit_body) {
-    return compile_tu_ex(src, tag, NULL, emit_body);
+/* Does a to-be-cached .mazm carry an INCLUDE directive (maize-37)? The asm
+   cache keys on the RAW .mazm bytes, which do NOT capture an included file's
+   contents, so a cached object built from an INCLUDE-using .mazm could be served
+   stale when the included file changes. Resolved OQ 9662: DETECT INCLUDE and
+   bypass the cache for that TU (never store or serve), rather than fold the
+   include closure into the key (deferred). Detection is a conservative
+   whole-word scan for the uppercase INCLUDE token; a false positive (the word
+   in a comment) only forgoes caching for that TU, which is always safe. The
+   include-free RT set (crt0/syscall/setjmp/mzdev) caches normally. */
+static int mazm_has_include(const char *bytes, size_t len) {
+    const char *kw = "INCLUDE";
+    size_t klen = 7;
+    for (size_t i = 0; i + klen <= len; ++i) {
+        if (bytes[i] != 'I' || memcmp(bytes + i, kw, klen) != 0) {
+            continue;
+        }
+        char before = (i == 0) ? ' ' : bytes[i - 1];
+        char after = (i + klen < len) ? bytes[i + klen] : ' ';
+        int lhs_delim = !((before >= 'A' && before <= 'Z') ||
+                          (before >= 'a' && before <= 'z') ||
+                          (before >= '0' && before <= '9') || before == '_');
+        int rhs_delim = !((after >= 'A' && after <= 'Z') ||
+                          (after >= 'a' && after <= 'z') ||
+                          (after >= '0' && after <= '9') || after == '_');
+        if (lhs_delim && rhs_delim) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* Assemble a .mazm file at `mazm_path` to a .mzo tagged `tag` (maize-280
    generalization of assemble_rt_asm, which hardcoded RT_DIR/<name>.mazm). Read
    the .mazm and feed it through the same mazm stdin-to-object path (no copy into
    scratch needed, cc-maize.sh:479-488). Returns a fresh .mzo path, or NULL. */
-char *assemble_mazm_file(const char *mazm_path, const char *tag) {
+char *assemble_mazm_file(const char *mazm_path, const char *tag, ByteBuf *diag) {
     ByteBuf b;
     if (read_file(mazm_path, &b) != 0) {
-        fprintf(stderr, "mzcc: cannot read asm module %s\n", mazm_path);
+        diag_printf(diag, "mzcc: cannot read asm module %s\n", mazm_path);
         byte_buf_free(&b);
         return NULL;
     }
-    char *mzo = assemble_stdin(b.data, b.len, tag);
+
+    /* Asm-path object cache (maize-274, spec 2d): key = SHA-256(fingerprint ||
+       raw .mazm bytes || tag). Bypass entirely on an INCLUDE-using .mazm (OQ
+       9662) so an object whose include closure is not in the key is never
+       stored or served. */
+    int cache_on = mzcc_cache_enabled() && !mazm_has_include(b.data, b.len);
+    char *mzo_dst = joinstr(OBJ_DIR, "/", tag, ".mzo");
+    char key[MZCC_SHA256_HEX_LEN + 1];
+    if (cache_on) {
+        mzcc_cache_key(b.data, b.len, tag, key);
+        if (mzcc_cache_lookup(key, mzo_dst)) {
+            cache_log("hit", tag);
+            byte_buf_free(&b);
+            return mzo_dst; /* mazm spawn skipped */
+        }
+        cache_log("miss", tag);
+    }
+
+    char *mzo = assemble_stdin(b.data, b.len, tag, diag);
     byte_buf_free(&b);
+    if (mzo && cache_on) {
+        mzcc_cache_store(key, mzo);
+    }
+    free(mzo_dst);
     return mzo;
 }
 
-/* Assemble a freestanding RT asm module (crt0/syscall/setjmp/mzdev) to a .mzo. */
-static char *assemble_rt_asm(const char *name) {
-    char *src = joinstr(RT_DIR, "/", name, ".mazm");
-    char *mzo = assemble_mazm_file(src, name);
-    free(src);
-    return mzo;
+/* ---- reusable build core: the parallel object build (maize-274) ---------
+   The RT asm set + optional mzdev + the libc C modules + the user TUs form ONE
+   independent job set feeding a single link. compile_tu_ex / assemble_mazm_file
+   are the DI9 pure-function seam (no shared mutable driver state), so workers
+   are thread-safe as-is; the only shared writable resource, OBJ_DIR, receives a
+   distinct filename per job (tags are unique). Both former serial loops
+   (build_rt_objects / compile_user_sources) collapse into ONE job builder here
+   so the single-file path and every batch subcommand share it (spec section 4).
+
+   Determinism (spec 3c): only compilation is parallelized. Each job writes its
+   own pre-assigned slot; the object vector is read back in canonical job order
+   (RT_ASM, mzdev, RT_C, user in source order), INDEPENDENT of completion order,
+   so the linked .mzx is byte-identical to the serial (MAIZE_JOBS=1) build. */
+
+typedef enum { JOB_ASM, JOB_C } JobKind;
+
+typedef struct {
+    JobKind      kind;
+    char        *src;    /* owned: .mazm path (ASM) or .c path (C) */
+    char        *tag;    /* owned object tag */
+    const Argv  *extra;  /* borrowed cpp -D tokens (C jobs; may be NULL) */
+    int          want_emit;
+    /* outputs, each written only by this job's own worker (no sharing): */
+    char        *mzo;    /* owned result path; NULL on failure */
+    ByteBuf      emit;    /* qbe body, when want_emit */
+    int          have_emit;
+    ByteBuf      diag;    /* captured failure diagnostics (spec 3d) */
+    int          ok;
+} Job;
+
+/* The per-index worker (MzJobFn): run one job into its own slots. */
+static int run_one_job(void *ctx, int i) {
+    Job *j = &((Job *)ctx)[i];
+    byte_buf_init(&j->diag);
+    j->have_emit = 0;
+    if (j->kind == JOB_ASM) {
+        j->mzo = assemble_mazm_file(j->src, j->tag, &j->diag);
+    } else {
+        ByteBuf *emitp = j->want_emit ? &j->emit : NULL;
+        j->mzo = compile_tu_ex(j->src, j->tag, j->extra, emitp, &j->diag);
+        if (j->mzo && emitp) { j->have_emit = 1; }
+    }
+    j->ok = (j->mzo != NULL);
+    return j->ok ? 0 : 1;
 }
 
-/* ---- reusable build core (maize-280) ----------------------------------- */
+/* Concurrency cap (spec 3b): explicit -j / MAIZE_JOBS wins; else max(2,
+   nproc-2), fallback 4 when nproc is unknown; then clamped to 1..job_count.
+   MAIZE_JOBS=1 forces the serial parity reference. */
+static int resolve_job_cap(int job_count) {
+    int explicit_cap = 0;
+    if (g_jobs_override > 0) {
+        explicit_cap = g_jobs_override;
+    } else {
+        const char *e = getenv("MAIZE_JOBS");
+        if (e && e[0]) {
+            int v = atoi(e);
+            if (v > 0) { explicit_cap = v; }
+        }
+    }
+    int cap;
+    if (explicit_cap > 0) {
+        cap = explicit_cap;
+    } else {
+        int np = mzcc_nproc();
+        if (np > 0) {
+            cap = np - 2;
+            if (cap < 2) { cap = 2; }
+        } else {
+            cap = 4;
+        }
+    }
+    if (cap < 1) { cap = 1; }
+    if (cap > job_count) { cap = job_count; }
+    return cap;
+}
 
-/* Compile the RT object set (section 8) into `rt_objs` (already sl_init'd), in
-   the single-point-of-truth link order. `extra_defines` (nullable) is applied to
-   the libc C modules exactly as cc-maize.sh applies its command-line -D flags to
-   every compile. Returns 0 on success, 1 on any RT build failure. */
-static int build_rt_objects(int dev, const Argv *extra_defines, StrList *rt_objs) {
+static void free_jobs(Job *jobs, int njobs) {
+    for (int i = 0; i < njobs; ++i) {
+        free(jobs[i].src);
+        free(jobs[i].tag);
+        free(jobs[i].mzo);
+        byte_buf_free(&jobs[i].emit);
+        byte_buf_free(&jobs[i].diag);
+    }
+    free(jobs);
+}
+
+/* Build the full object set (RT asm + optional mzdev + libc + user TUs) in
+   parallel and fill `out_objs` (already sl_init'd) in canonical link order.
+   `extra_defines` (nullable) applies to the libc C modules and the user sources
+   (never the asm jobs), exactly as cc-maize.sh applies its command-line -D flags.
+   `emit_single` (nullable, single-source only) receives the qbe body of the sole
+   user TU; *out_have_emit is set accordingly (the cache is bypassed for that TU).
+   Returns 0 on success, 1 on any compile/assemble failure (failed-job diagnostics
+   are flushed to stderr in canonical order first). */
+static int build_objects_parallel(int dev, const Argv *extra_defines,
+                                  const StrList *sources, int used_sources,
+                                  ByteBuf *emit_single, int *out_have_emit,
+                                  StrList *out_objs) {
+    if (out_have_emit) { *out_have_emit = 0; }
+    int multi = (sources->n >= 2) || used_sources;
+    int n_asm = (int)(sizeof(RT_ASM) / sizeof(RT_ASM[0])) + (dev ? 1 : 0);
+    int n_rtc = (int)(sizeof(RT_C) / sizeof(RT_C[0]));
+    int njobs = n_asm + n_rtc + sources->n;
+
+    Job *jobs = (Job *)xmalloc((size_t)njobs * sizeof(Job));
+    memset(jobs, 0, (size_t)njobs * sizeof(Job));
+
+    int idx = 0;
+    /* RT asm set (declared order), then mzdev if --dev. */
     for (size_t i = 0; i < sizeof(RT_ASM) / sizeof(RT_ASM[0]); ++i) {
-        char *mzo = assemble_rt_asm(RT_ASM[i]);
-        if (!mzo) { return 1; }
-        sl_push(rt_objs, mzo);
-        free(mzo);
+        jobs[idx].kind = JOB_ASM;
+        jobs[idx].src = joinstr(RT_DIR, "/", RT_ASM[i], ".mazm");
+        jobs[idx].tag = xstrdup(RT_ASM[i]);
+        ++idx;
     }
     if (dev) {
-        char *mzo = assemble_rt_asm("mzdev");
-        if (!mzo) { return 1; }
-        sl_push(rt_objs, mzo);
-        free(mzo);
+        jobs[idx].kind = JOB_ASM;
+        jobs[idx].src = joinstr(RT_DIR, "/mzdev.mazm", NULL, NULL);
+        jobs[idx].tag = xstrdup("mzdev");
+        ++idx;
     }
+    /* libc C modules (declared order), tag rt_<name>. */
     for (size_t i = 0; i < sizeof(RT_C) / sizeof(RT_C[0]); ++i) {
-        char *cpath = joinstr(RT_DIR, "/", RT_C[i], ".c");
-        char *tag = joinstr("rt_", RT_C[i], NULL, NULL);
-        char *mzo = compile_tu_ex(cpath, tag, extra_defines, NULL);
-        free(cpath);
-        free(tag);
-        if (!mzo) {
-            fprintf(stderr, "mzcc: failed to compile C runtime object %s.c\n", RT_C[i]);
-            return 1;
-        }
-        sl_push(rt_objs, mzo);
-        free(mzo);
+        jobs[idx].kind = JOB_C;
+        jobs[idx].src = joinstr(RT_DIR, "/", RT_C[i], ".c");
+        jobs[idx].tag = joinstr("rt_", RT_C[i], NULL, NULL);
+        jobs[idx].extra = extra_defines;
+        ++idx;
     }
-    return 0;
-}
-
-/* Compile the user sources into `user_objs` (already sl_init'd). multi is
-   (n>=2)||used_sources (cc-maize.sh's own rule): multi-source objects carry the
-   u<i>_<base> tag, a single source carries its bare base. `emit_body` (nullable,
-   single-source only) receives the qbe body; *out_have_emit is set accordingly.
-   `extra_defines` (nullable) applies to every source. Returns 0/1. */
-static int compile_user_sources(const StrList *sources, int used_sources,
-                                const Argv *extra_defines, ByteBuf *emit_body,
-                                int *out_have_emit, StrList *user_objs) {
-    int multi = (sources->n >= 2) || used_sources;
-    if (out_have_emit) { *out_have_emit = 0; }
-    if (multi) {
-        for (int i = 0; i < sources->n; ++i) {
-            char *base = base_noext_c(sources->v[i]);
+    /* User TUs (source order): multi -> u<i>_<base>, single -> bare base. */
+    for (int i = 0; i < sources->n; ++i) {
+        char *base = base_noext_c(sources->v[i]);
+        jobs[idx].kind = JOB_C;
+        jobs[idx].src = xstrdup(sources->v[i]);
+        if (multi) {
             char pfx[32];
             snprintf(pfx, sizeof(pfx), "u%d_", i);
-            char *tag = joinstr(pfx, base, NULL, NULL);
-            char *mzo = compile_tu_ex(sources->v[i], tag, extra_defines, NULL);
-            free(base);
-            free(tag);
-            if (!mzo) { return 1; }
-            sl_push(user_objs, mzo);
-            free(mzo);
+            jobs[idx].tag = joinstr(pfx, base, NULL, NULL);
+        } else {
+            jobs[idx].tag = xstrdup(base);
+            jobs[idx].want_emit = (emit_single != NULL);
         }
-    } else {
-        char *base = base_noext_c(sources->v[0]);
-        char *mzo = compile_tu_ex(sources->v[0], base, extra_defines, emit_body);
-        if (out_have_emit && emit_body) { *out_have_emit = 1; }
+        jobs[idx].extra = extra_defines;
         free(base);
-        if (!mzo) { return 1; }
-        sl_push(user_objs, mzo);
-        free(mzo);
+        ++idx;
     }
+
+    int cap = resolve_job_cap(njobs);
+    int rc = mzcc_run_jobs(run_one_job, jobs, njobs, cap);
+
+    /* Flush every failed job's captured diagnostics in canonical order (spec
+       3d): un-garbled and deterministic regardless of completion order. */
+    for (int i = 0; i < njobs; ++i) {
+        if (!jobs[i].ok && jobs[i].diag.len) {
+            fwrite(jobs[i].diag.data, 1, jobs[i].diag.len, stderr);
+        }
+    }
+
+    if (rc != 0) {
+        free_jobs(jobs, njobs);
+        return 1;
+    }
+
+    /* Assemble the object vector in canonical (job) order, never completion
+       order: this is the byte-identity guarantee vs the serial build. */
+    for (int i = 0; i < njobs; ++i) {
+        sl_push(out_objs, jobs[i].mzo);
+    }
+    if (emit_single && njobs > 0 && jobs[njobs - 1].want_emit && jobs[njobs - 1].have_emit) {
+        byte_buf_init(emit_single);
+        byte_buf_append(emit_single, jobs[njobs - 1].emit.data, jobs[njobs - 1].emit.len);
+        if (out_have_emit) { *out_have_emit = 1; }
+    }
+    free_jobs(jobs, njobs);
     return 0;
 }
 
@@ -857,6 +1102,12 @@ int resolve_toolchain(const char *preset) {
             return 2;
         }
     }
+
+    /* Register the post-cpp tool binaries with the object cache (maize-274): the
+       fingerprint over their raw bytes plus the running mzcc rolls every cache
+       key on a tool rebuild/re-pin, so a stale object is never served (AC 9637).
+       cpp is excluded (its effect is captured by the preprocessed bytes). */
+    mzcc_cache_configure(CPROC_QBE, QBE, MAZM);
     return 0;
 }
 
@@ -949,31 +1200,25 @@ int build_default_c_image(const char *preset, const BuildSpec *spec, const char 
     if (trc != 0) { return trc; }
     ensure_scratch();
 
-    StrList rt_objs;
-    sl_init(&rt_objs);
-    if (build_rt_objects(spec->dev, &spec->extra_defines, &rt_objs) != 0) {
-        sl_free(&rt_objs);
+    /* One parallel + cached object build for the whole set (RT asm + libc +
+       user body), assembled in canonical order (maize-274, spec section 4).
+       This is the shared path every batch subcommand inherits with no
+       subcommand-specific code. */
+    StrList all_objs;
+    sl_init(&all_objs);
+    if (build_objects_parallel(spec->dev, &spec->extra_defines, &spec->sources,
+                               spec->used_sources, NULL, NULL, &all_objs) != 0) {
+        sl_free(&all_objs);
         return 1;
     }
 
-    StrList user_objs;
-    sl_init(&user_objs);
-    if (compile_user_sources(&spec->sources, spec->used_sources, &spec->extra_defines,
-                             NULL, NULL, &user_objs) != 0) {
-        sl_free(&rt_objs);
-        sl_free(&user_objs);
-        return 1;
-    }
-
-    /* Assemble the full object list (RT then user) and link the default profile
-       to the scratch image, then copy to out_path (mirroring the single-file
-       path's link-to-scratch-then-copy, the maize-278 byte-parity shape). */
+    /* Link the default profile to the scratch image in canonical object order,
+       then copy to out_path (mirroring the single-file path's
+       link-to-scratch-then-copy, the maize-278 byte-parity shape). */
     Argv objs;
     av_init(&objs);
-    for (int i = 0; i < rt_objs.n; ++i) { av_add(&objs, rt_objs.v[i]); }
-    for (int i = 0; i < user_objs.n; ++i) { av_add(&objs, user_objs.v[i]); }
-    sl_free(&rt_objs);
-    sl_free(&user_objs);
+    for (int i = 0; i < all_objs.n; ++i) { av_add(&objs, all_objs.v[i]); }
+    sl_free(&all_objs);
 
     char *mzx = path_join(SCRATCH_ROOT, "prog.mzx");
     int lrc = mzld_link(NULL, mzx, objs.v, objs.n);
@@ -1021,9 +1266,9 @@ typedef struct {
 } Options;
 
 static const char *USAGE =
-    "usage: mzcc [--preset <name>] [-r|--run] [--emit] [-o <path>] <file.c>\n"
-    "       mzcc [--preset <name>] [-r|--run] -o <path> <a.c> <b.c> [<c.c> ...]\n"
-    "       mzcc [--preset <name>] [-r|--run] -o <path> --sources <listfile>\n"
+    "usage: mzcc [--preset <name>] [-r|--run] [--emit] [-j N] [-o <path>] <file.c>\n"
+    "       mzcc [--preset <name>] [-r|--run] [-j N] -o <path> <a.c> <b.c> [<c.c> ...]\n"
+    "       mzcc [--preset <name>] [-r|--run] [-j N] -o <path> --sources <listfile>\n"
     "       mzcc --build";
 
 int main(int argc, char **argv) {
@@ -1074,6 +1319,10 @@ int main(int argc, char **argv) {
             av_add(&EXTRA_CPPDEFS, a);
         } else if (strcmp(a, "--compile-only") == 0) {
             opt.run = 0;
+        } else if (strcmp(a, "-j") == 0) {
+            mzcc_set_jobs_override((i + 1 < argc) ? atoi(argv[++i]) : 0);
+        } else if (strncmp(a, "-j", 2) == 0) {
+            mzcc_set_jobs_override(atoi(a + 2));
         } else if (strcmp(a, "-o") == 0) {
             free(opt.out);
             opt.out = xstrdup((i + 1 < argc) ? argv[++i] : "");
@@ -1216,36 +1465,35 @@ int main(int argc, char **argv) {
        base (DI6). */
     ensure_scratch();
 
-    /* ---- RT object set + user sources through the shared build core (the same
-       functions build_default_c_image calls, maize-280). The RT set / tagging /
-       link order stay the single point of truth in build_rt_objects /
-       compile_user_sources; the single-file path differs only in the emit /
-       produce-beside / run tail below. --------------------------------------- */
-    StrList rt_objs;
-    sl_init(&rt_objs);
-    if (build_rt_objects(opt.dev, NULL, &rt_objs) != 0) { return 1; }
-
-    StrList user_objs;
-    sl_init(&user_objs);
+    /* ---- RT object set + user sources through the ONE parallel + cached
+       object build (maize-274). The RT set / tagging / link order stay the
+       single point of truth in build_objects_parallel; the single-file path
+       differs only in the emit / produce-beside / run tail below. ----------- */
     ByteBuf emit_body;
     int have_emit_body = 0;
     byte_buf_init(&emit_body);
-    if (compile_user_sources(&src_list, opt.used_sources, NULL,
-                             opt.emit ? &emit_body : NULL, &have_emit_body,
-                             &user_objs) != 0) {
+    StrList all_objs;
+    sl_init(&all_objs);
+    if (build_objects_parallel(opt.dev, NULL, &src_list, opt.used_sources,
+                               opt.emit ? &emit_body : NULL, &have_emit_body,
+                               &all_objs) != 0) {
+        byte_buf_free(&emit_body);
+        sl_free(&all_objs);
         return 1;
     }
 
     /* ---- link (default C profile: RT + libc + body, entry _start, default
-       base). The link-profile seam is the object set + base; build-quesos's
-       minimal profile slots into the same mzld_link (section 8). ------------- */
+       base), object vector in canonical order. The link-profile seam is the
+       object set + base; build-quesos's minimal profile slots into the same
+       mzld_link (section 8). ------------------------------------------------ */
     char *mzx = path_join(SCRATCH_ROOT, "prog.mzx");
     Argv lav;
     av_init(&lav);
-    for (int i = 0; i < rt_objs.n; ++i) { av_add(&lav, rt_objs.v[i]); }
-    for (int i = 0; i < user_objs.n; ++i) { av_add(&lav, user_objs.v[i]); }
+    for (int i = 0; i < all_objs.n; ++i) { av_add(&lav, all_objs.v[i]); }
+    sl_free(&all_objs);
     if (mzld_link(NULL, mzx, lav.v, lav.n) != 0) {
         av_free(&lav);
+        byte_buf_free(&emit_body);
         return 1;
     }
     av_free(&lav);

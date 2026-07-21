@@ -39,6 +39,10 @@ int cmd_build_quesos(int argc, char **argv) {
             preset = (i + 1 < argc) ? argv[++i] : "";
         } else if (strncmp(a, "--preset=", 9) == 0) {
             preset = a + 9;
+        } else if (strcmp(a, "-j") == 0) {
+            mzcc_set_jobs_override((i + 1 < argc) ? atoi(argv[++i]) : 0);
+        } else if (strncmp(a, "-j", 2) == 0) {
+            mzcc_set_jobs_override(atoi(a + 2));
         } else if (strcmp(a, "-o") == 0) {
             out = xstrdup((i + 1 < argc) ? argv[++i] : "");
         } else if (strncmp(a, "-o", 2) == 0) {
@@ -65,7 +69,7 @@ int cmd_build_quesos(int argc, char **argv) {
     char *syscall_mazm = joinstr(RT_DIR, "/syscall.mazm", NULL, NULL);
 
     /* 2. Compile quesos.c to quesos.body.mzo (the same .body infix convention). */
-    char *body_mzo = compile_tu_ex(quesos_c, "quesos", NULL, NULL);
+    char *body_mzo = compile_tu_ex(quesos_c, "quesos", NULL, NULL, NULL);
     free(quesos_c);
     if (!body_mzo) {
         fprintf(stderr, "mzcc: FAILED building quesOS (quesos.c)\n");
@@ -74,14 +78,14 @@ int cmd_build_quesos(int argc, char **argv) {
     }
 
     /* 3. Assemble the metal (quesos_boot) and 4. the raw syscall stubs. */
-    char *boot_mzo = assemble_mazm_file(boot_mazm, "quesos_boot");
+    char *boot_mzo = assemble_mazm_file(boot_mazm, "quesos_boot", NULL);
     free(boot_mazm);
     if (!boot_mzo) {
         fprintf(stderr, "mzcc: FAILED building quesOS (quesos_boot.mazm)\n");
         free(out); free(syscall_mazm); free(body_mzo);
         return 1;
     }
-    char *syscall_mzo = assemble_mazm_file(syscall_mazm, "syscall");
+    char *syscall_mzo = assemble_mazm_file(syscall_mazm, "syscall", NULL);
     free(syscall_mazm);
     if (!syscall_mzo) {
         fprintf(stderr, "mzcc: FAILED building quesOS (syscall.mazm)\n");

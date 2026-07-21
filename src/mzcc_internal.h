@@ -104,13 +104,23 @@ int verify_mzx_image(const char *path);
 /* Compile one C translation unit through the full pipeline (cpp -> cproc-qbe ->
    normalize -> qbe -> mazm), applying `extra_defines` (may be NULL) in addition
    to the process-global EXTRA_CPPDEFS. `emit_body` (may be NULL) receives the
-   qbe body bytes. Returns a fresh .mzo path, or NULL on failure. */
+   qbe body bytes. `diag` (maize-274; may be NULL) is a failure-diagnostic sink:
+   when non-NULL, every failure message and captured child stderr appends to it
+   instead of going to the process stderr, so the parallel scheduler can flush
+   failed-job diagnostics deterministically after join; NULL preserves the
+   inline-stderr behavior. When `emit_body` is requested the object cache is
+   bypassed for this TU. Returns a fresh .mzo path, or NULL on failure. */
 char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
-                    ByteBuf *emit_body);
+                    ByteBuf *emit_body, ByteBuf *diag);
 
 /* Assemble a .mazm file at `mazm_path` to a .mzo tagged `tag` via the mazm
-   stdin-to-object path. Returns a fresh .mzo path, or NULL. */
-char *assemble_mazm_file(const char *mazm_path, const char *tag);
+   stdin-to-object path. `diag` (maize-274; may be NULL) is the same failure sink
+   compile_tu_ex takes. Returns a fresh .mzo path, or NULL. */
+char *assemble_mazm_file(const char *mazm_path, const char *tag, ByteBuf *diag);
+
+/* Set the process-wide -j concurrency override (maize-274) from a batch
+   subcommand's own arg scan. 0 clears it (fall back to MAIZE_JOBS / nproc). */
+void mzcc_set_jobs_override(int n);
 
 /* Link `objects[0..n_objects)` (already-built .mzo paths, in link order) to
    `out_path`. `base_hex` NULL uses mzld's default base; non-NULL is passed as
