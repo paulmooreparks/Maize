@@ -71,13 +71,15 @@ $RepoRoot = Split-Path -Parent $ScriptDir
 
 $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
-# INTERIM DEPENDENCY NOTE (maize-266 tracks the end state): stages 2-5 below call
-# into install-mazm.ps1 / build-quesos.ps1 / build-userland.ps1 / build-demos.ps1,
-# each of which resolves Git Bash (Resolve-GitBash, scripts/lib/gitbash.ps1) to run
-# the POSIX-only cproc/QBE C toolchain. Git Bash ships with Git for Windows itself,
-# so this adds no dependency beyond Git plus what the repo vendors (no WSL, no
-# MSYS2, nothing else on PATH), but calling out to bash at all is a tolerated
-# interim shape, not the target: maize-266 designs that dependency out.
+# INTERIM DEPENDENCY NOTE (maize-266 tracks the end state): stage [2/5] below
+# calls into install-mazm.ps1, which resolves Git Bash (Resolve-GitBash,
+# scripts/lib/gitbash.ps1) to run its interim build-toolchain.sh delegation for
+# the POSIX-only cproc/QBE C toolchain. Git Bash ships with Git for Windows
+# itself, so this adds no dependency beyond Git plus what the repo vendors (no
+# WSL, no MSYS2, nothing else on PATH), but calling out to bash at all is a
+# tolerated interim shape, not the target: maize-266 designs that dependency
+# out. Stages [3/5]-[5/5] (maize-291) call $InstallDir\mzcc.exe directly and no
+# longer touch Git Bash, WSL, or any shell at all.
 
 # Resolve the effective output paths up front, matching each composed script's own
 # default resolution, so the closing summary can list them even when the caller left
@@ -121,33 +123,43 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+# --- Stages 3/5-5/5: resolve mzcc.exe (maize-291) ------------------------------------
+# Stage [2/5] (install-mazm.ps1) is what builds and installs mzcc alongside
+# maize/maizeg/mazm/mzld/mzdis; that stage already exited 0 above (aborting the
+# whole run otherwise), so $InstallDir\mzcc.exe is expected to exist here.
+$MzccExe = Join-Path $InstallDir 'mzcc.exe'
+if (-not (Test-Path $MzccExe)) {
+    Write-Error "build-world.ps1: $MzccExe not found after stage [2/5]; install-mazm.ps1 should have installed it." -ErrorAction Continue
+    exit 2
+}
+
+# mzcc self-locates its repo root by walking up from its own exe path, assuming
+# the build\<preset>\mzcc.exe layout (mzcc.c ensure_repo_root). $MzccExe above is
+# the InstallDir copy, which breaks that assumption, so MAIZE_ROOT (mzcc's own
+# documented override) points it back at this checkout.
+$env:MAIZE_ROOT = $RepoRoot
+
 # --- Stage 3/5: quesOS ----------------------------------------------------------------
-Write-Host '=== [3/5] quesOS (build-quesos.ps1) ==='
-$quesosArgs = @{ Preset = $Preset }
-if ($QuesosOut -ne '') { $quesosArgs['Out'] = $QuesosOut }
-& (Join-Path $ScriptDir 'build-quesos.ps1') @quesosArgs
+Write-Host '=== [3/5] quesOS (mzcc build-quesos) ==='
+& $MzccExe build-quesos --preset $Preset -o $EffectiveQuesosOut
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "build-world.ps1: stage [3/5] 'quesOS' failed (exit $LASTEXITCODE). See build-quesos.ps1's own error above; no later stage ran." -ErrorAction Continue
+    Write-Error "build-world.ps1: stage [3/5] 'quesOS' failed (exit $LASTEXITCODE). See mzcc's own error above; no later stage ran." -ErrorAction Continue
     exit $LASTEXITCODE
 }
 
 # --- Stage 4/5: wave-1 userland --------------------------------------------------------
-Write-Host '=== [4/5] wave-1 userland (build-userland.ps1) ==='
-$userlandArgs = @{ Preset = $Preset }
-if ($UserlandOut -ne '') { $userlandArgs['Out'] = $UserlandOut }
-& (Join-Path $ScriptDir 'build-userland.ps1') @userlandArgs
+Write-Host '=== [4/5] wave-1 userland (mzcc build-userland) ==='
+& $MzccExe build-userland --preset $Preset --out $EffectiveUserlandOut
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "build-world.ps1: stage [4/5] 'wave-1 userland' failed (exit $LASTEXITCODE). See build-userland.ps1's own error above; no later stage ran." -ErrorAction Continue
+    Write-Error "build-world.ps1: stage [4/5] 'wave-1 userland' failed (exit $LASTEXITCODE). See mzcc's own error above; no later stage ran." -ErrorAction Continue
     exit $LASTEXITCODE
 }
 
 # --- Stage 5/5: demos -------------------------------------------------------------------
-Write-Host '=== [5/5] demos (build-demos.ps1) ==='
-$demosArgs = @{ Preset = $Preset }
-if ($DemosOut -ne '') { $demosArgs['Out'] = $DemosOut }
-& (Join-Path $ScriptDir 'build-demos.ps1') @demosArgs
+Write-Host '=== [5/5] demos (mzcc build-demos) ==='
+& $MzccExe build-demos --preset $Preset --out $EffectiveDemosOut
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "build-world.ps1: stage [5/5] 'demos' failed (exit $LASTEXITCODE). See build-demos.ps1's own error above; no later stage ran." -ErrorAction Continue
+    Write-Error "build-world.ps1: stage [5/5] 'demos' failed (exit $LASTEXITCODE). See mzcc's own error above; no later stage ran." -ErrorAction Continue
     exit $LASTEXITCODE
 }
 

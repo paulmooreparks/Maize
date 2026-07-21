@@ -18,14 +18,15 @@
 # This is the documented "I pulled, now what" answer; run it after a fresh clone or
 # pull to build everything in one call.
 #
-# Each composed script is invoked through an explicit interpreter (bash for
-# install-mazm.sh, which is bash-specific; sh for the three POSIX-sh build scripts)
-# rather than executed directly by path, matching scripts/run-ctest.sh's own
-# established call shape for build-quesos.sh / build-userland.sh. This is
-# belt-and-suspenders alongside the scripts' own git-tracked executable bit: a
-# future re-add at mode 644, or any checkout mechanism that does not preserve the
-# tracked mode, cannot silently regress this composer's stage 2-5 into a
-# Permission-denied exit 126.
+# Stage [2/5] (install-mazm.sh) is invoked through an explicit interpreter (bash,
+# which it is specific to) rather than executed directly by path, matching
+# scripts/run-ctest.sh's own established call shape. This is belt-and-suspenders
+# alongside the script's own git-tracked executable bit: a future re-add at mode
+# 644, or any checkout mechanism that does not preserve the tracked mode, cannot
+# silently regress this composer's stage 2 into a Permission-denied exit 126.
+#
+# Stages [3/5]-[5/5] (maize-291) call the just-installed mzcc binary directly:
+# no interpreter, and mzcc's executable bit comes from the build, not git tracking.
 #
 # Usage: scripts/build-world.sh [--preset <name>] [--install-dir <dir>]
 #                                [--userland-out <dir>] [--demos-out <dir>]
@@ -93,30 +94,43 @@ else
     exit "$rc"
 fi
 
-echo "=== [3/5] quesOS (build-quesos.sh) ==="
-if sh "${REPO_ROOT}/os/quesos/build-quesos.sh" --preset "${PRESET}" -o "${QUESOS_OUT}"; then
+MZCC_EXE="${INSTALL_DIR}/mzcc"
+if [ ! -x "${MZCC_EXE}" ]; then
+    echo "build-world.sh: ${MZCC_EXE} not found or not executable after stage [2/5]; install-mazm.sh should have installed it." >&2
+    exit 2
+fi
+
+# mzcc self-locates its repo root by walking up from its own exe path, assuming
+# the build/<preset>/mzcc layout (mzcc.c ensure_repo_root). The INSTALL_DIR copy
+# invoked below breaks that assumption, so MAIZE_ROOT (mzcc's own documented
+# override) points it back at this checkout.
+MAIZE_ROOT="${REPO_ROOT}"
+export MAIZE_ROOT
+
+echo "=== [3/5] quesOS (mzcc build-quesos) ==="
+if "${MZCC_EXE}" build-quesos --preset "${PRESET}" -o "${QUESOS_OUT}"; then
     :
 else
     rc=$?
-    echo "build-world.sh: stage [3/5] 'quesOS' failed (exit ${rc}). See build-quesos.sh's own error above; no later stage ran." >&2
+    echo "build-world.sh: stage [3/5] 'quesOS' failed (exit ${rc}). See mzcc's own error above; no later stage ran." >&2
     exit "$rc"
 fi
 
-echo "=== [4/5] wave-1 userland (build-userland.sh) ==="
-if sh "${REPO_ROOT}/userland/build-userland.sh" --preset "${PRESET}" --out "${USERLAND_OUT}"; then
+echo "=== [4/5] wave-1 userland (mzcc build-userland) ==="
+if "${MZCC_EXE}" build-userland --preset "${PRESET}" --out "${USERLAND_OUT}"; then
     :
 else
     rc=$?
-    echo "build-world.sh: stage [4/5] 'wave-1 userland' failed (exit ${rc}). See build-userland.sh's own error above; no later stage ran." >&2
+    echo "build-world.sh: stage [4/5] 'wave-1 userland' failed (exit ${rc}). See mzcc's own error above; no later stage ran." >&2
     exit "$rc"
 fi
 
-echo "=== [5/5] demos (build-demos.sh) ==="
-if sh "${REPO_ROOT}/demos/build-demos.sh" --preset "${PRESET}" --out "${DEMOS_OUT}"; then
+echo "=== [5/5] demos (mzcc build-demos) ==="
+if "${MZCC_EXE}" build-demos --preset "${PRESET}" --out "${DEMOS_OUT}"; then
     :
 else
     rc=$?
-    echo "build-world.sh: stage [5/5] 'demos' failed (exit ${rc}). See build-demos.sh's own error above; no later stage ran." >&2
+    echo "build-world.sh: stage [5/5] 'demos' failed (exit ${rc}). See mzcc's own error above; no later stage ran." >&2
     exit "$rc"
 fi
 
