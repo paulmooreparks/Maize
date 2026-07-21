@@ -330,12 +330,17 @@ maize_lock_root() {
 #   once, `dofork ... Resource temporarily unavailable`, stalling one 35+ minutes with
 #   no bound).
 #
-#   Mechanism: `mkdir` is the lock primitive (atomic on both POSIX and MSYS, no
-#   `flock` dependency, since neither a stock MSYS git-bash nor a stock Linux box is
-#   guaranteed to ship it). The winner records its PID and acquire-time UNIX timestamp
-#   inside the lock directory (the "holder" file) so a contending waiter can tell a
-#   LIVE holder from a STALE one, left behind by a holder that was SIGKILL'd (or
-#   crashed) before it reached its release path:
+#   Mechanism: `mkdir` is the lock primitive (atomic on both POSIX and MSYS). `flock`
+#   was checked and rejected for this host: this repo's actual harness shell is MSYS
+#   git-bash (x86_64-pc-msys) and it does not ship a `flock` binary (confirmed via
+#   `command -v flock` at cycle-3 implement time), so a `flock`-based rewrite would
+#   trade one bug class for an unconditional "the gate silently does not exist on the
+#   platform this card exists for" regression. `mkdir` remains the right primitive.
+#
+#   The winner records its PID and acquire-time UNIX timestamp inside the lock
+#   directory (the "holder" file) so a contending waiter can tell a LIVE holder from a
+#   STALE one, left behind by a holder that was SIGKILL'd (or crashed) before it
+#   reached its release path:
 #     - holder PID no longer running (`kill -0` fails)              -> stale, reclaim now
 #     - holder PID alive but older than MAIZE_GATE_STALE_SECONDS     -> stale, reclaim now
 #     - lock dir present with no holder file past a short grace window (a crash between
@@ -346,27 +351,39 @@ maize_lock_root() {
 #   fails fast with a clear diagnostic (return 1) rather than blocking forever, so a
 #   genuinely wedged holder cannot deadlock every other invocation on the host.
 #
-#   Cycle-2 code-review fixes (both closing the SAME class of bug: a waiter reclaiming
-#   a lock whose holder is still very much alive, i.e. a double critical-section entry):
-#     - The holder-identity write is now FORK-FREE for the part that matters (the PID):
-#       `printf` and `$$` are shell builtins, so the PID lands on disk with nothing
-#       able to fork/stall between `mkdir` succeeding and that write completing. The
-#       PREVIOUS code forked `date` for the timestamp BEFORE the first write ever hit
-#       disk; on a fork-starved host (exactly the condition maize-304 exists to handle)
-#       that fork could itself stall past the grace window below, so a waiter would
-#       reclaim a lock whose holder had not yet gotten around to proving it was there.
-#       The timestamp (which does need a `date +%s` fork; POSIX sh has no fork-free
-#       clock) is written in a second, separate pass, after the PID is already visible.
-#     - The decide-and-evict step is now fenced behind its OWN atomic mkdir (see the
-#       `.reclaiming` marker directory below) so at most one waiter ever acts on a given
-#       stale determination, and that waiter re-verifies the holder PID is UNCHANGED
-#       immediately before deleting anything. Without this fence, two waiters that both
-#       judge the same lock stale in the same iteration could interleave as: A deletes
-#       the lock dir, loops, wins the real `mkdir`, and starts writing its own holder
-#       file; B (already past its own stale check on the OLD state) then deletes the
-#       dir out from under A and also wins a `mkdir` -- two holders. The fence closes
-#       that: a waiter that loses the `.reclaiming` mkdir does not touch the directory
-#       at all, it just loops and re-reads fresh state.
+#   Cycle-2 fix KEPT: the holder-identity write is FORK-FREE for the part that matters
+#   (the PID). `printf` and `$$` are shell builtins, so the PID lands on disk with
+#   nothing able to fork/stall between `mkdir` succeeding and that write completing.
+#   The PREVIOUS (cycle-1) code forked `date` for the timestamp BEFORE the first write
+#   ever hit disk; on a fork-starved host (exactly the condition maize-304 exists to
+#   handle) that fork could itself stall past the grace window below, so a waiter would
+#   reclaim a lock whose holder had not yet gotten around to proving it was there. The
+#   timestamp (which does need a `date +%s` fork; POSIX sh has no fork-free clock) is
+#   written in a second, separate pass, after the PID is already visible.
+#
+#   Cycle-2 fix REMOVED (cycle-3 simplification, replacing it rather than patching it
+#   again): cycle-2 also fenced the decide-and-evict step behind its OWN atomic mkdir
+#   (a `.reclaiming` marker), to stop two waiters both judging a lock stale in the same
+#   iteration from double-entering the critical section. That fence introduced a NEW
+#   bug (found in cycle-3 code review): its fall-through `continue` paths (both "lost
+#   the `.reclaiming` mkdir" and "won it, reclaimed, done") skipped the poll-sleep and
+#   the `_gate_elapsed` bump at the bottom of the loop entirely. A `.reclaiming` marker
+#   orphaned by a process killed between its own mkdir and rmdir became permanent: every
+#   future waiter lost that inner mkdir race forever and looped back to the top with NO
+#   sleep and NO elapsed increment, a genuine unbounded 100%-CPU livelock, worse than
+#   the stall this card exists to fix. The fence is gone. Nothing replaces it, because
+#   nothing needs to: `mkdir "$_gate_dir"` at the top of the loop is ALREADY the single
+#   atomic arbiter this gate needs. If two waiters both judge the lock stale in the same
+#   instant and both `rm -rf` it, that is harmless: `rm -rf` on an already-removed (or
+#   about-to-be-removed) directory is a no-op either way, and NEITHER waiter has entered
+#   the critical section yet. The very next `mkdir "$_gate_dir"` (back at the top of
+#   EACH waiter's own loop) is what actually decides the one winner, exactly as it does
+#   for a fresh, uncontested lock; a loser just sees `mkdir` fail again and waits another
+#   poll interval, same as any other contended iteration. A stale-reclaim iteration is
+#   now a plain iteration: it always falls through to the shared wait-budget check, the
+#   shared progress print, and the shared `sleep` + `_gate_elapsed` bump, so it is
+#   provably bounded by MAIZE_GATE_WAIT_SECONDS exactly like every other path through
+#   this loop, with no separate code path that can skip the bump.
 #
 #   On success, installs an EXIT/INT/TERM trap that force-releases the lock even if the
 #   caller is killed or errors out before calling maize_gate_release itself (belt and
@@ -461,31 +478,16 @@ maize_gate_acquire() {
         fi
 
         if [ "$_stale" -eq 1 ]; then
-            # Fence the decide-and-evict step behind its OWN atomic mkdir so at most
-            # one waiter ever touches "$_gate_dir" here (see the doc comment above).
-            # Losing this mkdir means another waiter is already handling (or has
-            # already handled) the reclaim; just loop and re-read fresh state rather
-            # than acting on a decision that may already be stale itself.
-            _gate_reclaim="${_gate_dir}.reclaiming"
-            if mkdir "$_gate_reclaim" 2>/dev/null; then
-                # Re-verify under the fence: the holder must still be the one we
-                # judged stale (same PID, or still no holder file in the
-                # crashed-before-first-write case) before deleting anything. If a
-                # legitimate new holder acquired the lock while we were deciding,
-                # this leaves it alone.
-                _recheck_pid=""
-                if [ -d "$_gate_dir" ]; then
-                    if [ -f "${_gate_dir}/holder" ]; then
-                        _recheck_pid=$(cut -d' ' -f1 "${_gate_dir}/holder" 2>/dev/null) || _recheck_pid=""
-                    fi
-                    if [ "$_recheck_pid" = "$_holder_pid" ]; then
-                        echo "run-ctest.sh: reclaiming stale ${_gate_name} lock (${_gate_dir}, holder pid ${_holder_pid:-unknown} gone or older than ${_gate_stale}s)" >&2
-                        rm -rf "$_gate_dir" 2>/dev/null || true
-                    fi
-                fi
-                rmdir "$_gate_reclaim" 2>/dev/null || true
-            fi
-            continue
+            # No fence needed (cycle-3: see the doc comment above for why the cycle-2
+            # `.reclaiming` fence was removed, not repaired). `rm -rf` here is
+            # best-effort and unconditional: if another waiter beats us to it, or has
+            # already removed it, this is a harmless no-op either way, and the real
+            # arbiter is the `mkdir "$_gate_dir"` retry at the top of the NEXT loop
+            # iteration, not this step. Deliberately falls through to the shared
+            # wait-budget check / progress print / sleep below rather than an early
+            # `continue`, so this path is bounded exactly like every other iteration.
+            echo "run-ctest.sh: reclaiming stale ${_gate_name} lock (${_gate_dir}, holder pid ${_holder_pid:-unknown} gone or older than ${_gate_stale}s)" >&2
+            rm -rf "$_gate_dir" 2>/dev/null || true
         fi
 
         if [ "$_gate_elapsed" -ge "$_gate_wait" ]; then
