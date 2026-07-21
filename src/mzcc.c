@@ -404,14 +404,24 @@ static void diag_bytes(ByteBuf *diag, const char *data, size_t len) {
 
 /* MAIZE_CACHE_STATS=1 turns on a per-TU HIT/MISS line to stderr (spec 2d / AC
    9633: a cache-hit log is the observable that proves cproc-qbe/qbe/mazm were
-   skipped on a hit). Resolved once. */
+   skipped on a hit). Resolved ONCE, on the main thread, in resolve_toolchain
+   (cycle-2 review finding 2): the previous shape lazily first-wrote a static
+   local (`v = -1` sentinel) from whichever thread called cache_log() first,
+   which is a scheduler worker the moment the parallel object build starts,
+   a TSan-flaggable racy first-write on a global. resolve_toolchain runs
+   serially before build_objects_parallel spawns any worker (the same
+   guarantee mzcc_cache_configure's warm-init relies on), so resolving the
+   flag there and having cache_stats_on() do a plain read closes the race
+   with no lazy first-write left on any cache/stats global. */
+static int g_cache_stats_on = 0;
+
+static void mzcc_cache_stats_resolve(void) {
+    const char *e = getenv("MAIZE_CACHE_STATS");
+    g_cache_stats_on = (e && e[0] && !(e[0] == '0' && e[1] == '\0')) ? 1 : 0;
+}
+
 static int cache_stats_on(void) {
-    static int v = -1;
-    if (v < 0) {
-        const char *e = getenv("MAIZE_CACHE_STATS");
-        v = (e && e[0] && !(e[0] == '0' && e[1] == '\0')) ? 1 : 0;
-    }
-    return v;
+    return g_cache_stats_on;
 }
 
 static void cache_log(const char *verb, const char *tag) {
@@ -1137,6 +1147,11 @@ int resolve_toolchain(const char *preset) {
        key on a tool rebuild/re-pin, so a stale object is never served (AC 9637).
        cpp is excluded (its effect is captured by the preprocessed bytes). */
     mzcc_cache_configure(CPROC_QBE, QBE, MAZM);
+
+    /* Resolve MAIZE_CACHE_STATS here too (cycle-2 review finding 2): same
+       serial-before-any-worker guarantee as mzcc_cache_configure above, so
+       g_cache_stats_on is never first-written from a scheduler worker. */
+    mzcc_cache_stats_resolve();
     return 0;
 }
 

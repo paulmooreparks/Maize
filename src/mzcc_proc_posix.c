@@ -14,6 +14,16 @@
    resolved via execvp when `exe` has no slash (a bare `cc`/`gcc` off PATH,
    decision D4) and execv otherwise, mirroring presenter_transport_posix's
    posix_spawn/posix_spawnp split. */
+
+/* _GNU_SOURCE (cycle-2 review finding 1): glibc's unistd.h declares pipe2()
+   only under __USE_GNU, which plain gnu11 extensions mode does not imply on
+   its own (that gets _DEFAULT_SOURCE, not _GNU_SOURCE). Must be defined
+   before any system header is pulled in; mzcc_proc.h itself only pulls
+   <stddef.h>, so defining it ahead of that include is sufficient. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "mzcc_proc.h"
 
 #if !defined(_WIN32)
@@ -87,6 +97,33 @@ static void close_fd(int *fd) {
     }
 }
 
+/* Create a pipe with FD_CLOEXEC set ATOMICALLY at creation (cycle-2 review
+   finding 1): the prior shape called plain pipe() and set FD_CLOEXEC via a
+   separate fcntl() ~30 lines later, leaving a TOCTOU window between the two
+   calls. A concurrent scheduler worker's fork() in that window snapshots the
+   still-not-CLOEXEC'd fds into ITS child, which holds them open past its own
+   exec() (nothing marks them close-on-exec on that copy), so a reader here
+   never sees EOF even after this job's true owner closes its own end: the
+   same class of hang the cycle-1 fix closed for the steady-state fds, just
+   at lower probability since it requires a fork to land inside the narrow
+   window. pipe2(O_CLOEXEC) is Linux (and most modern POSIX) and sets the
+   flag in the same syscall that creates the fds, so there is no window at
+   all. macOS has no pipe2, so it falls back to pipe()+fcntl(FD_CLOEXEC); the
+   residual TOCTOU there is accepted per D7 (macOS is verify-later, not
+   exercised under concurrent CI forking). */
+static int pipe_cloexec(int fds[2]) {
+#if defined(__linux__) && defined(O_CLOEXEC)
+    return pipe2(fds, O_CLOEXEC);
+#else
+    if (pipe(fds) != 0) {
+        return -1;
+    }
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    return 0;
+#endif
+}
+
 int run_proc(const char *exe, char *const *argv, int argc,
              const char *stdin_bytes, size_t stdin_len, const char *cwd,
              ProcResult *out) {
@@ -106,43 +143,26 @@ int run_proc(const char *exe, char *const *argv, int argc,
        here and exits 127 on a pre-exec chdir/exec failure; FD_CLOEXEC on both
        ends means a SUCCESSFUL exec closes the write end for free, so the
        parent's read() returns 0 (EOF) with nothing written. Either way the
-       read returns promptly: it never blocks on stdout/stderr traffic. */
+       read returns promptly: it never blocks on stdout/stderr traffic.
+
+       Every pipe here is created via pipe_cloexec (cycle-2 review finding 1):
+       CLOEXEC on every data-pipe fd (in_pipe/out_pipe/err_pipe) closes the
+       fork+exec-from-a-worker-thread hang the cycle-1 fix identified, and
+       doing it atomically at creation (pipe2(O_CLOEXEC) on Linux) rather than
+       via a separate fcntl() moments later removes the TOCTOU window a
+       concurrent worker's fork() could still land in. Harmless on the child
+       side: dup2 always yields a fresh, non-CLOEXEC fd 0/1/2 regardless of the
+       source fd's flag, and the child explicitly closes the original numbered
+       ends right after dup2'ing anyway. */
     int spawn_err_pipe[2] = { -1, -1 };
-    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0 ||
-        pipe(spawn_err_pipe) != 0) {
+    if (pipe_cloexec(in_pipe) != 0 || pipe_cloexec(out_pipe) != 0 ||
+        pipe_cloexec(err_pipe) != 0 || pipe_cloexec(spawn_err_pipe) != 0) {
         close_fd(&in_pipe[0]);  close_fd(&in_pipe[1]);
         close_fd(&out_pipe[0]); close_fd(&out_pipe[1]);
         close_fd(&err_pipe[0]); close_fd(&err_pipe[1]);
         close_fd(&spawn_err_pipe[0]); close_fd(&spawn_err_pipe[1]);
         return 0;
     }
-    fcntl(spawn_err_pipe[0], F_SETFD, FD_CLOEXEC);
-    fcntl(spawn_err_pipe[1], F_SETFD, FD_CLOEXEC);
-
-    /* CLOEXEC on every data-pipe fd too (found during maize-274 cycle-1
-       verification: a genuine hang under the new parallel scheduler, not one
-       of the four review findings, but blocking enough to fix in the same
-       pass rather than ship a known-broken build). Without this, fork()+exec()
-       from one worker THREAD duplicates the WHOLE process's fd table,
-       including every OTHER in-flight job's still-open in_pipe[1]/out_pipe[0]/
-       err_pipe[0]; those leaked copies survive that unrelated child's own
-       exec() (nothing marks them close-on-exec), so a pipe never reaches EOF
-       from the true reader's point of view even after its real owner closes
-       its own copy: a real, reachable deadlock the moment more than one job
-       runs concurrently (unreachable before maize-274, which is the first
-       caller to fork from multiple threads at once). The Win32 backend
-       already gets this right per-handle via
-       SetHandleInformation(..., HANDLE_FLAG_INHERIT, 0) (mzcc_proc_win32.c);
-       this brings the POSIX backend to the same invariant. Harmless on the
-       child side: dup2 always yields a fresh, non-CLOEXEC fd 0/1/2 regardless
-       of the source fd's flag, and the child explicitly closes the original
-       numbered ends right after dup2'ing anyway. */
-    fcntl(in_pipe[0],  F_SETFD, FD_CLOEXEC);
-    fcntl(in_pipe[1],  F_SETFD, FD_CLOEXEC);
-    fcntl(out_pipe[0], F_SETFD, FD_CLOEXEC);
-    fcntl(out_pipe[1], F_SETFD, FD_CLOEXEC);
-    fcntl(err_pipe[0], F_SETFD, FD_CLOEXEC);
-    fcntl(err_pipe[1], F_SETFD, FD_CLOEXEC);
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -259,13 +279,13 @@ int run_inherit(const char *exe, char *const *argv, int argc, int *exit_code) {
     (void)argc;
     /* Same self-pipe contract fix as run_proc (review #3052 finding 3): this
        primitive documents "0 on spawn failure" too (mzcc_proc.h), and
-       run_inherit's own callers (--build, -r) need it just as much. */
+       run_inherit's own callers (--build, -r) need it just as much. Uses
+       pipe_cloexec (cycle-2 review finding 1) for the same atomic-CLOEXEC
+       reason as run_proc, above. */
     int spawn_err_pipe[2] = { -1, -1 };
-    if (pipe(spawn_err_pipe) != 0) {
+    if (pipe_cloexec(spawn_err_pipe) != 0) {
         return 0;
     }
-    fcntl(spawn_err_pipe[0], F_SETFD, FD_CLOEXEC);
-    fcntl(spawn_err_pipe[1], F_SETFD, FD_CLOEXEC);
 
     pid_t pid = fork();
     if (pid < 0) {
