@@ -350,3 +350,45 @@ than needing a new dispatch mechanism.
   available secondary host; the driver/staging-overhead share reported for Linux is
   probably inflated by DrvFs (see section 2d), though the cpp/link numbers, which drive the
   ranking, are not expected to be materially affected.
+
+## 9. Final aim (locked after adversarial review)
+
+An independent adversarial review (opus) verified the load-bearing code claims and
+refined this outline. Locked decisions and the filed cards:
+
+- First card: prebuilt runtime archive (maize-302). Confirmed on the merits, not just
+  as the operator's preference: it removes the RT-C compile and cpp from the
+  per-program path structurally (66.9% of all cpp spawn events, warm and cold), it is
+  the real libc.a structure rather than a cache, it enables mzld member selection, and
+  its container leaks into no contract. The narrow RT-only cpp cache is dropped
+  (dominated by the archive, and its proposed key omits -D so it would serve wrong
+  objects).
+- Fast-follow: direct-mode cpp cache for user TUs (maize-303, parked behind 302). The
+  archive removes RT cpp but not the residual user-TU cpp, which is where the warm
+  floor (link-only) is actually reached, without in-process preprocessing.
+- Test track, co-equal and filed now: maize-304 (bound run-ctest fork concurrency to
+  stop the dofork stall; cheap, lands first) and maize-305 (per-card dependency-graph
+  test scoping; own spike). The Test hour is not a build-speed problem and no compile
+  lever touches it.
+- Pillar-2 library-ification (mazm/mzld/qbe) drops behind the cpp cache: it helps only
+  the cold regime (those stages are fully cached to zero on warm), so it must be
+  re-justified from cold-regime pain, which the operator has not named.
+- Measurement correction: the section 2a 64% RT-C wall-clock share is likely a 1.5x to
+  2x overestimate (the global 179ms cpp average was applied to RT-C, whose own
+  single-TU measurement is ~86ms; the true split is probably RT-C ~31% / user-TU cpp
+  ~65%). This does not change archive-first (justified by spawn count, 473 of 707), it
+  elevates the cpp cache to immediate fast-follow, and it gates the under-30s
+  warm-corpus target on archive plus cache together, not the archive alone. maize-302
+  should capture per-source cpp timing to settle the exact share.
+- Targets: warm trivial TU under 200ms Windows / under 50ms Linux after the archive;
+  under 50ms Windows / under 20ms Linux after the cpp cache (link-only floor); full
+  warm corpus under 30s Windows / under 5s Linux gated on archive plus cache together;
+  all Windows numbers caveated by the unquantified Defender band (needs an admin
+  before/after). Test-stage single-digit-minutes stays aspirational until maize-305's
+  spike bounds the achievable floor.
+- Risk owned by maize-302's spec: per-build -D flags currently reach libc compilation
+  (oksh's -D volatile= blanks volatile inside stdio.c and string.c; mzcc.c:1067 and
+  :727-729). A build-once archive is incorrect unless it decides whether user -D stops
+  reaching libc (the real-toolchain answer, a semantic change to surface) or keys
+  archive variants per define-set. The maize-290 stable-identity determinism is safe
+  under both the archive and the cpp cache (identities are source-derived).
