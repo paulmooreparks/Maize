@@ -198,6 +198,49 @@ compile_c() {
     return 0
 }
 
+# maize-304: compile one fixture through $CC_MAIZE, bounded by a fail-fast `timeout`
+# (mirroring quesos_ac_case's existing `timeout 90` on the RUN step below; this is the
+# same guard on the COMPILE step, which previously had none). Used by the three
+# heaviest fixture-compile loops (run_quesos_ac_fixtures, run_quesos94_fixtures,
+# run_userland94_fixtures), each of which shells out to $CC_MAIZE dozens of times back
+# to back and was the mechanical hole that let a Windows/MSYS `dofork ... Resource
+# temporarily unavailable` condition stall the harness 35+ minutes with no bound
+# (maize-304 spec section 0).
+#
+# On success (rc 0) returns 0 silently, appending the compile's own output to
+# ${_cmb_log} exactly as the unwrapped call did before. On failure, echoes ONE of three
+# [FAIL] lines depending on cause, so an operator scanning CI output does not have to
+# guess:
+#   - exit 124 (timeout's own "I killed the child" code): "compile timed out ...
+#     (possible fork-resource exhaustion)"
+#   - the dofork/"Resource temporarily unavailable" signature found in the captured
+#     log: "compile failed (fork-resource exhaustion: ...)"
+#   - anything else: the original generic "compile failed"
+# then cats the accumulated log to stderr (unchanged from the prior per-call-site
+# behavior) and returns 1; callers bump TOTAL/FAIL_COUNT and return/continue exactly as
+# they did around the old bare call.
+MAIZE_FIXTURE_COMPILE_TIMEOUT="${MAIZE_FIXTURE_COMPILE_TIMEOUT:-120}"
+cc_maize_compile_bounded() {
+    _cmb_label="$1"; _cmb_out="$2"; _cmb_src="$3"; _cmb_log="$4"
+    set +e
+    timeout "$MAIZE_FIXTURE_COMPILE_TIMEOUT" "$CC_MAIZE" --preset "$PRESET" \
+        -o "$_cmb_out" "$_cmb_src" >>"$_cmb_log" 2>&1
+    _cmb_rc=$?
+    set -e
+    if [ "$_cmb_rc" -eq 0 ]; then
+        return 0
+    fi
+    if [ "$_cmb_rc" -eq 124 ]; then
+        echo "[FAIL] ${_cmb_label} compile timed out after ${MAIZE_FIXTURE_COMPILE_TIMEOUT}s (possible fork-resource exhaustion)"
+    elif grep -qiE 'dofork.*Resource temporarily unavailable' "$_cmb_log" 2>/dev/null; then
+        echo "[FAIL] ${_cmb_label} compile failed (fork-resource exhaustion: dofork Resource temporarily unavailable)"
+    else
+        echo "[FAIL] ${_cmb_label} compile failed"
+    fi
+    cat "$_cmb_log" >&2
+    return 1
+}
+
 run_ctest() {
     name="$1"
     expfile="${CTEST_DIR}/${name}.expected"
@@ -2350,6 +2393,16 @@ run_quesos_ac_fixtures() {
         echo "[FAIL] quesos_ac: quesOS link failed"; cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
+    # maize-304: this loop is the densest fixture-compile section in the harness (~34
+    # sources, each ~60-90 forked processes through cc-maize.sh); gate it machine-wide
+    # so it cannot run concurrently with the same section in another agent-worktree
+    # invocation on this host (the cross-invocation MSYS fork-ceiling condition the
+    # maize-304 spec traced maize-292's stall to). Every early return below MUST
+    # release the gate first: holding it until the whole script's EXIT trap fires
+    # would serialize far more than this one section against every other waiter.
+    if ! maize_gate_acquire quesos-ac-compile; then
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
     for src in fork_isolation fork_multi exec_launch exec_target pipe_roundtrip \
                pipe_bigwrite bigwrite_native pipeline producer filter consumer stress20 preempt \
                blocked console_echo \
@@ -2364,12 +2417,14 @@ run_quesos_ac_fixtures() {
                bulk_forward bulk_noncontig bulk_bounds bulk_kernel_range \
                bigalloc fb_present kbd_acl bigfootprint_fork loader_guard bigimage \
                palette_blit_guard; do
-        if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
-                "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
-            echo "[FAIL] quesos_ac: ${src}.c compile failed"; cat "$log" >&2
-            TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+        if ! cc_maize_compile_bounded "quesos_ac: ${src}.c" "${progs}/${src}.mzx" \
+                "${REPO_ROOT}/os/quesos/${src}.c" "$log"; then
+            TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
+            maize_gate_release
+            return
         fi
     done
+    maize_gate_release
     nat=$(host_to_native "$progs")
 
     # An optional 4th arg passes extra maize flags (used by the maize-236 fb_reject case,
@@ -2813,9 +2868,8 @@ run_quesos94_fixtures() {
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
     for src in fs_forward cwd_resolve termios_raw ttysize_console raw_reap_restore libc_proc execvp_run bin_echoer setjmp_launch; do
-        if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${src}.mzx" \
-                "${REPO_ROOT}/os/quesos/${src}.c" >>"$log" 2>&1; then
-            echo "[FAIL] quesos94: ${src}.c compile failed"; cat "$log" >&2
+        if ! cc_maize_compile_bounded "quesos94: ${src}.c" "${progs}/${src}.mzx" \
+                "${REPO_ROOT}/os/quesos/${src}.c" "$log"; then
             TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
         fi
     done
@@ -2990,39 +3044,68 @@ run_userland94_fixtures() {
         echo "[FAIL] userland94: quesOS link failed"; cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
-    # Build the shipped wave-1 /bin set through the userland harness (the vendored sbase
-    # plus the oksh shell). oksh is the wave's central deliverable (ACs 8929-8934).
-    if ! sh "$ubuild" --preset "$PRESET" --out "$bindir" \
-            true false echo cat pwd printf cp mv rm ls oksh >>"$log" 2>&1; then
-        echo "[FAIL] userland94: build-userland.sh failed to build the wave-1 sbase + oksh set"
-        cat "$log" >&2
+    # maize-304: gate this function's heavy compile burst (the wave-1 sbase+oksh build
+    # via $ubuild below, plus the bin_echoer/kilo/*_launch compiles that follow) the
+    # same way as run_quesos_ac_fixtures's loop: this is the OTHER of the two heaviest
+    # fixture-compile sections the maize-304 spec calls out (section 1b). Every early
+    # return inside the gated region releases first, for the same reason noted there:
+    # holding the gate until the whole script exits would serialize far more than this
+    # one section against every other waiter on the host.
+    if ! maize_gate_acquire userland94-compile; then
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
+    # Build the shipped wave-1 /bin set through the userland harness (the vendored sbase
+    # plus the oksh shell). oksh is the wave's central deliverable (ACs 8929-8934).
+    # maize-304: bounded by `timeout` (build-userland.sh's own internal cc-maize.sh
+    # calls are the same fork-dense pipeline the quesOS loops use, over 11 tools).
+    UBUILD_TIMEOUT="${MAIZE_UBUILD_TIMEOUT:-300}"
+    set +e
+    timeout "$UBUILD_TIMEOUT" sh "$ubuild" --preset "$PRESET" --out "$bindir" \
+            true false echo cat pwd printf cp mv rm ls oksh >>"$log" 2>&1
+    _ubuild_rc=$?
+    set -e
+    if [ "$_ubuild_rc" -ne 0 ]; then
+        if [ "$_ubuild_rc" -eq 124 ]; then
+            echo "[FAIL] userland94: build-userland.sh timed out after ${UBUILD_TIMEOUT}s (possible fork-resource exhaustion)"
+        elif grep -qiE 'dofork.*Resource temporarily unavailable' "$log" 2>/dev/null; then
+            echo "[FAIL] userland94: build-userland.sh failed (fork-resource exhaustion: dofork Resource temporarily unavailable)"
+        else
+            echo "[FAIL] userland94: build-userland.sh failed to build the wave-1 sbase + oksh set"
+        fi
+        cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
+        maize_gate_release
+        return
+    fi
     # bin_echoer is the execvp-fallback resolution target (decision 9084), placed in /bin.
-    if ! "$CC_MAIZE" --preset "$PRESET" -o "${bindir}/bin_echoer.mzx" \
-            "${REPO_ROOT}/os/quesos/bin_echoer.c" >>"$log" 2>&1; then
-        echo "[FAIL] userland94: bin_echoer.c compile failed"; cat "$log" >&2
-        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    if ! cc_maize_compile_bounded "userland94: bin_echoer.c" "${bindir}/bin_echoer.mzx" \
+            "${REPO_ROOT}/os/quesos/bin_echoer.c" "$log"; then
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
+        maize_gate_release
+        return
     fi
     # maize-250: kilo (the full-screen editor) built into /bin so the pty fixture can launch
     # it as a child of oksh under quesOS. Compiles clean through cc-maize with no source
     # changes (demos/kilo/README.md).
-    if ! "$CC_MAIZE" --preset "$PRESET" -o "${bindir}/kilo.mzx" \
-            "${REPO_ROOT}/demos/kilo/kilo.c" >>"$log" 2>&1; then
-        echo "[FAIL] userland94: kilo.c compile failed"; cat "$log" >&2
-        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    if ! cc_maize_compile_bounded "userland94: kilo.c" "${bindir}/kilo.mzx" \
+            "${REPO_ROOT}/demos/kilo/kilo.c" "$log"; then
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
+        maize_gate_release
+        return
     fi
     # The launcher drivers are quesOS worklist entries (compiled like any fixture):
     # sbase_launch (echo|cat pipeline), printf_launch, and the cp/mv/rm fs launchers
     # (each seeds a file on the /rw mount, execve's its util, and verifies the result).
     for _drv in sbase_launch printf_launch cp_launch mv_launch rm_launch ls_launch \
                 oksh_shell execvp_ext oksh_interactive; do
-        if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/${_drv}.mzx" \
-                "${REPO_ROOT}/os/quesos/${_drv}.c" >>"$log" 2>&1; then
-            echo "[FAIL] userland94: ${_drv}.c compile failed"; cat "$log" >&2
-            TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+        if ! cc_maize_compile_bounded "userland94: ${_drv}.c" "${progs}/${_drv}.mzx" \
+                "${REPO_ROOT}/os/quesos/${_drv}.c" "$log"; then
+            TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
+            maize_gate_release
+            return
         fi
     done
+    maize_gate_release
     # The no-arg utils run as direct worklist entries: stage them under /progs too.
     cp "${bindir}/true.mzx" "${bindir}/false.mzx" "${bindir}/pwd.mzx" "$progs/"
     pnat=$(host_to_native "$progs")
