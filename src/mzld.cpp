@@ -511,19 +511,28 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* --map: write the address/name sidecar for profilers and debuggers. One line per
-	   DEFINED GLOBAL symbol at its final linked address, sorted ascending:
-	   "0x<addr> <name>". Globals only: local labels (assembler block labels, qbe's
-	   Lm* jump targets) would win nearest-preceding resolution and shred a profile
-	   into meaningless per-block rows; function-granularity attribution is the point.
-	   A static C function therefore aggregates into the preceding global. */
+	   DEFINED symbol at its final linked address, sorted ascending: "0x<addr> <name>".
+	   Locals are INCLUDED because static C functions arrive as local symbols carrying
+	   their real names, and dropping them makes whole static bodies mis-attribute to
+	   the nearest preceding global (a kernel image is almost entirely static
+	   functions). What IS excluded is the compiler's generated basic-block jump
+	   targets ("Lm" + digits), which carry no attribution value and would shred a
+	   profile into per-block rows. */
 	if (!map_path.empty()) {
+		auto is_block_label = [](const std::string &n) {
+			if (n.size() < 3 || n[0] != 'L' || n[1] != 'm') { return false; }
+			for (std::size_t k = 2; k < n.size(); ++k) {
+				if (n[k] < '0' || n[k] > '9') { return false; }
+			}
+			return true;
+		};
 		std::vector<std::pair<std::uint64_t, const std::string*>> map_rows;
 		for (const auto &obj : objects) {
 			for (const auto &sym : obj.symbols) {
 				if (sym.section_index == SHN_UNDEF || sym.section_index >= obj.sections.size()) {
 					continue;
 				}
-				if (sym.name.empty() || sym.binding != BIND_GLOBAL) {
+				if (sym.name.empty() || is_block_label(sym.name)) {
 					continue;
 				}
 				map_rows.emplace_back(obj.sections[sym.section_index].vaddr + sym.value, &sym.name);
