@@ -744,17 +744,73 @@ static const char *rt_listing(void) {
     return g_rt_listing;
 }
 
+/* If slash-normalized `path` lies strictly under slash-normalized `root`
+   (root + '/' + tail, tail non-empty), return a fresh copy of the tail; else
+   NULL. A trailing '/' on root is ignored so RT_DIR / src_dir match whether or
+   not they carry one. Used to re-express an absolute staged include path as a
+   stable, root-relative reference (maize-303 cycle-2). */
+static char *rel_under(const char *path, const char *root) {
+    if (!path || !root || !root[0]) { return NULL; }
+    size_t rl = strlen(root);
+    while (rl > 0 && root[rl - 1] == '/') { --rl; }
+    if (rl == 0) { return NULL; }
+    if (strncmp(path, root, rl) != 0 || path[rl] != '/' || !path[rl + 1]) {
+        return NULL;
+    }
+    return xstrdup(path + rl + 1);
+}
+
+/* Encode a discovered (absolute, slash-normalized) include path as a STABLE,
+   re-anchorable manifest reference: "S\t<rel>" when it lies under src_dir,
+   "R\t<rel>" when under RT_DIR. Returns a fresh encoded string, or NULL when
+   the path lies under NEITHER root. The two roots are physically disjoint
+   (RT_DIR under REPO_ROOT, src_dir under the staging temp), so classification
+   is unambiguous. An unmappable include (a header outside both search roots)
+   returns NULL, and the caller then DECLINES to cache the TU (a safe re-
+   preprocess every build, never a wrong hit): this is the fail-safe the spec's
+   "stable identity or bypass" clause requires. src_dir is deliberately keyed as
+   a ROOT here (not the absolute value) so the reference survives the randomized
+   per-invocation staging dir. */
+static char *encode_include(const char *abspath, const char *src_dir) {
+    char *rel = rel_under(abspath, src_dir);
+    if (rel) { char *e = joinstr("S\t", rel, NULL, NULL); free(rel); return e; }
+    rel = rel_under(abspath, RT_DIR);
+    if (rel) { char *e = joinstr("R\t", rel, NULL, NULL); free(rel); return e; }
+    return NULL;
+}
+
+/* Re-anchor an encoded reference to the CURRENT invocation's roots so its live
+   bytes can be read: "R\t<rel>" -> <RT_DIR>/<rel>, "S\t<rel>" -> <src_dir>/<rel>.
+   Returns a fresh absolute path, or NULL on a malformed reference (treated as a
+   miss). The manifest was written by a prior invocation whose absolute staging
+   dir is gone; re-anchoring reads THIS invocation's freshly staged copy, so a
+   header edited in the repo re-stages with new bytes and misses by content. */
+static char *reanchor_include(const char *enc, const char *src_dir) {
+    if (!enc || !enc[0] || enc[1] != '\t') { return NULL; }
+    const char *rel = enc + 2;
+    if (enc[0] == 'R') { return joinstr(RT_DIR, "/", rel, NULL); }
+    if (enc[0] == 'S') { return joinstr(src_dir ? src_dir : "", "/", rel, NULL); }
+    return NULL;
+}
+
 /* manifest_key = SHA-256(domain, cpp-identity, RT-listing, src_dir-listing,
-   fed bytes, and each output-affecting cpp flag argv[flag_lo..flag_hi) in
-   order). The -I path VALUES are among those flags; the -I directory LISTINGS
-   are the separate shadow-guard component above. */
+   fed bytes, each output-affecting cpp flag argv[flag_lo..flag_hi) in order,
+   then the two -I search paths as STABLE identities). flag_hi is the index just
+   BEFORE the two `-I <dir>` argv pairs, so those absolute VALUES are excluded
+   from the verbatim flag fold and re-added below as path-independent tokens:
+   RT_DIR by its repo-relative path, src_dir by the source's maize-290 stable
+   identity `src_id`. This is the cycle-2 fix: the old key folded the absolute
+   `-I src_dir` value, which is a fresh randomized staging path every invocation
+   (mzcc_userland.c stage_root), so a warm rebuild never hit across invocations.
+   The -I directory LISTINGS (the shadow guard, folded above) plus src_id carry
+   the search-path semantics without the volatile absolute string. */
 static void compute_manifest_key(const Argv *cpp, int flag_lo, int flag_hi,
                                  const char *fed_data, size_t fed_len,
-                                 const char *src_dir,
+                                 const char *src_dir, const char *src_id,
                                  char out[MZCC_SHA256_HEX_LEN + 1]) {
     mzcc_sha256_ctx c;
     mzcc_sha256_init(&c);
-    static const char dom[] = "ppcache-manifest-v1";
+    static const char dom[] = "ppcache-manifest-v2";
     sha_absorb_lp(&c, dom, sizeof(dom) - 1);
     /* Reaching here implies !g_ppcache_disabled, i.e. the identity is real. */
     sha_absorb_lp(&c, g_cpp_identity, sizeof(g_cpp_identity));
@@ -767,33 +823,49 @@ static void compute_manifest_key(const Argv *cpp, int flag_lo, int flag_hi,
     for (int i = flag_lo; i < flag_hi; ++i) {
         sha_absorb_lp(&c, cpp->v[i], strlen(cpp->v[i]));
     }
+    static const char itok[] = "-I";
+    char *rtrel = rel_under(RT_DIR, REPO_ROOT);
+    const char *rtkey = rtrel ? rtrel : "toolchain/rt";
+    sha_absorb_lp(&c, itok, sizeof(itok) - 1);
+    sha_absorb_lp(&c, rtkey, strlen(rtkey));
+    free(rtrel);
+    sha_absorb_lp(&c, itok, sizeof(itok) - 1);
+    sha_absorb_lp(&c, src_id, strlen(src_id));
     uint8_t dig[MZCC_SHA256_DIGEST_LEN];
     mzcc_sha256_final(&c, dig);
     mzcc_sha256_hex(dig, out);
 }
 
 /* preprocessed_key = SHA-256(domain, manifest_key hex, and for each recorded
-   include in order: its path + its CURRENT content bytes). Returns 1 with the
-   key filled when every include was readable; 0 (a MISS, never a stale serve)
-   the moment any recorded include is unreadable/removed. */
+   include in order: its STABLE encoded reference + its CURRENT content bytes,
+   read by re-anchoring the reference to this invocation's roots). Returns 1
+   with the key filled when every include re-anchored and read; 0 (a MISS, never
+   a stale serve) the moment any recorded include is malformed, unmappable, or
+   unreadable/removed. Folding the encoded reference (not the absolute path)
+   keeps the key stable across the randomized staging dir. */
 static int compute_preprocessed_key(const char *manifest_key_hex,
                                     const StrList *includes,
+                                    const char *src_dir,
                                     char out[MZCC_SHA256_HEX_LEN + 1]) {
     mzcc_sha256_ctx c;
     mzcc_sha256_init(&c);
-    static const char dom[] = "ppcache-output-v1";
+    static const char dom[] = "ppcache-output-v2";
     sha_absorb_lp(&c, dom, sizeof(dom) - 1);
     sha_absorb_lp(&c, manifest_key_hex, strlen(manifest_key_hex));
     for (int i = 0; i < includes->n; ++i) {
-        const char *p = includes->v[i];
-        sha_absorb_lp(&c, p, strlen(p));
+        const char *enc = includes->v[i];
+        sha_absorb_lp(&c, enc, strlen(enc));
+        char *path = reanchor_include(enc, src_dir);
+        if (!path) { return 0; } /* malformed/unmappable reference -> miss */
         ByteBuf hb;
-        if (read_file(p, &hb) != 0) {
+        if (read_file(path, &hb) != 0) {
             byte_buf_free(&hb);
+            free(path);
             return 0; /* a removed/unreadable recorded header forces a miss */
         }
         sha_absorb_lp(&c, hb.data, hb.len);
         byte_buf_free(&hb);
+        free(path);
     }
     uint8_t dig[MZCC_SHA256_DIGEST_LEN];
     mzcc_sha256_final(&c, dig);
@@ -847,12 +919,14 @@ static void parse_depfile(const char *data, size_t len, StrList *out) {
     byte_buf_free(&tok);
 }
 
-/* Serialize the include set to the v1 manifest format (one canonical path per
-   line, preceded by a magic/version header and the count) into `out`. */
+/* Serialize the include set to the v2 manifest format (one STABLE encoded
+   reference "S\t<rel>" / "R\t<rel>" per line, preceded by a magic/version
+   header and the count) into `out`. v2 stores root-relative references, not the
+   v1 absolute paths, so a manifest survives the per-invocation staging dir. */
 static void serialize_manifest_into(const StrList *includes, ByteBuf *out) {
     byte_buf_init(out);
     char hdr[64];
-    int hn = snprintf(hdr, sizeof(hdr), "MZCC-PPMANIFEST v1\n%d\n", includes->n);
+    int hn = snprintf(hdr, sizeof(hdr), "MZCC-PPMANIFEST v2\n%d\n", includes->n);
     if (hn > 0) { byte_buf_append(out, hdr, (size_t)hn); }
     for (int i = 0; i < includes->n; ++i) {
         byte_buf_append(out, includes->v[i], strlen(includes->v[i]));
@@ -864,8 +938,8 @@ static void serialize_manifest_into(const StrList *includes, ByteBuf *out) {
    well-formed manifest, -1 on any malformation (the caller treats -1 as a
    miss, never a stale serve). */
 static int parse_manifest(const char *data, size_t len, StrList *out) {
-    /* Line 0: magic. Line 1: count. Lines 2..2+count: paths. */
-    static const char magic[] = "MZCC-PPMANIFEST v1";
+    /* Line 0: magic. Line 1: count. Lines 2..2+count: encoded references. */
+    static const char magic[] = "MZCC-PPMANIFEST v2";
     size_t mlen = sizeof(magic) - 1;
     if (len < mlen || memcmp(data, magic, mlen) != 0) { return -1; }
     size_t i = mlen;
@@ -1007,6 +1081,11 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
     byte_buf_free(&lf);
 
     char *src_dir = abs_dir_of(src);
+    /* The source's maize-290 stable identity (repo-relative, or basename for a
+       source outside the repo tree): folded into manifest_key in place of the
+       absolute `-I src_dir` value, so the key is stable across the randomized
+       per-invocation staging dir (maize-303 cycle-2). */
+    char *src_id = stable_file_identity(src);
 
     /* Stage: cpp. Reproduces cc-maize.sh:442-449 EXACTLY (the maize-257
        host-canonicalization invariant); flags in this order, as discrete argv
@@ -1039,13 +1118,19 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
             av_add(&cpp, extra_defines->v[i]);
         }
     }
+    /* `flags_end` marks the argv index just BEFORE the two `-I <dir>` pairs, so
+       manifest_key folds the pure output-affecting flags verbatim over
+       argv[1..flags_end) and re-adds the two -I search paths as STABLE
+       identities (RT_DIR repo-relative, src_dir as src_id) rather than their
+       per-invocation absolute values (maize-303 cycle-2). */
+    int flags_end = cpp.n;
     av_add(&cpp, "-I"); av_add(&cpp, RT_DIR);
     av_add(&cpp, "-I"); av_add(&cpp, src_dir);
     /* NOTE: the stdin input marker "-" is appended in the MISS branch below,
        AFTER the miss-only -MD/-MF/-MT depfile flags, so the canonical option-
-       before-input order holds; manifest_key is computed over argv[1..cpp.n)
-       here while "-" is still absent, folding exactly the output-affecting
-       flags (the two -I VALUES included) and nothing else. */
+       before-input order holds; manifest_key is computed over the flags here
+       (argv[1..flags_end) verbatim plus the two -I paths as stable identities)
+       while "-" is still absent. */
 
     /* ---- direct-mode cpp-output cache lookup (maize-303) ------------------
        Runs BEFORE the cpp spawn. On a preprocessed-cache hit we serve the
@@ -1059,17 +1144,18 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
     ProcResult pp;
     int pp_served = 0; /* 1 once pp.stdout_bytes holds served cpp-cache bytes */
     if (pp_on) {
-        compute_manifest_key(&cpp, 1, cpp.n, fed.data, fed.len, src_dir, mkey);
+        compute_manifest_key(&cpp, 1, flags_end, fed.data, fed.len, src_dir, src_id, mkey);
         ByteBuf mbytes;
         if (mzcc_cache_manifest_lookup(mkey, &mbytes)) {
             StrList inc;
             sl_init(&inc);
             if (parse_manifest(mbytes.data, mbytes.len, &inc) == 0) {
                 char pkey[MZCC_SHA256_HEX_LEN + 1];
-                /* Recompute preprocessed_key from LIVE header bytes: a changed
-                   or removed recorded header yields a key that misses every
-                   stored entry, so a stale hit is unreachable by construction. */
-                if (compute_preprocessed_key(mkey, &inc, pkey)) {
+                /* Recompute preprocessed_key from LIVE header bytes (re-anchored
+                   to this invocation's roots): a changed or removed recorded
+                   header yields a key that misses every stored entry, so a stale
+                   hit is unreachable by construction. */
+                if (compute_preprocessed_key(mkey, &inc, src_dir, pkey)) {
                     ByteBuf ppbytes;
                     if (mzcc_cache_pp_lookup(pkey, &ppbytes)) {
                         pp.exit_code = 0;
@@ -1103,11 +1189,26 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
                next build re-preprocesses. */
             ByteBuf db;
             if (read_file(depfile, &db) == 0) {
+                StrList raw;
+                sl_init(&raw);
+                parse_depfile(db.data, db.len, &raw);
+                /* Re-express each discovered absolute include as a STABLE,
+                   re-anchorable reference. If ANY include lies outside both -I
+                   search roots it is unmappable: decline to cache this TU (leave
+                   no manifest), so it safely re-preprocesses every build rather
+                   than risk a wrong hit on a reference we cannot re-anchor. */
                 StrList inc;
                 sl_init(&inc);
-                parse_depfile(db.data, db.len, &inc);
+                int mappable = 1;
+                for (int k = 0; k < raw.n; ++k) {
+                    char *enc = encode_include(raw.v[k], src_dir);
+                    if (!enc) { mappable = 0; break; }
+                    sl_push(&inc, enc);
+                    free(enc);
+                }
+                sl_free(&raw);
                 char pkey[MZCC_SHA256_HEX_LEN + 1];
-                if (compute_preprocessed_key(mkey, &inc, pkey)) {
+                if (mappable && compute_preprocessed_key(mkey, &inc, src_dir, pkey)) {
                     mzcc_cache_pp_store(pkey, pp.stdout_bytes.data, pp.stdout_bytes.len);
                     ByteBuf mser;
                     serialize_manifest_into(&inc, &mser);
@@ -1124,6 +1225,7 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
     av_free(&cpp);
     byte_buf_free(&fed);
     free(src_dir);
+    free(src_id);
     if (!ran || pp.exit_code != 0) {
         diag_printf(diag, "mzcc: cpp failed for %s\n", tag);
         diag_bytes(diag, pp.stderr_bytes.data, pp.stderr_bytes.len);
