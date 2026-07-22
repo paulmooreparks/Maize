@@ -9,6 +9,23 @@
 #include <cassert>
 #include <cstring>
 
+/* maize-330 (JIT J1): headers for src/jit.inl, which is included at namespace scope
+   inside this file (below, ahead of tick()) and therefore cannot include them itself. */
+#include <algorithm>
+#include <cstdlib>
+#include <iostream>
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#else
+#  include <sys/mman.h>
+#endif
+
 /* This isn't classic OOP. My primary concern is performance; readability is secondary. Readability
 and maintainability are still important, though, because I want this to become something
 that I can use to write any byte code implementation. */
@@ -256,6 +273,26 @@ namespace maize {
 
         }
 
+        /* maize-330 (JIT J1): shared JIT state and hooks, forward-declared here because
+           they are referenced from the memory write seams (just below), the control-
+           transfer sites, and the MAIZE_NEXT preamble, all of which precede the JIT
+           machinery itself (src/jit.inl, included ahead of tick()). All internal
+           linkage; the definitions with initializers live here, the functions in the
+           .inl (same unique anonymous namespace, same TU). */
+        namespace {
+            bool jit_active = false;            /* --jit or --jit-check enabled */
+            bool jit_active_dispatch = false;   /* dispatch allowed (cleared while the
+                                                   differential oracle is stepping) */
+            bool jit_pending_boundary = true;   /* a control transfer landed; the next
+                                                   MAIZE_NEXT preamble consults the JIT */
+            bool jit_step_on = false;           /* differential oracle stepping (bounded) */
+            u_word jit_step_budget = 0;
+            bool jit_seam_armed = false;        /* write seams report stores to the JIT */
+            void jit_note_store(u_word pa, u_word value, std::size_t n, bool journal_value);
+            void jit_dispatch();
+        }
+        void tick();
+
         memory_module::~memory_module() {
             for (auto &[base, ptr] : memory_map) {
                 delete[] ptr;
@@ -265,6 +302,9 @@ namespace maize {
         }
 
         u_hword memory_module::write_byte(reg_value address, u_byte value) {
+            /* maize-330: store seam 1 of 3. The JIT invalidates compiled blocks on any
+               written physical page, and journals the store under --jit-check. */
+            if (jit_seam_armed) { jit_note_store(address.w0, value, 1, true); }
             size_t idx {block_size - set_cache_address(address)};
             cache[idx] = value;
             return sizeof(u_byte);
@@ -278,6 +318,8 @@ namespace maize {
         // remaining bytes land in the NEXT block instead of wrapping 0xFF -> 0x00
         // back into the same block. (maize-42)
         u_hword memory_module::write_bytes(u_word address, u_word value, size_t count) {
+            /* maize-330: store seam 2 of 3 (serves write_qword/hword/word). */
+            if (jit_seam_armed) { jit_note_store(address, value, count, true); }
             size_t written {0};
 
             do {
@@ -484,6 +526,9 @@ namespace maize {
         }
 
         void memory_module::write_from(u_word address, const u_byte* src, size_t count) {
+            /* maize-330: store seam 3 of 3 (bulk). Invalidation only; the differential
+               journal never needs bulk writes because no covered instruction bulk-writes. */
+            if (jit_seam_armed) { jit_note_store(address, 0, count, false); }
             size_t done {0};
             while (count) {
                 size_t rem {set_cache_address(address)};   // bytes to end of the current block
@@ -1139,8 +1184,11 @@ namespace maize {
             }
 
             /* Called by the control-transfer handler sites just after RP is written.
-               Inline and trivially cheap when survey_on is false. */
+               Inline and trivially cheap when survey_on is false. maize-330: the same
+               sites are the JIT's block boundaries, so this doubles as the tier-up
+               trigger (jit_pending_boundary) when the JIT is dispatching. */
             inline void survey_note_transfer(int kind) {
+                if (jit_active_dispatch) { jit_pending_boundary = true; }
                 if (!survey_on) { return; }
                 ++survey_exit_kinds[kind];
                 survey_pending = kind;
@@ -2067,6 +2115,12 @@ namespace maize {
            re-delivered on IRET. Returns true when an interrupt was delivered (the run
            loop then continues to the handler's first instruction). */
         bool try_deliver_interrupt() {
+            /* maize-330: while the differential oracle is stepping over a compiled
+               block's span, delivery is deferred to the block boundary (the compiled run
+               it is being compared against could not have taken the interrupt either). */
+            if (jit_step_on) {
+                return false;
+            }
             if (!interrupt_enabled_flag || !irq_pending.load(std::memory_order_relaxed)) {
                 return false;
             }
@@ -3942,6 +3996,12 @@ namespace maize {
 
         /* Out-of-line unknown-opcode trap, kept out of tick() so no non-trivial local lives
            in the threaded-dispatch body (see LBL_default). */
+
+        /* maize-330 (JIT J1): the tier-1 template JIT. Included here, after every
+           semantic helper it single-sources and before tick(), whose MAIZE_NEXT
+           preamble dispatches into it at block boundaries. */
+#include "jit.inl"
+
         [[noreturn]] void raise_unknown_opcode(u_byte op) {
             std::stringstream err {};
             err << "unknown opcode: " << std::hex << static_cast<unsigned>(op);
@@ -4191,6 +4251,17 @@ namespace maize {
                 } \
                 if (active_timer_ptr != nullptr) { tick_active_timer(*active_timer_ptr); } \
                 if (active_input_ptr != nullptr && (++input_tick_ctr_ & INPUT_TICK_MASK) == 0) { active_input_ptr->on_input_tick(); } \
+                if (jit_active) { \
+                    if (jit_step_on) { \
+                        if (jit_step_budget == 0) { goto tick_exit; } \
+                        --jit_step_budget; \
+                    } \
+                    if (jit_pending_boundary && jit_active_dispatch) { \
+                        jit_pending_boundary = false; \
+                        jit_dispatch(); \
+                        if (!running_flag) { goto tick_exit; } \
+                    } \
+                } \
                 current_instr_pc = regs::rp.w0; \
                 if (survey_on) { survey_step(current_instr_pc); } \
                 mm.read(translate(regs::rp.w0, access_kind::fetch), regs::ri, subreg_enum::w0); \
@@ -5118,6 +5189,10 @@ namespace maize {
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, new_rs, subreg_enum::w0);
                         regs::rs.w0 = new_rs.w0;
                         copy_regval_reg_zext(op1_reg(), op1_subreg_flag(), regs::rp, subreg_enum::w0);
+                        /* maize-330: this indirect-call site was the one transfer the
+                           maize-324 survey missed; hooked so the JIT sees the boundary
+                           (and the survey now counts it too). */
+                        survey_note_transfer(survey_kind_indirect);
                         MAIZE_NEXT();
                     }
 

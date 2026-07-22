@@ -151,6 +151,21 @@ MAZM=$(resolve_exe "${BUILD_DIR}/mazm") || {
     echo "run-ctest.sh: mazm not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 MAIZE=$(resolve_exe "${BUILD_DIR}/maize") || {   # maize-225/230: SDL-free console build (no WSLg window)
     echo "run-ctest.sh: maize (console build) not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+# maize-330: optional JIT leg, same env contract as run-tests.{sh,ps1}. MAIZE_JIT=1
+# runs every C-fixture execution under --jit; MAIZE_JIT=check under --jit-check.
+if [ -n "${MAIZE_JIT:-}" ]; then
+    _jit_flag="--jit"
+    if [ "${MAIZE_JIT}" = "check" ]; then _jit_flag="--jit-check"; fi
+    mkdir -p "${BUILD_DIR}/ctest-run"
+    _jit_wrap="${BUILD_DIR}/ctest-run/maize-jit-wrap.sh"
+    {
+        echo '#!/bin/sh'
+        echo "exec \"${MAIZE}\" ${_jit_flag} --jit-threshold ${MAIZE_JIT_THRESHOLD:-50} \"\$@\""
+    } > "$_jit_wrap"
+    chmod +x "$_jit_wrap"
+    MAIZE="$_jit_wrap"
+    echo "run-ctest.sh: running maize under ${_jit_flag} (threshold ${MAIZE_JIT_THRESHOLD:-50})"
+fi
 # maize-249: the graphical build. add_executable(maizeg ...) is unconditional (CMakeLists.txt:26)
 # and, with MAIZE_DISPLAY off (every CI preset), links no SDL and runs headless, so invoking it
 # directly is CI-safe on BOTH legs (Linux and Windows/MSYS2). Used by run_launcher_per_binary to

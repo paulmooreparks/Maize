@@ -460,6 +460,15 @@ namespace maize {
 			static constexpr u_word block_size {u_word {1} << block_shift};
 			static constexpr u_word block_mask {block_size - 1};
 
+			/* maize-330 (JIT J1): expose the L1 arrays' storage to the JIT so compiled
+			   code can inline the block-cache hit path (a slot probe + tag compare +
+			   host load/store), exactly mirroring set_cache_address's fast path. Read
+			   access to the arrays only; guest bytes are written through the block
+			   pointers the arrays already hand out. */
+			u_byte* const* jit_l1_ptr_data() const { return l1_ptr.data(); }
+			const u_word* jit_l1_base_data() const { return l1_base.data(); }
+			static constexpr size_t jit_l1_mask() { return l1_mask; }
+
 		protected:
 			reg address_reg {0};
 			u_word address_mask {~block_mask};
@@ -1114,6 +1123,16 @@ namespace maize {
 		const std::unordered_map<u_word, std::uint64_t>& profile_histogram();   // sampled PC -> hits
 		void enable_jit_survey();               // --jit-survey: block-shape survey, no codegen (JIT J0)
 		void jit_survey_report(std::ostream& out);   // printed at exit when the survey ran
+
+		/* Tier-1 template JIT (maize-330, JIT J1). enable_jit(false) turns on compiled
+		   execution of hot Bare-mode code paths; enable_jit(true) additionally verifies
+		   every compiled block against the interpreter (--jit-check, the differential
+		   miscompile net). On a host CPU with no JIT backend both print a note and the
+		   machine runs interpreted. The setters must be called before enable_jit. */
+		void enable_jit(bool check_mode);
+		void set_jit_cache_bytes(u_word bytes);      // --jit-cache-mb (default 64 MiB)
+		void set_jit_threshold(u_word t);            // block hotness threshold (default 50)
+		void jit_report(std::ostream& out);          // printed at exit when --jit ran
 		u_word instruction_count();   // running guest-instruction count (for MIPS)
 
 		/* Extract the zero-extended value of a named subregister from a port operand.

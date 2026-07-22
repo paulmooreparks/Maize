@@ -105,11 +105,11 @@ memory exists today, and this document stops claiming one.
 
 The committed fixture `asm/test_selfmod.mazm` pins the architectural contract
 but executes its target only twice, far below any plausible hotness
-threshold, so as it stands it never exercises a compiled block. J2's
-acceptance criteria include a hot variant (execute the target past the
-threshold, patch it through each of the three write seams in turn, and
-verify the re-executed result), and J3 extends it with a chained-successor
-variant for the unlink contract below.
+threshold, so as it stands it never exercises a compiled block. J1 ships a
+hot variant through the guest-store seam (execute the target past the
+threshold, patch it, and verify the re-executed result, with live chained
+predecessors exercising the unlink contract below); J2 extends the hot
+variant through the two host-side write seams.
 
 ### 3.2a Chained jumps unlink on invalidation
 
@@ -119,8 +119,12 @@ page-generation bitmap alone cannot see (the known QEMU tb_invalidate
 gotcha the review raised). Every block therefore keeps a list of its
 incoming chain links, and invalidating a block walks that list and restores
 each predecessor's exit to the lookup stub before the block is discarded.
-Chaining and unlinking land together in J3 as one unit; a chained
-successor is never created before its unlink bookkeeping exists.
+Chaining and unlinking land together as one unit; a chained successor is
+never created before its unlink bookkeeping exists. The J0 survey moved
+that unit forward from J3 into J1: measured blocks are short (median 2 to 7
+instructions) and 77 to 83 percent of dynamic exits are direct, so an
+unchained J1 would pay a dispatcher round trip every few instructions and
+could not meet its own end-to-end gate.
 
 ### 3.2b Indirect transfers go through the central lookup
 
@@ -220,7 +224,9 @@ instruction count is known at compile time and added at block entry.
   workloads (if it is lower, the block model is wrong and the design returns
   here).
 - J1, minimal emitter, Bare mode only. Straight-line ALU, CP/LD/ST, and
-  conditional branches; everything else exits the block. Gate: at least 2x
+  conditional branches; everything else exits the block. Direct-exit
+  chaining with its unlink bookkeeping and the central indirect lookup are
+  in scope (pulled forward from J3 by the J0 findings above). Gate: at least 2x
   END-TO-END wall-clock on a named benchmark (doom_bench headless), with the
   covered dynamic-instruction fraction reported alongside the multiple. The
   gate cannot be met by a synthetic microbenchmark; the covered fraction is
@@ -231,8 +237,8 @@ instruction count is known at compile time and added at block entry.
   all write sources, inline Sv48 fast-page checks, fault-PC side tables.
   Gate: full asm and C suites green including test_selfmod and the quesOS
   families, plus a hosted MIPS win on the oksh loop.
-- J3, quality inside the block. Static register pinning, lazy flags, block
-  chaining, backedge interrupt checks. Gate: the 4x-or-better multiple on
+- J3, quality inside the block. Static register pinning and lazy flags in
+  codegen (chaining moved to J1). Gate: the 4x-or-better multiple on
   compute-bound workloads, measured against the J0 baselines.
 - J4 and beyond, coverage growth by measured frequency, then AArch64.
 
@@ -252,8 +258,8 @@ predecode tier in one cheap spike instead of a long build.
   changes.
 - Chain-unlink bookkeeping is the second correctness risk, because a stale
   chained jump bypasses the block table entirely. Mitigation: chaining and
-  unlinking are one J3 unit, and the J3 fixture variant invalidates a block
-  that has live predecessors.
+  unlinking are one J1 unit, and the J1 hot-selfmod fixture invalidates a
+  block that has live predecessors.
 - Compile-time regressions on churny code (a shell forking short-lived
   children whose code compiles and is thrown away) are the performance risk.
   Mitigation: the hotness threshold, physical keying (fork children share the

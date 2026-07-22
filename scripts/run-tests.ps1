@@ -85,6 +85,7 @@ $Tests = @(
     # Self-modifying-code contract (from the maize-307 investigation): a store into code
     # bytes takes effect for the NEXT fetch; any future decoded/JIT tier must preserve this.
     [pscustomobject]@{ Name = 'test_selfmod';       File = 'test_selfmod.mazm';       Expected = 'selfmod: PASS';                 Golden = $false }
+    [pscustomobject]@{ Name = 'test_jit_selfmod_hot'; File = 'test_jit_selfmod_hot.mazm'; Expected = 'selfmod hot: PASS';         Golden = $false }
     # maize-272 PUSHALL/POPALL: flag neutrality, the 13-register frame ABI, full round trip.
     [pscustomobject]@{ Name = 'test_pushall';       File = 'test_pushall.mazm';       Expected = 'pushall: PASS';                 Golden = $false }
     [pscustomobject]@{ Name = 'oob_subreg_guard';   File = 'test_oob_subreg.mazm';    Expected = 'oob subreg: PASS';              Golden = $false }
@@ -236,6 +237,21 @@ if (-not (Test-Path $MzdisExe)) {
 
 if (-not (Test-Path $TestRunDir)) {
     New-Item -ItemType Directory -Path $TestRunDir -Force | Out-Null
+}
+
+# --- maize-330: optional JIT leg. MAIZE_JIT=1 runs every maize invocation under --jit;
+# MAIZE_JIT=check runs under --jit-check (differential verification). Implemented as a
+# .cmd exec wrapper so the suite's call sites (both `&` calls and ProcessStartInfo)
+# stay unchanged. MAIZE_JIT_THRESHOLD overrides the hotness threshold (1 = compile
+# everything, the aggressive correctness setting). Keep in sync with run-tests.sh.
+if ($env:MAIZE_JIT) {
+    $jitFlag = if ($env:MAIZE_JIT -eq 'check') { '--jit-check' } else { '--jit' }
+    $jitThreshold = if ($env:MAIZE_JIT_THRESHOLD) { $env:MAIZE_JIT_THRESHOLD } else { '50' }
+    $jitWrap = Join-Path $TestRunDir 'maize-jit-wrap.cmd'
+    "@echo off`r`n`"$MaizeExe`" $jitFlag --jit-threshold $jitThreshold %*" |
+        Set-Content -Path $jitWrap -Encoding ascii
+    $MaizeExe = $jitWrap
+    Write-Host "run-tests.ps1: running maize under $jitFlag (threshold $jitThreshold)"
 }
 
 # --- Per-test execution -------------------------------------------------------------

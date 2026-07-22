@@ -171,6 +171,24 @@ fi
 
 mkdir -p "$TEST_RUN_DIR"
 
+# --- maize-330: optional JIT leg. MAIZE_JIT=1 runs every maize invocation under --jit;
+# MAIZE_JIT=check runs under --jit-check (differential verification). Implemented as an
+# exec wrapper so the suite's call sites stay unchanged. MAIZE_JIT_THRESHOLD overrides
+# the hotness threshold (1 = compile everything, the aggressive correctness setting).
+# Keep in sync with run-tests.ps1 (the Windows twin).
+if [ -n "${MAIZE_JIT:-}" ]; then
+    JIT_FLAG="--jit"
+    if [ "${MAIZE_JIT}" = "check" ]; then JIT_FLAG="--jit-check"; fi
+    JIT_WRAP="${TEST_RUN_DIR}/maize-jit-wrap.sh"
+    {
+        echo '#!/bin/sh'
+        echo "exec \"${MAIZE_EXE}\" ${JIT_FLAG} --jit-threshold ${MAIZE_JIT_THRESHOLD:-50} \"\$@\""
+    } > "$JIT_WRAP"
+    chmod +x "$JIT_WRAP"
+    MAIZE_EXE="$JIT_WRAP"
+    echo "run-tests.sh: running maize under ${JIT_FLAG} (threshold ${MAIZE_JIT_THRESHOLD:-50})"
+fi
+
 # --- Per-test execution -------------------------------------------------------------
 FAIL_COUNT=0
 TOTAL=0
@@ -296,6 +314,7 @@ run_test "test_alu_memsrc_width" "test_alu_memsrc_width.mazm" "alu memsrc width:
 # Self-modifying-code contract (from the maize-307 investigation): a store into code
 # bytes takes effect for the NEXT fetch; any future decoded/JIT tier must preserve this.
 run_test "test_selfmod"      "test_selfmod.mazm"      "selfmod: PASS"                 0
+run_test "test_jit_selfmod_hot" "test_jit_selfmod_hot.mazm" "selfmod hot: PASS"        0
 # maize-272 PUSHALL/POPALL: flag neutrality, the 13-register frame ABI (word at RS+8k
 # per block order R0..R9,RT,RV,RB), and the full round trip incl. RS.
 run_test "test_pushall"      "test_pushall.mazm"      "pushall: PASS"                 0

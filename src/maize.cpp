@@ -207,6 +207,13 @@ static void print_usage(std::ostream &out) {
 		"                             at exit; add --profile-map for function names\n"
 		"      --jit-survey           report basic-block shape and reuse statistics\n"
 		"                             at exit (block lengths, hot-block coverage)\n"
+		"      --jit                  compile hot code paths to native code for faster\n"
+		"                             execution (prints a summary report at exit)\n"
+		"      --jit-check            run --jit with every compiled block verified\n"
+		"                             against the interpreter (slow; for testing)\n"
+		"      --jit-cache-mb <N>     size of the --jit code cache in MiB (default 64)\n"
+		"      --jit-threshold <N>    executions before a code path is compiled\n"
+		"                             (default 50)\n"
 		"      --profile-map <path>   symbol map for --profile (write one at link time\n"
 		"                             with `mzld --map <path>`)\n"
 		"      --no-root              disable the sandbox root; the guest starts with\n"
@@ -918,6 +925,10 @@ int main(int argc, char *argv[]) {
 	bool show_perf = false;          // --show-perf: draw guest MIPS + FPS in the window corner
 	bool profile_enabled = false;    // --profile[=N]: sample the guest PC every N instructions (maize-261)
 	bool jit_survey_enabled = false; // --jit-survey: block-shape survey report at exit (maize-324, JIT J0)
+	bool jit_enabled = false;        // --jit: tier-1 template JIT (maize-330, JIT J1)
+	bool jit_check_enabled = false;  // --jit-check: differential-verify every compiled block
+	unsigned long long jit_cache_mb = 0;   // --jit-cache-mb (0 = default)
+	unsigned long long jit_threshold = 0;  // --jit-threshold (0 = default)
 	std::vector<std::pair<maize::u_word, std::string>> profile_map;   // --profile-map rows, sorted by address
 	bool pause_on_halt = false;      // --pause-on-halt: hold the window open after the guest halts
 	bool vsync = true;               // --vsync/--no-vsync: sync graphics presents to the monitor vblank (maize-227)
@@ -1254,6 +1265,40 @@ int main(int argc, char *argv[]) {
 			++idx;
 			continue;
 		}
+		if (arg == "--jit" || arg == "--jit-check") {
+			/* maize-330 (JIT J1): compile hot Bare-mode code paths. --jit-check runs the
+			   same tier with every compiled block differentially verified against the
+			   interpreter. Enabled after the argument loop so --jit-cache-mb and
+			   --jit-threshold apply regardless of flag order. */
+			jit_enabled = true;
+			if (arg == "--jit-check") { jit_check_enabled = true; }
+			++idx;
+			continue;
+		}
+		if (arg == "--jit-cache-mb" || arg.rfind("--jit-cache-mb=", 0) == 0) {
+			std::string val;
+			if (arg.size() > 15 && arg[14] == '=') { val = arg.substr(15); ++idx; }
+			else if (idx + 1 < argc) { val = argv[idx + 1]; idx += 2; }
+			else { std::cerr << "maize: --jit-cache-mb requires a value" << std::endl; return 2; }
+			try { jit_cache_mb = std::stoull(val); } catch (...) { jit_cache_mb = 0; }
+			if (jit_cache_mb < 1 || jit_cache_mb > 4096) {
+				std::cerr << "maize: --jit-cache-mb must be between 1 and 4096" << std::endl;
+				return 2;
+			}
+			continue;
+		}
+		if (arg == "--jit-threshold" || arg.rfind("--jit-threshold=", 0) == 0) {
+			std::string val;
+			if (arg.size() > 16 && arg[15] == '=') { val = arg.substr(16); ++idx; }
+			else if (idx + 1 < argc) { val = argv[idx + 1]; idx += 2; }
+			else { std::cerr << "maize: --jit-threshold requires a value" << std::endl; return 2; }
+			try { jit_threshold = std::stoull(val); } catch (...) { jit_threshold = 0; }
+			if (jit_threshold < 1) {
+				std::cerr << "maize: --jit-threshold must be at least 1" << std::endl;
+				return 2;
+			}
+			continue;
+		}
 		if (arg == "--profile-map" && idx + 1 < argc) {
 			/* Load the `mzld --map` sidecar: "0x<address> <name>" per line. */
 			std::ifstream mf(argv[idx + 1]);
@@ -1463,6 +1508,27 @@ int main(int argc, char *argv[]) {
 	if (idx >= argc) {
 		print_usage(std::cerr);
 		return 2;
+	}
+
+	/* maize-330: arm the JIT after the whole option loop so --jit-cache-mb and
+	   --jit-threshold apply regardless of flag order. --jit-survey measures the
+	   interpreter's block shape and --profile samples interpreter PCs, so both force
+	   the interpreted tier. */
+	if (jit_enabled) {
+		if (jit_survey_enabled) {
+			std::cerr << "maize: --jit and --jit-survey are mutually exclusive" << std::endl;
+			return 2;
+		}
+		if (profile_enabled) {
+			std::cerr << "maize: --profile samples the interpreter, so --jit is disabled for this run" << std::endl;
+			jit_enabled = false;
+			jit_check_enabled = false;
+		}
+	}
+	if (jit_enabled) {
+		if (jit_cache_mb != 0) { cpu::set_jit_cache_bytes(static_cast<maize::u_word>(jit_cache_mb) << 20); }
+		if (jit_threshold != 0) { cpu::set_jit_threshold(static_cast<maize::u_word>(jit_threshold)); }
+		cpu::enable_jit(jit_check_enabled);
 	}
 
 	/* maize-249: three-tier mount-grant shadow merge, a direct generalization of the
@@ -1881,6 +1947,11 @@ int main(int argc, char *argv[]) {
 	/* maize-324: the JIT J0 block-shape survey report (stderr, beside the perf report). */
 	if (jit_survey_enabled) {
 		cpu::jit_survey_report(std::cerr);
+	}
+
+	/* maize-330: the JIT run report (blocks compiled, covered fraction, invalidations). */
+	if (jit_enabled) {
+		cpu::jit_report(std::cerr);
 	}
 
 	/* maize-261: the sampling-profiler report. Aggregates the sampled-PC histogram by
