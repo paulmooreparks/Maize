@@ -2409,15 +2409,12 @@ run_quesos_ac_fixtures() {
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
     # maize-304: this loop is the densest fixture-compile section in the harness (~34
-    # sources, each ~60-90 forked processes through cc-maize.sh); gate it machine-wide
-    # so it cannot run concurrently with the same section in another agent-worktree
-    # invocation on this host (the cross-invocation MSYS fork-ceiling condition the
-    # maize-304 spec traced maize-292's stall to). Every early return below MUST
-    # release the gate first: holding it until the whole script's EXIT trap fires
-    # would serialize far more than this one section against every other waiter.
-    if ! maize_gate_acquire quesos-ac-compile; then
-        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
-    fi
+    # sources, each ~60-90 forked processes through cc-maize.sh). An earlier maize-304
+    # cycle gated it with a machine-wide lock; the operator dropped that gate (comment
+    # #3133) rather than land a cross-process lock. There is no cross-process lock
+    # here: heavy Test-stage runs are expected to be run one at a time by orchestration
+    # discipline, and cc_maize_compile_bounded's timeout wrap below bounds the damage
+    # if two ever overlap anyway.
     for src in fork_isolation fork_multi exec_launch exec_target pipe_roundtrip \
                pipe_bigwrite bigwrite_native pipeline producer filter consumer stress20 preempt \
                blocked console_echo \
@@ -2435,11 +2432,9 @@ run_quesos_ac_fixtures() {
         if ! cc_maize_compile_bounded "quesos_ac: ${src}.c" "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" "$log"; then
             TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
-            maize_gate_release
             return
         fi
     done
-    maize_gate_release
     nat=$(host_to_native "$progs")
 
     # An optional 4th arg passes extra maize flags (used by the maize-236 fb_reject case,
@@ -3059,16 +3054,14 @@ run_userland94_fixtures() {
         echo "[FAIL] userland94: quesOS link failed"; cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
-    # maize-304: gate this function's heavy compile burst (the wave-1 sbase+oksh build
-    # via $ubuild below, plus the bin_echoer/kilo/*_launch compiles that follow) the
-    # same way as run_quesos_ac_fixtures's loop: this is the OTHER of the two heaviest
-    # fixture-compile sections the maize-304 spec calls out (section 1b). Every early
-    # return inside the gated region releases first, for the same reason noted there:
-    # holding the gate until the whole script exits would serialize far more than this
-    # one section against every other waiter on the host.
-    if ! maize_gate_acquire userland94-compile; then
-        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
-    fi
+    # maize-304: this function's heavy compile burst (the wave-1 sbase+oksh build via
+    # $ubuild below, plus the bin_echoer/kilo/*_launch compiles that follow) was gated
+    # by an earlier maize-304 cycle the same way as run_quesos_ac_fixtures's loop. The
+    # operator dropped that gate (comment #3133) rather than land a cross-process
+    # lock. There is no cross-process lock here: heavy Test-stage runs are expected to
+    # be run one at a time by orchestration discipline, and the timeout wraps below
+    # (cc_maize_compile_bounded and the direct $ubuild timeout) bound the damage if two
+    # ever overlap anyway.
     # Build the shipped wave-1 /bin set through the userland harness (the vendored sbase
     # plus the oksh shell). oksh is the wave's central deliverable (ACs 8929-8934).
     # maize-304: bounded by `timeout` (build-userland.sh's own internal cc-maize.sh
@@ -3098,14 +3091,12 @@ run_userland94_fixtures() {
         fi
         cat "$log" >&2
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
-        maize_gate_release
         return
     fi
     # bin_echoer is the execvp-fallback resolution target (decision 9084), placed in /bin.
     if ! cc_maize_compile_bounded "userland94: bin_echoer.c" "${bindir}/bin_echoer.mzx" \
             "${REPO_ROOT}/os/quesos/bin_echoer.c" "$log"; then
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
-        maize_gate_release
         return
     fi
     # maize-250: kilo (the full-screen editor) built into /bin so the pty fixture can launch
@@ -3114,7 +3105,6 @@ run_userland94_fixtures() {
     if ! cc_maize_compile_bounded "userland94: kilo.c" "${bindir}/kilo.mzx" \
             "${REPO_ROOT}/demos/kilo/kilo.c" "$log"; then
         TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
-        maize_gate_release
         return
     fi
     # The launcher drivers are quesOS worklist entries (compiled like any fixture):
@@ -3125,11 +3115,9 @@ run_userland94_fixtures() {
         if ! cc_maize_compile_bounded "userland94: ${_drv}.c" "${progs}/${_drv}.mzx" \
                 "${REPO_ROOT}/os/quesos/${_drv}.c" "$log"; then
             TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
-            maize_gate_release
             return
         fi
     done
-    maize_gate_release
     # The no-arg utils run as direct worklist entries: stage them under /progs too.
     cp "${bindir}/true.mzx" "${bindir}/false.mzx" "${bindir}/pwd.mzx" "$progs/"
     pnat=$(host_to_native "$progs")
