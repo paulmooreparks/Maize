@@ -1,0 +1,13 @@
+diff --git a/type.c b/type.c
+index 17fb983..1b40a7e 100644
+--- a/type.c
++++ b/type.c
+@@ -245,7 +245,7 @@ typecommonreal(struct type *t1, unsigned w1, struct type *t2, unsigned w2)
+ 	switch (t2->kind) {
+ 	case TYPEINT: return &typeuint;
+ 	case TYPELONG: return &typeulong;
+-	case TYPELLONG: return &typellong;
++	case TYPELLONG: return &typeullong;
+ 	}
+ 	fatal("internal error; could not find common real type");
+ 	return NULL;

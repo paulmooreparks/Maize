@@ -1268,6 +1268,13 @@ run_ctest "malloc"
 # maize-146 freestanding headers: fixed-width types + limit/constant macros + bool,
 # and (precautionary) the inttypes PRI* format macros over the Maize printf.
 run_ctest "stdint"
+# maize-297: cproc/qbe miscompiled the equal-width, lower-rank-unsigned usual-
+# arithmetic-conversions arm (typecommonreal's TYPELLONG case), so
+# MIN(LLONG_MAX, SIZE_MAX) evaluated to -1 instead of LLONG_MAX. Covers the
+# constant-folded AND runtime forms of the repro, the full mixed long-long-vs-
+# unsigned-long relational matrix, the == / != controls, and an over-fix guard
+# (long long vs unsigned int must stay a SIGNED compare).
+run_ctest "minmax_signedness"
 # maize-147 RT headers round 2 for DOOM: includes every new header (strings/math/
 # assert/unistd/sys/types/sys/stat), asserts the SEEK_*/EISDIR/S_IF* macro values and
 # the off_t/ssize_t/mode_t widths, proves the struct stat byte-ABI (sizeof 144;

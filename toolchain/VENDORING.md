@@ -6,6 +6,32 @@ in-repo under `toolchain/qbe-maize/` and is overlaid onto the qbe checkout at bu
 time (`scripts/apply-maize-qbe-target.sh`), so the submodules stay pristine
 upstream.
 
+## cproc source patches (maize-297)
+
+Small, targeted correctness fixes to the vendored cproc frontend land as patch
+files under `toolchain/cproc-patches/`, applied to the pinned `toolchain/cproc`
+checkout at build time by `scripts/apply-cproc-patches.sh` (invoked from
+`scripts/build-toolchain.sh` before either build branch), mirroring the qbe
+overlay mechanism above. This keeps the cproc submodule pinned pristine rather
+than committing directly into it, and avoids pulling in an unrelated upstream
+pin bump for a narrow, targeted fix. The patch content is folded into
+`toolchain_cache_key()` in `scripts/build-toolchain.sh`, so a stale pre-patch
+`cproc-qbe` binary is never served as a false cache hit when a patch lands or
+changes (the same class of footgun documented for the qbe registration patch,
+maize-110).
+
+Currently carries:
+
+- `0001-typecommonreal-unsigned-llong.patch`: `typecommonreal()`'s `TYPELLONG`
+  arm of the equal-width unsigned-vs-signed usual-arithmetic-conversions switch
+  returned the signed type (`&typellong`) instead of the unsigned counterpart
+  (`&typeullong`) that C11 6.3.1.8 requires and that the sibling
+  `TYPEINT`/`TYPELONG` arms already return correctly. This silently miscompiled
+  mixed `long long` vs `unsigned long` comparisons (e.g.
+  `MIN(LLONG_MAX, SIZE_MAX)` evaluated to `-1`). Reported upstream to
+  michaelforney/cproc is tracked separately; retire this patch on a future pin
+  bump if/when upstream carries the fix.
+
 ## Pins
 
 | Tool  | Path             | Submodule URL                              | Pinned commit                              | License |
