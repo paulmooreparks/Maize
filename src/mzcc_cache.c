@@ -220,6 +220,26 @@ int mzcc_cache_lookup(const char *key, const char *dst_path) {
     return cache_lookup_ext(key, dst_path, ".mzo");
 }
 
+/* maize-303: byte-oriented lookup for the cpp-output cache. Reads the entry
+   file into `out` (which read_file initializes) rather than copying to a
+   destination path, because both the preprocessed bytes and the manifest are
+   consumed in memory. Returns 1 on a hit, 0 on a miss / any read error. */
+static int cache_lookup_bytes_ext(const char *key, ByteBuf *out, const char *ext) {
+    char *entry = entry_path_ext(key, ext);
+    if (!entry) {
+        byte_buf_init(out);
+        return 0;
+    }
+    if (!path_exists(entry)) {
+        byte_buf_init(out);
+        free(entry);
+        return 0;
+    }
+    int rc = read_file(entry, out);
+    free(entry);
+    return rc == 0 ? 1 : 0;
+}
+
 int mzcc_cache_archive_lookup(const char *key, const char *dst_path) {
     return cache_lookup_ext(key, dst_path, ".mza");
 }
@@ -320,4 +340,76 @@ int mzcc_cache_store(const char *key, const char *src_path) {
 
 int mzcc_cache_archive_store(const char *key, const char *src_path) {
     return cache_store_ext(key, src_path, ".mza");
+}
+
+/* maize-303: byte-oriented atomic store for the cpp-output cache. Identical to
+   cache_store_ext except the payload is an in-memory buffer written straight to
+   the temp file (no source-file read), so the preprocessed bytes / serialized
+   manifest never need a scratch temp of their own. Same temp-write + rename
+   atomicity, same racing-writer-wins handling. g_store_mtx is warm-initialized
+   by mzcc_cache_configure before any worker spawns (the cpp cache is reached
+   only after resolve_toolchain), so no lazy mutex-pointer publish races here. */
+static int cache_store_bytes_ext(const char *key, const char *data, size_t len,
+                                 const char *ext) {
+    const char *root = cache_root();
+    if (!root) {
+        return -1;
+    }
+    char shard[3];
+    shard[0] = key[0];
+    shard[1] = key[1];
+    shard[2] = '\0';
+    char *dir = joinstr(root, "/", shard, NULL);
+    if (!path_exists(dir)) {
+        mkdir_p(dir);
+    }
+    char *final = joinstr(dir, "/", key, ext);
+    if (path_exists(final)) {
+        free(dir); free(final);
+        return 0;
+    }
+
+    unsigned long ctr;
+    mz_mutex_lock(g_store_mtx);
+    ctr = ++g_store_ctr;
+    mz_mutex_unlock(g_store_mtx);
+
+    char suffix[64];
+    snprintf(suffix, sizeof(suffix), ".%lu.%lu.tmp", mzcc_pid(), ctr);
+    char *tmp = joinstr(dir, "/", key, suffix);
+    free(dir);
+
+    if (write_file(tmp, data, len) != 0) {
+        remove(tmp);
+        free(tmp); free(final);
+        return -1;
+    }
+    if (rename(tmp, final) != 0) {
+        if (path_exists(final)) {
+            remove(tmp);
+            free(tmp); free(final);
+            return 0;
+        }
+        remove(tmp);
+        free(tmp); free(final);
+        return -1;
+    }
+    free(tmp); free(final);
+    return 0;
+}
+
+int mzcc_cache_pp_lookup(const char *key, ByteBuf *out) {
+    return cache_lookup_bytes_ext(key, out, ".mzi");
+}
+
+int mzcc_cache_pp_store(const char *key, const char *data, size_t len) {
+    return cache_store_bytes_ext(key, data, len, ".mzi");
+}
+
+int mzcc_cache_manifest_lookup(const char *key, ByteBuf *out) {
+    return cache_lookup_bytes_ext(key, out, ".mzmf");
+}
+
+int mzcc_cache_manifest_store(const char *key, const char *data, size_t len) {
+    return cache_store_bytes_ext(key, data, len, ".mzmf");
 }

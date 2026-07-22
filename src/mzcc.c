@@ -270,30 +270,41 @@ static char *resolve_exe(const char *base) {
     return NULL;
 }
 
-/* Is `name` resolvable on PATH? (existence probe only; the bare name is then
-   handed to run_proc, whose execvp/CreateProcess re-resolves it.) */
-int which_exists(const char *name) {
+/* Resolve `name` to the absolute path of the first PATH entry that contains it,
+   or NULL if it is not on PATH (maize-303). The path-recovering variant of
+   which_exists: the cpp-identity guard needs the ACTUAL file to hash, not a
+   yes/no, because CPP is a bare name on Linux (cc/gcc/$CC) that which_exists
+   confirms but discards. Returns a fresh allocation. */
+static char *which_resolve(const char *name) {
     const char *path = getenv("PATH");
     if (!path || !path[0]) {
-        return 0;
+        return NULL;
     }
     char *copy = xstrdup(path);
-    int found = 0;
+    char *result = NULL;
     /* Plain strtok: PATH parsing here is single-threaded and non-reentrant use
        is safe (no nested tokenization), and strtok is available on every host. */
     char *tok = strtok(copy, PATH_SEP_LIST);
     for (; tok; tok = strtok(NULL, PATH_SEP_LIST)) {
         char *cand = path_join(tok, name);
-        if (path_exists(cand)) { free(cand); found = 1; break; }
+        if (path_exists(cand)) { result = cand; break; }
         free(cand);
         if (IS_WINDOWS) {
             char *cexe = joinstr(tok, "/", name, ".exe");
-            if (path_exists(cexe)) { free(cexe); found = 1; break; }
+            if (path_exists(cexe)) { result = cexe; break; }
             free(cexe);
         }
     }
     free(copy);
-    return found;
+    return result;
+}
+
+/* Is `name` resolvable on PATH? (existence probe only; the bare name is then
+   handed to run_proc, whose execvp/CreateProcess re-resolves it.) */
+int which_exists(const char *name) {
+    char *p = which_resolve(name);
+    if (p) { free(p); return 1; }
+    return 0;
 }
 
 int read_file(const char *path, ByteBuf *out) {
@@ -593,6 +604,20 @@ static char *MZLD = NULL;
 
 static Argv EXTRA_CPPDEFS; /* -D tokens in command-line order (empty for every existing caller) */
 
+/* ---- direct-mode cpp-output cache identity (maize-303) ------------------ */
+/* g_ppcache_disabled: set at toolchain-resolve time when NO real cpp identity
+   can be obtained (CPP unresolvable/unreadable AND the --version probe fails).
+   When set, the cpp-output cache is bypassed for the whole build (always spawn
+   cpp), the fail-CLOSED degrade: a missing identity never folds a constant and
+   serves a stale hit. g_cpp_identity is the 32-byte SHA-256 over the resolved
+   CPP file bytes plus its `--version` output; valid only when NOT disabled.
+   g_rt_listing memoizes RT_DIR's sorted entry-basename listing (the shadow
+   guard), warmed once on the main thread in ppcache_configure so no worker is
+   ever its first writer. */
+static int     g_ppcache_disabled = 0;
+static uint8_t g_cpp_identity[MZCC_SHA256_DIGEST_LEN];
+static char   *g_rt_listing = NULL;
+
 /* argv[0] captured at main() entry, so ensure_repo_root() can self-locate even
    when reached from a subcommand entry point (which is handed argv+2). */
 static const char *g_argv0 = "mzcc";
@@ -650,6 +675,287 @@ static char *assemble_stdin(const char *bytes, size_t len, const char *tag, Byte
     byte_buf_free(&r.stdout_bytes);
     byte_buf_free(&r.stderr_bytes);
     return mzo;
+}
+
+/* ======================================================================== */
+/* Direct-mode cpp-output cache (maize-303).                                 */
+/*                                                                           */
+/* A ccache-style two-level cache in front of the cpp spawn: a MANIFEST      */
+/* (keyed by manifest_key, computable without running cpp) records the       */
+/* transitive include set a TU opened; a PREPROCESSED entry (keyed by        */
+/* preprocessed_key = f(manifest_key, current header bytes)) holds the cpp   */
+/* stdout. On a warm rebuild an unchanged TU skips cpp entirely. Correctness */
+/* is paramount: a stale hit is a silent miscompile, so preprocessed_key is  */
+/* recomputed from LIVE header bytes at lookup (a changed/removed header      */
+/* misses by construction), cpp identity is folded real-and-fail-closed, and */
+/* the -I entry listings guard the header-shadowing hazard.                  */
+/* ======================================================================== */
+
+/* Absorb `len` bytes into a running SHA-256, length-prefixed (big-endian u64)
+   so two adjacent contributions cannot alias by a boundary shift. Mirrors
+   mzcc_cache.c's fp_absorb_file framing for in-memory buffers. */
+static void sha_absorb_lp(mzcc_sha256_ctx *c, const void *data, size_t len) {
+    uint8_t lp[8];
+    for (int i = 0; i < 8; ++i) { lp[i] = (uint8_t)((uint64_t)len >> (56 - i * 8)); }
+    mzcc_sha256_update(c, lp, 8);
+    mzcc_sha256_update(c, len ? data : "", len);
+}
+
+static int cmp_cstr(const void *a, const void *b) {
+    const char *sa = *(const char *const *)a;
+    const char *sb = *(const char *const *)b;
+    return strcmp(sa, sb);
+}
+
+/* The sorted, newline-joined basename listing of `dir` (the shadow-guard
+   component): a fresh string, empty when `dir` is unreadable. Filenames only,
+   NOT contents; this component only has to notice the candidate-file SET
+   changed (an added/removed same-named header at a higher -I priority), since
+   an actually-included header's content change is already caught by
+   preprocessed_key. */
+static char *dir_listing_string(const char *dir) {
+    StrList names;
+    sl_init(&names);
+    if (list_dir(dir, &names) != 0) { sl_free(&names); return xstrdup(""); }
+    if (names.n > 1) { qsort(names.v, (size_t)names.n, sizeof(char *), cmp_cstr); }
+    ByteBuf b;
+    byte_buf_init(&b);
+    for (int i = 0; i < names.n; ++i) {
+        byte_buf_append(&b, names.v[i], strlen(names.v[i]));
+        byte_buf_append(&b, "\n", 1);
+    }
+    sl_free(&names);
+    char *r = xmalloc(b.len + 1);
+    if (b.len) { memcpy(r, b.data, b.len); }
+    r[b.len] = '\0';
+    byte_buf_free(&b);
+    return r;
+}
+
+/* RT_DIR's listing, memoized. RT_DIR is constant across a build and shared by
+   every TU, so this is computed once; warmed on the main thread by
+   ppcache_configure before any worker exists, so the first-write is never a
+   race (mirroring the object cache's warm-init discipline). The per-program
+   src_dir listing is NOT memoized (it is cheap and per-src-dir memoization
+   would need cross-worker locking); recomputing it per TU is correct and
+   over-invalidation-safe. */
+static const char *rt_listing(void) {
+    if (!g_rt_listing) { g_rt_listing = dir_listing_string(RT_DIR ? RT_DIR : ""); }
+    return g_rt_listing;
+}
+
+/* manifest_key = SHA-256(domain, cpp-identity, RT-listing, src_dir-listing,
+   fed bytes, and each output-affecting cpp flag argv[flag_lo..flag_hi) in
+   order). The -I path VALUES are among those flags; the -I directory LISTINGS
+   are the separate shadow-guard component above. */
+static void compute_manifest_key(const Argv *cpp, int flag_lo, int flag_hi,
+                                 const char *fed_data, size_t fed_len,
+                                 const char *src_dir,
+                                 char out[MZCC_SHA256_HEX_LEN + 1]) {
+    mzcc_sha256_ctx c;
+    mzcc_sha256_init(&c);
+    static const char dom[] = "ppcache-manifest-v1";
+    sha_absorb_lp(&c, dom, sizeof(dom) - 1);
+    /* Reaching here implies !g_ppcache_disabled, i.e. the identity is real. */
+    sha_absorb_lp(&c, g_cpp_identity, sizeof(g_cpp_identity));
+    const char *rt = rt_listing();
+    sha_absorb_lp(&c, rt, strlen(rt));
+    char *sd = dir_listing_string(src_dir);
+    sha_absorb_lp(&c, sd, strlen(sd));
+    free(sd);
+    sha_absorb_lp(&c, fed_data, fed_len);
+    for (int i = flag_lo; i < flag_hi; ++i) {
+        sha_absorb_lp(&c, cpp->v[i], strlen(cpp->v[i]));
+    }
+    uint8_t dig[MZCC_SHA256_DIGEST_LEN];
+    mzcc_sha256_final(&c, dig);
+    mzcc_sha256_hex(dig, out);
+}
+
+/* preprocessed_key = SHA-256(domain, manifest_key hex, and for each recorded
+   include in order: its path + its CURRENT content bytes). Returns 1 with the
+   key filled when every include was readable; 0 (a MISS, never a stale serve)
+   the moment any recorded include is unreadable/removed. */
+static int compute_preprocessed_key(const char *manifest_key_hex,
+                                    const StrList *includes,
+                                    char out[MZCC_SHA256_HEX_LEN + 1]) {
+    mzcc_sha256_ctx c;
+    mzcc_sha256_init(&c);
+    static const char dom[] = "ppcache-output-v1";
+    sha_absorb_lp(&c, dom, sizeof(dom) - 1);
+    sha_absorb_lp(&c, manifest_key_hex, strlen(manifest_key_hex));
+    for (int i = 0; i < includes->n; ++i) {
+        const char *p = includes->v[i];
+        sha_absorb_lp(&c, p, strlen(p));
+        ByteBuf hb;
+        if (read_file(p, &hb) != 0) {
+            byte_buf_free(&hb);
+            return 0; /* a removed/unreadable recorded header forces a miss */
+        }
+        sha_absorb_lp(&c, hb.data, hb.len);
+        byte_buf_free(&hb);
+    }
+    uint8_t dig[MZCC_SHA256_DIGEST_LEN];
+    mzcc_sha256_final(&c, dig);
+    mzcc_sha256_hex(dig, out);
+    return 1;
+}
+
+/* Flush an accumulated depfile token into `out` (canonicalized to forward
+   slashes), dropping the empty token and the stdin "-" prerequisite. */
+static void dep_flush(ByteBuf *tok, StrList *out) {
+    if (tok->len == 0) { return; }
+    char *s = xmalloc(tok->len + 1);
+    memcpy(s, tok->data, tok->len);
+    s[tok->len] = '\0';
+    to_slashes(s);
+    if (!(s[0] == '-' && s[1] == '\0')) { sl_push(out, s); }
+    free(s);
+    tok->len = 0;
+}
+
+/* Parse a `-MD` depfile ("tu: dep1 dep2 \<newline> dep3 ...") into the ordered
+   include set. Strips the target up to the first ':', joins `\`-newline
+   continuations, splits on unescaped whitespace, and unescapes `\ ` in a path.
+   The stdin "-" prerequisite is dropped by dep_flush. */
+static void parse_depfile(const char *data, size_t len, StrList *out) {
+    size_t i = 0;
+    /* Skip the target: advance past the first unescaped ':'. */
+    for (; i < len; ++i) {
+        if (data[i] == '\\' && i + 1 < len) { ++i; continue; }
+        if (data[i] == ':') { ++i; break; }
+    }
+    ByteBuf tok;
+    byte_buf_init(&tok);
+    for (; i < len; ++i) {
+        char ch = data[i];
+        if (ch == '\\' && i + 1 < len) {
+            char nx = data[i + 1];
+            if (nx == '\n' || nx == '\r') { dep_flush(&tok, out); ++i; continue; }
+            /* An escaped space/tab (or any other escaped char) is literal. */
+            byte_buf_append(&tok, &nx, 1);
+            ++i;
+            continue;
+        }
+        if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
+            dep_flush(&tok, out);
+            continue;
+        }
+        byte_buf_append(&tok, &ch, 1);
+    }
+    dep_flush(&tok, out);
+    byte_buf_free(&tok);
+}
+
+/* Serialize the include set to the v1 manifest format (one canonical path per
+   line, preceded by a magic/version header and the count) into `out`. */
+static void serialize_manifest_into(const StrList *includes, ByteBuf *out) {
+    byte_buf_init(out);
+    char hdr[64];
+    int hn = snprintf(hdr, sizeof(hdr), "MZCC-PPMANIFEST v1\n%d\n", includes->n);
+    if (hn > 0) { byte_buf_append(out, hdr, (size_t)hn); }
+    for (int i = 0; i < includes->n; ++i) {
+        byte_buf_append(out, includes->v[i], strlen(includes->v[i]));
+        byte_buf_append(out, "\n", 1);
+    }
+}
+
+/* Parse a stored v1 manifest back into the include list. Returns 0 on a
+   well-formed manifest, -1 on any malformation (the caller treats -1 as a
+   miss, never a stale serve). */
+static int parse_manifest(const char *data, size_t len, StrList *out) {
+    /* Line 0: magic. Line 1: count. Lines 2..2+count: paths. */
+    static const char magic[] = "MZCC-PPMANIFEST v1";
+    size_t mlen = sizeof(magic) - 1;
+    if (len < mlen || memcmp(data, magic, mlen) != 0) { return -1; }
+    size_t i = mlen;
+    if (i >= len || data[i] != '\n') { return -1; }
+    ++i;
+    /* Read the decimal count. */
+    long count = 0;
+    int saw_digit = 0;
+    for (; i < len && data[i] != '\n'; ++i) {
+        if (data[i] < '0' || data[i] > '9') { return -1; }
+        count = count * 10 + (data[i] - '0');
+        saw_digit = 1;
+        if (count > 100000) { return -1; } /* sanity bound */
+    }
+    if (!saw_digit || i >= len) { return -1; }
+    ++i; /* consume the newline after the count */
+    long read = 0;
+    while (i < len && read < count) {
+        size_t start = i;
+        while (i < len && data[i] != '\n') { ++i; }
+        size_t plen = i - start;
+        char *s = xmalloc(plen + 1);
+        if (plen) { memcpy(s, data + start, plen); }
+        s[plen] = '\0';
+        sl_push(out, s);
+        free(s);
+        ++read;
+        if (i < len) { ++i; } /* consume newline */
+    }
+    return (read == count) ? 0 : -1;
+}
+
+/* Resolve the cpp identity once, on the main thread, at toolchain-resolve time
+   (called from resolve_toolchain right after CPP is chosen and
+   mzcc_cache_configure has run, before any worker spawns). See the
+   g_ppcache_disabled comment for the fail-closed contract. */
+static void ppcache_configure(void) {
+    g_ppcache_disabled = 0;
+    free(g_rt_listing);
+    g_rt_listing = NULL;
+
+    mzcc_sha256_ctx c;
+    mzcc_sha256_init(&c);
+    int have_signal = 0;
+
+    /* (1) resolved-file bytes (primary): resolve a bare CPP against PATH, hash
+       the actual file. Catches even a same-version rebuild of the binary. */
+    char *resolved = NULL;
+    if (CPP && CPP[0]) {
+        resolved = is_abs_path(CPP) ? xstrdup(CPP) : which_resolve(CPP);
+    }
+    if (resolved) {
+        ByteBuf fb;
+        if (read_file(resolved, &fb) == 0) {
+            sha_absorb_lp(&c, fb.data, fb.len);
+            have_signal = 1;
+        }
+        byte_buf_free(&fb);
+    }
+    free(resolved);
+
+    /* (2) `<CPP> --version` bytes (belt-and-suspenders + wrapper/shim catch). */
+    if (CPP && CPP[0]) {
+        Argv v;
+        av_init(&v);
+        av_add(&v, CPP);
+        av_add(&v, "--version");
+        ProcResult pr;
+        int ran = run_proc(CPP, v.v, v.n, NULL, 0, NULL, &pr);
+        av_free(&v);
+        if (ran && (pr.stdout_bytes.len > 0 || pr.stderr_bytes.len > 0)) {
+            sha_absorb_lp(&c, pr.stdout_bytes.data, pr.stdout_bytes.len);
+            sha_absorb_lp(&c, pr.stderr_bytes.data, pr.stderr_bytes.len);
+            have_signal = 1;
+        }
+        if (ran) {
+            byte_buf_free(&pr.stdout_bytes);
+            byte_buf_free(&pr.stderr_bytes);
+        }
+    }
+
+    if (!have_signal) {
+        /* Fail closed: no real identity, disable the cpp cache for the build. */
+        g_ppcache_disabled = 1;
+        return;
+    }
+    mzcc_sha256_final(&c, g_cpp_identity);
+
+    /* Warm the RT_DIR shadow-guard listing on this (main) thread. */
+    (void)rt_listing();
 }
 
 /* Compile one C translation unit through the full segmented pipeline to a .mzo:
@@ -735,10 +1041,86 @@ char *compile_tu_ex(const char *src, const char *tag, const Argv *extra_defines,
     }
     av_add(&cpp, "-I"); av_add(&cpp, RT_DIR);
     av_add(&cpp, "-I"); av_add(&cpp, src_dir);
-    av_add(&cpp, "-");
+    /* NOTE: the stdin input marker "-" is appended in the MISS branch below,
+       AFTER the miss-only -MD/-MF/-MT depfile flags, so the canonical option-
+       before-input order holds; manifest_key is computed over argv[1..cpp.n)
+       here while "-" is still absent, folding exactly the output-affecting
+       flags (the two -I VALUES included) and nothing else. */
 
+    /* ---- direct-mode cpp-output cache lookup (maize-303) ------------------
+       Runs BEFORE the cpp spawn. On a preprocessed-cache hit we serve the
+       cached bytes AS cpp's stdout and skip the spawn; on any miss (or when the
+       cache is off / cpp-identity unavailable) we fall through to the spawn,
+       with the depfile side-channel added so the miss populates the manifest +
+       preprocessed entries. emit_body bypasses the cpp cache exactly as it
+       bypasses the object cache (the qbe body is a side output). */
+    int pp_on = mzcc_cache_enabled() && !g_ppcache_disabled && emit_body == NULL;
+    char mkey[MZCC_SHA256_HEX_LEN + 1];
     ProcResult pp;
-    int ran = run_proc(CPP, cpp.v, cpp.n, fed.data, fed.len, CPP_CWD, &pp);
+    int pp_served = 0; /* 1 once pp.stdout_bytes holds served cpp-cache bytes */
+    if (pp_on) {
+        compute_manifest_key(&cpp, 1, cpp.n, fed.data, fed.len, src_dir, mkey);
+        ByteBuf mbytes;
+        if (mzcc_cache_manifest_lookup(mkey, &mbytes)) {
+            StrList inc;
+            sl_init(&inc);
+            if (parse_manifest(mbytes.data, mbytes.len, &inc) == 0) {
+                char pkey[MZCC_SHA256_HEX_LEN + 1];
+                /* Recompute preprocessed_key from LIVE header bytes: a changed
+                   or removed recorded header yields a key that misses every
+                   stored entry, so a stale hit is unreachable by construction. */
+                if (compute_preprocessed_key(mkey, &inc, pkey)) {
+                    ByteBuf ppbytes;
+                    if (mzcc_cache_pp_lookup(pkey, &ppbytes)) {
+                        pp.exit_code = 0;
+                        pp.stdout_bytes = ppbytes; /* transfer ownership */
+                        byte_buf_init(&pp.stderr_bytes);
+                        pp_served = 1;
+                        cache_log("cpp-hit", tag);
+                    }
+                }
+            }
+            sl_free(&inc);
+            byte_buf_free(&mbytes);
+        }
+    }
+
+    int ran = 1;
+    if (!pp_served) {
+        char *depfile = NULL;
+        if (pp_on) {
+            depfile = joinstr(OBJ_DIR, "/", tag, ".ppd");
+            av_add(&cpp, "-MD");
+            av_add(&cpp, "-MF"); av_add(&cpp, depfile);
+            av_add(&cpp, "-MT"); av_add(&cpp, "tu");
+            cache_log("cpp-miss", tag);
+        }
+        av_add(&cpp, "-");
+        ran = run_proc(CPP, cpp.v, cpp.n, fed.data, fed.len, CPP_CWD, &pp);
+        if (ran && pp.exit_code == 0 && pp_on && depfile) {
+            /* Discover the include set from the depfile and populate both
+               entries. Both stores are best-effort: a failure just means the
+               next build re-preprocesses. */
+            ByteBuf db;
+            if (read_file(depfile, &db) == 0) {
+                StrList inc;
+                sl_init(&inc);
+                parse_depfile(db.data, db.len, &inc);
+                char pkey[MZCC_SHA256_HEX_LEN + 1];
+                if (compute_preprocessed_key(mkey, &inc, pkey)) {
+                    mzcc_cache_pp_store(pkey, pp.stdout_bytes.data, pp.stdout_bytes.len);
+                    ByteBuf mser;
+                    serialize_manifest_into(&inc, &mser);
+                    mzcc_cache_manifest_store(mkey, mser.data, mser.len);
+                    byte_buf_free(&mser);
+                }
+                sl_free(&inc);
+            }
+            byte_buf_free(&db);
+            remove(depfile);
+        }
+        free(depfile);
+    }
     av_free(&cpp);
     byte_buf_free(&fed);
     free(src_dir);
@@ -1536,6 +1918,16 @@ int resolve_toolchain(const char *preset) {
        key on a tool rebuild/re-pin, so a stale object is never served (AC 9637).
        cpp is excluded (its effect is captured by the preprocessed bytes). */
     mzcc_cache_configure(CPROC_QBE, QBE, MAZM);
+
+    /* Resolve the direct-mode cpp-output cache identity (maize-303): hash the
+       resolved CPP file bytes + `<CPP> --version` output ONCE, here, on the
+       main thread before any worker spawns (same serial-before-workers
+       guarantee mzcc_cache_configure relies on). Fail-closed: if no real
+       identity is obtainable, g_ppcache_disabled is set and the cpp cache is
+       bypassed for the whole build. Also warms the RT_DIR shadow-guard
+       listing. cpp is excluded from the object-cache fingerprint above; this is
+       where its identity enters the direct-mode key. */
+    ppcache_configure();
 
     /* Resolve MAIZE_CACHE_STATS here too (cycle-2 review finding 2): same
        serial-before-any-worker guarantee as mzcc_cache_configure above, so

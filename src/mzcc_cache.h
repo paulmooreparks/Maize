@@ -16,6 +16,7 @@
 #include <stddef.h>
 
 #include "mzcc_sha256.h" /* MZCC_SHA256_HEX_LEN */
+#include "mzcc_proc.h"   /* ByteBuf (maize-303 byte-oriented cpp-cache wrappers) */
 
 /* Register the post-cpp tool paths whose raw bytes form the toolchain
    fingerprint (cproc-qbe, qbe, mazm; the running mzcc binary is added
@@ -69,5 +70,22 @@ int mzcc_cache_fingerprint(uint8_t out[MZCC_SHA256_DIGEST_LEN]);
    (the caller checks mzcc_cache_enabled() before reaching these). */
 int mzcc_cache_archive_lookup(const char *key, const char *dst_path);
 int mzcc_cache_archive_store(const char *key, const char *src_path);
+
+/* maize-303: direct-mode cpp-output cache typed wrappers. .mzi holds the
+   preprocessed bytes; .mzmf holds the include manifest. Same sharded, atomic,
+   best-effort, cache-root semantics as the .mzo/.mza entry points, but keyed to
+   distinct on-disk extensions so a cpp-cache artifact never aliases an object
+   or archive entry, and BYTE-oriented rather than file-based: the preprocessed
+   bytes live in memory on both store and hit (the served bytes feed cproc-qbe's
+   stdin directly), and the manifest is a small in-memory record. The caller
+   checks mzcc_cache_enabled() AND the g_ppcache_disabled fail-safe before
+   reaching these, so MAIZE_NO_OBJECT_CACHE and an unavailable cpp identity both
+   disable the cpp cache exactly as they must. lookup returns 1 on a hit (with
+   `out` filled; the caller frees it via byte_buf_free) or 0 on a miss / any
+   read error; store returns 0 on success, -1 on any failure (ignored). */
+int mzcc_cache_pp_lookup(const char *key, ByteBuf *out);
+int mzcc_cache_pp_store(const char *key, const char *data, size_t len);
+int mzcc_cache_manifest_lookup(const char *key, ByteBuf *out);
+int mzcc_cache_manifest_store(const char *key, const char *data, size_t len);
 
 #endif /* MZCC_CACHE_H */
