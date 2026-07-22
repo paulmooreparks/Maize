@@ -15,6 +15,7 @@
 #ifdef MAIZE_DISPLAY
 #include <SDL.h>
 #include "sdl_scancodes.h"   // shared map_scancode() (maize::devices::display)
+#include "font8x16.h"        // maize-267: glyphs for the --show-perf overlay (per-TU static)
 #endif
 
 #include <csignal>   // sig_atomic_t is needed unconditionally (used outside the
@@ -101,7 +102,7 @@ namespace {
 }
 
 // ---- Headless checksum stub (the fixture-facing presenter) --------------------------
-int run(const std::string& session_id, unsigned /*scale*/, unsigned /*hz*/) {
+int run(const std::string& session_id, unsigned /*scale*/, unsigned /*hz*/, bool /*show_perf*/) {
     pt::mapped_segment seg{};
     int exit_code = 0;
     if (!attach_and_claim(session_id, seg, &exit_code)) { return exit_code; }
@@ -177,8 +178,33 @@ int run(const std::string& session_id, unsigned /*scale*/, unsigned /*hz*/) {
 }
 
 #else
+namespace {
+    /* maize-267: the same fixed-width glyph blit devices.cpp's overlay uses (that copy is
+       file-static there; the font arrays are per-TU statics, so a local twin is the
+       cheapest correct reuse). Draw color must be set by the caller. */
+    void draw_text(SDL_Renderer* ren, int x, int y, int px, const std::string& s) {
+        for (char ch : s) {
+            int c = static_cast<unsigned char>(ch);
+            if (c >= FONT_FIRST && c <= FONT_LAST) {
+                const unsigned char* g = font8x16[c - FONT_FIRST];
+                for (int row = 0; row < FONT_H; ++row) {
+                    unsigned char bits = g[row];
+                    for (int col = 0; col < FONT_W; ++col) {
+                        if (bits & (1 << col)) {
+                            SDL_Rect r { x + col * px, y + row * px, px, px };
+                            SDL_RenderFillRect(ren, &r);
+                        }
+                    }
+                }
+            }
+            x += FONT_W * px;
+        }
+    }
+}
+
 // ---- SDL windowed presenter (operator-verified, AC 9417; not self-verified by Build) --
-int run(const std::string& session_id, unsigned display_scale, unsigned refresh_hz) {
+int run(const std::string& session_id, unsigned display_scale, unsigned refresh_hz,
+        bool show_perf) {
     pt::mapped_segment seg{};
     int exit_code = 0;
     if (!attach_and_claim(session_id, seg, &exit_code)) { return exit_code; }
@@ -196,10 +222,21 @@ int run(const std::string& session_id, unsigned display_scale, unsigned refresh_
         w * static_cast<int>(scale), h * static_cast<int>(scale), SDL_WINDOW_RESIZABLE);
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
     SDL_RenderSetLogicalSize(ren, w, h);
+    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);   // maize-267: overlay box alpha
     SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
         SDL_TEXTUREACCESS_STREAMING, w, h);
 
     pt::mark_presenter_ready(seg);
+
+    /* maize-267 --show-perf overlay state: MIPS from the session-published instruction
+       counter's deltas (ctl->instr_count, written every link tick), FPS from the guest
+       present_sequence deltas, sampled on the same 500 ms cadence as maizeg's native
+       overlay. The session's exit report stays the authoritative summary. */
+    std::int64_t perf_last_ms = 0;
+    std::uint64_t perf_last_instr = 0;
+    std::uint64_t perf_last_seq = 0;
+    std::string perf_str;
+    std::string last_drawn_perf;
 
     unsigned rhz = refresh_hz < 1 ? 1 : (refresh_hz > 1000 ? 1000 : refresh_hz);
     unsigned refresh_ms = 1000u / rhz;
@@ -260,19 +297,56 @@ int run(const std::string& session_id, unsigned display_scale, unsigned refresh_
 
         int slot = seg.ctl->active_slot.load(std::memory_order_acquire);
         std::uint64_t seq = seg.ctl->present_sequence.load(std::memory_order_acquire);
-        if (slot != last_slot || seq != last_seq) {
+
+        if (show_perf) {
+            std::int64_t nowms = now_ms();
+            std::uint64_t ic = seg.ctl->instr_count.load(std::memory_order_relaxed);
+            if (perf_last_ms == 0) {
+                perf_last_ms = nowms;
+                perf_last_instr = ic;
+                perf_last_seq = seq;
+            } else if (nowms - perf_last_ms >= 500) {
+                std::int64_t dt = nowms - perf_last_ms;
+                int mips = static_cast<int>((ic - perf_last_instr)
+                    / (static_cast<std::uint64_t>(dt) * 1000ull));
+                int fps = static_cast<int>((seq - perf_last_seq) * 1000ull
+                    / static_cast<std::uint64_t>(dt));
+                perf_str = "M" + std::to_string(mips) + " F" + std::to_string(fps);
+                perf_last_ms = nowms;
+                perf_last_instr = ic;
+                perf_last_seq = seq;
+            }
+        }
+
+        bool frame_changed = (slot != last_slot || seq != last_seq);
+        bool perf_changed = show_perf && !perf_str.empty() && perf_str != last_drawn_perf;
+        if (frame_changed || perf_changed) {
             last_slot = slot;
             last_seq = seq;
             std::uint32_t* frame = pt::frame_ptr(seg, slot);
             if (slot >= 0 && frame) {
-                SDL_UpdateTexture(tex, nullptr, frame, w * 4);
+                if (frame_changed) {
+                    SDL_UpdateTexture(tex, nullptr, frame, w * 4);
+                }
+                /* On a perf-only tick the texture still holds the last frame. */
                 SDL_RenderClear(ren);
                 SDL_RenderCopy(ren, tex, nullptr, nullptr);
-                SDL_RenderPresent(ren);
             } else {
                 SDL_RenderClear(ren);   // console active: blank frame
-                SDL_RenderPresent(ren);
             }
+            if (show_perf && !perf_str.empty()) {
+                /* Same top-left translucent box + green text as the native overlay. */
+                int px = 1;
+                int boxw = static_cast<int>(perf_str.size()) * FONT_W * px + 2;
+                int boxh = FONT_H * px + 2;
+                SDL_Rect box { 1, 1, boxw, boxh };
+                SDL_SetRenderDrawColor(ren, 0, 0, 0, 180);
+                SDL_RenderFillRect(ren, &box);
+                SDL_SetRenderDrawColor(ren, 0, 255, 0, 255);
+                draw_text(ren, 2, 2, px, perf_str);
+                last_drawn_perf = perf_str;
+            }
+            SDL_RenderPresent(ren);
         }
         SDL_Delay(refresh_ms);
     }

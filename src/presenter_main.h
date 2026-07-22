@@ -15,7 +15,8 @@ namespace presenter_main {
    loop (SDL window or headless checksum stub). Returns a process exit code: 0 on a clean
    shutdown, nonzero if the segment could not be opened or ownership could not be claimed
    (a live presenter already holds it). */
-int run(const std::string& session_id, unsigned display_scale, unsigned refresh_hz);
+int run(const std::string& session_id, unsigned display_scale, unsigned refresh_hz,
+        bool show_perf);   // maize-267: draw the live M/F overlay (SDL presenter only)
 
 }  // namespace presenter_main
 }  // namespace maize

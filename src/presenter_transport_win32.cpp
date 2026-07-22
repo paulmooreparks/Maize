@@ -154,6 +154,7 @@ bool spawn_presenter(const std::string& session_id, unsigned display_scale, unsi
     std::string cmd = "\"" + exe + "\" --presenter " + session_id
         + " --display-scale " + std::to_string(display_scale)
         + " --refresh-hz " + std::to_string(refresh_hz);
+    if (spawn_show_perf()) { cmd += " --show-perf"; }   /* maize-267 overlay forward */
 
     STARTUPINFOA si;
     ZeroMemory(&si, sizeof(si));

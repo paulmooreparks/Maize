@@ -146,6 +146,12 @@ namespace {
                 drain_pending_activate(seg, fb);
                 /* 3. (D16) Auto-respawn watch. */
                 watch_tick(seg, fb);
+                /* 4. maize-267: publish the guest instruction counter for the presenter's
+                   --show-perf overlay. Unconditional (reads 0 when the perf counter is
+                   disabled; the presenter only draws when its own flag says so). On the
+                   link tick rather than the present hook, so MIPS stays live when no
+                   frames move (menus, HALT-parked guests). */
+                seg.ctl->instr_count.store(cpu::instruction_count(), std::memory_order_relaxed);
                 /* Reap a dead child promptly so respawns do not leak a zombie. */
                 pt::reap_spawned_child();
             }

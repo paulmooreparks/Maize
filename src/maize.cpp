@@ -860,16 +860,18 @@ int main(int argc, char *argv[]) {
 		if (std::string(argv[i]) == "--presenter") {
 			std::string presenter_session = (i + 1 < argc) ? argv[i + 1] : std::string();
 			unsigned p_scale = 3, p_hz = 60;
+			bool p_show_perf = false;
 			for (int j = 1; j < argc; ++j) {
 				std::string a = argv[j];
 				if (a == "--display-scale" && j + 1 < argc) { p_scale = static_cast<unsigned>(std::atoi(argv[j + 1])); }
 				else if (a == "--refresh-hz" && j + 1 < argc) { p_hz = static_cast<unsigned>(std::atoi(argv[j + 1])); }
+				else if (a == "--show-perf") { p_show_perf = true; }   /* maize-267 overlay */
 			}
 			if (presenter_session.empty()) {
 				std::cerr << "maizeg --presenter: missing <session-id>" << std::endl;
 				return 2;
 			}
-			return presenter_main::run(presenter_session, p_scale, p_hz);
+			return presenter_main::run(presenter_session, p_scale, p_hz, p_show_perf);
 		}
 	}
 #endif
@@ -1208,9 +1210,11 @@ int main(int argc, char *argv[]) {
 		}
 		if (arg == "--show-perf") {
 			/* Overlay guest MIPS + FPS in the window corner (windowed mode only) and print
-			   peak MIPS/FPS on exit. Enables the per-instruction counter. */
+			   peak MIPS/FPS on exit. Enables the per-instruction counter. maize-267: also
+			   forwarded to any auto-spawned presenter so its window carries the overlay. */
 			show_perf = true;
 			cpu::enable_perf_counter();
+			presenter_transport::set_spawn_show_perf(true);
 			++idx;
 			continue;
 		}

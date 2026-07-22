@@ -27,7 +27,7 @@ namespace maize {
 namespace presenter_transport {
 
 constexpr std::uint32_t kMagic = 0x4d5a5054;       // 'MZPT', sanity check on attach
-constexpr std::uint32_t kVersion = 2;              // presenter_pid/presenter_heartbeat added (cycle 2/3)
+constexpr std::uint32_t kVersion = 3;              // v2: presenter_pid/presenter_heartbeat; v3: instr_count (maize-267)
 constexpr std::size_t   kInputRingCapacity = 256;  // Set-1 scancodes, presenter producer / session consumer
 constexpr std::int32_t  kConsoleSentinel = -1;     // matches cpu::fb_console_sentinel's meaning
 constexpr std::int32_t  kNoPendingActivate = -2;   // distinct from a legal slot index or kConsoleSentinel
@@ -57,6 +57,7 @@ struct control_block {
     std::atomic<std::uint8_t>  shutdown;             // session sets 1 at teardown; presenter's poll loop notices and exits
     std::atomic<std::uint32_t> presenter_pid;        // 0 = unclaimed; else the owning presenter's pid (single-owner CAS)
     std::atomic<std::uint64_t> presenter_heartbeat;  // monotonic counter the OWNING presenter bumps every kHeartbeatIntervalMs
+    std::atomic<std::uint64_t> instr_count;          // maize-267: session publishes cpu::instruction_count() every link tick; the presenter's --show-perf overlay derives MIPS from its deltas
     std::atomic<std::uint32_t> input_head;           // ring producer index (presenter-owned)
     std::atomic<std::uint32_t> input_tail;           // ring consumer index (session-owned)
     std::uint8_t input_ring[kInputRingCapacity];     // Set-1 scancodes, same bytes push_event consumes today
@@ -76,6 +77,12 @@ std::string new_session_id();
 
 /* Record argv[0] so spawn_presenter can find `maizeg` next to the running binary. */
 void set_argv0(const char* argv0);
+
+/* maize-267: process-wide spawn config, the set_argv0 pattern. When set, every
+   spawn_presenter (initial AND the D16 auto-respawn path) forwards --show-perf to the
+   child so the presenter draws the live M/F overlay. */
+void set_spawn_show_perf(bool enabled);
+bool spawn_show_perf();
 
 // --- session (client) side ---
 mapped_segment create_segment(const std::string& session_id, std::uint32_t width, std::uint32_t height,

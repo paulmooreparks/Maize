@@ -15,6 +15,12 @@
 namespace maize {
 namespace presenter_transport {
 
+/* maize-267: spawn-time --show-perf forwarding flag (the set_argv0 pattern; shared by
+   both platform spawn implementations, including the auto-respawn path). */
+namespace { bool g_spawn_show_perf = false; }
+void set_spawn_show_perf(bool enabled) { g_spawn_show_perf = enabled; }
+bool spawn_show_perf() { return g_spawn_show_perf; }
+
 namespace {
     void sleep_ms(int ms) {
         if (ms > 0) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }

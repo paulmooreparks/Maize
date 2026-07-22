@@ -174,16 +174,18 @@ bool spawn_presenter(const std::string& session_id, unsigned display_scale, unsi
     std::string a_presenter = "--presenter";
     std::string a_scale = "--display-scale";
     std::string a_hz = "--refresh-hz";
-    char* argv[] = {
-        const_cast<char*>(prog),
-        const_cast<char*>(a_presenter.c_str()),
-        const_cast<char*>(session_id.c_str()),
-        const_cast<char*>(a_scale.c_str()),
-        const_cast<char*>(scale_str.c_str()),
-        const_cast<char*>(a_hz.c_str()),
-        const_cast<char*>(hz_str.c_str()),
-        nullptr
-    };
+    std::string a_perf = "--show-perf";
+    char* argv[10];
+    int an = 0;
+    argv[an++] = const_cast<char*>(prog);
+    argv[an++] = const_cast<char*>(a_presenter.c_str());
+    argv[an++] = const_cast<char*>(session_id.c_str());
+    argv[an++] = const_cast<char*>(a_scale.c_str());
+    argv[an++] = const_cast<char*>(scale_str.c_str());
+    argv[an++] = const_cast<char*>(a_hz.c_str());
+    argv[an++] = const_cast<char*>(hz_str.c_str());
+    if (spawn_show_perf()) { argv[an++] = const_cast<char*>(a_perf.c_str()); }   /* maize-267 */
+    argv[an] = nullptr;
 
     pid_t pid = -1;
     int rc;
