@@ -438,11 +438,12 @@ struct exit_edge {
 };
 
 struct jit_block {
-    u_word key = 0;                 /* (physical entry << 1) | privilege */
+    u_word key = 0;                 /* (physical entry << 2) | (privilege << 1) | paged */
     u_word entry_va = 0;
     u_word page = 0;                /* physical page number of the entry (blocks never span pages) */
     jit_fn code = nullptr;
     u_word instr_count = 0;
+    bool paged = false;             /* compiled while Sv48 (MODE==1) was active (maize-341) */
     std::vector<exit_edge> edges;               /* outgoing direct edges (final size <= 2) */
     std::vector<exit_edge*> incoming;           /* predecessor edges chained INTO this block */
 };
@@ -472,9 +473,41 @@ jit_state g_jit;
 
 const u_word JIT_NEVER_COMPILE = ~u_word{0};
 
+inline bool jit_mode_paged() { return (control_regs[0].w0 & 0xF) == 1; }
+
+/* Block key folds in BOTH privilege and paging mode (maize-341): a bare block and a
+   paged block at the same physical entry are distinct compiled objects with different
+   memory templates, so they must never collide. */
 inline u_word jit_block_key(u_word pc) {
-    return (translate(pc, access_kind::fetch) << 1)
-         | (privilege_flag ? u_word{1} : u_word{0});
+    return (translate(pc, access_kind::fetch) << 2)
+         | (privilege_flag ? u_word{2} : u_word{0})
+         | (jit_mode_paged() ? u_word{1} : u_word{0});
+}
+
+/* =====================================================================================
+ * Fault-safe memory for paged blocks (maize-341). Under Sv48 any guest memory access can
+ * page-fault, and raise_page_fault throws page_fault_redirect (a C++ exception) which must
+ * NEVER unwind through an emitted (non-C++) frame. So a paged block routes every memory op
+ * through a C++ wrapper whose own try/catch absorbs the throw: by the time the throw
+ * happens the fault is already DELIVERED (deliver_vectored ran, RP points at the handler,
+ * the saved RF carries materialized flags), so catching it and returning leaves clean
+ * handler state; the block returns to the dispatcher, which resumes at RP. Args ride
+ * globals so the wrapper dodges the 4-register-arg call limit. */
+void* jit_fs_fn = nullptr;
+u_word jit_fs_a[3] = { 0, 0, 0 };
+u_word jit_fs_n = 0;    /* u_word (not int) so the emitter's 8-byte store_const is safe */
+bool jit_pending_fault = false;
+void jit_faultsafe_call() {
+    try {
+        switch (jit_fs_n) {
+            case 0: reinterpret_cast<void(*)()>(jit_fs_fn)(); break;
+            case 1: reinterpret_cast<void(*)(u_word)>(jit_fs_fn)(jit_fs_a[0]); break;
+            case 2: reinterpret_cast<void(*)(u_word, u_word)>(jit_fs_fn)(jit_fs_a[0], jit_fs_a[1]); break;
+            case 3: reinterpret_cast<void(*)(u_word, u_word, u_word)>(jit_fs_fn)(jit_fs_a[0], jit_fs_a[1], jit_fs_a[2]); break;
+        }
+    } catch (page_fault_redirect&) {
+        jit_pending_fault = true;
+    }
 }
 
 /* =====================================================================================
@@ -823,6 +856,22 @@ void jit_call_immaddr(u_word addr_lit, u_word ret_addr) {
     regs::rp.w0 = target.w0;
 }
 
+/* maize-341: the set of semantic thunks that touch guest memory (and so can page-fault
+   under Sv48). A paged block emits these through the fault-safe path. Any thunk NOT here
+   operates on registers only. */
+bool jit_thunk_is_mem(void* fn) {
+    return fn == reinterpret_cast<void*>(&jit_alu_mr)   || fn == reinterpret_cast<void*>(&jit_alu_mr_nw)
+        || fn == reinterpret_cast<void*>(&jit_alu_imr)  || fn == reinterpret_cast<void*>(&jit_alu_imr_nw)
+        || fn == reinterpret_cast<void*>(&jit_ld_rr)    || fn == reinterpret_cast<void*>(&jit_ldz_rr)
+        || fn == reinterpret_cast<void*>(&jit_ld_ir)    || fn == reinterpret_cast<void*>(&jit_ldz_ir)
+        || fn == reinterpret_cast<void*>(&jit_st_rr)    || fn == reinterpret_cast<void*>(&jit_st_ir)
+        || fn == reinterpret_cast<void*>(&jit_push_reg) || fn == reinterpret_cast<void*>(&jit_push_imm)
+        || fn == reinterpret_cast<void*>(&jit_pop)      || fn == reinterpret_cast<void*>(&jit_call_push)
+        || fn == reinterpret_cast<void*>(&jit_ret_pop)  || fn == reinterpret_cast<void*>(&jit_jmp_regaddr)
+        || fn == reinterpret_cast<void*>(&jit_jmp_immaddr) || fn == reinterpret_cast<void*>(&jit_call_regval)
+        || fn == reinterpret_cast<void*>(&jit_call_regaddr) || fn == reinterpret_cast<void*>(&jit_call_immaddr);
+}
+
 /* Per-block-exit boundary events: advance the perf counter, the instruction-tick timer,
    and the input poll by the block's instruction count, then report whether the compiled
    chain must break (deliverable interrupt pending, or the machine stopped). Interrupt
@@ -950,6 +999,33 @@ inline void jit_call_thunk(jit_emitter& e, void* fn, int argc, const u_word* arg
     if (jit_anchor_ok) { e.mov_ri(11, reinterpret_cast<u_word>(jit_anchor)); }
 }
 
+/* True while jit_compile is emitting a paged (Sv48) block; memory templates consult it
+   to route through the fault-safe path. */
+bool jit_compiling_paged = false;
+
+/* Emit the paged-block fault check: if the last fault-safe call recorded a page fault,
+   return to the dispatcher (the fault is already delivered, RP is at the handler);
+   otherwise fall through. Uses r10 as a scratch address register. */
+void jit_emit_fault_check(jit_emitter& e) {
+    e.mov_ri(10, reinterpret_cast<u_word>(&jit_pending_fault));
+    e.u8(0x41); e.u8(0x80); e.u8(0x3A); e.u8(0x00);   /* cmp byte [r10], 0 */
+    e.u8(0x74); e.u8(0x01);                            /* jz +1 (skip the ret) */
+    e.u8(0xC3);                                        /* ret to dispatcher */
+}
+
+/* Emit a memory-op thunk. In a bare block this is a plain thunk call (cannot fault). In a
+   paged block it routes through jit_faultsafe_call (args via globals), sets the faulting
+   guest PC, and checks for a delivered fault. */
+void jit_emit_mem_thunk(jit_emitter& e, void* fn, int n, const u_word* args, u_word pc, bool paged) {
+    if (!paged) { jit_call_thunk(e, fn, n, args); return; }
+    e.store_const(&current_instr_pc, pc);
+    e.store_const(&jit_fs_fn, reinterpret_cast<u_word>(fn));
+    for (int i = 0; i < n; ++i) { e.store_const(&jit_fs_a[i], args[i]); }
+    e.store_const(&jit_fs_n, static_cast<u_word>(n));
+    jit_call_thunk(e, reinterpret_cast<void*>(&jit_faultsafe_call), 0, nullptr);
+    jit_emit_fault_check(e);
+}
+
 /* Truncate reg to `size` bytes zero-extended, in place (no-op for size 8). */
 inline void jit_emit_trunc(jit_emitter& e, u_byte r, u_byte size) {
     if (size != 8) { e.movzx_rr(r, r, size); }
@@ -1027,6 +1103,20 @@ bool jit_try_inline(jit_emitter& e, u_byte op, u_word pc, u_word& len_out) {
     if (!jit_anchor_ok) { return false; }
     u_byte base = op & 0x3F;
     u_byte mode = op & opcode_flag;
+
+    /* maize-341: the inline memory templates assume the guest address is physical (Bare
+       mode) and their slow fallback can page-fault, so under Sv48 they must defer to the
+       fault-safe thunk path in jit_compile. Compute templates (ALU, CP reg/imm, SETcc,
+       LEA, INC/DEC) touch no memory and stay inline in both modes. */
+    if (jit_compiling_paged) {
+        if (op == instr::ld_regAddr_reg || op == instr::ldz_regAddr_reg
+            || op == instr::ld_immAddr_reg || op == instr::ldz_immAddr_reg
+            || op == instr::st_regVal_regAddr || op == instr::st_immVal_regAddr
+            || op == instr::push_regVal || op == instr::push_immVal
+            || op == instr::pop_opcode) {
+            return false;
+        }
+    }
 
     /* ---- CP / CPZ, register source ---- */
     if (op == instr::cp_regVal_reg || op == instr::cpz_regVal_reg) {
@@ -1406,6 +1496,21 @@ void jit_emit_events_inline(jit_emitter& e, u_word n, std::vector<u_byte*>& brk_
    otherwise take the patchable jump (initially to a local return; later chained
    straight to the successor block). In check mode the edge is never chained. */
 void jit_emit_edge(jit_emitter& e, jit_block& b, u_word target_va, u_word n) {
+    /* maize-341: a paged block chains a direct edge ONLY when the target is in the same
+       guest page as the block entry. A virtual page maps atomically to one physical page,
+       so a same-page branch is same-physical-page and stays valid under ANY SATP: whenever
+       the source physical block is entered, the target physical block is reached by the
+       identical mapping (and if a remap points the virtual page elsewhere, the source is a
+       different physical block and is never entered). Cross-page targets translate under
+       the live SATP, which can change, so those return to the dispatcher to recompute the
+       physical key. This captures the hot in-page loop while staying correct. */
+    if (b.paged && (target_va & ~static_cast<u_word>(0xFFF)) != (b.entry_va & ~static_cast<u_word>(0xFFF))) {
+        e.store_const(&regs::rp.w0, target_va);
+        u_word args[1] = { n };
+        e.call_fn(reinterpret_cast<void*>(&jit_boundary_events), 1, args);
+        e.ret();
+        return;
+    }
     /* Set RP with an absolute-addressed store (no dependency on the anchor register
        being live at the block boundary), call the boundary-events helper, and either
        break to the dispatcher (rax != 0) or take the patchable chain jump. The optional
@@ -1454,12 +1559,16 @@ void jit_emit_edge(jit_emitter& e, jit_block& b, u_word target_va, u_word n) {
    probe the direct-mapped cache, jmp to a hit; every miss and each brk site lands on
    the trailing ret (back to the dispatcher). */
 void jit_emit_probe_tail(jit_emitter& e, std::vector<u_byte*>& brk_sites) {
-    e.load_anchor(0, jit_disp(&regs::rp.w0), 8, false);   /* rax = target VA (bare PA) */
-    e.lea_sum(1, 0, 0);                                    /* rcx = pa << 1 */
+    /* Bare-block probe: key = (pa << 2) | (privilege << 1) | 0 (bare mode bit), matching
+       jit_block_key's 2-bit-tag format (maize-341). RP is the physical address in bare
+       mode. Paged blocks never reach here (they skip the probe). */
+    e.load_anchor(0, jit_disp(&regs::rp.w0), 8, false);   /* rax = target PA (bare) */
+    e.mov_rr(1, 0);
+    e.shift_ri(4, 1, 2);                                   /* rcx = pa << 2 */
     e.load_anchor(2, jit_disp(&regs::rf.w0), 8, false);
-    e.shift_ri(5, 2, 32);
-    e.and_ri32_32(2, 1);
-    e.or_rr(1, 2);                                         /* rcx = key */
+    e.shift_ri(5, 2, 31);                                 /* privilege (RF bit 32) -> bit 1 */
+    e.and_ri32_32(2, 2);
+    e.or_rr(1, 2);                                         /* rcx = key (mode bit 0 = bare) */
     e.mov_ri(2, JIT_PROBE_MULT);
     e.imul_rr(2, 1);
     e.shift_ri(5, 2, static_cast<u_byte>(64 - JIT_PROBE_BITS));
@@ -1474,7 +1583,9 @@ void jit_emit_probe_tail(jit_emitter& e, std::vector<u_byte*>& brk_sites) {
 }
 
 void jit_emit_indirect_exit(jit_emitter& e, u_word n) {
-    if (jit_check_mode || !jit_anchor_ok) {
+    /* Paged blocks skip the probe: RP is a VA and the physical key depends on the live
+       SATP, so the dispatcher recomputes it (maize-341). */
+    if (jit_check_mode || !jit_anchor_ok || jit_compiling_paged) {
         u_word args[1] = { n };
         e.call_fn(reinterpret_cast<void*>(&jit_boundary_events), 1, args);
         e.ret();
@@ -1653,7 +1764,9 @@ jit_block* jit_compile(u_word entry_pc) {
     b->entry_va = entry_pc;
     b->page = translate(entry_pc, access_kind::fetch) >> 12;
     b->code = reinterpret_cast<jit_fn>(g_jit.arena.cursor());
+    b->paged = jit_mode_paged();
     b->edges.reserve(2);
+    jit_compiling_paged = b->paged;   /* memory templates route fault-safe when set (maize-341) */
 
     /* Block prologue: establish the anchor register for the inline templates. */
     if (jit_anchor_ok) { e.mov_ri(11, reinterpret_cast<u_word>(jit_anchor)); }
@@ -1705,8 +1818,11 @@ jit_block* jit_compile(u_word entry_pc) {
             u_byte d = jg8(pc + 1);
             if (jit_desc_is_rp(d)) { jit_emit_edge(e, *b, pc, count); break; }
             u_word args[1] = { d };
-            e.call_fn(op == instr::jmp_regVal ? reinterpret_cast<void*>(&jit_jmp_regval)
-                                              : reinterpret_cast<void*>(&jit_jmp_regaddr), 1, args);
+            if (op == instr::jmp_regVal) {
+                e.call_fn(reinterpret_cast<void*>(&jit_jmp_regval), 1, args);   /* reg -> rp, no memory */
+            } else {
+                jit_emit_mem_thunk(e, reinterpret_cast<void*>(&jit_jmp_regaddr), 1, args, pc, b->paged);
+            }
             jit_emit_indirect_exit(e, count + 1);
             count += 1; break;
         }
@@ -1714,7 +1830,7 @@ jit_block* jit_compile(u_word entry_pc) {
             u_byte immsz = static_cast<u_byte>(1u << (jg8(pc + 1) & opflag_imm_size));
             u_word addr_lit = jgN(pc + 2, immsz);
             u_word args[1] = { addr_lit };
-            e.call_fn(reinterpret_cast<void*>(&jit_jmp_immaddr), 1, args);
+            jit_emit_mem_thunk(e, reinterpret_cast<void*>(&jit_jmp_immaddr), 1, args, pc, b->paged);
             jit_emit_indirect_exit(e, count + 1);
             count += 1; break;
         }
@@ -1723,8 +1839,9 @@ jit_block* jit_compile(u_word entry_pc) {
             if (jit_desc_is_rp(d)) { jit_emit_edge(e, *b, pc, count); break; }
             u_word ret_addr = pc + 2;
             u_word args[2] = { d, ret_addr };
-            e.call_fn(op == instr::call_regVal ? reinterpret_cast<void*>(&jit_call_regval)
-                                               : reinterpret_cast<void*>(&jit_call_regaddr), 2, args);
+            jit_emit_mem_thunk(e, op == instr::call_regVal ? reinterpret_cast<void*>(&jit_call_regval)
+                                                           : reinterpret_cast<void*>(&jit_call_regaddr),
+                               2, args, pc, b->paged);
             jit_emit_indirect_exit(e, count + 1);
             count += 1; break;
         }
@@ -1733,7 +1850,7 @@ jit_block* jit_compile(u_word entry_pc) {
             u_word addr_lit = jgN(pc + 2, immsz);
             u_word ret_addr = pc + 2 + immsz;
             u_word args[2] = { addr_lit, ret_addr };
-            e.call_fn(reinterpret_cast<void*>(&jit_call_immaddr), 2, args);
+            jit_emit_mem_thunk(e, reinterpret_cast<void*>(&jit_call_immaddr), 2, args, pc, b->paged);
             jit_emit_indirect_exit(e, count + 1);
             count += 1; break;
         }
@@ -1741,7 +1858,11 @@ jit_block* jit_compile(u_word entry_pc) {
             u_byte immsz = static_cast<u_byte>(1u << (jg8(pc + 1) & opflag_imm_size));
             u_word target = jgN(pc + 2, immsz);
             u_word ret_addr = pc + 2 + immsz;
-            if (jit_anchor_ok) {
+            if (b->paged) {
+                /* Paged: the push can fault; route through the fault-safe path. */
+                u_word args[1] = { ret_addr };
+                jit_emit_mem_thunk(e, reinterpret_cast<void*>(&jit_call_push), 1, args, pc, true);
+            } else if (jit_anchor_ok) {
                 /* Inline the return-address push (the L1-hit stack store), mirroring
                    jit_call_push's fault-atomic order: RS commits after the store. */
                 std::vector<u_byte*> slow;
@@ -1776,7 +1897,10 @@ jit_block* jit_compile(u_word entry_pc) {
             count += 1; break;
         }
         if (op == instr::ret_opcode) {
-            if (jit_anchor_ok) {
+            if (b->paged) {
+                /* Paged: the pop can fault; route through the fault-safe path. */
+                jit_emit_mem_thunk(e, reinterpret_cast<void*>(&jit_ret_pop), 0, nullptr, pc, true);
+            } else if (jit_anchor_ok) {
                 /* Inline the return-address pop (the L1-hit stack load). */
                 std::vector<u_byte*> slow;
                 e.load_anchor(0, jit_disp(&regs::rs.w0), 8, false);
@@ -1983,7 +2107,13 @@ jit_block* jit_compile(u_word entry_pc) {
             jit_emit_edge(e, *b, pc, count);
             break;
         }
-        if (thunk != nullptr) { jit_call_thunk(e, thunk, nargs, a); }
+        if (thunk != nullptr) {
+            if (b->paged && jit_thunk_is_mem(thunk)) {
+                jit_emit_mem_thunk(e, thunk, nargs, a, pc, true);
+            } else {
+                jit_call_thunk(e, thunk, nargs, a);
+            }
+        }
         g_jit.emitted_thunk += 1;
         pc += len;
         count += 1;
@@ -2005,12 +2135,14 @@ jit_block* jit_compile(u_word entry_pc) {
     g_jit.table[b->key] = b;
     g_jit.code_pages[b->page].push_back(b->key);
     jit_page_bitmap[jit_bitmap_slot(b->page)] = 1;
-    if (!jit_check_mode) { jit_probe_insert(b->key, reinterpret_cast<const void*>(b->code)); }
+    /* Paged blocks are never probed for or chained (maize-341), so they neither enter the
+       probe cache nor run the chaining pass; their edges vector is empty. */
+    if (!jit_check_mode && !b->paged) { jit_probe_insert(b->key, reinterpret_cast<const void*>(b->code)); }
     g_jit.blocks_compiled += 1;
 
     /* Chaining (skipped wholesale in check mode: every check run must be exactly one
        block so the oracle window matches). */
-    if (!jit_check_mode) {
+    if (!jit_check_mode && !b->paged) {
         for (auto& ed : b->edges) {
             auto it = g_jit.table.find(ed.target_key);
             if (it != g_jit.table.end() && it->second != b) {
@@ -2198,9 +2330,13 @@ void jit_dispatch() {
     for (;;) {
         if (!running_flag) { return; }
         if (interrupt_enabled_flag && irq_pending.load(std::memory_order_relaxed)) { return; }
-        if ((control_regs[0].w0 & 0xF) == 1) { return; }    /* Sv48 active: J2 territory */
 
         u_word pc = regs::rp.w0;
+        /* maize-341: set the fault PC BEFORE the key computation, whose fetch-translate can
+           itself page-fault under Sv48; a block-entry fetch fault then reports this PC.
+           jit_block_key / jit_compile run in pure C++ frames (this is inside tick() inside
+           run()), so run()'s existing catch(page_fault_redirect) covers a fault raised here. */
+        current_instr_pc = pc;
         u_word key = jit_block_key(pc);
         auto it = g_jit.table.find(key);
         jit_block* b = (it != g_jit.table.end()) ? it->second : nullptr;
@@ -2232,7 +2368,10 @@ void jit_dispatch() {
             jit_journal_a.clear();
             jit_journal = &jit_journal_a;
             g_jit.block_runs += 1;
+            jit_pending_fault = false;
             b->code();
+            bool jit_faulted = jit_pending_fault;   /* a compiled memory op page-faulted (maize-341) */
+            jit_pending_fault = false;
             jit_journal = nullptr;
             materialize_flags();
             arch_snapshot jit_end; jit_snapshot(jit_end);
@@ -2259,13 +2398,29 @@ void jit_dispatch() {
             jit_step_on = true;
             bool saved_dispatch = jit_active_dispatch;
             jit_active_dispatch = false;    /* no recursive dispatch while stepping */
-            tick();
+            /* The oracle can page-fault at the same instruction the compiled block did;
+               catch it here so the throw does not unwind past this differential frame
+               (maize-341). deliver_vectored has already run, so the post-fault globals are
+               the handler-entry state, which must match the compiled tier's. */
+            bool int_faulted = false;
+            try {
+                tick();
+            } catch (page_fault_redirect&) {
+                int_faulted = true;
+            }
             jit_active_dispatch = saved_dispatch;
             jit_step_on = false;
             jit_journal = nullptr;
             materialize_flags();
             arch_snapshot int_end; jit_snapshot(int_end);
 
+            if (jit_faulted != int_faulted) {
+                std::cerr << "maize: JIT MISCOMPILE block 0x" << std::hex << pc << std::dec
+                          << ": fault divergence (jit " << (jit_faulted ? "faulted" : "did not")
+                          << ", interp " << (int_faulted ? "faulted" : "did not") << ")" << std::endl;
+                std::cerr << "maize: aborting on JIT miscompile (--jit-check)" << std::endl;
+                std::exit(2);
+            }
             if (!jit_diff_check(pc, n, jit_end, int_end)) {
                 std::cerr << "maize: aborting on JIT miscompile (--jit-check)" << std::endl;
                 /* A hard nonzero exit, not power_off(): a miscompile must fail any
@@ -2279,7 +2434,16 @@ void jit_dispatch() {
 
         (void) block_len;
         g_jit.block_runs += 1;
+        jit_pending_fault = false;
         b->code();
+        if (jit_pending_fault) {
+            /* A compiled memory op page-faulted; the fault is already fully delivered (RP
+               at the handler, trap frame pushed, flags materialized into the saved RF), so
+               hand back to the interpreter to run the handler. The block stopped at the
+               faulting instruction. */
+            jit_pending_fault = false;
+            return;
+        }
         if (!running_flag) { return; }
     }
 #endif
