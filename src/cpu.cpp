@@ -934,6 +934,35 @@ namespace maize {
                6 bits of the VPN, which lie in VA[17:12] and are unaffected by this mask. */
             static constexpr u_word vpn_tag_mask = (u_word {1} << 36) - 1;
 
+            /* Per-access-kind inline last-page cache in FRONT of the TLB probe (card
+               maize-317). The callgrind gate showed the Sv48 cost is the TLB HIT path,
+               not misses (translate_slow 21.2% of all host instructions vs sv48_walk
+               0.96%): every guest instruction pays ~3 out-of-line translate calls
+               (opcode fetch, operand fetch, data access) at ~20 host instructions each.
+               One entry per access kind caches the last successful (page, privilege) ->
+               PA-page translation so the inline translate() resolves a same-page repeat
+               in one compare + or.
+
+               key = ((VPN << 1) | privilege) + 1, 0 = invalid. Two properties carry the
+               correctness: (a) the entry is PER KIND, so the leaf_permits(kind) check
+               that passed at fill time covers every later hit for that kind; (b) the
+               PRIVILEGE BIT is part of the key, so a privilege transition self-
+               invalidates without any flush-site enumeration (supervisor RF writes can
+               change the privilege bit anywhere, not just trap entry / IRET). Staleness
+               vs PTE rewrites follows the existing software-TLB contract (maize-194:
+               the guest must TLBINV / rewrite SATP after PTE changes), and both flush
+               helpers below clear these entries alongside the TLB. VPN is masked with
+               vpn_tag_mask for the same VA[63:48]-ignored reason as the TLB tag. */
+            struct fast_page {
+                u_word key = 0;
+                u_word pa_page = 0;
+            };
+            fast_page fast_pages[3] {};   // indexed by access_kind (fetch/load/store)
+            inline u_word fast_page_key(u_word va) {
+                return ((((va >> 12) & vpn_tag_mask) << 1)
+                        | (privilege_flag ? u_word {1} : u_word {0})) + 1;
+            }
+
             /* Page fault is FAULT-class: the saved PC is the faulting instruction's own
                entry PC, captured at the top of MAIZE_NEXT() before the opcode fetch, not
                the advanced PC. delivering_trap guards the double-fault case: a fault raised
@@ -951,6 +980,12 @@ namespace maize {
             inline u_word translate(u_word va, access_kind kind) {
                 if ((control_regs[0].w0 & 0xF) != 1) {
                     return va;   // Bare / undefined MODE: passthrough, zero added cost
+                }
+                /* maize-317: one-compare fast path for the overwhelmingly common case
+                   (same page, same kind, same privilege as the last access). */
+                fast_page const& fp = fast_pages[static_cast<size_t>(kind)];
+                if (fp.key == fast_page_key(va)) {
+                    return fp.pa_page | (va & static_cast<u_word>(0xFFF));
                 }
                 return translate_slow(va, kind);
             }
@@ -1847,6 +1882,12 @@ namespace maize {
                         raise_page_fault(va, kind, true);   // mapping present, perm violation
                     }
                     u_word pa = (pte & ~static_cast<u_word>(0xFFF)) | (va & offset_mask);
+                    /* maize-317: install the inline fast-page entry at 4 KiB granularity;
+                       valid for a superpage leaf too, since any 4 KiB window inside it
+                       translates uniformly (pa minus the low 12 bits IS that window's
+                       page base). leaf_permits above licenses later same-kind hits. */
+                    fast_pages[static_cast<size_t>(kind)] =
+                        { fast_page_key(va), pa & ~static_cast<u_word>(0xFFF) };
                     if (level == 0) {
                         /* Only a 4 KiB leaf is cached; superpages never (decision). */
                         size_t idx = (va >> 12) & (tlb_size - 1);
@@ -1882,6 +1923,9 @@ namespace maize {
                 if (!leaf_permits(kind, e.r, e.w, e.x, e.u)) {
                     raise_page_fault(va, kind, true);
                 }
+                /* maize-317: install the inline fast-page entry for this (kind, page,
+                   privilege); the permission check above is what licenses later hits. */
+                fast_pages[static_cast<size_t>(kind)] = { fast_page_key(va), e.ppn };
                 return e.ppn | (va & static_cast<u_word>(0xFFF));
             }
             return sv48_walk(va, kind);
@@ -1893,6 +1937,10 @@ namespace maize {
             for (size_t i = 0; i < tlb_size; ++i) {
                 software_tlb[i].valid = false;
             }
+            /* maize-317: the inline fast-page entries obey the same flush contract. */
+            for (auto& f : fast_pages) {
+                f.key = 0;
+            }
         }
 
         /* Invalidate the single TLB entry that would cache `va`, if present: called from
@@ -1901,6 +1949,14 @@ namespace maize {
             size_t idx = (va >> 12) & (tlb_size - 1);
             if (software_tlb[idx].valid && software_tlb[idx].tag == ((va >> 12) & vpn_tag_mask)) {
                 software_tlb[idx].valid = false;
+            }
+            /* maize-317: clear any inline fast-page entry caching this page, for either
+               privilege (the key's low bit), any kind. */
+            u_word vpn = (va >> 12) & vpn_tag_mask;
+            for (auto& f : fast_pages) {
+                if (f.key != 0 && ((f.key - 1) >> 1) == vpn) {
+                    f.key = 0;
+                }
             }
         }
 
