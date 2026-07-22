@@ -69,3 +69,17 @@ Match the language to the layer.
 ## The rule, in one line
 
 If a second implementer would have to rebuild it to run quesOS, it is the machine and it belongs in mzvm. Otherwise it is the OS and it belongs in the guest.
+
+## Update, 2026-07-23: ratifications and the first audit
+
+Several decisions landed after this policy was first written, and the first audit against it ran the same day.
+
+The ISA is open for a thaw. The operator is willing to unfreeze the ISA for a deliberate thaw-and-refreeze cycle, on the grounds that it is unshipped and the machine is his to revise. That resolves the "give a true machine primitive an instruction rather than a syscall" note: the `$F4` and `$F5` bulk memory operations become real block-memory instructions rather than Maize-private syscalls. Note that adding instructions in reserved opcode space was already permitted under the v1.0 freeze as a compatible v1.x extension, the way LDZ and SETSYSG were, so `$F4` and `$F5` do not strictly require a thaw. The willingness to thaw is broader latitude for changes that are not purely additive, and pending ISA additions should be batched into one v1.1 cut rather than thawed for one at a time.
+
+The native provider is bootstrap scaffolding, confirmed. Running a bare `.mzx` directly, without quesOS, is not a permanent peer mode. As quesOS takes over policy, the native provider in `src/sys.cpp` shrinks to the device layer plus a loader, and its policy pieces (the VFS, the TTY line discipline, heap and fd routing) are on a path to retirement rather than long-term maintenance. What turns out to be non-negotiable gets discovered as things move.
+
+Device backends must not be welded to one host engine. The display is to be architected so it does not depend on SDL2, so it can run on another graphics engine and eventually drive real hardware directly through a Maize-implemented driver, with the same principle applied to the other devices. This is the endgame that lets a Maize VM run on bare metal and answer "Does it run Maize?" on the widest possible range of hosts.
+
+Peer performance is the bar for apps through quesOS. The operator wants applications to eventually run through quesOS at performance that matches bare-metal, or is at least not noticeably worse. If the full-kernel path cannot deliver that, the fallback is a revived "quesito", a super-thin quesOS-compatible shim offering near-bare-metal performance. This is an open design question gated on JIT data.
+
+The first audit (2026-07-23) confirmed the structural line is drawn correctly for the ISA, the MMU mechanism, and every process, scheduling, and memory-policy concern, all of which live in quesOS. It found two real leaks and one app-shaped hatch: the VFS living in the VM with quesOS forwarding to it (the anchor cleanup), the TTY line discipline in the VM console device (a tolerated bootstrap shim), and `$F3` palette_blit as a DOOM-shaped operation welded into the syscall ABI (retire post-JIT). These are tracked in the quesOS Platform workstream.
