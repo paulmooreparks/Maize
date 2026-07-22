@@ -205,6 +205,8 @@ static void print_usage(std::ostream &out) {
 		"      --profile[=N]          sample where the program spends its time (every\n"
 		"                             N instructions, default 4096) and print a report\n"
 		"                             at exit; add --profile-map for function names\n"
+		"      --jit-survey           report basic-block shape and reuse statistics\n"
+		"                             at exit (block lengths, hot-block coverage)\n"
 		"      --profile-map <path>   symbol map for --profile (write one at link time\n"
 		"                             with `mzld --map <path>`)\n"
 		"      --no-root              disable the sandbox root; the guest starts with\n"
@@ -915,6 +917,7 @@ int main(int argc, char *argv[]) {
 	                                 // dump its grid at exit (headless CI self-check channel)
 	bool show_perf = false;          // --show-perf: draw guest MIPS + FPS in the window corner
 	bool profile_enabled = false;    // --profile[=N]: sample the guest PC every N instructions (maize-261)
+	bool jit_survey_enabled = false; // --jit-survey: block-shape survey report at exit (maize-324, JIT J0)
 	std::vector<std::pair<maize::u_word, std::string>> profile_map;   // --profile-map rows, sorted by address
 	bool pause_on_halt = false;      // --pause-on-halt: hold the window open after the guest halts
 	bool vsync = true;               // --vsync/--no-vsync: sync graphics presents to the monitor vblank (maize-227)
@@ -1239,6 +1242,15 @@ int main(int argc, char *argv[]) {
 			}
 			profile_enabled = true;
 			cpu::enable_profile(static_cast<maize::u_word>(interval));
+			++idx;
+			continue;
+		}
+		if (arg == "--jit-survey") {
+			/* maize-324 (JIT J0): block-shape survey, no code generation. Records
+			   dynamic basic blocks (physical entry + privilege), their lengths and
+			   reuse, and the control-transfer kind mix; a report prints at exit. */
+			jit_survey_enabled = true;
+			cpu::enable_jit_survey();
 			++idx;
 			continue;
 		}
@@ -1864,6 +1876,11 @@ int main(int argc, char *argv[]) {
 	   omitted here. Goes to stderr so it never pollutes the guest's stdout (safe under pipes). */
 	if (show_perf && !used_display) {
 		maize::perf::emit(std::cerr);
+	}
+
+	/* maize-324: the JIT J0 block-shape survey report (stderr, beside the perf report). */
+	if (jit_survey_enabled) {
+		cpu::jit_survey_report(std::cerr);
 	}
 
 	/* maize-261: the sampling-profiler report. Aggregates the sampled-PC histogram by

@@ -1106,6 +1106,71 @@ namespace maize {
                 commit_reg_w0(dst, src_data.w0);
             }
 
+            /* maize-324 (JIT J0): block-shape survey, zero codegen. When survey_on, the
+               MAIZE_NEXT preamble calls survey_step per instruction; the control-transfer
+               handler sites note the transfer kind just after writing RP. A dynamic block
+               runs from a transfer target to the next transfer (or the 512-instruction
+               cap, or a 4 KiB page crossing), matching docs/design/jit.md's block rules.
+               Blocks are keyed by PHYSICAL entry plus the privilege bit (VA keying would
+               conflate quesOS processes, which share one VA layout). Costs nothing when
+               off beyond one predictable test per instruction (AC2 measures that), and
+               survey mode itself has no performance requirement. Declared here, above the
+               transfer helpers that call survey_note_transfer. */
+            bool survey_on = false;
+            int  survey_pending = 1;                       /* nonzero: next instr starts a block */
+            constexpr int survey_kind_direct = 1, survey_kind_indirect = 2,
+                          survey_kind_trap = 3, survey_kind_split = 4;
+            u_word survey_entry_key = 0;
+            u_word survey_entry_va_page = 0;
+            u_word survey_len = 0;
+            struct survey_block { std::uint64_t count = 0; std::uint64_t total_len = 0; };
+            std::unordered_map<u_word, survey_block> survey_blocks;
+            std::uint64_t survey_len_hist[513] = {};       /* per-execution block lengths */
+            std::uint64_t survey_exit_kinds[5] = {};       /* indexed by survey_kind_*   */
+            std::uint64_t survey_dyn_instr = 0;
+
+            void survey_finalize_block() {
+                if (survey_len == 0) { return; }
+                survey_block& b = survey_blocks[survey_entry_key];
+                ++b.count;
+                b.total_len += survey_len;
+                ++survey_len_hist[survey_len > 512 ? 512 : survey_len];
+                survey_len = 0;
+            }
+
+            /* Called by the control-transfer handler sites just after RP is written.
+               Inline and trivially cheap when survey_on is false. */
+            inline void survey_note_transfer(int kind) {
+                if (!survey_on) { return; }
+                ++survey_exit_kinds[kind];
+                survey_pending = kind;
+            }
+
+            void survey_step(u_word pc) {                  /* out-of-line on purpose */
+                ++survey_dyn_instr;
+                if (survey_pending == 0) {
+                    /* Mid-block: end at a page crossing or the length cap. VA contiguity
+                       inside a block makes the VA page test equivalent to the PA one. */
+                    if ((pc & ~static_cast<u_word>(0xFFF)) != survey_entry_va_page
+                        || survey_len >= 512) {
+                        ++survey_exit_kinds[survey_kind_split];
+                        survey_pending = survey_kind_split;
+                    } else {
+                        ++survey_len;
+                        return;
+                    }
+                }
+                /* Block entry: finalize the previous block and open a new one. The entry
+                   translation rides the same fast path the real fetch is about to take;
+                   a fetch fault here is the same fault the fetch itself would raise. */
+                survey_finalize_block();
+                u_word pa = translate(pc, access_kind::fetch);
+                survey_entry_key = (pa << 1) | (privilege_flag ? u_word {1} : u_word {0});
+                survey_entry_va_page = pc & ~static_cast<u_word>(0xFFF);
+                survey_len = 1;
+                survey_pending = 0;
+            }
+
             /* Set PC (RP) from an immediate jump/branch target in the code stream at PC, encoded
                at op1_imm_size() width (maize-41). Read exactly that many bytes zero-extended into
                a fresh register, then replace PC. Honors the size flag so a target can reach the
@@ -1115,6 +1180,7 @@ namespace maize {
                 reg target;
                 mm.read(translate(regs::rp.w0, access_kind::fetch), target, imm_size, 0);
                 regs::rp.w0 = target.w0;
+                survey_note_transfer(survey_kind_direct);   /* maize-324: JMP imm + taken Jcc */
             }
 
             /* Shared condition machinery (card maize-64). The two high opcode bits
@@ -1779,6 +1845,7 @@ namespace maize {
             interrupt_enabled_flag = false;
 
             regs::rp.w0 = handler;
+            survey_note_transfer(survey_kind_trap);   /* maize-324: trap/IRQ entry */
         }
 
         /* ---- Sv48 address translation, software TLB, page fault (card maize-194) ----
@@ -4125,6 +4192,7 @@ namespace maize {
                 if (active_timer_ptr != nullptr) { tick_active_timer(*active_timer_ptr); } \
                 if (active_input_ptr != nullptr && (++input_tick_ctr_ & INPUT_TICK_MASK) == 0) { active_input_ptr->on_input_tick(); } \
                 current_instr_pc = regs::rp.w0; \
+                if (survey_on) { survey_step(current_instr_pc); } \
                 mm.read(translate(regs::rp.w0, access_kind::fetch), regs::ri, subreg_enum::w0); \
                 ++regs::rp.w0; \
                 if (perf_count_enabled) { \
@@ -5068,6 +5136,7 @@ namespace maize {
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, new_rs, subreg_enum::w0);
                         regs::rs.w0 = new_rs.w0;
                         regs::rp.w0 = target.w0;
+                        survey_note_transfer(survey_kind_direct);   /* maize-324 */
                         MAIZE_NEXT();
                     }
 
@@ -5090,6 +5159,7 @@ namespace maize {
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, new_rs, subreg_enum::w0);
                         regs::rs.w0 = new_rs.w0;
                         regs::rp.w0 = target.w0;
+                        survey_note_transfer(survey_kind_indirect);   /* maize-324 */
                         MAIZE_NEXT();
                     }
 
@@ -5112,6 +5182,7 @@ namespace maize {
                         copy_regval_regaddr(regs::rp, subreg_enum::w0, new_rs, subreg_enum::w0);
                         regs::rs.w0 = new_rs.w0;
                         regs::rp.w0 = target.w0;
+                        survey_note_transfer(survey_kind_indirect);   /* maize-324 */
                         MAIZE_NEXT();
                     }
 
@@ -5120,6 +5191,7 @@ namespace maize {
                         u_byte src_size = subreg_size_map[static_cast<size_t>(subreg_enum::w0)];
                         copy_memval_reg(regs::rs.w0, src_size, regs::rp, subreg_enum::w0, access_kind::load);
                         regs::rs.w0 += src_size;
+                        survey_note_transfer(survey_kind_indirect);   /* maize-324: RET */
                         MAIZE_NEXT();
                     }
 
@@ -5157,6 +5229,7 @@ namespace maize {
                         pending_flags.dirty = false;
                         regs::rp.w0 = saved_rp.w0;
                         regs::rs.w0 += src_size + src_size;
+                        survey_note_transfer(survey_kind_trap);   /* maize-324: IRET */
                         MAIZE_NEXT();
                     }
 
@@ -5167,6 +5240,7 @@ namespace maize {
                     LBL_jmp_regVal: {
                         regs::rp.w0 += 1;
                         copy_regval_reg_zext(op1_reg(), subreg_enum::w0, regs::rp, subreg_enum::w0);
+                        survey_note_transfer(survey_kind_indirect);   /* maize-324 */
                         MAIZE_NEXT();
                     }
 
@@ -5179,12 +5253,14 @@ namespace maize {
                     LBL_jmp_regAddr: {
                         regs::rp.w0 += 1;
                         copy_regaddr_reg(op1_reg(), subreg_enum::w0, regs::rp, subreg_enum::w0);
+                        survey_note_transfer(survey_kind_indirect);   /* maize-324 */
                         MAIZE_NEXT();
                     }
 
                     LBL_jmp_immAddr: {
                         regs::rp.w0 += 1;
                         copy_memaddr_reg(regs::rp.w0, op1_imm_size(), regs::rp, subreg_enum::w0);
+                        survey_note_transfer(survey_kind_indirect);   /* maize-324 */
                         MAIZE_NEXT();
                     }
 
@@ -5715,6 +5791,64 @@ namespace maize {
 
         const std::unordered_map<u_word, std::uint64_t>& profile_histogram() {
             return profile_hist;
+        }
+
+        /* maize-324 (JIT J0): switch the block-shape survey on. */
+        void enable_jit_survey() {
+            survey_on = true;
+        }
+
+        /* maize-324: the J0 report, printed at exit when --jit-survey was given. Every
+           number here feeds the docs/design/jit.md J0 gate: coverage-vs-threshold decides
+           the campaign kill gate, the exit-kind split sizes the 3.2b indirect path, and
+           the length distribution sizes the emitter's block budget. */
+        void jit_survey_report(std::ostream& out) {
+            survey_finalize_block();   /* close the open block */
+            std::uint64_t blocks_executed = 0;
+            for (std::size_t i = 0; i < 513; ++i) { blocks_executed += survey_len_hist[i]; }
+            out << "maize: jit-survey report\n";
+            out << "  dynamic instructions : " << survey_dyn_instr << "\n";
+            out << "  dynamic blocks       : " << blocks_executed << "\n";
+            out << "  unique blocks        : " << survey_blocks.size() << "\n";
+            if (blocks_executed == 0 || survey_blocks.empty()) { return; }
+            out << "  mean reuse           : "
+                << (blocks_executed / survey_blocks.size()) << " executions/block\n";
+            /* Length distribution from the per-execution histogram. */
+            double mean_len = static_cast<double>(survey_dyn_instr)
+                              / static_cast<double>(blocks_executed);
+            std::uint64_t seen = 0, median = 0, p95 = 0;
+            for (std::size_t i = 0; i < 513; ++i) {
+                seen += survey_len_hist[i];
+                if (median == 0 && seen * 2 >= blocks_executed) { median = i; }
+                if (p95 == 0 && seen * 20 >= blocks_executed * 19) { p95 = i; }
+            }
+            out << "  block length         : mean " << static_cast<std::uint64_t>(mean_len)
+                << ", median " << median << ", p95 " << p95 << " (cap 512)\n";
+            /* Exit kinds. Index order matches the survey_kind_* constants. */
+            std::uint64_t exits = survey_exit_kinds[1] + survey_exit_kinds[2]
+                                + survey_exit_kinds[3] + survey_exit_kinds[4];
+            if (exits > 0) {
+                out << "  exits                : direct " << (survey_exit_kinds[1] * 100 / exits)
+                    << "%, indirect " << (survey_exit_kinds[2] * 100 / exits)
+                    << "%, trap " << (survey_exit_kinds[3] * 100 / exits)
+                    << "%, cap/page-split " << (survey_exit_kinds[4] * 100 / exits) << "%\n";
+            }
+            /* Coverage-vs-hotness-threshold sweep: the fraction of all dynamic
+               instructions spent inside blocks whose execution count reaches T. */
+            const std::uint64_t sweep[4] = { 10, 50, 100, 500 };
+            for (int s = 0; s < 4; ++s) {
+                std::uint64_t covered = 0;
+                std::uint64_t hot_blocks = 0;
+                for (auto const& kv : survey_blocks) {
+                    if (kv.second.count >= sweep[s]) {
+                        covered += kv.second.total_len;
+                        ++hot_blocks;
+                    }
+                }
+                out << "  coverage @ T=" << sweep[s] << "        : "
+                    << (survey_dyn_instr ? covered * 1000 / survey_dyn_instr : 0) / 10.0
+                    << "% of dynamic instructions in " << hot_blocks << " hot blocks\n";
+            }
         }
 
         u_word instruction_count() {
