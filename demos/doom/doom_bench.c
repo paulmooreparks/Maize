@@ -26,10 +26,25 @@
 #define BENCH_FRAMES 120
 #endif
 
+/* maize-330: with -D BENCH_DETERMINISTIC the guest-side game clock goes virtual (the
+ * maize-251 DG_MaizeDeterministicClock mechanism the selfcheck uses), so DOOM's tic
+ * pacing never waits on real time and the frame loop runs as fast as the VM allows.
+ * The bench's OWN boot/frame timing above stays real host time, so the report measures
+ * pure execution throughput (timedemo semantics). Without the define the bench keeps
+ * its historical real-time pacing; at interpreter speeds past ~60 MIPS that variant
+ * saturates at DOOM's 35 Hz tic cadence and stops responding to VM speed at all. */
+#ifdef BENCH_DETERMINISTIC
+extern int DG_MaizeDeterministicClock;
+#endif
+
 int main(int argc, char **argv)
 {
     unsigned long boot0, boot1, run0, run1, boot_ms, run_ms;
     int i;
+
+#ifdef BENCH_DETERMINISTIC
+    DG_MaizeDeterministicClock = 1;
+#endif
 
     boot0 = sys_clock_ms();
     doomgeneric_Create(argc, argv);   /* DG_Init + D_DoomMain + first render */

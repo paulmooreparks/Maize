@@ -160,6 +160,7 @@ if [ -n "${MAIZE_JIT:-}" ]; then
     _jit_wrap="${BUILD_DIR}/ctest-run/maize-jit-wrap.sh"
     {
         echo '#!/bin/sh'
+        echo "export MAIZE_JIT_QUIET=1"
         echo "exec \"${MAIZE}\" ${_jit_flag} --jit-threshold ${MAIZE_JIT_THRESHOLD:-50} \"\$@\""
     } > "$_jit_wrap"
     chmod +x "$_jit_wrap"

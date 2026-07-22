@@ -223,23 +223,39 @@ instruction count is known at compile time and added at block entry.
   proceeding: hot-block dynamic coverage above 90 percent on compute-bound
   workloads (if it is lower, the block model is wrong and the design returns
   here).
-- J1, minimal emitter, Bare mode only. Straight-line ALU, CP/LD/ST, and
-  conditional branches; everything else exits the block. Direct-exit
-  chaining with its unlink bookkeeping and the central indirect lookup are
-  in scope (pulled forward from J3 by the J0 findings above). Gate: at least 2x
-  END-TO-END wall-clock on a named benchmark (doom_bench headless), with the
-  covered dynamic-instruction fraction reported alongside the multiple. The
-  gate cannot be met by a synthetic microbenchmark; the covered fraction is
-  reported precisely so a low-coverage-high-multiple result reads as the
-  failure it is, and if end-to-end 2x is out of reach the stream stops for
-  re-planning.
+- J1, Bare-mode emitter (J3 merged in by the operator, 2026-07-23). The first
+  build shipped a call-threaded emitter (one host call to a semantic thunk per
+  guest instruction) and measured 0.95x: it removed dispatch, which J0 and the
+  maize-307 spike proved is roughly zero percent of DOOM, while keeping the
+  handler-body cost and adding a call per instruction. That measured kill-gate
+  failure moved J3's quality work forward into J1: the emitter now inlines the
+  hot shapes directly as host code (guest state addressed off a pinned anchor
+  register, the L1 memory fast path inlined, flags materialized inline, and a
+  compare-and-branch fusion for the dominant ALU-then-Jcc loop enders), keeping
+  the thunk tier only as the fallback for shapes it does not cover. Direct-exit
+  chaining with unlink and the central indirect-lookup probe are in scope. The
+  differential checker (--jit-check, every compiled block verified against the
+  interpreter oracle) is the standing miscompile net for this and every later
+  phase. Gate: at least 2x END-TO-END wall-clock on doom_bench headless with the
+  covered dynamic-instruction fraction reported alongside; not satisfiable by a
+  microbenchmark. INSTRUMENT NOTE (2026-07-23): the historical real-time-paced
+  doom_bench is throughput-saturated. It waits on the host clock through
+  DG_SleepMs to pace DOOM's 35 Hz tic rate, so past a modest interpreter speed
+  its frame time is pinned to wall-clock pacing, not execution, and a JIT
+  throughput win is invisible in it (measured 0.97x, with ~53 percent of samples
+  in the guest's real-clock spin). doom_bench built -D BENCH_DETERMINISTIC uses
+  the maize-251 virtual clock (the selfcheck's mechanism): DG_SleepMs advances a
+  virtual counter with no real wait, so the bench executes 120 real DOOM frames
+  as fast as the VM allows and its own boot/frame timing (real host time) then
+  measures pure throughput. That is the throughput instrument for this gate.
 - J2, hosted correctness. Physical keying, the invalidation bitmap across
   all write sources, inline Sv48 fast-page checks, fault-PC side tables.
   Gate: full asm and C suites green including test_selfmod and the quesOS
   families, plus a hosted MIPS win on the oksh loop.
-- J3, quality inside the block. Static register pinning and lazy flags in
-  codegen (chaining moved to J1). Gate: the 4x-or-better multiple on
-  compute-bound workloads, measured against the J0 baselines.
+- J3, folded into J1 (2026-07-23). Its register-pinning and lazy-flags-in-codegen
+  work is the inline emitter J1 now ships; what remains for a later card is
+  deepening it (a persistent register allocation across chained blocks, wider
+  operand coverage) rather than introducing it.
 - J4 and beyond, coverage growth by measured frequency, then AArch64.
 
 Each phase is its own card (or small card cluster) with the gate written into

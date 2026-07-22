@@ -248,7 +248,7 @@ if ($env:MAIZE_JIT) {
     $jitFlag = if ($env:MAIZE_JIT -eq 'check') { '--jit-check' } else { '--jit' }
     $jitThreshold = if ($env:MAIZE_JIT_THRESHOLD) { $env:MAIZE_JIT_THRESHOLD } else { '50' }
     $jitWrap = Join-Path $TestRunDir 'maize-jit-wrap.cmd'
-    "@echo off`r`n`"$MaizeExe`" $jitFlag --jit-threshold $jitThreshold %*" |
+    "@echo off`r`nset MAIZE_JIT_QUIET=1`r`n`"$MaizeExe`" $jitFlag --jit-threshold $jitThreshold %*" |
         Set-Content -Path $jitWrap -Encoding ascii
     $MaizeExe = $jitWrap
     Write-Host "run-tests.ps1: running maize under $jitFlag (threshold $jitThreshold)"

@@ -55,11 +55,20 @@ namespace {
  * are DEFINED near the top of cpu.cpp (they are referenced by the MAIZE_NEXT preamble,
  * the transfer sites, and the memory write seams, all of which precede this include). */
 bool jit_check_mode = false;                            /* --jit-check */
+bool jit_no_probe = false;                              /* MAIZE_JIT_NOPROBE=1: bisect knob */
+/* Block-exit events go through the jit_boundary_events helper by default. The fully
+ * inline emission (jit_emit_events_inline) is a further micro-opt that measured
+ * negligible on doom_bench and currently has a Windows-only fault under investigation,
+ * so it stays behind this knob (MAIZE_JIT_INLINE_EVENTS=1) rather than on the hot path. */
+bool jit_no_inline_events = true;
 bool jit_inject_miscompile = false;                     /* MAIZE_JIT_MISCOMPILE=1: deliberately
                                                            corrupt one template so the
                                                            differential net can be proven
                                                            to catch a miscompile (AC 4) */
-std::size_t jit_cache_bytes = std::size_t(64) << 20;    /* --jit-cache-mb, default 64 MiB */
+std::size_t jit_cache_bytes = std::size_t(16) << 20;    /* --jit-cache-mb, default 16 MiB
+                                                           (whole-cache flush on overflow;
+                                                           DOOM fits in ~1 MiB, so this is
+                                                           headroom, not a working set) */
 u_word jit_hotness_threshold = 50;                      /* docs/design/jit.md section 2 */
 
 /* =====================================================================================
@@ -85,6 +94,24 @@ const u_byte JIT_ARG_REG[4] = { HR_RDI, HR_RSI, HR_RDX, HR_RCX };
 const u_byte JIT_CALL_FRAME = 8;
 #endif
 
+/* ---- Anchor-relative addressing (the "merged J1+J3" inline tier, decision 9801).
+ * One host register (r11) holds a fixed anchor (&regs::r0.w0) for the whole block;
+ * every piece of VM state a template touches is a [r11+disp32] operand. The anchor is
+ * re-established at block entry and after every thunk call (r11 is caller-saved in
+ * both host ABIs). If any needed state falls outside disp32 range of the anchor
+ * (never in practice; all of it is module globals), the inline tier disables itself
+ * and the thunk tier carries on alone. */
+u_byte* jit_anchor = nullptr;
+bool jit_anchor_ok = false;
+inline std::int64_t jit_disp64(const void* p) {
+    return static_cast<const u_byte*>(p) - jit_anchor;
+}
+inline bool jit_disp_fits(const void* p) {
+    std::int64_t d = jit_disp64(p);
+    return d >= INT32_MIN && d <= INT32_MAX;
+}
+inline std::int32_t jit_disp(const void* p) { return static_cast<std::int32_t>(jit_disp64(p)); }
+
 struct jit_emitter {
     u_byte* buf = nullptr;
     u_byte* end = nullptr;
@@ -101,6 +128,213 @@ struct jit_emitter {
     }
     void sub_rsp(u_byte n) { u8(0x48); u8(0x83); u8(0xEC); u8(n); }
     void add_rsp(u_byte n) { u8(0x48); u8(0x83); u8(0xC4); u8(n); }
+
+    /* ---- REX / ModRM plumbing for the inline templates. Base register is always
+       r11 (the anchor) for VM state, or an explicit base for guest-memory access. */
+    void rex(bool w, u_byte reg, bool x, bool b) {
+        u8(static_cast<u_byte>(0x40 | (w ? 8 : 0) | ((reg >= 8) ? 4 : 0) | (x ? 2 : 0) | (b ? 1 : 0)));
+    }
+    void modrm_r11(u_byte reg, std::int32_t disp) {          /* [r11 + disp32] */
+        u8(static_cast<u_byte>(0x80 | ((reg & 7) << 3) | 0x03));
+        u32(static_cast<std::uint32_t>(disp));
+    }
+    void modrm_r11_sib(u_byte reg, u_byte idx, u_byte scale_log, std::int32_t disp) {
+        u8(static_cast<u_byte>(0x80 | ((reg & 7) << 3) | 0x04));   /* [r11 + idx*s + disp32] */
+        u8(static_cast<u_byte>((scale_log << 6) | ((idx & 7) << 3) | 0x03));
+        u32(static_cast<std::uint32_t>(disp));
+    }
+    void modrm_base_idx(u_byte reg, u_byte base, u_byte idx) {  /* [base + idx], no disp */
+        u8(static_cast<u_byte>(((reg & 7) << 3) | 0x04));
+        u8(static_cast<u_byte>(((idx & 7) << 3) | (base & 7)));
+    }
+
+    /* Load from [r11+disp] into r64, by width, zero- or sign-extending. */
+    void load_anchor(u_byte reg, std::int32_t disp, u_byte size, bool sx) {
+        switch (size) {
+            case 1: rex(true, reg, false, true); u8(0x0F); u8(sx ? 0xBE : 0xB6); modrm_r11(reg, disp); break;
+            case 2: rex(true, reg, false, true); u8(0x0F); u8(sx ? 0xBF : 0xB7); modrm_r11(reg, disp); break;
+            case 4:
+                if (sx) { rex(true, reg, false, true); u8(0x63); modrm_r11(reg, disp); }
+                else    { rex(false, reg, false, true); u8(0x8B); modrm_r11(reg, disp); }
+                break;
+            default: rex(true, reg, false, true); u8(0x8B); modrm_r11(reg, disp); break;
+        }
+    }
+    /* Partial store of r64's low `size` bytes to [r11+disp] (the whole subregister
+       merge: on a little-endian host a subregister IS `size` bytes at a byte offset). */
+    void store_anchor(u_byte reg, std::int32_t disp, u_byte size) {
+        switch (size) {
+            case 1: rex(false, reg, false, true); u8(0x88); modrm_r11(reg, disp); break;
+            case 2: u8(0x66); rex(false, reg, false, true); u8(0x89); modrm_r11(reg, disp); break;
+            case 4: rex(false, reg, false, true); u8(0x89); modrm_r11(reg, disp); break;
+            default: rex(true, reg, false, true); u8(0x89); modrm_r11(reg, disp); break;
+        }
+    }
+    /* mov qword [r11+disp], imm32 (sign-extended). */
+    void store_imm32_anchor(std::int32_t disp, std::int32_t imm) {
+        rex(true, 0, false, true); u8(0xC7); modrm_r11(0, disp); u32(static_cast<std::uint32_t>(imm));
+    }
+    /* mov dword [r11+disp], imm32 (32-bit store; used for the pending-flags header). */
+    void store_imm32_dword_anchor(std::int32_t disp, std::uint32_t imm) {
+        rex(false, 0, false, true); u8(0xC7); modrm_r11(0, disp); u32(imm);
+    }
+    /* Load r64 from [r11 + idx*8 + disp32] (the L1 arrays). */
+    void load_anchor_idx8(u_byte reg, u_byte idx, std::int32_t disp) {
+        rex(true, reg, idx >= 8, true); u8(0x8B); modrm_r11_sib(reg, idx, 3, disp);
+    }
+    /* cmp byte [r11 + idx*1 + disp32], imm8 (the code-page bitmap probe). */
+    void cmp8_anchor_idx1(u_byte idx, std::int32_t disp, u_byte imm) {
+        rex(false, 0, idx >= 8, true); u8(0x80); modrm_r11_sib(7, idx, 0, disp); u8(imm);
+    }
+    /* cmp qword [r11+disp], imm8 (the journal-pointer probe in check flavor). */
+    void cmp64_anchor_imm8(std::int32_t disp, u_byte imm) {
+        rex(true, 0, false, true); u8(0x83); modrm_r11(7, disp); u8(imm);
+    }
+    /* cmp reg, [r11 + idx*8 + disp32] (the indirect-probe key compare). */
+    void cmp_anchor_idx8(u_byte reg, u_byte idx, std::int32_t disp) {
+        rex(true, reg, idx >= 8, true); u8(0x3B); modrm_r11_sib(reg, idx, 3, disp);
+    }
+    /* jmp rax (the indirect-probe hit path). */
+    void jmp_rax() { u8(0xFF); u8(0xE0); }
+    /* add qword [r11+disp], imm32. */
+    void add_mem_imm32(std::int32_t disp, std::int32_t imm) {
+        rex(true, 0, false, true); u8(0x81); modrm_r11(0, disp); u32(static_cast<std::uint32_t>(imm));
+    }
+
+    /* Register-register forms (all 64-bit unless noted). */
+    void rr_op(u_byte opc, u_byte reg, u_byte rm) {          /* generic REX.W op /r */
+        rex(true, reg, false, rm >= 8); u8(opc);
+        u8(static_cast<u_byte>(0xC0 | ((reg & 7) << 3) | (rm & 7)));
+    }
+    void mov_rr(u_byte dst, u_byte src)  { rr_op(0x8B, dst, src); }
+    void add_rr(u_byte dst, u_byte src)  { rr_op(0x03, dst, src); }
+    void sub_rr(u_byte dst, u_byte src)  { rr_op(0x2B, dst, src); }
+    void and_rr(u_byte dst, u_byte src)  { rr_op(0x23, dst, src); }
+    void or_rr(u_byte dst, u_byte src)   { rr_op(0x0B, dst, src); }
+    void xor_rr(u_byte dst, u_byte src)  { rr_op(0x33, dst, src); }
+    void imul_rr(u_byte dst, u_byte src) {
+        rex(true, dst, false, src >= 8); u8(0x0F); u8(0xAF);
+        u8(static_cast<u_byte>(0xC0 | ((dst & 7) << 3) | (src & 7)));
+    }
+    void not_r(u_byte r) { rex(true, 2, false, r >= 8); u8(0xF7); u8(static_cast<u_byte>(0xC0 | (2 << 3) | (r & 7))); }
+    void shift_ri(u_byte kind, u_byte r, u_byte n) {          /* kind: 4=shl 5=shr 7=sar */
+        rex(true, kind, false, r >= 8); u8(0xC1); u8(static_cast<u_byte>(0xC0 | (kind << 3) | (r & 7))); u8(n);
+    }
+    void and_ri32(u_byte r, std::int32_t imm) {
+        rex(true, 4, false, r >= 8); u8(0x81); u8(static_cast<u_byte>(0xC0 | (4 << 3) | (r & 7)));
+        u32(static_cast<std::uint32_t>(imm));
+    }
+    void and_ri32_32(u_byte r, std::uint32_t imm) {           /* 32-bit and (zero-extends) */
+        rex(false, 4, false, r >= 8); u8(0x81); u8(static_cast<u_byte>(0xC0 | (4 << 3) | (r & 7)));
+        u32(imm);
+    }
+    void cmp_rr(u_byte a, u_byte b) { rr_op(0x3B, a, b); }
+    void cmp_ri32_32(u_byte r, std::uint32_t imm) {           /* 32-bit cmp reg, imm32 */
+        rex(false, 7, false, r >= 8); u8(0x81); u8(static_cast<u_byte>(0xC0 | (7 << 3) | (r & 7)));
+        u32(imm);
+    }
+    void test_rr(u_byte a, u_byte b) { rr_op(0x85, b, a); }   /* test rm(a), reg(b) */
+    void mov_r32_r32(u_byte dst, u_byte src) {                /* zero-extends to 64 */
+        rex(false, dst, false, src >= 8); u8(0x8B);
+        u8(static_cast<u_byte>(0xC0 | ((dst & 7) << 3) | (src & 7)));
+    }
+    void movzx_rr(u_byte dst, u_byte src, u_byte size) {      /* size 1/2: movzx; 4: mov r32 */
+        if (size == 4) { mov_r32_r32(dst, src); return; }
+        rex(true, dst, false, src >= 8); u8(0x0F); u8(size == 1 ? 0xB6 : 0xB7);
+        u8(static_cast<u_byte>(0xC0 | ((dst & 7) << 3) | (src & 7)));
+    }
+    void movsx_load(u_byte reg, std::int32_t disp, u_byte size) { load_anchor(reg, disp, size, true); }
+    /* lea dst, [a + b] */
+    void lea_sum(u_byte dst, u_byte a, u_byte b) {
+        rex(true, dst, b >= 8, a >= 8); u8(0x8D);
+        u8(static_cast<u_byte>(((dst & 7) << 3) | 0x04));
+        u8(static_cast<u_byte>(((b & 7) << 3) | (a & 7)));
+    }
+    /* lea dst, [a + disp8] */
+    void lea_disp8(u_byte dst, u_byte a, std::int8_t d) {
+        rex(true, dst, false, a >= 8); u8(0x8D);
+        u8(static_cast<u_byte>(0x40 | ((dst & 7) << 3) | (a & 7)));
+        u8(static_cast<u_byte>(d));
+    }
+    /* Guest-memory access through a resolved block pointer: [base + idx]. */
+    void load_mem(u_byte reg, u_byte base, u_byte idx, u_byte size, bool sx) {
+        switch (size) {
+            case 1: rex(true, reg, idx >= 8, base >= 8); u8(0x0F); u8(sx ? 0xBE : 0xB6); modrm_base_idx(reg, base, idx); break;
+            case 2: rex(true, reg, idx >= 8, base >= 8); u8(0x0F); u8(sx ? 0xBF : 0xB7); modrm_base_idx(reg, base, idx); break;
+            case 4:
+                if (sx) { rex(true, reg, idx >= 8, base >= 8); u8(0x63); modrm_base_idx(reg, base, idx); }
+                else    { rex(false, reg, idx >= 8, base >= 8); u8(0x8B); modrm_base_idx(reg, base, idx); }
+                break;
+            default: rex(true, reg, idx >= 8, base >= 8); u8(0x8B); modrm_base_idx(reg, base, idx); break;
+        }
+    }
+    void store_mem(u_byte reg, u_byte base, u_byte idx, u_byte size) {
+        switch (size) {
+            case 1: rex(false, reg, idx >= 8, base >= 8); u8(0x88); modrm_base_idx(reg, base, idx); break;
+            case 2: u8(0x66); rex(false, reg, idx >= 8, base >= 8); u8(0x89); modrm_base_idx(reg, base, idx); break;
+            case 4: rex(false, reg, idx >= 8, base >= 8); u8(0x89); modrm_base_idx(reg, base, idx); break;
+            default: rex(true, reg, idx >= 8, base >= 8); u8(0x89); modrm_base_idx(reg, base, idx); break;
+        }
+    }
+    /* Conditional jump with a rel32 placeholder; cc is the x86 condition code
+       (0x4 = jz/je, 0x5 = jnz, 0x7 = ja, ...). Returns the patch site. */
+    u_byte* jcc_placeholder(u_byte cc) {
+        u8(0x0F); u8(static_cast<u_byte>(0x80 | cc));
+        u_byte* site = buf; u32(0);
+        return site;
+    }
+    /* Width-sized reg-reg ALU op (sets host flags at exactly the operation width).
+       opc64 is the 16/32/64-bit opcode (e.g. 0x3B cmp, 0x2B sub, 0x03 add, 0x23 and,
+       0x85 test); the 8-bit form is opc64 - 1 except TEST (0x84). */
+    void alu_rr_w(u_byte opc64, u_byte w, u_byte reg, u_byte rm) {
+        u_byte opc8 = (opc64 == 0x85) ? 0x84 : static_cast<u_byte>(opc64 - 1);
+        if (w == 2) { u8(0x66); }
+        rex(w == 8, reg, false, rm >= 8);
+        u8(w == 1 ? opc8 : opc64);
+        u8(static_cast<u_byte>(0xC0 | ((reg & 7) << 3) | (rm & 7)));
+    }
+    /* Width-sized add/sub reg, imm8 (INC/DEC fusion). ext: 0 = add, 5 = sub. */
+    void addsub_ri8_w(u_byte ext, u_byte w, u_byte r, u_byte imm) {
+        if (w == 2) { u8(0x66); }
+        rex(w == 8, ext, false, r >= 8);
+        u8(w == 1 ? 0x80 : 0x83);
+        u8(static_cast<u_byte>(0xC0 | (ext << 3) | (r & 7)));
+        u8(imm);
+    }
+    /* setcc r8 (low byte). cc is the x86 condition code. */
+    void setcc_r(u_byte cc, u_byte r) {
+        rex(false, 0, false, r >= 8);
+        u8(0x0F); u8(static_cast<u_byte>(0x90 | cc));
+        u8(static_cast<u_byte>(0xC0 | (r & 7)));
+    }
+    /* lea dst, [base + idx*scale] (flag-free accumulate). */
+    void lea_scaled(u_byte dst, u_byte base_r, u_byte idx, u_byte scale_log) {
+        rex(true, dst, idx >= 8, base_r >= 8); u8(0x8D);
+        u8(static_cast<u_byte>(((dst & 7) << 3) | 0x04));
+        u8(static_cast<u_byte>((scale_log << 6) | ((idx & 7) << 3) | (base_r & 7)));
+    }
+    /* mov byte [r11+disp], imm8. */
+    void store_imm8_anchor(std::int32_t disp, u_byte imm) {
+        rex(false, 0, false, true); u8(0xC6); modrm_r11(0, disp); u8(imm);
+    }
+    /* test byte [reg], imm8. */
+    void test_m8_imm(u_byte base_r, u_byte imm) {
+        rex(false, 0, false, base_r >= 8); u8(0xF6);
+        u8(static_cast<u_byte>(((0) << 3) | (base_r & 7)));
+        u8(imm);
+    }
+    /* test al, imm8. */
+    void test_al_imm(u_byte imm) { u8(0xA8); u8(imm); }
+    /* cmp byte [r11+disp], imm8. */
+    void cmp8_anchor(std::int32_t disp, u_byte imm) {
+        rex(false, 0, false, true); u8(0x80); modrm_r11(7, disp); u8(imm);
+    }
+    /* add reg, imm32 (64-bit). */
+    void add_ri32(u_byte r, std::int32_t imm) {
+        rex(true, 0, false, r >= 8); u8(0x81);
+        u8(static_cast<u_byte>(0xC0 | (0 << 3) | (r & 7)));
+        u32(static_cast<std::uint32_t>(imm));
+    }
 
     /* Primitive 1: call fn(argv[0..argc-1]) with integer-constant args. Nothing stays
        live in host registers across the call. Return value lands in the host's
@@ -227,6 +461,12 @@ struct jit_state {
     std::uint64_t invalidations = 0;
     std::uint64_t covered_instr = 0;
     std::uint64_t check_blocks = 0;
+    std::uint64_t emitted_inline = 0;    /* static: instructions emitted as inline templates */
+    std::uint64_t emitted_thunk = 0;     /* static: instructions emitted as thunk calls */
+    std::uint64_t uncovered_end[256] = {};   /* static: block-ending uncovered opcode histogram */
+    std::uint64_t dispatch_hit = 0;      /* dispatcher entries that ran a compiled block */
+    std::uint64_t dispatch_miss = 0;     /* dispatcher entries that fell back to the interpreter */
+    std::unordered_map<u_word, std::uint64_t> miss_pcs;   /* diagnostic: where misses land */
 };
 jit_state g_jit;
 
@@ -243,6 +483,44 @@ inline u_word jit_block_key(u_word pc) {
  * once for the interpreter's oracle run, so the two write streams can be compared
  * byte-for-byte (spec item 8: "the bytes written to memory must match").
  * ===================================================================================== */
+
+/* Code-page presence bitmap, indexed by (physical page number & 0xFFFFF). Nonzero
+ * means "a compiled block MAY live on a page hashing here" (collisions give safe false
+ * positives). The interpreter's write seams use it as a cheap pre-filter and compiled
+ * stores probe it inline; the exact answer stays in g_jit.code_pages. */
+u_byte jit_page_bitmap[std::size_t(1) << 20] = {};
+inline std::size_t jit_bitmap_slot(u_word pageno) { return static_cast<std::size_t>(pageno & 0xFFFFF); }
+
+/* Central indirect-transfer probe table (docs/design/jit.md 3.2b): a direct-mapped
+ * CACHE over g_jit.table, keyed by the block key, probed INLINE at every indirect
+ * exit (RET, JMP/CALL through a register) so the hot return path stays in compiled
+ * code instead of round-tripping through the dispatcher's hash map (measured: 30M
+ * dispatcher entries per doom_bench run before this existed). Insert overwrites on
+ * collision (the evicted block stays reachable through the dispatcher); the empty
+ * sentinel is all-ones, which no reachable key equals. */
+const u_word JIT_PROBE_BITS = 16;
+const u_word JIT_PROBE_MULT = 0x9E3779B97F4A7C15ull;
+u_word jit_probe_keys[std::size_t(1) << JIT_PROBE_BITS];
+const void* jit_probe_code[std::size_t(1) << JIT_PROBE_BITS] = {};
+inline std::size_t jit_probe_slot(u_word key) {
+    return static_cast<std::size_t>((key * JIT_PROBE_MULT) >> (64 - JIT_PROBE_BITS));
+}
+void jit_probe_reset() {
+    std::memset(jit_probe_keys, 0xFF, sizeof jit_probe_keys);
+    std::memset(jit_probe_code, 0, sizeof jit_probe_code);
+}
+inline void jit_probe_insert(u_word key, const void* code) {
+    std::size_t s = jit_probe_slot(key);
+    jit_probe_keys[s] = key;
+    jit_probe_code[s] = code;
+}
+inline void jit_probe_remove(u_word key) {
+    std::size_t s = jit_probe_slot(key);
+    if (jit_probe_keys[s] == key) {
+        jit_probe_keys[s] = ~u_word{0};
+        jit_probe_code[s] = nullptr;
+    }
+}
 
 struct jit_store_rec { u_word addr; u_word value; u_word old; u_byte width; };
 std::vector<jit_store_rec> jit_journal_a;    /* compiled run */
@@ -267,6 +545,9 @@ void jit_note_store(u_word pa, u_word value, std::size_t n, bool journal_value) 
     if (g_jit.code_pages.empty()) { return; }
     u_word first = pa >> 12;
     u_word last = (pa + (n ? n - 1 : 0)) >> 12;
+    /* Bitmap pre-filter: almost every store misses it with two byte loads. */
+    if (jit_page_bitmap[jit_bitmap_slot(first)] == 0
+        && jit_page_bitmap[jit_bitmap_slot(last)] == 0) { return; }
     for (u_word p = first; p <= last; ++p) {
         if (g_jit.code_pages.find(p) != g_jit.code_pages.end()) { jit_invalidate_page(p); }
     }
@@ -507,6 +788,40 @@ void jit_ret_pop() {
 void jit_jmp_regval(u_word desc) {
     copy_regval_reg_zext(jit_reg(static_cast<u_byte>(desc)), subreg_enum::w0, regs::rp, subreg_enum::w0);
 }
+/* JMP through a register address: RP = load8(full register), mirroring LBL_jmp_regAddr. */
+void jit_jmp_regaddr(u_word desc) {
+    copy_regaddr_reg(jit_reg(static_cast<u_byte>(desc)), subreg_enum::w0, regs::rp, subreg_enum::w0);
+}
+/* JMP through an immediate address (literal baked): RP = load8(addr_lit). */
+void jit_jmp_immaddr(u_word addr_lit) {
+    reg target; target.w0 = 0;
+    mm.read(translate(addr_lit, access_kind::load), target, 8, 0);
+    regs::rp.w0 = target.w0;
+}
+/* CALL through a register value (the DOOM colfunc/spanfunc shape): push the baked
+   return address, then RP = zext(encoded subregister), mirroring LBL_call_regVal's
+   push-then-read order exactly. */
+void jit_call_regval(u_word desc, u_word ret_addr) {
+    jit_call_push(ret_addr);
+    copy_regval_reg_zext(jit_reg(static_cast<u_byte>(desc)), jit_sub(static_cast<u_byte>(desc)),
+                         regs::rp, subreg_enum::w0);
+}
+/* CALL through a register address: resolve the target FIRST (fault-atomic), then push,
+   then jump, mirroring LBL_call_regAddr. */
+void jit_call_regaddr(u_word desc, u_word ret_addr) {
+    reg target; target.w0 = 0;
+    copy_regaddr_reg(jit_reg(static_cast<u_byte>(desc)), jit_sub(static_cast<u_byte>(desc)),
+                     target, subreg_enum::w0);
+    jit_call_push(ret_addr);
+    regs::rp.w0 = target.w0;
+}
+/* CALL through an immediate address (literal baked): double-dereference then push. */
+void jit_call_immaddr(u_word addr_lit, u_word ret_addr) {
+    reg target; target.w0 = 0;
+    mm.read(translate(addr_lit, access_kind::load), target, 8, 0);
+    jit_call_push(ret_addr);
+    regs::rp.w0 = target.w0;
+}
 
 /* Per-block-exit boundary events: advance the perf counter, the instruction-tick timer,
    and the input poll by the block's instruction count, then report whether the compiled
@@ -514,6 +829,17 @@ void jit_jmp_regval(u_word desc) {
    and timer granularity coarsens from one instruction to one block, bounded by the
    512-instruction cap (docs/design/jit.md 3.3). In differential-check mode the oracle
    interpreter run owns all of this state, so the compiled side only tallies coverage. */
+/* Out-of-line halves of the inlined block-exit events: the (rare) armed-timer tick
+   and the (stride-crossing) input poll. */
+void jit_timer_n(u_word n) {
+    if (active_timer_ptr == nullptr) { return; }
+    timer_device& t = *active_timer_ptr;
+    for (u_word i = 0; i < n; ++i) { tick_active_timer(t); }
+}
+void jit_input_tick() {
+    if (active_input_ptr != nullptr) { active_input_ptr->on_input_tick(); }
+}
+
 u_word jit_boundary_events(u_word n) {
     g_jit.covered_instr += n;
     if (jit_check_mode) { return 1; }   /* always return to the dispatcher (no chaining) */
@@ -583,14 +909,526 @@ inline bool jit_alu_is_nw(u_byte base) {
 #if MAIZE_JIT_BACKEND
 
 /* =====================================================================================
+ * Inline templates (decision 9801: the J1+J3 merge). Each covered hot shape compiles
+ * to straight-line host code operating on [r11+disp32] VM state; the semantics are the
+ * SAME formulas the interpreter's helpers use, verified end to end by --jit-check.
+ * Shapes not handled here fall back to the semantic thunks above.
+ * ===================================================================================== */
+
+static_assert(offsetof(pending_flags_t, dirty) == 0
+           && offsetof(pending_flags_t, op_kind) == 1
+           && offsetof(pending_flags_t, width) == 2
+           && offsetof(pending_flags_t, dst_before) == 8
+           && offsetof(pending_flags_t, src) == 16
+           && offsetof(pending_flags_t, result) == 24,
+           "maize-330: inline flag staging depends on pending_flags_t's layout");
+
+/* A guest subregister as a host-addressable byte range: on a little-endian host every
+   subregister is exactly `size` bytes at a byte offset inside the register's u_word. */
+struct gsub { std::int32_t disp; u_byte size; };
+inline gsub jit_gsub(u_byte desc) {
+    reg* r = reg_map[(desc & opflag_reg) >> 4];
+    u_byte sr = desc & opflag_subreg;
+    gsub g;
+    g.size = subreg_size_map[sr];
+    g.disp = jit_disp(reinterpret_cast<u_byte*>(&r->w0) + (subreg_offset_map[sr] / 8));
+    return g;
+}
+/* Inline-eligible operand: a real subregister of a register the templates may touch
+   directly. RF stays thunk-only (materialize-on-read + the commit_reg_w0 privilege
+   mask); RP is never a plain operand in compiled code. */
+inline bool jit_inl_desc(u_byte desc) {
+    u_byte ri_ = (desc & opflag_reg) >> 4;
+    if (ri_ == 0xC || ri_ == 0xE) { return false; }
+    u_byte sz = subreg_size_map[desc & opflag_subreg];
+    return sz == 1 || sz == 2 || sz == 4 || sz == 8;
+}
+
+/* Emit a thunk call and re-establish the anchor register (thunks clobber r11). */
+inline void jit_call_thunk(jit_emitter& e, void* fn, int argc, const u_word* argv) {
+    e.call_fn(fn, argc, argv);
+    if (jit_anchor_ok) { e.mov_ri(11, reinterpret_cast<u_word>(jit_anchor)); }
+}
+
+/* Truncate reg to `size` bytes zero-extended, in place (no-op for size 8). */
+inline void jit_emit_trunc(jit_emitter& e, u_byte r, u_byte size) {
+    if (size != 8) { e.movzx_rr(r, r, size); }
+}
+
+/* Stage pending flags: header (dirty|op|width), then dst_before / src / result from
+   host registers or constants. reg==0xFF with a constant means "store the imm". */
+inline void jit_emit_stage_hdr(jit_emitter& e, u_byte opk, u_byte width) {
+    std::uint32_t hdr = 1u | (static_cast<std::uint32_t>(opk) << 8) | (static_cast<std::uint32_t>(width) << 16);
+    e.store_imm32_dword_anchor(jit_disp(&pending_flags), hdr);
+}
+inline void jit_emit_stage_field(jit_emitter& e, const void* field, u_byte reg_or_ff, u_word imm) {
+    std::int32_t d = jit_disp(field);
+    if (reg_or_ff != 0xFF) { e.store_anchor(reg_or_ff, d, 8); return; }
+    if (static_cast<u_word>(static_cast<std::int64_t>(static_cast<std::int32_t>(imm))) == imm) {
+        e.store_imm32_anchor(d, static_cast<std::int32_t>(imm));
+    } else {
+        e.mov_ri(10, imm);                        /* r10 scratch */
+        e.store_anchor(10, d, 8);
+    }
+}
+
+/* The guest-memory fast path: resolve `addr_reg` (a host reg holding the guest PA;
+   Bare mode) to a host pointer in r8 with the in-page offset in rdx, or branch to
+   `slow_sites` on any miss. Mirrors set_cache_address's hit path plus the page-bound
+   check for the access width. Clobbers rdx, r8, r9, r10. */
+inline void jit_emit_l1_probe(jit_emitter& e, u_byte addr_reg, u_byte width,
+                              std::vector<u_byte*>& slow_sites) {
+    /* rdx = (addr >> 12) & l1_mask */
+    e.mov_rr(2, addr_reg);
+    e.shift_ri(5, 2, 12);
+    e.and_ri32_32(2, static_cast<std::uint32_t>(memory_module::jit_l1_mask()));
+    /* r10 = l1_base[slot]; r8 = l1_ptr[slot] */
+    e.load_anchor_idx8(10, 2, jit_disp(mm.jit_l1_base_data()));
+    e.load_anchor_idx8(8, 2, jit_disp(mm.jit_l1_ptr_data()));
+    /* r9 = addr & ~0xFFF; hit iff base matches and the slot is populated */
+    e.mov_rr(9, addr_reg);
+    e.and_ri32(9, -4096);
+    e.cmp_rr(10, 9);
+    slow_sites.push_back(e.jcc_placeholder(0x5));      /* jne slow */
+    e.test_rr(8, 8);
+    slow_sites.push_back(e.jcc_placeholder(0x4));      /* jz slow (never-touched slot) */
+    /* rdx = in-page offset; width > 1 must not cross the block end */
+    e.mov_r32_r32(2, addr_reg);
+    e.and_ri32_32(2, 0xFFF);
+    if (width > 1) {
+        e.cmp_ri32_32(2, 4096u - width);
+        slow_sites.push_back(e.jcc_placeholder(0x7));  /* ja slow */
+    }
+}
+
+/* Maize condition index -> x86 condition code. The predicate formulas are identical
+   (eval_condition's table IS the x86 flag algebra over the same C/N/V/Z definitions),
+   so a width-sized host compare drives the same branch decision. Index 10 (P, the
+   FCMP unordered bit) has no integer-compare equivalent and is never fused. */
+inline int jit_cc_for_cond(u_word idx) {
+    switch (idx) {
+        case 0: return 0x4;   /* Z  -> e  */
+        case 1: return 0x5;   /* NZ -> ne */
+        case 2: return 0xC;   /* LT -> l  */
+        case 3: return 0x2;   /* B  -> b  */
+        case 4: return 0xF;   /* GT -> g  */
+        case 5: return 0x7;   /* A  -> a  */
+        case 6: return 0xD;   /* GE -> ge */
+        case 7: return 0xE;   /* LE -> le */
+        case 8: return 0x6;   /* BE -> be */
+        case 9: return 0x3;   /* AE -> ae */
+        default: return -1;
+    }
+}
+
+/* Try to emit `op` at `pc` as an inline template. Returns true (and sets len_out)
+   when handled; false falls back to the thunk/uncovered paths. */
+bool jit_try_inline(jit_emitter& e, u_byte op, u_word pc, u_word& len_out) {
+    if (!jit_anchor_ok) { return false; }
+    u_byte base = op & 0x3F;
+    u_byte mode = op & opcode_flag;
+
+    /* ---- CP / CPZ, register source ---- */
+    if (op == instr::cp_regVal_reg || op == instr::cpz_regVal_reg) {
+        u_byte d1 = jg8(pc + 1), d2 = jg8(pc + 2);
+        if (!jit_inl_desc(d1) || !jit_inl_desc(d2)) { return false; }
+        gsub s = jit_gsub(d1), d = jit_gsub(d2);
+        e.load_anchor(0, s.disp, s.size, op == instr::cp_regVal_reg);
+        e.store_anchor(0, d.disp, d.size);
+        len_out = 3;
+        return true;
+    }
+    /* ---- CP / CPZ, immediate source (value baked, CP pre-sign-extended) ---- */
+    if (op == instr::cp_immVal_reg || op == instr::cpz_immVal_reg) {
+        u_byte immsz = static_cast<u_byte>(1u << (jg8(pc + 1) & opflag_imm_size));
+        u_byte d2 = jg8(pc + 2);
+        if (!jit_inl_desc(d2)) { return false; }
+        u_word raw = jgN(pc + 3, immsz);
+        u_word v = (op == instr::cp_immVal_reg) ? jit_signext(raw, immsz) : raw;
+        if (jit_inject_miscompile) { v += 1; }         /* AC-4 net proof, same knob as the thunk */
+        gsub d = jit_gsub(d2);
+        if (d.size == 8 && static_cast<u_word>(static_cast<std::int64_t>(static_cast<std::int32_t>(v))) == v) {
+            e.store_imm32_anchor(d.disp, static_cast<std::int32_t>(v));
+        } else {
+            e.mov_ri(0, v);
+            e.store_anchor(0, d.disp, d.size);
+        }
+        len_out = 3u + immsz;
+        return true;
+    }
+    /* ---- LD / LDZ through a register address ---- */
+    if (op == instr::ld_regAddr_reg || op == instr::ldz_regAddr_reg) {
+        u_byte d1 = jg8(pc + 1), d2 = jg8(pc + 2);
+        if (!jit_inl_desc(d1) || !jit_inl_desc(d2)) { return false; }
+        gsub a = jit_gsub(d1), d = jit_gsub(d2);
+        std::vector<u_byte*> slow;
+        e.load_anchor(1, a.disp, a.size, false);       /* rcx = guest address */
+        jit_emit_l1_probe(e, 1, d.size, slow);
+        e.load_mem(0, 8, 2, d.size, false);            /* rax = zext(loaded bytes) */
+        if (op == instr::ld_regAddr_reg) {
+            e.store_anchor(0, d.disp, d.size);         /* merge into the dst field */
+        } else {
+            reg* dr = reg_map[(d2 & opflag_reg) >> 4];
+            e.store_anchor(0, jit_disp(&dr->w0), 8);   /* LDZ: full-register zext */
+        }
+        u_byte* done = e.jump_placeholder();
+        u_byte* slow_lbl = e.buf;
+        for (u_byte* s : slow) { jit_patch_branch(s, slow_lbl); }
+        {
+            u_word args[2] = { d1, d2 };
+            jit_call_thunk(e,
+                (op == instr::ld_regAddr_reg) ? reinterpret_cast<void*>(&jit_ld_rr)
+                                              : reinterpret_cast<void*>(&jit_ldz_rr), 2, args);
+        }
+        jit_patch_branch(done, e.buf);
+        len_out = 3;
+        return true;
+    }
+    /* ---- ST, register value to register address ---- */
+    if (op == instr::st_regVal_regAddr) {
+        u_byte d1 = jg8(pc + 1), d2 = jg8(pc + 2);
+        if (!jit_inl_desc(d1) || !jit_inl_desc(d2)) { return false; }
+        gsub s = jit_gsub(d1), a = jit_gsub(d2);
+        std::vector<u_byte*> slow;
+        e.load_anchor(0, s.disp, s.size, false);       /* rax = value bytes */
+        e.load_anchor(1, a.disp, a.size, false);       /* rcx = guest address */
+        /* Code-page bitmap probe: a store that might hit compiled code goes slow
+           (the thunk lands in the write seams, which invalidate). */
+        e.mov_rr(9, 1);
+        e.shift_ri(5, 9, 12);
+        e.and_ri32_32(9, 0xFFFFF);
+        e.cmp8_anchor_idx1(9, jit_disp(jit_page_bitmap), 0);
+        slow.push_back(e.jcc_placeholder(0x5));        /* jne slow */
+        if (jit_check_mode) {
+            /* Differential runs journal every store; route through the seams. */
+            e.cmp64_anchor_imm8(jit_disp(&jit_journal), 0);
+            slow.push_back(e.jcc_placeholder(0x5));
+        }
+        jit_emit_l1_probe(e, 1, s.size, slow);
+        e.store_mem(0, 8, 2, s.size);
+        u_byte* done = e.jump_placeholder();
+        u_byte* slow_lbl = e.buf;
+        for (u_byte* sst : slow) { jit_patch_branch(sst, slow_lbl); }
+        {
+            u_word args[2] = { d1, d2 };
+            jit_call_thunk(e, reinterpret_cast<void*>(&jit_st_rr), 2, args);
+        }
+        jit_patch_branch(done, e.buf);
+        len_out = 3;
+        return true;
+    }
+    /* ---- Integer ALU, register or immediate source ---- */
+    {
+        bool is_row_family = base == 0x31 || base == 0x32
+            || (base >= instr::setcc_base && base <= instr::setcc_base + 2)
+            || (base >= instr::jcc_base && base <= instr::jcc_base + 2)
+            || base == 0x27 || base == 0x29 || base == 0x24 || base == 0x22
+            || base == 0x33 || base == 0x39 || base == 0x3A || base == 0x15 || base == 0x28;
+        bool alu_ok = !is_row_family
+            && (base == instr::add_opcode || base == instr::sub_opcode || base == instr::cmp_opcode
+             || base == instr::and_opcode || base == instr::or_opcode || base == instr::xor_opcode
+             || base == instr::nor_opcode || base == instr::nand_opcode
+             || base == instr::test_opcode || base == instr::mul_opcode);
+        bool shift_ok = !is_row_family
+            && (base == instr::shl_opcode || base == instr::shr_opcode || base == instr::sar_opcode);
+        bool arith = base == instr::add_opcode || base == instr::sub_opcode
+                  || base == instr::cmp_opcode || base == instr::mul_opcode;
+        bool writeback = base != instr::cmp_opcode && base != instr::test_opcode;
+
+        if ((alu_ok || shift_ok) && (mode == opcode_flag_srcReg || mode == opcode_flag_srcImm)) {
+            bool immform = (mode == opcode_flag_srcImm);
+            u_byte dst_desc = jg8(pc + 2);
+            if (!jit_inl_desc(dst_desc)) { return false; }
+            gsub d = jit_gsub(dst_desc);
+            u_byte w = d.size;
+            u_byte immsz = 0;
+            u_word imm_sx = 0;
+            u_byte src_desc = 0;
+            if (immform) {
+                immsz = static_cast<u_byte>(1u << (jg8(pc + 1) & opflag_imm_size));
+                imm_sx = jit_signext(jgN(pc + 3, immsz), immsz);
+            } else {
+                src_desc = jg8(pc + 1);
+                if (!jit_inl_desc(src_desc)) { return false; }
+            }
+            u_word ilen = immform ? (3u + immsz) : 3u;
+
+            if (shift_ok) {
+                if (!immform) { return false; }        /* register counts keep the thunk's edge ladder */
+                /* Effective count: the sign-extended immediate cast to the operation
+                   width, exactly as alu_shl/shr/sar receive it. */
+                u_word n_eff;
+                switch (w) {
+                    case 1: n_eff = static_cast<u_byte>(imm_sx); break;
+                    case 2: n_eff = static_cast<u_qword>(imm_sx); break;
+                    case 4: n_eff = static_cast<u_hword>(imm_sx); break;
+                    default: n_eff = imm_sx; break;
+                }
+                u_word bits = static_cast<u_word>(w) * 8;
+                if (n_eff == 0) { len_out = ilen; return true; }   /* value unchanged, no staging */
+                e.load_anchor(1, d.disp, w, false);    /* rcx = dst_before (zext) */
+                if (base == instr::sar_opcode) {
+                    /* Arithmetic shift of the 64-bit sign-extended value, count clamped
+                       to 63, then width-truncate: identical low bits for n < bits and
+                       the correct sign fill for n >= bits (alu_sar's two branches). */
+                    e.load_anchor(2, d.disp, w, true); /* rdx = sign-extended value */
+                    u_byte sh = static_cast<u_byte>(n_eff < 63 ? n_eff : 63);
+                    e.shift_ri(7, 2, sh);
+                } else if (n_eff >= bits) {
+                    e.xor_rr(2, 2);                    /* SHL/SHR count >= width: zero */
+                } else {
+                    e.mov_rr(2, 1);
+                    e.shift_ri(base == instr::shl_opcode ? 4 : 5, 2, static_cast<u_byte>(n_eff));
+                }
+                jit_emit_trunc(e, 2, w);
+                e.store_anchor(2, d.disp, w);
+                jit_emit_stage_hdr(e, base, w);
+                jit_emit_stage_field(e, &pending_flags.dst_before, 1, 0);
+                jit_emit_stage_field(e, &pending_flags.src, 0xFF, n_eff);
+                jit_emit_stage_field(e, &pending_flags.result, 2, 0);
+                len_out = ilen;
+                return true;
+            }
+
+            /* Plain two-operand ALU. rax = src (sign-extended), rcx = dst_before
+               (width-zext), rdx = width-truncated result; staging mirrors the
+               alu_* helpers exactly. */
+            if (immform) {
+                if (static_cast<u_word>(static_cast<std::int64_t>(static_cast<std::int32_t>(imm_sx))) == imm_sx) {
+                    e.rex(true, 0, false, false); e.u8(0xC7); e.u8(0xC0);
+                    e.u32(static_cast<std::uint32_t>(imm_sx));  /* mov rax, imm32 (sx) */
+                } else {
+                    e.mov_ri(0, imm_sx);
+                }
+            } else {
+                gsub s = jit_gsub(src_desc);
+                e.load_anchor(0, s.disp, s.size, true);
+            }
+            e.load_anchor(1, d.disp, w, false);
+            switch (base) {
+                case instr::add_opcode: e.lea_sum(2, 1, 0); break;
+                case instr::sub_opcode:
+                case instr::cmp_opcode: e.mov_rr(2, 1); e.sub_rr(2, 0); break;
+                case instr::and_opcode:
+                case instr::test_opcode: e.mov_rr(2, 1); e.and_rr(2, 0); break;
+                case instr::or_opcode:  e.mov_rr(2, 1); e.or_rr(2, 0); break;
+                case instr::xor_opcode: e.mov_rr(2, 1); e.xor_rr(2, 0); break;
+                case instr::nor_opcode: e.mov_rr(2, 1); e.or_rr(2, 0); e.not_r(2); break;
+                case instr::nand_opcode: e.mov_rr(2, 1); e.and_rr(2, 0); e.not_r(2); break;
+                case instr::mul_opcode: e.mov_rr(2, 1); e.imul_rr(2, 0); break;
+                default: return false;
+            }
+            jit_emit_trunc(e, 2, w);
+            if (writeback) { e.store_anchor(2, d.disp, w); }
+            jit_emit_stage_hdr(e, base, w);
+            if (arith) {
+                jit_emit_stage_field(e, &pending_flags.dst_before, 1, 0);
+                if (immform) {
+                    u_word src_tr;
+                    switch (w) {
+                        case 1: src_tr = static_cast<u_byte>(imm_sx); break;
+                        case 2: src_tr = static_cast<u_qword>(imm_sx); break;
+                        case 4: src_tr = static_cast<u_hword>(imm_sx); break;
+                        default: src_tr = imm_sx; break;
+                    }
+                    jit_emit_stage_field(e, &pending_flags.src, 0xFF, src_tr);
+                } else {
+                    jit_emit_trunc(e, 0, w);
+                    jit_emit_stage_field(e, &pending_flags.src, 0, 0);
+                }
+            } else {
+                jit_emit_stage_field(e, &pending_flags.dst_before, 0xFF, 0);
+                jit_emit_stage_field(e, &pending_flags.src, 0xFF, 0);
+            }
+            jit_emit_stage_field(e, &pending_flags.result, 2, 0);
+            len_out = ilen;
+            return true;
+        }
+    }
+    /* ---- LEA, register and immediate source: flag-neutral add at the second
+       operand's width, landed in the third operand's field (mirrors jit_lea_rr /
+       jit_lea_ir minus the run_alu staging dance, which nets to no flag effect). ---- */
+    if (op == instr::lea_regVal_regreg || op == instr::lea_immVal_regreg) {
+        bool immform = (op == instr::lea_immVal_regreg);
+        u_byte immsz = 0;
+        u_byte d1 = 0;
+        if (immform) {
+            immsz = static_cast<u_byte>(1u << (jg8(pc + 1) & opflag_imm_size));
+        } else {
+            d1 = jg8(pc + 1);
+            if (!jit_inl_desc(d1)) { return false; }
+        }
+        u_byte d2 = jg8(pc + 2), d3 = jg8(pc + 3);
+        if (!jit_inl_desc(d2) || !jit_inl_desc(d3)) { return false; }
+        gsub s2 = jit_gsub(d2), d = jit_gsub(d3);
+        if (immform) {
+            u_word v = jit_signext(jgN(pc + 4, immsz), immsz);
+            if (static_cast<u_word>(static_cast<std::int64_t>(static_cast<std::int32_t>(v))) == v) {
+                e.rex(true, 0, false, false); e.u8(0xC7); e.u8(0xC0);
+                e.u32(static_cast<std::uint32_t>(v));
+            } else {
+                e.mov_ri(0, v);
+            }
+        } else {
+            gsub s1 = jit_gsub(d1);
+            e.load_anchor(0, s1.disp, s1.size, true);
+        }
+        e.load_anchor(1, s2.disp, s2.size, true);
+        e.lea_sum(2, 1, 0);
+        jit_emit_trunc(e, 2, s2.size);        /* op width = the second operand's size */
+        e.store_anchor(2, d.disp, d.size);
+        len_out = immform ? (4u + immsz) : 4u;
+        return true;
+    }
+    /* ---- PUSH register / POP: the L1-hit stack access inline (RS commit order
+       mirrors the fault-atomic thunks). ---- */
+    if (op == instr::push_regVal) {
+        u_byte d1 = jg8(pc + 1);
+        if (!jit_inl_desc(d1)) { return false; }
+        gsub s = jit_gsub(d1);
+        std::vector<u_byte*> slow;
+        e.load_anchor(0, s.disp, s.size, false);      /* rax = value bytes */
+        e.load_anchor(1, jit_disp(&regs::rs.w0), 8, false);
+        e.lea_disp8(1, 1, static_cast<std::int8_t>(-static_cast<int>(s.size)));
+        e.mov_rr(9, 1);
+        e.shift_ri(5, 9, 12);
+        e.and_ri32_32(9, 0xFFFFF);
+        e.cmp8_anchor_idx1(9, jit_disp(jit_page_bitmap), 0);
+        slow.push_back(e.jcc_placeholder(0x5));
+        if (jit_check_mode) {
+            e.cmp64_anchor_imm8(jit_disp(&jit_journal), 0);
+            slow.push_back(e.jcc_placeholder(0x5));
+        }
+        jit_emit_l1_probe(e, 1, s.size, slow);
+        e.store_mem(0, 8, 2, s.size);
+        e.store_anchor(1, jit_disp(&regs::rs.w0), 8);
+        u_byte* done = e.jump_placeholder();
+        u_byte* slow_lbl = e.buf;
+        for (u_byte* sst : slow) { jit_patch_branch(sst, slow_lbl); }
+        {
+            u_word args[1] = { d1 };
+            jit_call_thunk(e, reinterpret_cast<void*>(&jit_push_reg), 1, args);
+        }
+        jit_patch_branch(done, e.buf);
+        len_out = 2;
+        return true;
+    }
+    if (op == instr::pop_opcode) {
+        u_byte d1 = jg8(pc + 1);
+        if (!jit_inl_desc(d1)) { return false; }
+        gsub d = jit_gsub(d1);
+        std::vector<u_byte*> slow;
+        e.load_anchor(1, jit_disp(&regs::rs.w0), 8, false);
+        jit_emit_l1_probe(e, 1, d.size, slow);
+        e.load_mem(0, 8, 2, d.size, false);
+        e.store_anchor(0, d.disp, d.size);
+        e.load_anchor(1, jit_disp(&regs::rs.w0), 8, false);
+        e.lea_disp8(1, 1, static_cast<std::int8_t>(d.size));
+        e.store_anchor(1, jit_disp(&regs::rs.w0), 8);
+        u_byte* done = e.jump_placeholder();
+        u_byte* slow_lbl = e.buf;
+        for (u_byte* sst : slow) { jit_patch_branch(sst, slow_lbl); }
+        {
+            u_word args[1] = { d1 };
+            jit_call_thunk(e, reinterpret_cast<void*>(&jit_pop), 1, args);
+        }
+        jit_patch_branch(done, e.buf);
+        len_out = 2;
+        return true;
+    }
+    /* ---- INC / DEC (ADD/SUB with src = 1; NOT/NEG keep the run_alu thunk) ---- */
+    if (op == instr::inc_opcode || op == instr::dec_opcode) {
+        u_byte d1 = jg8(pc + 1);
+        if (!jit_inl_desc(d1)) { return false; }
+        gsub d = jit_gsub(d1);
+        e.load_anchor(1, d.disp, d.size, false);
+        e.lea_disp8(2, 1, op == instr::inc_opcode ? 1 : -1);
+        jit_emit_trunc(e, 2, d.size);
+        e.store_anchor(2, d.disp, d.size);
+        jit_emit_stage_hdr(e, op == instr::inc_opcode ? alu_uop_inc : alu_uop_dec, d.size);
+        jit_emit_stage_field(e, &pending_flags.dst_before, 1, 0);
+        jit_emit_stage_field(e, &pending_flags.src, 0xFF, 1);
+        jit_emit_stage_field(e, &pending_flags.result, 2, 0);
+        len_out = 2;
+        return true;
+    }
+    return false;
+}
+
+/* =====================================================================================
  * Block compilation
  * ===================================================================================== */
+
+/* Emit the block-exit event fast path inline (counters, timer-enabled probe, input
+   stride probe, running/IRQ check), with helper calls only on the armed branches.
+   Bit-for-bit the same effects as jit_boundary_events. Emits jumps to `brk_sites`
+   wherever the chain must break (the caller lands them on a `ret`). Requires the
+   anchor (r11) live; clobbers rax, rcx, r10 (and volatiles on the rare helper
+   paths, which re-establish r11). */
+void jit_emit_events_inline(jit_emitter& e, u_word n, std::vector<u_byte*>& brk_sites) {
+    e.add_mem_imm32(jit_disp(&g_jit.covered_instr), static_cast<std::int32_t>(n));
+    e.add_mem_imm32(jit_disp(&perf_insn_count), static_cast<std::int32_t>(n));
+    if (active_timer_ptr != nullptr) {
+        e.mov_ri(10, reinterpret_cast<u_word>(&active_timer_ptr->control_reg.w0));
+        e.test_m8_imm(10, 0x1);
+        u_byte* no_timer = e.jcc_placeholder(0x4);         /* jz: disabled (the norm) */
+        {
+            u_word args[1] = { n };
+            jit_call_thunk(e, reinterpret_cast<void*>(&jit_timer_n), 1, args);
+        }
+        jit_patch_branch(no_timer, e.buf);
+    }
+    if (active_input_ptr != nullptr) {
+        e.load_anchor(0, jit_disp(&input_tick_ctr_), 8, false);
+        e.mov_rr(1, 0);
+        e.add_ri32(1, static_cast<std::int32_t>(n));
+        e.store_anchor(1, jit_disp(&input_tick_ctr_), 8);
+        e.shift_ri(5, 0, 14);
+        e.shift_ri(5, 1, 14);
+        e.cmp_rr(0, 1);
+        u_byte* no_input = e.jcc_placeholder(0x4);         /* je: same stride */
+        jit_call_thunk(e, reinterpret_cast<void*>(&jit_input_tick), 0, nullptr);
+        jit_patch_branch(no_input, e.buf);
+    }
+    /* RF's high dword: bit 1 = interrupts enabled (bit 33), bit 3 = running (35). */
+    e.load_anchor(0, jit_disp(reinterpret_cast<const u_byte*>(&regs::rf.w0) + 4), 4, false);
+    e.test_al_imm(0x08);
+    brk_sites.push_back(e.jcc_placeholder(0x4));           /* jz: not running */
+    e.test_al_imm(0x02);
+    u_byte* no_irq = e.jcc_placeholder(0x4);               /* jz: interrupts masked */
+    e.cmp8_anchor(jit_disp(&irq_pending), 0);
+    brk_sites.push_back(e.jcc_placeholder(0x5));           /* jne: deliverable IRQ */
+    jit_patch_branch(no_irq, e.buf);
+}
 
 /* Emit a direct exit to a known guest target and record its chainable edge:
    set RP; run boundary events; if the chain must break, return to the dispatcher;
    otherwise take the patchable jump (initially to a local return; later chained
    straight to the successor block). In check mode the edge is never chained. */
 void jit_emit_edge(jit_emitter& e, jit_block& b, u_word target_va, u_word n) {
+    /* Set RP with an absolute-addressed store (no dependency on the anchor register
+       being live at the block boundary), call the boundary-events helper, and either
+       break to the dispatcher (rax != 0) or take the patchable chain jump. The optional
+       fully-inline events path is behind MAIZE_JIT_INLINE_EVENTS. */
+    if (jit_anchor_ok && !jit_check_mode && !jit_no_inline_events) {
+        e.store_const(&regs::rp.w0, target_va);
+        std::vector<u_byte*> brk;
+        jit_emit_events_inline(e, n, brk);
+        u_byte* jmp_site = e.jump_placeholder();
+        u_byte* brk_lbl = e.buf;
+        for (u_byte* s : brk) { jit_patch_branch(s, brk_lbl); }
+        e.ret();
+        u_byte* stub = e.buf;
+        e.ret();
+        jit_patch_branch(jmp_site, stub);
+        exit_edge ed;
+        ed.patch_site = jmp_site;
+        ed.stub = stub;
+        ed.target_key = jit_block_key(target_va);
+        ed.chained = false;
+        b.edges.push_back(ed);
+        return;
+    }
     e.store_const(&regs::rp.w0, target_va);
     {
         u_word args[1] = { n };
@@ -612,10 +1450,190 @@ void jit_emit_edge(jit_emitter& e, jit_block& b, u_word target_va, u_word n) {
     b.edges.push_back(ed);
 }
 
-void jit_emit_indirect_exit(jit_emitter& e, u_word n) {
-    u_word args[1] = { n };
-    e.call_fn(reinterpret_cast<void*>(&jit_boundary_events), 1, args);
+/* Emit the central-table probe tail (r11 live): compute the block key from RP+RF,
+   probe the direct-mapped cache, jmp to a hit; every miss and each brk site lands on
+   the trailing ret (back to the dispatcher). */
+void jit_emit_probe_tail(jit_emitter& e, std::vector<u_byte*>& brk_sites) {
+    e.load_anchor(0, jit_disp(&regs::rp.w0), 8, false);   /* rax = target VA (bare PA) */
+    e.lea_sum(1, 0, 0);                                    /* rcx = pa << 1 */
+    e.load_anchor(2, jit_disp(&regs::rf.w0), 8, false);
+    e.shift_ri(5, 2, 32);
+    e.and_ri32_32(2, 1);
+    e.or_rr(1, 2);                                         /* rcx = key */
+    e.mov_ri(2, JIT_PROBE_MULT);
+    e.imul_rr(2, 1);
+    e.shift_ri(5, 2, static_cast<u_byte>(64 - JIT_PROBE_BITS));
+    e.cmp_anchor_idx8(1, 2, jit_disp(jit_probe_keys));
+    u_byte* miss = e.jcc_placeholder(0x5);                 /* jne -> dispatcher */
+    e.load_anchor_idx8(0, 2, jit_disp(jit_probe_code));
+    e.jmp_rax();
+    u_byte* out = e.buf;
+    for (u_byte* s : brk_sites) { jit_patch_branch(s, out); }
+    jit_patch_branch(miss, out);
     e.ret();
+}
+
+void jit_emit_indirect_exit(jit_emitter& e, u_word n) {
+    if (jit_check_mode || !jit_anchor_ok) {
+        u_word args[1] = { n };
+        e.call_fn(reinterpret_cast<void*>(&jit_boundary_events), 1, args);
+        e.ret();
+        return;
+    }
+    std::vector<u_byte*> brk_sites;
+    if (jit_no_inline_events) {
+        u_word args[1] = { n };
+        e.call_fn(reinterpret_cast<void*>(&jit_boundary_events), 1, args);
+        e.mov_ri(11, reinterpret_cast<u_word>(jit_anchor));
+        e.test_rr(0, 0);
+        brk_sites.push_back(e.jcc_placeholder(0x5));      /* jnz (rax != 0) -> dispatcher */
+    } else {
+        jit_emit_events_inline(e, n, brk_sites);
+    }
+    if (jit_no_probe) {
+        u_byte* out = e.buf;
+        for (u_byte* s : brk_sites) { jit_patch_branch(s, out); }
+        e.ret();
+        return;
+    }
+    jit_emit_probe_tail(e, brk_sites);
+}
+
+/* Fuse a flag-producing ALU instruction with an IMMEDIATELY following Jcc into a
+   width-sized host compare + a flag-free RF materialization + a native conditional
+   branch (decision 9801; the dominant DEC+JNZ / CMP+Jcc loop enders). The emitted
+   post-state is EXACTLY the interpreter's post-Jcc state: eval_condition materializes
+   the staged flags, so RF carries concrete C/N/V/Z and the pending descriptor is
+   clean. Host CF/OF/SF/ZF at the operation width equal Maize's C/V/N/Z by the same
+   formulas materialize_flags computes (sub-family: borrow/overflow/sign/zero; add
+   family: carry/overflow/sign/zero; logic family: sign/zero with C=V=0). Ops whose
+   flags are NOT the host's (MUL's recomputed overflow, NOR/NAND's post-NOT result,
+   shifts) are never fused. Returns the fused block-end state via `done`. */
+bool jit_try_fuse(jit_emitter& e, jit_block& b, u_word pc, u_word count) {
+    if (!jit_anchor_ok) { return false; }
+    u_byte op = jg8(pc);
+    u_byte base = op & 0x3F;
+    u_byte mode = op & opcode_flag;
+
+    bool is_unary = (op == instr::inc_opcode || op == instr::dec_opcode);
+    bool is_row_family = base == 0x31 || base == 0x32
+        || (base >= instr::setcc_base && base <= instr::setcc_base + 2)
+        || (base >= instr::jcc_base && base <= instr::jcc_base + 2)
+        || base == 0x27 || base == 0x29 || base == 0x24 || base == 0x22
+        || base == 0x33 || base == 0x39 || base == 0x3A || base == 0x15 || base == 0x28;
+
+    u_byte opc64 = 0;            /* host reg-reg opcode for the width op */
+    bool writeback = true;
+    if (!is_unary) {
+        if (is_row_family) { return false; }
+        if (mode != opcode_flag_srcReg && mode != opcode_flag_srcImm) { return false; }
+        switch (base) {
+            case instr::add_opcode:  opc64 = 0x03; break;
+            case instr::sub_opcode:  opc64 = 0x2B; break;
+            case instr::cmp_opcode:  opc64 = 0x3B; writeback = false; break;
+            case instr::and_opcode:  opc64 = 0x23; break;
+            case instr::or_opcode:   opc64 = 0x0B; break;
+            case instr::xor_opcode:  opc64 = 0x33; break;
+            case instr::test_opcode: opc64 = 0x85; writeback = false; break;
+            default: return false;
+        }
+    }
+    bool logic_family = (base == instr::and_opcode || base == instr::or_opcode
+                      || base == instr::xor_opcode || base == instr::test_opcode) && !is_unary;
+
+    /* Decode the ALU instruction's shape. */
+    u_byte dst_desc;
+    u_byte src_desc = 0;
+    u_byte immsz = 0;
+    u_word imm_sx = 0;
+    u_word alu_len;
+    if (is_unary) {
+        dst_desc = jg8(pc + 1);
+        alu_len = 2;
+    } else if (mode == opcode_flag_srcImm) {
+        immsz = static_cast<u_byte>(1u << (jg8(pc + 1) & opflag_imm_size));
+        imm_sx = jit_signext(jgN(pc + 3, immsz), immsz);
+        dst_desc = jg8(pc + 2);
+        alu_len = 3u + immsz;
+    } else {
+        src_desc = jg8(pc + 1);
+        dst_desc = jg8(pc + 2);
+        if (!jit_inl_desc(src_desc)) { return false; }
+        alu_len = 3;
+    }
+    if (!jit_inl_desc(dst_desc)) { return false; }
+    gsub d = jit_gsub(dst_desc);
+    u_byte w = d.size;
+
+    /* The Jcc that must immediately follow. */
+    u_word jpc = pc + alu_len;
+    if ((jpc & ~static_cast<u_word>(0xFFF)) != (pc & ~static_cast<u_word>(0xFFF))) { return false; }
+    u_byte jop = jg8(jpc);
+    u_byte jbase = jop & 0x3F;
+    if (jbase < instr::jcc_base || jbase > instr::jcc_base + 2) { return false; }
+    u_word cond_idx = static_cast<u_word>(((jop & opcode_flag) >> 6) * 3 + (jbase - instr::jcc_base));
+    int cc = jit_cc_for_cond(cond_idx);
+    if (cc < 0) { return false; }
+    u_byte jimmsz = static_cast<u_byte>(1u << (jg8(jpc + 1) & opflag_imm_size));
+    u_word target = jgN(jpc + 2, jimmsz);
+    u_word fall = jpc + 2 + jimmsz;
+
+    /* ---- Emission. Register plan: rax = src, rcx = dst_before (both dead after the
+       compute), rdx = masked RF accumulator (flag-free lea/movzx assembly), r8 =
+       result then the C setcc, r9 = N, r10 = V, al = Z. ---- */
+    if (is_unary) {
+        e.load_anchor(1, d.disp, w, false);
+    } else if (mode == opcode_flag_srcImm) {
+        if (static_cast<u_word>(static_cast<std::int64_t>(static_cast<std::int32_t>(imm_sx))) == imm_sx) {
+            e.rex(true, 0, false, false); e.u8(0xC7); e.u8(0xC0);
+            e.u32(static_cast<std::uint32_t>(imm_sx));
+        } else {
+            e.mov_ri(0, imm_sx);
+        }
+        e.load_anchor(1, d.disp, w, false);
+    } else {
+        gsub s = jit_gsub(src_desc);
+        e.load_anchor(0, s.disp, s.size, true);
+        e.load_anchor(1, d.disp, w, false);
+    }
+    /* Masked RF BEFORE the flag-producing compute (and/or clobber flags). */
+    e.load_anchor(2, jit_disp(&regs::rf.w0), 8, false);
+    e.and_ri32(2, static_cast<std::int32_t>(~(bit_carryout | bit_negative | bit_overflow | bit_zero)));
+    /* The width-sized compute (host flags = Maize flags). */
+    if (is_unary) {
+        e.mov_rr(8, 1);
+        e.addsub_ri8_w(op == instr::inc_opcode ? 0 : 5, w, 8, 1);
+        e.store_anchor(8, d.disp, w);
+    } else if (writeback) {
+        e.mov_rr(8, 1);
+        e.alu_rr_w(opc64, w, 8, 0);
+        e.store_anchor(8, d.disp, w);
+    } else {
+        e.alu_rr_w(opc64, w, 1, 0);
+    }
+    /* Materialize RF from the live host flags (setcc/movzx/lea are flag-free). */
+    if (!logic_family) {
+        e.setcc_r(0x2, 8);                       /* setb  r8b : C */
+        e.setcc_r(0x0, 10);                      /* seto r10b : V */
+    }
+    e.setcc_r(0x8, 9);                           /* sets  r9b : N */
+    e.setcc_r(0x4, 0);                           /* sete   al : Z */
+    if (!logic_family) {
+        e.movzx_rr(1, 8, 1);  e.lea_scaled(2, 2, 1, 0);   /* += C      */
+        e.movzx_rr(1, 10, 1); e.lea_scaled(2, 2, 1, 2);   /* += V << 2 */
+    }
+    e.movzx_rr(1, 9, 1);  e.lea_scaled(2, 2, 1, 1);       /* += N << 1 */
+    e.movzx_rr(1, 0, 1);                                  /* rcx = Z */
+    e.lea_scaled(1, 1, 1, 0);                             /* rcx = 2Z */
+    e.lea_scaled(2, 2, 1, 3);                             /* += Z << 4 */
+    e.store_anchor(2, jit_disp(&regs::rf.w0), 8);
+    e.store_imm8_anchor(jit_disp(&pending_flags), 0);     /* dirty = false */
+    /* Branch on the SAME host flags (everything since the compute was flag-free). */
+    u_byte* taken_site = e.jcc_placeholder(static_cast<u_byte>(cc));
+    jit_emit_edge(e, b, fall, count + 2);                 /* fall-through */
+    jit_patch_branch(taken_site, e.buf);
+    jit_emit_edge(e, b, target, count + 2);               /* taken */
+    return true;
 }
 
 bool jit_last_compile_uncoverable = false;
@@ -637,6 +1655,9 @@ jit_block* jit_compile(u_word entry_pc) {
     b->code = reinterpret_cast<jit_fn>(g_jit.arena.cursor());
     b->edges.reserve(2);
 
+    /* Block prologue: establish the anchor register for the inline templates. */
+    if (jit_anchor_ok) { e.mov_ri(11, reinterpret_cast<u_word>(jit_anchor)); }
+
     u_word pc = entry_pc;
     u_word count = 0;
     u_word entry_page_va = entry_pc & ~static_cast<u_word>(0xFFF);
@@ -651,6 +1672,28 @@ jit_block* jit_compile(u_word entry_pc) {
         u_byte base = op & 0x3F;
         u_byte mode = op & opcode_flag;
 
+        /* ---- Fused compare-and-branch first: an ALU op immediately followed by Jcc
+           becomes a width-sized host compare + native branch, ending the block. ---- */
+        if (jit_try_fuse(e, *b, pc, count)) {
+            g_jit.emitted_inline += 2;
+            count += 2;
+            break;
+        }
+
+        /* ---- Inline templates next (decision 9801): the hot straight-line shapes
+           compile to direct host code; everything they decline falls through to the
+           thunk paths below. ---- */
+        {
+            u_word inl_len = 0;
+            if (jit_try_inline(e, op, pc, inl_len)) {
+                g_jit.emitted_inline += 1;
+                pc += inl_len;
+                count += 1;
+                if (e.overflow) { break; }
+                continue;
+            }
+        }
+
         /* ---- Block-ending covered transfers. ---- */
         if (op == instr::jmp_immVal) {
             u_byte immsz = static_cast<u_byte>(1u << (jg8(pc + 1) & opflag_imm_size));
@@ -658,11 +1701,39 @@ jit_block* jit_compile(u_word entry_pc) {
             jit_emit_edge(e, *b, target, count + 1);
             count += 1; break;
         }
-        if (op == instr::jmp_regVal) {
+        if (op == instr::jmp_regVal || op == instr::jmp_regAddr) {
             u_byte d = jg8(pc + 1);
             if (jit_desc_is_rp(d)) { jit_emit_edge(e, *b, pc, count); break; }
             u_word args[1] = { d };
-            e.call_fn(reinterpret_cast<void*>(&jit_jmp_regval), 1, args);
+            e.call_fn(op == instr::jmp_regVal ? reinterpret_cast<void*>(&jit_jmp_regval)
+                                              : reinterpret_cast<void*>(&jit_jmp_regaddr), 1, args);
+            jit_emit_indirect_exit(e, count + 1);
+            count += 1; break;
+        }
+        if (op == instr::jmp_immAddr) {
+            u_byte immsz = static_cast<u_byte>(1u << (jg8(pc + 1) & opflag_imm_size));
+            u_word addr_lit = jgN(pc + 2, immsz);
+            u_word args[1] = { addr_lit };
+            e.call_fn(reinterpret_cast<void*>(&jit_jmp_immaddr), 1, args);
+            jit_emit_indirect_exit(e, count + 1);
+            count += 1; break;
+        }
+        if (op == instr::call_regVal || op == instr::call_regAddr) {
+            u_byte d = jg8(pc + 1);
+            if (jit_desc_is_rp(d)) { jit_emit_edge(e, *b, pc, count); break; }
+            u_word ret_addr = pc + 2;
+            u_word args[2] = { d, ret_addr };
+            e.call_fn(op == instr::call_regVal ? reinterpret_cast<void*>(&jit_call_regval)
+                                               : reinterpret_cast<void*>(&jit_call_regaddr), 2, args);
+            jit_emit_indirect_exit(e, count + 1);
+            count += 1; break;
+        }
+        if (op == instr::call_immAddr) {
+            u_byte immsz = static_cast<u_byte>(1u << (jg8(pc + 1) & opflag_imm_size));
+            u_word addr_lit = jgN(pc + 2, immsz);
+            u_word ret_addr = pc + 2 + immsz;
+            u_word args[2] = { addr_lit, ret_addr };
+            e.call_fn(reinterpret_cast<void*>(&jit_call_immaddr), 2, args);
             jit_emit_indirect_exit(e, count + 1);
             count += 1; break;
         }
@@ -670,13 +1741,59 @@ jit_block* jit_compile(u_word entry_pc) {
             u_byte immsz = static_cast<u_byte>(1u << (jg8(pc + 1) & opflag_imm_size));
             u_word target = jgN(pc + 2, immsz);
             u_word ret_addr = pc + 2 + immsz;
-            u_word args[1] = { ret_addr };
-            e.call_fn(reinterpret_cast<void*>(&jit_call_push), 1, args);
+            if (jit_anchor_ok) {
+                /* Inline the return-address push (the L1-hit stack store), mirroring
+                   jit_call_push's fault-atomic order: RS commits after the store. */
+                std::vector<u_byte*> slow;
+                e.load_anchor(0, jit_disp(&regs::rs.w0), 8, false);
+                e.lea_disp8(0, 0, -8);                     /* rax = rs - 8 */
+                e.mov_rr(9, 0);
+                e.shift_ri(5, 9, 12);
+                e.and_ri32_32(9, 0xFFFFF);
+                e.cmp8_anchor_idx1(9, jit_disp(jit_page_bitmap), 0);
+                slow.push_back(e.jcc_placeholder(0x5));
+                if (jit_check_mode) {
+                    e.cmp64_anchor_imm8(jit_disp(&jit_journal), 0);
+                    slow.push_back(e.jcc_placeholder(0x5));
+                }
+                jit_emit_l1_probe(e, 0, 8, slow);
+                e.mov_ri(1, ret_addr);
+                e.store_mem(1, 8, 2, 8);
+                e.store_anchor(0, jit_disp(&regs::rs.w0), 8);
+                u_byte* done = e.jump_placeholder();
+                u_byte* slow_lbl = e.buf;
+                for (u_byte* s : slow) { jit_patch_branch(s, slow_lbl); }
+                {
+                    u_word args[1] = { ret_addr };
+                    jit_call_thunk(e, reinterpret_cast<void*>(&jit_call_push), 1, args);
+                }
+                jit_patch_branch(done, e.buf);
+            } else {
+                u_word args[1] = { ret_addr };
+                e.call_fn(reinterpret_cast<void*>(&jit_call_push), 1, args);
+            }
             jit_emit_edge(e, *b, target, count + 1);
             count += 1; break;
         }
         if (op == instr::ret_opcode) {
-            e.call_fn(reinterpret_cast<void*>(&jit_ret_pop), 0, nullptr);
+            if (jit_anchor_ok) {
+                /* Inline the return-address pop (the L1-hit stack load). */
+                std::vector<u_byte*> slow;
+                e.load_anchor(0, jit_disp(&regs::rs.w0), 8, false);
+                jit_emit_l1_probe(e, 0, 8, slow);
+                e.load_mem(1, 8, 2, 8, false);
+                e.store_anchor(1, jit_disp(&regs::rp.w0), 8);
+                e.load_anchor(0, jit_disp(&regs::rs.w0), 8, false);
+                e.lea_disp8(0, 0, 8);
+                e.store_anchor(0, jit_disp(&regs::rs.w0), 8);
+                u_byte* done = e.jump_placeholder();
+                u_byte* slow_lbl = e.buf;
+                for (u_byte* s : slow) { jit_patch_branch(s, slow_lbl); }
+                jit_call_thunk(e, reinterpret_cast<void*>(&jit_ret_pop), 0, nullptr);
+                jit_patch_branch(done, e.buf);
+            } else {
+                e.call_fn(reinterpret_cast<void*>(&jit_ret_pop), 0, nullptr);
+            }
             jit_emit_indirect_exit(e, count + 1);
             count += 1; break;
         }
@@ -862,10 +1979,12 @@ jit_block* jit_compile(u_word entry_pc) {
 
         if (!covered) {
             /* Uncovered: end the block; the interpreter executes from here. */
+            g_jit.uncovered_end[op] += 1;
             jit_emit_edge(e, *b, pc, count);
             break;
         }
-        if (thunk != nullptr) { e.call_fn(thunk, nargs, a); }
+        if (thunk != nullptr) { jit_call_thunk(e, thunk, nargs, a); }
+        g_jit.emitted_thunk += 1;
         pc += len;
         count += 1;
         if (e.overflow) { break; }
@@ -885,6 +2004,8 @@ jit_block* jit_compile(u_word entry_pc) {
 
     g_jit.table[b->key] = b;
     g_jit.code_pages[b->page].push_back(b->key);
+    jit_page_bitmap[jit_bitmap_slot(b->page)] = 1;
+    if (!jit_check_mode) { jit_probe_insert(b->key, reinterpret_cast<const void*>(b->code)); }
     g_jit.blocks_compiled += 1;
 
     /* Chaining (skipped wholesale in check mode: every check run must be exactly one
@@ -958,7 +2079,16 @@ void jit_invalidate_page(u_word pageno) {
         }
         g_jit.table.erase(bit);
         g_jit.counter.erase(key);
+        jit_probe_remove(key);
         delete b;
+    }
+    /* Clear the bitmap slot unless another live code page hashes to it. */
+    {
+        bool shared = false;
+        for (auto const& kv : g_jit.code_pages) {
+            if (jit_bitmap_slot(kv.first) == jit_bitmap_slot(pageno)) { shared = true; break; }
+        }
+        if (!shared) { jit_page_bitmap[jit_bitmap_slot(pageno)] = 0; }
     }
     g_jit.arena.set_exec(true);
     g_jit.invalidations += 1;
@@ -975,6 +2105,10 @@ void jit_flush_all() {
     g_jit.counter.clear();
     g_jit.pending.clear();
     g_jit.code_pages.clear();
+#if MAIZE_JIT_BACKEND
+    std::memset(jit_page_bitmap, 0, sizeof jit_page_bitmap);
+    jit_probe_reset();
+#endif
     g_jit.arena.used = 0;
     g_jit.arena.set_exec(true);
     g_jit.flushes += 1;
@@ -1073,15 +2207,17 @@ void jit_dispatch() {
 
         if (b == nullptr) {
             u_word& c = g_jit.counter[key];
-            if (c == JIT_NEVER_COMPILE) { return; }
-            if (++c < jit_hotness_threshold) { return; }
+            if (c == JIT_NEVER_COMPILE) { g_jit.dispatch_miss += 1; ++g_jit.miss_pcs[pc]; return; }
+            if (++c < jit_hotness_threshold) { g_jit.dispatch_miss += 1; ++g_jit.miss_pcs[pc]; return; }
             if (g_jit.arena.remaining() < 64 * 1024) { jit_flush_all(); }
             b = jit_compile(pc);
             if (b == nullptr) {
                 if (jit_last_compile_uncoverable) { g_jit.counter[key] = JIT_NEVER_COMPILE; }
+                g_jit.dispatch_miss += 1;
                 return;
             }
         }
+        g_jit.dispatch_hit += 1;
         u_word block_len = b->instr_count;   /* b can be invalidated by its own stores */
 
         if (jit_check_mode) {
@@ -1169,10 +2305,37 @@ void enable_jit(bool check_mode) {
     jit_check_mode = check_mode;
     /* Covered-fraction reporting needs the total executed-instruction count. */
     perf_count_enabled = true;
+    /* Anchor for the inline templates: every piece of VM state a template touches must
+       sit within disp32 of &regs::r0.w0 (always true for module globals). If anything
+       falls outside, the inline tier stands down and the thunk tier runs alone. */
+    jit_anchor = reinterpret_cast<u_byte*>(&regs::r0.w0);
+    jit_anchor_ok = true;
+    {
+        auto jchk = [](const void* p) { if (!jit_disp_fits(p)) { jit_anchor_ok = false; } };
+        for (int i = 0; i < 16; ++i) { jchk(&reg_map[i]->w0); }
+        jchk(&pending_flags);
+        jchk(&pending_flags.result);
+        jchk(mm.jit_l1_ptr_data());
+        jchk(mm.jit_l1_ptr_data() + memory_module::jit_l1_mask());
+        jchk(mm.jit_l1_base_data());
+        jchk(mm.jit_l1_base_data() + memory_module::jit_l1_mask());
+        jchk(jit_page_bitmap);
+        jchk(jit_page_bitmap + (std::size_t(1) << 20) - 1);
+        jchk(&jit_journal);
+    }
+    if (!jit_anchor_ok) {
+        std::cerr << "maize: JIT inline templates disabled (VM state exceeds the anchor's"
+                     " 2 GiB reach); running the call-threaded tier" << std::endl;
+    }
+    jit_probe_reset();
 #if defined(_WIN32)
     if (GetEnvironmentVariableA("MAIZE_JIT_MISCOMPILE", nullptr, 0) > 0) { jit_inject_miscompile = true; }
+    if (GetEnvironmentVariableA("MAIZE_JIT_NOPROBE", nullptr, 0) > 0) { jit_no_probe = true; }
+    if (GetEnvironmentVariableA("MAIZE_JIT_INLINE_EVENTS", nullptr, 0) > 0) { jit_no_inline_events = false; }
 #else
     if (std::getenv("MAIZE_JIT_MISCOMPILE") != nullptr) { jit_inject_miscompile = true; }
+    if (std::getenv("MAIZE_JIT_NOPROBE") != nullptr) { jit_no_probe = true; }
+    if (std::getenv("MAIZE_JIT_INLINE_EVENTS") != nullptr) { jit_no_inline_events = false; }
 #endif
     jit_seam_armed = true;
     jit_active_dispatch = true;
@@ -1201,6 +2364,34 @@ void jit_report(std::ostream& out) {
     out << "  covered instructions: " << g_jit.covered_instr << "\n";
     out << "  page invalidations  : " << g_jit.invalidations << "\n";
     out << "  cache flushes       : " << g_jit.flushes << "\n";
+    out << "  emission mix        : " << g_jit.emitted_inline << " inline / "
+        << g_jit.emitted_thunk << " thunk (static)\n";
+    out << "  dispatcher          : " << g_jit.dispatch_hit << " hits / "
+        << g_jit.dispatch_miss << " misses\n";
+    {
+        /* Diagnostic: the pcs where dispatcher misses concentrate. */
+        std::vector<std::pair<std::uint64_t, u_word>> tops;
+        for (auto const& kv : g_jit.miss_pcs) { tops.emplace_back(kv.second, kv.first); }
+        std::sort(tops.begin(), tops.end(), std::greater<>());
+        for (std::size_t i = 0; i < tops.size() && i < 8; ++i) {
+            out << "  miss pc             : 0x" << std::hex << tops[i].second << std::dec
+                << " x" << tops[i].first << "\n";
+        }
+    }
+    {
+        /* Top block-ending uncovered opcodes (static): what fragments the blocks. */
+        for (int rank = 0; rank < 6; ++rank) {
+            int best = -1;
+            std::uint64_t bc = 0;
+            for (int i = 0; i < 256; ++i) {
+                if (g_jit.uncovered_end[i] > bc) { bc = g_jit.uncovered_end[i]; best = i; }
+            }
+            if (best < 0 || bc == 0) { break; }
+            out << "  uncovered ender     : opcode 0x" << std::hex << best << std::dec
+                << " x" << bc << "\n";
+            g_jit.uncovered_end[best] = 0;
+        }
+    }
     if (perf_count_enabled && perf_insn_count > 0) {
         out << "  covered fraction    : "
             << (g_jit.covered_instr * 1000 / perf_insn_count) / 10.0

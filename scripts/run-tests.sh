@@ -182,6 +182,7 @@ if [ -n "${MAIZE_JIT:-}" ]; then
     JIT_WRAP="${TEST_RUN_DIR}/maize-jit-wrap.sh"
     {
         echo '#!/bin/sh'
+        echo "export MAIZE_JIT_QUIET=1"
         echo "exec \"${MAIZE_EXE}\" ${JIT_FLAG} --jit-threshold ${MAIZE_JIT_THRESHOLD:-50} \"\$@\""
     } > "$JIT_WRAP"
     chmod +x "$JIT_WRAP"

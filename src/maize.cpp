@@ -1949,9 +1949,15 @@ int main(int argc, char *argv[]) {
 		cpu::jit_survey_report(std::cerr);
 	}
 
-	/* maize-330: the JIT run report (blocks compiled, covered fraction, invalidations). */
+	/* maize-330: the JIT run report (blocks compiled, covered fraction, invalidations).
+	   Suppressed under MAIZE_JIT_QUIET so the test harnesses can run every fixture under
+	   --jit without the report polluting a stderr assertion or tripping PowerShell's
+	   strict native-stderr handling. */
 	if (jit_enabled) {
-		cpu::jit_report(std::cerr);
+		const char* quiet = std::getenv("MAIZE_JIT_QUIET");
+		if (quiet == nullptr || quiet[0] == '\0') {
+			cpu::jit_report(std::cerr);
+		}
 	}
 
 	/* maize-261: the sampling-profiler report. Aggregates the sampled-PC histogram by
