@@ -471,6 +471,15 @@ static u8 g_iobuf[QUESOS_IOBUF_CAP];
 void *memcpy(void *dst, const void *src, unsigned long n) {
     u8 *d = (u8 *)dst;
     const u8 *s = (const u8 *)src;
+    /* maize-321: forward large copies to the native bulk-copy accelerator ($F4), the
+     * mirrored twin of memset's $F5 forward below (maize-315). Kernel pointers are
+     * identity-mapped physical addresses, exactly the flat addresses $F4 wants; the
+     * substantial caller is fork's eager frame copy (PAGE_SIZE per page). $F4 is
+     * memmove-safe and performs NO partial write on rejection, so a refusal falls
+     * through to the portable byte loop with nothing lost. */
+    if (n >= QUESOS_BULK_MIN && sys_bulk_copy(dst, src, n) == (long)n) {
+        return dst;
+    }
     while (n--) { *d++ = *s++; }
     return dst;
 }

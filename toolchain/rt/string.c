@@ -37,10 +37,11 @@ memcpy(void *dst, const void *src, size_t n)
     const unsigned char *s = (const unsigned char *)src;
     if (n >= BULK_SYSCALL_THRESHOLD) {   /* maize-216: hoist large copies to the host */
         /* maize-94: check the result and fall back to the portable loop if the
-         * accelerator is unavailable. sys_bulk_copy returns n on success or a -errno;
-         * under quesOS the $F4 number is not forwarded (returns -ENOSYS), and blindly
-         * assuming success silently skipped the copy, corrupting any large copy in a
-         * guest running under quesOS. The fallback keeps the fast path on the bare VM. */
+         * accelerator declines. sys_bulk_copy returns n on success or a -errno; since
+         * maize-247 quesOS forwards $F4 for physically contiguous ranges and returns
+         * -ENOSYS for scattered ones, so the fallback is the scattered-range path
+         * under quesOS and the never-taken safety net on the bare VM. Blindly assuming
+         * success would silently skip a declined copy. */
         if (sys_bulk_copy(dst, src, n) == (long)n) {
             return dst;
         }
