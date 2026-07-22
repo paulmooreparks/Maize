@@ -2321,6 +2321,10 @@ void enable_jit(bool check_mode) {
         jchk(mm.jit_l1_base_data() + memory_module::jit_l1_mask());
         jchk(jit_page_bitmap);
         jchk(jit_page_bitmap + (std::size_t(1) << 20) - 1);
+        jchk(jit_probe_keys);
+        jchk(jit_probe_keys + (std::size_t(1) << JIT_PROBE_BITS) - 1);
+        jchk(jit_probe_code);
+        jchk(jit_probe_code + (std::size_t(1) << JIT_PROBE_BITS) - 1);
         jchk(&jit_journal);
     }
     if (!jit_anchor_ok) {
