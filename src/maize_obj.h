@@ -32,6 +32,42 @@ namespace obj {
 	constexpr std::size_t   SYMBOL_SIZE      = 24;
 	constexpr std::size_t   RELOC_SIZE       = 24;
 
+	/* ---- .mza (prebuilt runtime archive, maize-302) ---------------------- */
+
+	/* An ar-style container holding each runtime .mzo member verbatim plus a
+	   member index, with its own magic distinct from MZO. It is an internal,
+	   replaceable implementation choice (design build-performance.md section 5,
+	   the project DIRT ruling): the stability contract is the .mzo object format
+	   plus the ABI, NOT this container, so the container may change later (for
+	   dynamic linking) with no ABI impact. Written by mzcc's runtime-archive
+	   builder; read by mzld, which sniffs MZA_MAGIC to tell an archive input from
+	   a plain .mzo and expands the archive's members in declared order.
+
+	   v1 (maize-302) links the WHOLE archive (member selection is deferred to
+	   maize-306), so the format carries only what a whole-archive link needs: a
+	   member index over verbatim .mzo blobs. A global-symbol -> member map is
+	   deliberately NOT stored here in v1; it would be data no consumer reads
+	   until member selection exists. maize-306 adds it with the selection pass.
+
+	   Layout (all offsets from file start, little-endian, matching .mzo/.mzx):
+	     header (16 bytes): magic 'M','Z','A', version (byte 3); u16 flags (0);
+	                        u16 member_count; u64 index_off
+	     index  (member_count * 24 bytes, at index_off), per member:
+	                        u32 name_off (byte offset into the string table);
+	                        u32 reserved (0);
+	                        u64 member_off (byte offset of the member .mzo bytes);
+	                        u64 member_size (byte length of the member .mzo)
+	     strtab (NUL-terminated member tag strings)
+	     members (each member's .mzo bytes verbatim, in declared order) */
+
+	constexpr std::uint8_t  MZA_MAGIC0 = 'M';
+	constexpr std::uint8_t  MZA_MAGIC1 = 'Z';
+	constexpr std::uint8_t  MZA_MAGIC2 = 'A';
+	constexpr std::uint8_t  MZA_VERSION = 0x01;
+
+	constexpr std::size_t   MZA_HEADER_SIZE      = 16;
+	constexpr std::size_t   MZA_INDEX_ENTRY_SIZE = 24;
+
 	/* ---- .mzx (linked executable) ---------------------------------------- */
 
 	constexpr std::uint8_t  MZX_MAGIC0 = 'M';

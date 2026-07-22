@@ -87,12 +87,11 @@ namespace {
 		return std::string(base + off);
 	}
 
-	/* Parse one .mzo into an Object. Returns "" on success, else an error msg. */
-	std::string parse_object(const std::string &path, Object &obj) {
-		std::vector<std::uint8_t> buf;
-		if (!read_file(path, buf)) {
-			return "cannot read object '" + path + "'";
-		}
+	/* Parse a .mzo image already resident in `buf` (from a file, or a member
+	   sliced out of a .mza archive) into an Object. `path` names the source for
+	   diagnostics. Returns "" on success, else an error msg. */
+	std::string parse_object_buf(const std::vector<std::uint8_t> &buf,
+			const std::string &path, Object &obj) {
 		if (buf.size() < MZO_HEADER_SIZE) {
 			return "'" + path + "' is too small to be a .mzo";
 		}
@@ -185,6 +184,56 @@ namespace {
 		return "";
 	}
 
+	/* Expand a .mza runtime archive resident in `buf` into `objects`, appending
+	   every member (in the archive's declared order) as its own Object. maize-302
+	   v1 links the WHOLE archive (member selection is deferred to maize-306), so
+	   every member is pulled here; the classic on-demand fixpoint rides in with
+	   that later card. Members land in `objects` in declared order, and because
+	   mzcc passes the archive as the FIRST link input, the runtime objects occupy
+	   the same leading layout positions they held when compiled from source, so
+	   the linked image stays behavior-parity (and, absent member selection,
+	   byte-parity) with the from-source build. Returns "" on success. */
+	std::string parse_archive(const std::string &path,
+			const std::vector<std::uint8_t> &buf, std::vector<Object> &objects) {
+		if (buf.size() < MZA_HEADER_SIZE) {
+			return "'" + path + "' is too small to be a .mza archive";
+		}
+		const std::uint8_t *b = buf.data();
+		if (b[3] != MZA_VERSION) {
+			return "'" + path + "' is not a v1 .mza archive (bad version)";
+		}
+		std::uint16_t member_count = get_u16(b, 6);
+		std::uint64_t index_off    = get_u64(b, 8);
+		for (std::uint16_t i = 0; i < member_count; ++i) {
+			std::size_t eo = static_cast<std::size_t>(index_off)
+				+ static_cast<std::size_t>(i) * MZA_INDEX_ENTRY_SIZE;
+			if (eo + MZA_INDEX_ENTRY_SIZE > buf.size()) {
+				return "'" + path + "' archive member index out of bounds";
+			}
+			std::uint32_t name_off    = get_u32(b, eo + 0);
+			std::uint64_t member_off  = get_u64(b, eo + 8);
+			std::uint64_t member_size = get_u64(b, eo + 16);
+			if (member_off + member_size > buf.size()) {
+				return "'" + path + "' archive member contents out of bounds";
+			}
+			std::string tag;
+			for (std::size_t k = name_off; k < buf.size() && b[k] != 0; ++k) {
+				tag.push_back(static_cast<char>(b[k]));
+			}
+			std::vector<std::uint8_t> member(
+				b + static_cast<std::size_t>(member_off),
+				b + static_cast<std::size_t>(member_off + member_size));
+			Object obj;
+			std::string mname = path + "(" + (tag.empty() ? std::to_string(i) : tag) + ")";
+			std::string err = parse_object_buf(member, mname, obj);
+			if (!err.empty()) {
+				return err;
+			}
+			objects.push_back(std::move(obj));
+		}
+		return "";
+	}
+
 	std::uint64_t align_up(std::uint64_t v, std::uint64_t a) {
 		if (a <= 1) {
 			return v;
@@ -200,7 +249,8 @@ static void print_usage(std::ostream &out) {
 		"\n"
 		"Maize linker. Links one or more relocatable .mzo objects into a single\n"
 		"linked .mzx executable, resolving symbols and applying relocations. On\n"
-		"error no output is produced.\n"
+		"error no output is produced. An input may also be a .mza runtime archive,\n"
+		"whose members are linked in the archive's declared order.\n"
 		"\n"
 		"options:\n"
 		"  -o <out.mzx>   output path for the linked executable (default: a.mzx)\n"
@@ -258,15 +308,36 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
+	/* Read each input, sniffing its magic: a .mza runtime archive (maize-302)
+	   expands into its member objects in declared order; a plain .mzo parses to
+	   one object. Both .mzo and .mza begin 'M','Z'; the third byte ('O' vs 'A')
+	   discriminates. An explicitly named .mzo always links; archive members ride
+	   in via parse_archive (whole-archive in v1, on-demand selection in
+	   maize-306). Downstream layout, symbol resolution, relocation, and the
+	   hygiene passes all operate on the resulting `objects` vector unchanged, so
+	   the W+X and segment-overlap checks cover archive members too (AC9). */
 	std::vector<Object> objects;
 	objects.reserve(inputs.size());
 	for (const auto &path : inputs) {
-		Object obj;
-		std::string err = parse_object(path, obj);
-		if (!err.empty()) {
-			return fail(err);
+		std::vector<std::uint8_t> buf;
+		if (!read_file(path, buf)) {
+			return fail("cannot read input '" + path + "'");
 		}
-		objects.push_back(std::move(obj));
+		if (buf.size() >= 4 && buf[0] == MZA_MAGIC0 && buf[1] == MZA_MAGIC1
+				&& buf[2] == MZA_MAGIC2) {
+			std::string err = parse_archive(path, buf, objects);
+			if (!err.empty()) {
+				return fail(err);
+			}
+		}
+		else {
+			Object obj;
+			std::string err = parse_object_buf(buf, path, obj);
+			if (!err.empty()) {
+				return fail(err);
+			}
+			objects.push_back(std::move(obj));
+		}
 	}
 
 	/* Hygiene: reject any W+X section up front (Decision 6431 / AC6). */
@@ -564,7 +635,7 @@ int main(int argc, char *argv[]) {
 		return fail("failed writing '" + out_path + "'");
 	}
 
-	std::cout << "Linked " << inputs.size() << " object(s) -> " << out_path
+	std::cout << "Linked " << objects.size() << " object(s) -> " << out_path
 		<< " (entry 0x" << std::hex << entry_addr << std::dec << ")" << std::endl;
 	return 0;
 }

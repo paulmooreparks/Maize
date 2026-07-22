@@ -24,6 +24,7 @@
 #include "mzcc_fs.h"
 #include "mzcc_cache.h"
 #include "mzcc_sched.h"
+#include "mzcc_sha256.h"
 
 #include <assert.h>
 #include <stdarg.h>
@@ -603,10 +604,13 @@ static void cleanup_scratch(void) {
 }
 
 /* ---- RT object set (section 8): the single point of truth. RT asm objects
-   first (crt0, syscall, setjmp[, mzdev]), then the libc C modules; the user
-   body/bodies link last (build order below). mzld resolves by name so order is
-   layout-only, preserved byte-identical to cc-maize.sh:574-582. Shared by the
-   single-file path in main() and by build_default_c_image (maize-280). */
+   first (crt0, syscall, setjmp), then the libc C modules. Since maize-302 these
+   are compiled ONCE into the prebuilt runtime archive (.mza) by
+   ensure_runtime_archive rather than per program; the member order here is the
+   archive's declared layout order, so crt0/_start still lands first and the user
+   body last, preserving the from-source layout. mzdev stays a per-build asm
+   object (decision D3) and is NOT in this set. mzld resolves by symbol, so order
+   is layout-only. Shared by ensure_runtime_archive and the archive-key hash. */
 static const char *RT_ASM[] = { "crt0", "syscall", "setjmp" };
 static const char *RT_C[] = {
     "errno", "string", "strings", "ctype", "math",
@@ -947,8 +951,9 @@ char *assemble_mazm_file(const char *mazm_path, const char *tag, ByteBuf *diag) 
 
    Determinism (spec 3c): only compilation is parallelized. Each job writes its
    own pre-assigned slot; the object vector is read back in canonical job order
-   (RT_ASM, mzdev, RT_C, user in source order), INDEPENDENT of completion order,
-   so the linked .mzx is byte-identical to the serial (MAIZE_JOBS=1) build. */
+   (mzdev when --dev, then user in source order; the runtime members now come
+   from the prebuilt archive, maize-302), INDEPENDENT of completion order, so the
+   linked .mzx is byte-identical to the serial (MAIZE_JOBS=1) build. */
 
 typedef enum { JOB_ASM, JOB_C } JobKind;
 
@@ -1038,33 +1043,27 @@ static int build_objects_parallel(int dev, const Argv *extra_defines,
                                   StrList *out_objs) {
     if (out_have_emit) { *out_have_emit = 0; }
     int multi = (sources->n >= 2) || used_sources;
-    int n_asm = (int)(sizeof(RT_ASM) / sizeof(RT_ASM[0])) + (dev ? 1 : 0);
-    int n_rtc = (int)(sizeof(RT_C) / sizeof(RT_C[0]));
-    int njobs = n_asm + n_rtc + sources->n;
+    /* maize-302: crt0 + the freestanding libc are no longer compiled on the
+       per-program path. They are prebuilt ONCE into the runtime archive (.mza)
+       by ensure_runtime_archive and linked by mzld at the link sites. This is
+       where the 473 RT-C cpp spawns (11 libc modules x 43 programs, maize-301's
+       single largest structural cost) and the 129 RT-asm mazm spawns leave the
+       warm build. The per-program object set is now just the conditional mzdev
+       asm object (decision D3: mzdev stays per-build, it is --dev-only asm and
+       contributes zero cpp spawns) plus the user TUs. extra_defines still
+       reaches the user TUs; it no longer reaches libc (decision D1 / OQ1: the
+       archive is built with the single canonical define set). */
+    int n_dev = dev ? 1 : 0;
+    int njobs = n_dev + sources->n;
 
     Job *jobs = (Job *)xmalloc((size_t)njobs * sizeof(Job));
     memset(jobs, 0, (size_t)njobs * sizeof(Job));
 
     int idx = 0;
-    /* RT asm set (declared order), then mzdev if --dev. */
-    for (size_t i = 0; i < sizeof(RT_ASM) / sizeof(RT_ASM[0]); ++i) {
-        jobs[idx].kind = JOB_ASM;
-        jobs[idx].src = joinstr(RT_DIR, "/", RT_ASM[i], ".mazm");
-        jobs[idx].tag = xstrdup(RT_ASM[i]);
-        ++idx;
-    }
     if (dev) {
         jobs[idx].kind = JOB_ASM;
         jobs[idx].src = joinstr(RT_DIR, "/mzdev.mazm", NULL, NULL);
         jobs[idx].tag = xstrdup("mzdev");
-        ++idx;
-    }
-    /* libc C modules (declared order), tag rt_<name>. */
-    for (size_t i = 0; i < sizeof(RT_C) / sizeof(RT_C[0]); ++i) {
-        jobs[idx].kind = JOB_C;
-        jobs[idx].src = joinstr(RT_DIR, "/", RT_C[i], ".c");
-        jobs[idx].tag = joinstr("rt_", RT_C[i], NULL, NULL);
-        jobs[idx].extra = extra_defines;
         ++idx;
     }
     /* User TUs (source order): multi -> u<i>_<base>, single -> bare base. */
@@ -1120,6 +1119,341 @@ static int build_objects_parallel(int dev, const Argv *extra_defines,
     }
     free_jobs(jobs, njobs);
     return 0;
+}
+
+/* ---- prebuilt runtime archive (maize-302) -------------------------------
+
+   Build crt0 + the freestanding libc ONCE into a linkable archive (.mza), keyed
+   so every program links the prebuilt runtime instead of recompiling it. The
+   container is an ar-style member archive (decision D2): each runtime .mzo
+   member verbatim, plus a member index, under its own magic. It is an internal,
+   replaceable choice (design section 5, the DIRT ruling): the .mzo format and
+   the ABI are the stability contract, not this container. v1 links the WHOLE
+   archive (member selection deferred to maize-306, OQ2); mzld expands every
+   member in declared order, placed first (before the user objects) so the
+   layout matches the from-source build.
+
+   The .mza layout constants mirror src/maize_obj.h's maize::obj MZA_* (that C++
+   header is the format's source of truth; mzld reads what mzcc writes). This C
+   file cannot include the C++ header, so the literals are duplicated here, the
+   same way verify_mzx_image hardcodes the 'M','Z','X' magic. */
+#define MZA_MAGIC0 'M'
+#define MZA_MAGIC1 'Z'
+#define MZA_MAGIC2 'A'
+#define MZA_VERSION 0x01
+#define MZA_HEADER_SIZE 16u
+#define MZA_INDEX_ENTRY_SIZE 24u
+
+static void put_u16le(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v & 0xFF);
+    p[1] = (uint8_t)((v >> 8) & 0xFF);
+}
+static void put_u32le(uint8_t *p, uint32_t v) {
+    for (int i = 0; i < 4; ++i) { p[i] = (uint8_t)((v >> (8 * i)) & 0xFF); }
+}
+static void put_u64le(uint8_t *p, uint64_t v) {
+    for (int i = 0; i < 8; ++i) { p[i] = (uint8_t)((v >> (8 * i)) & 0xFF); }
+}
+
+/* Absorb a length-prefixed byte run into the running SHA-256 (the length prefix
+   stops two adjacent fields aliasing by a boundary shift, mirroring
+   mzcc_cache.c's fp_absorb_file). */
+static void arc_absorb(mzcc_sha256_ctx *c, const void *data, size_t len) {
+    uint8_t lp[8];
+    for (int i = 0; i < 8; ++i) { lp[i] = (uint8_t)((uint64_t)len >> (56 - i * 8)); }
+    mzcc_sha256_update(c, lp, 8);
+    mzcc_sha256_update(c, data ? data : "", len);
+}
+static void arc_absorb_str(mzcc_sha256_ctx *c, const char *s) {
+    arc_absorb(c, s, s ? strlen(s) : 0);
+}
+static int arc_absorb_file(mzcc_sha256_ctx *c, const char *path) {
+    ByteBuf b;
+    if (read_file(path, &b) != 0) {
+        byte_buf_free(&b);
+        return -1;
+    }
+    arc_absorb(c, b.data, b.len);
+    byte_buf_free(&b);
+    return 0;
+}
+static int arc_cmp_names(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* Hash the byte contents of every regular file under `dir` (recursively), in a
+   deterministic sorted order, into `c`. This over-covers the exact cpp include
+   closure of the runtime sources (it also folds in headers, mzdev, and docs
+   under toolchain/rt), which is the SAFE direction: an unrelated edit only
+   forces one extra archive rebuild, never serves a stale archive. Editing any
+   runtime header therefore rolls the archive key, which the coarser
+   "raw .c bytes only" key would miss. Returns 0 on success, -1 on any read
+   failure (treated as a hard error so a rolled key is never silently skipped). */
+static int arc_absorb_tree(mzcc_sha256_ctx *c, const char *dir, const char *relprefix) {
+    StrList ents;
+    sl_init(&ents);
+    if (list_dir(dir, &ents) != 0) {
+        sl_free(&ents);
+        return -1;
+    }
+    if (ents.n > 1) {
+        qsort(ents.v, (size_t)ents.n, sizeof(char *), arc_cmp_names);
+    }
+    int rc = 0;
+    for (int i = 0; i < ents.n; ++i) {
+        char *full = joinstr(dir, "/", ents.v[i], NULL);
+        char *rel = (relprefix && relprefix[0])
+            ? joinstr(relprefix, "/", ents.v[i], NULL) : xstrdup(ents.v[i]);
+        if (dir_exists(full)) {
+            arc_absorb_str(c, rel);
+            if (arc_absorb_tree(c, full, rel) != 0) { rc = -1; }
+        } else if (is_regular_file(full)) {
+            arc_absorb_str(c, rel);
+            if (arc_absorb_file(c, full) != 0) { rc = -1; }
+        }
+        free(full);
+        free(rel);
+    }
+    sl_free(&ents);
+    return rc;
+}
+
+/* Derive the runtime-archive cache key (spec "When the archive is built"):
+   content-addressed over the toolchain fingerprint (tool identities), the
+   canonical define set, the member list identity, and the RT source tree bytes.
+   Returns 0 and fills `out` on success, -1 if the fingerprint is unavailable or
+   a source file cannot be read. */
+static int compute_runtime_archive_key(char out[MZCC_SHA256_HEX_LEN + 1]) {
+    uint8_t fp[MZCC_SHA256_DIGEST_LEN];
+    if (!mzcc_cache_fingerprint(fp)) {
+        return -1;
+    }
+    mzcc_sha256_ctx c;
+    mzcc_sha256_init(&c);
+    /* Domain tag so an archive key can never share a preimage with a per-TU
+       object-cache key. */
+    arc_absorb_str(&c, "mza-v1");
+    arc_absorb(&c, fp, sizeof(fp));
+    /* Canonical define set: the process-global EXTRA_CPPDEFS (empty for every
+       current caller). The fixed cpp defines (compile_tu_ex) are baked into the
+       mzcc binary and thus already covered by the fingerprint's self-hash.
+       Per-build -D (extra_defines) deliberately does NOT enter the key: the
+       archive is built with the single canonical define set (decision D1/OQ1). */
+    for (int i = 0; i < EXTRA_CPPDEFS.n; ++i) {
+        arc_absorb_str(&c, EXTRA_CPPDEFS.v[i]);
+    }
+    /* Member list identity, order-sensitive (the archive's declared order). */
+    for (size_t i = 0; i < sizeof(RT_ASM) / sizeof(RT_ASM[0]); ++i) {
+        arc_absorb_str(&c, RT_ASM[i]);
+    }
+    for (size_t i = 0; i < sizeof(RT_C) / sizeof(RT_C[0]); ++i) {
+        arc_absorb_str(&c, RT_C[i]);
+    }
+    /* The runtime source tree bytes (sources + the header include closure). */
+    if (arc_absorb_tree(&c, RT_DIR, "") != 0) {
+        return -1;
+    }
+    uint8_t dig[MZCC_SHA256_DIGEST_LEN];
+    mzcc_sha256_final(&c, dig);
+    mzcc_sha256_hex(dig, out);
+    return 0;
+}
+
+/* Compile the archive members (crt0, syscall, setjmp, then the 11 RT_C libc
+   modules in declared order) through the SAME parallel + cached pipeline the
+   per-program build uses (compile_tu_ex / assemble_mazm_file via run_one_job),
+   with the canonical define set (extra=NULL). The maize-290 stable __FILE__
+   identity applies exactly as on the per-program path (compile_tu_ex is shared),
+   so members are byte-reproducible (AC8). Hands back parallel tag/obj arrays in
+   declared order. Returns 0 on success, -1 on any member failure. */
+static int build_archive_members(char ***out_tags, char ***out_objs, int *out_n) {
+    int n_asm = (int)(sizeof(RT_ASM) / sizeof(RT_ASM[0]));
+    int n_rtc = (int)(sizeof(RT_C) / sizeof(RT_C[0]));
+    int n = n_asm + n_rtc;
+
+    Job *jobs = (Job *)xmalloc((size_t)n * sizeof(Job));
+    memset(jobs, 0, (size_t)n * sizeof(Job));
+
+    int idx = 0;
+    for (int i = 0; i < n_asm; ++i) {
+        jobs[idx].kind = JOB_ASM;
+        jobs[idx].src = joinstr(RT_DIR, "/", RT_ASM[i], ".mazm");
+        jobs[idx].tag = xstrdup(RT_ASM[i]);
+        ++idx;
+    }
+    for (int i = 0; i < n_rtc; ++i) {
+        jobs[idx].kind = JOB_C;
+        jobs[idx].src = joinstr(RT_DIR, "/", RT_C[i], ".c");
+        jobs[idx].tag = joinstr("rt_", RT_C[i], NULL, NULL);
+        jobs[idx].extra = NULL; /* canonical define set (D1/OQ1) */
+        ++idx;
+    }
+
+    int cap = resolve_job_cap(n);
+    int rc = mzcc_run_jobs(run_one_job, jobs, n, cap);
+
+    /* Flush the lowest-index failed job's diagnostics (same discipline as
+       build_objects_parallel). */
+    for (int i = 0; i < n; ++i) {
+        if (!jobs[i].ok) {
+            if (jobs[i].diag.len) { fwrite(jobs[i].diag.data, 1, jobs[i].diag.len, stderr); }
+            break;
+        }
+    }
+    if (rc != 0) {
+        free_jobs(jobs, n);
+        return -1;
+    }
+
+    char **tags = (char **)xmalloc((size_t)n * sizeof(char *));
+    char **objs = (char **)xmalloc((size_t)n * sizeof(char *));
+    for (int i = 0; i < n; ++i) {
+        tags[i] = xstrdup(jobs[i].tag);
+        objs[i] = xstrdup(jobs[i].mzo);
+    }
+    free_jobs(jobs, n);
+    *out_tags = tags;
+    *out_objs = objs;
+    *out_n = n;
+    return 0;
+}
+
+/* Serialize the built member .mzo blobs (paths in `objs`, tags in `tags`, in
+   declared order) into a .mza at `out_path`. Deterministic concatenation of the
+   already-deterministic member bytes plus a deterministic index (AC8). Returns
+   0 on success, -1 on failure. */
+static int write_runtime_archive(const char *out_path, char **tags, char **objs, int n) {
+    ByteBuf *blobs = (ByteBuf *)xmalloc((size_t)n * sizeof(ByteBuf));
+    for (int i = 0; i < n; ++i) {
+        if (read_file(objs[i], &blobs[i]) != 0) {
+            fprintf(stderr, "mzcc: cannot read runtime member object %s\n", objs[i]);
+            byte_buf_free(&blobs[i]);
+            for (int j = 0; j < i; ++j) { byte_buf_free(&blobs[j]); }
+            free(blobs);
+            return -1;
+        }
+    }
+
+    size_t index_off = MZA_HEADER_SIZE;
+    size_t index_size = (size_t)n * MZA_INDEX_ENTRY_SIZE;
+    size_t strtab_off = index_off + index_size;
+
+    ByteBuf strtab;
+    byte_buf_init(&strtab);
+    uint32_t *name_off = (uint32_t *)xmalloc((size_t)n * sizeof(uint32_t));
+    for (int i = 0; i < n; ++i) {
+        name_off[i] = (uint32_t)(strtab_off + strtab.len);
+        byte_buf_append(&strtab, tags[i], strlen(tags[i]));
+        char z = 0;
+        byte_buf_append(&strtab, &z, 1);
+    }
+
+    size_t members_off = strtab_off + strtab.len;
+    uint64_t *moff = (uint64_t *)xmalloc((size_t)n * sizeof(uint64_t));
+    size_t running = members_off;
+    for (int i = 0; i < n; ++i) {
+        moff[i] = running;
+        running += blobs[i].len;
+    }
+    size_t total = running;
+
+    uint8_t *buf = (uint8_t *)xmalloc(total);
+    memset(buf, 0, total);
+    buf[0] = MZA_MAGIC0;
+    buf[1] = MZA_MAGIC1;
+    buf[2] = MZA_MAGIC2;
+    buf[3] = MZA_VERSION;
+    put_u16le(buf + 4, 0);
+    put_u16le(buf + 6, (uint16_t)n);
+    put_u64le(buf + 8, (uint64_t)index_off);
+    for (int i = 0; i < n; ++i) {
+        uint8_t *e = buf + index_off + (size_t)i * MZA_INDEX_ENTRY_SIZE;
+        put_u32le(e + 0, name_off[i]);
+        put_u32le(e + 4, 0);
+        put_u64le(e + 8, (uint64_t)moff[i]);
+        put_u64le(e + 16, (uint64_t)blobs[i].len);
+    }
+    memcpy(buf + strtab_off, strtab.data, strtab.len);
+    for (int i = 0; i < n; ++i) {
+        if (blobs[i].len) { memcpy(buf + moff[i], blobs[i].data, blobs[i].len); }
+    }
+
+    int wrc = write_file(out_path, (const char *)buf, total);
+
+    for (int i = 0; i < n; ++i) { byte_buf_free(&blobs[i]); }
+    free(blobs);
+    byte_buf_free(&strtab);
+    free(name_off);
+    free(moff);
+    free(buf);
+    return wrc == 0 ? 0 : -1;
+}
+
+/* Process-wide memo (decision D4): within one mzcc process (a batch build), the
+   archive key is stable across programs, so hash-and-check once and reuse the
+   built archive rather than re-hashing the RT tree for all 42 programs. */
+static char *g_rt_archive_key = NULL;
+static char *g_rt_archive_path = NULL;
+
+static void remember_archive(const char *key, const char *path) {
+    free(g_rt_archive_key);
+    g_rt_archive_key = xstrdup(key);
+    free(g_rt_archive_path);
+    g_rt_archive_path = xstrdup(path);
+}
+
+/* Ensure the prebuilt runtime archive exists and is current, and return a fresh
+   heap path to it (caller frees). Built lazily and idempotently, content
+   addressed on the RT source bytes + tool identities + canonical define set
+   (decision D4). On a warm build this is a key check plus a cache copy, so NO
+   cpp/mazm runs for any runtime source (the 473-spawn win). Requires
+   resolve_toolchain + ensure_scratch to have run. Returns NULL on failure. */
+static char *ensure_runtime_archive(void) {
+    char key[MZCC_SHA256_HEX_LEN + 1];
+    if (compute_runtime_archive_key(key) != 0) {
+        fprintf(stderr, "mzcc: could not derive the runtime-archive key "
+                        "(toolchain fingerprint or RT sources unavailable)\n");
+        return NULL;
+    }
+
+    if (g_rt_archive_key && strcmp(g_rt_archive_key, key) == 0
+            && g_rt_archive_path && path_exists(g_rt_archive_path)) {
+        return xstrdup(g_rt_archive_path);
+    }
+
+    char *scratch_mza = path_join(OBJ_DIR, "runtime.mza");
+
+    /* Content-addressed hit: link the cached archive without preprocessing or
+       compiling a single runtime source. */
+    if (mzcc_cache_enabled() && mzcc_cache_archive_lookup(key, scratch_mza)) {
+        remember_archive(key, scratch_mza);
+        return scratch_mza;
+    }
+
+    /* Miss (or object cache disabled): build the members ONCE, pack the .mza,
+       and (when caching) store it for every subsequent build. */
+    char **tags = NULL;
+    char **objs = NULL;
+    int n = 0;
+    if (build_archive_members(&tags, &objs, &n) != 0) {
+        fprintf(stderr, "mzcc: FAILED building the runtime archive members\n");
+        free(scratch_mza);
+        return NULL;
+    }
+    int wrc = write_runtime_archive(scratch_mza, tags, objs, n);
+    for (int i = 0; i < n; ++i) { free(tags[i]); free(objs[i]); }
+    free(tags);
+    free(objs);
+    if (wrc != 0) {
+        fprintf(stderr, "mzcc: FAILED writing the runtime archive\n");
+        free(scratch_mza);
+        return NULL;
+    }
+    if (mzcc_cache_enabled()) {
+        mzcc_cache_archive_store(key, scratch_mza);
+    }
+    remember_archive(key, scratch_mza);
+    return scratch_mza;
 }
 
 /* Resolve REPO_ROOT + RT_DIR once (idempotent). MAIZE_ROOT override, else two
@@ -1311,17 +1645,26 @@ int build_default_c_image(const char *preset, const BuildSpec *spec, const char 
         return 1;
     }
 
+    /* Prebuilt runtime archive first (maize-302): ensure it exists (built once,
+       cached), then pass it as the FIRST link input so mzld expands its members
+       in declared order ahead of the user objects, reproducing the from-source
+       layout (crt0/_start first, user code last). */
+    char *archive = ensure_runtime_archive();
+    if (!archive) { sl_free(&all_objs); return 1; }
+
     /* Link the default profile to the scratch image in canonical object order,
        then copy to out_path (mirroring the single-file path's
        link-to-scratch-then-copy, the maize-278 byte-parity shape). */
     Argv objs;
     av_init(&objs);
+    av_add(&objs, archive);
     for (int i = 0; i < all_objs.n; ++i) { av_add(&objs, all_objs.v[i]); }
     sl_free(&all_objs);
 
     char *mzx = path_join(SCRATCH_ROOT, "prog.mzx");
     int lrc = mzld_link(NULL, mzx, objs.v, objs.n);
     av_free(&objs);
+    free(archive);
     if (lrc != 0) { free(mzx); return 1; }
 
     char *odir = dir_of(out_path);
@@ -1598,10 +1941,22 @@ int main(int argc, char **argv) {
        object set + base; build-quesos's minimal profile slots into the same
        mzld_link (section 8). ------------------------------------------------ */
     char *mzx = path_join(SCRATCH_ROOT, "prog.mzx");
+    /* Prebuilt runtime archive first (maize-302): the runtime leaves the
+       per-program compile path and is linked from the prebuilt .mza, expanded by
+       mzld ahead of the user objects to reproduce the from-source layout. */
+    char *archive = ensure_runtime_archive();
+    if (!archive) {
+        sl_free(&all_objs);
+        byte_buf_free(&emit_body);
+        free(mzx);
+        return 1;
+    }
     Argv lav;
     av_init(&lav);
+    av_add(&lav, archive);
     for (int i = 0; i < all_objs.n; ++i) { av_add(&lav, all_objs.v[i]); }
     sl_free(&all_objs);
+    free(archive);
     if (mzld_link(NULL, mzx, lav.v, lav.n) != 0) {
         av_free(&lav);
         byte_buf_free(&emit_body);

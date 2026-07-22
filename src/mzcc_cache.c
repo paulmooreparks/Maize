@@ -184,9 +184,10 @@ void mzcc_cache_key(const char *preprocessed, size_t plen, const char *tag,
 
 /* ---- sharded path layout ----------------------------------------------- */
 
-/* <root>/<key[0:2]>/<key>.mzo, or NULL if the cache is off / rootless.
-   Fresh allocation. */
-static char *entry_path(const char *key) {
+/* <root>/<key[0:2]>/<key><ext>, or NULL if the cache is off / rootless. The ext
+   parameter (maize-302) namespaces the .mza runtime archive away from the .mzo
+   per-TU objects that share the key space. Fresh allocation. */
+static char *entry_path_ext(const char *key, const char *ext) {
     const char *root = cache_root();
     if (!root) {
         return NULL;
@@ -196,13 +197,13 @@ static char *entry_path(const char *key) {
     shard[1] = key[1];
     shard[2] = '\0';
     char *dir = joinstr(root, "/", shard, NULL);
-    char *p = joinstr(dir, "/", key, ".mzo");
+    char *p = joinstr(dir, "/", key, ext);
     free(dir);
     return p;
 }
 
-int mzcc_cache_lookup(const char *key, const char *dst_path) {
-    char *entry = entry_path(key);
+static int cache_lookup_ext(const char *key, const char *dst_path, const char *ext) {
+    char *entry = entry_path_ext(key, ext);
     if (!entry) {
         return 0;
     }
@@ -215,13 +216,29 @@ int mzcc_cache_lookup(const char *key, const char *dst_path) {
     return rc == 0 ? 1 : 0;
 }
 
+int mzcc_cache_lookup(const char *key, const char *dst_path) {
+    return cache_lookup_ext(key, dst_path, ".mzo");
+}
+
+int mzcc_cache_archive_lookup(const char *key, const char *dst_path) {
+    return cache_lookup_ext(key, dst_path, ".mza");
+}
+
+int mzcc_cache_fingerprint(uint8_t out[MZCC_SHA256_DIGEST_LEN]) {
+    if (!g_fp_valid) {
+        return 0;
+    }
+    memcpy(out, g_fingerprint, sizeof(g_fingerprint));
+    return 1;
+}
+
 /* ---- atomic store ------------------------------------------------------ */
 /* g_store_mtx itself is declared up top (forward-declared for the
    mzcc_cache_configure warm-init); only the write-counter is local here. */
 
 static unsigned long g_store_ctr = 0;
 
-int mzcc_cache_store(const char *key, const char *src_path) {
+static int cache_store_ext(const char *key, const char *src_path, const char *ext) {
     const char *root = cache_root();
     if (!root) {
         return -1;
@@ -235,7 +252,7 @@ int mzcc_cache_store(const char *key, const char *src_path) {
     if (!path_exists(dir)) {
         mkdir_p(dir);
     }
-    char *final = joinstr(dir, "/", key, ".mzo");
+    char *final = joinstr(dir, "/", key, ext);
 
     /* Already present (another writer of the same key won; identical bytes):
        nothing to do. */
@@ -295,4 +312,12 @@ int mzcc_cache_store(const char *key, const char *src_path) {
     }
     free(tmp); free(final);
     return 0;
+}
+
+int mzcc_cache_store(const char *key, const char *src_path) {
+    return cache_store_ext(key, src_path, ".mzo");
+}
+
+int mzcc_cache_archive_store(const char *key, const char *src_path) {
+    return cache_store_ext(key, src_path, ".mza");
 }

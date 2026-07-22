@@ -54,4 +54,20 @@ int mzcc_cache_lookup(const char *key, const char *dst_path);
    success, -1 on any failure (the caller ignores the result). */
 int mzcc_cache_store(const char *key, const char *src_path);
 
+/* maize-302: expose the memoized toolchain fingerprint (the 32 raw digest bytes
+   over cproc-qbe || qbe || mazm || mzcc-self) so the prebuilt-runtime-archive
+   builder content-addresses the .mza on the SAME tool identities as the per-TU
+   object cache. Fills `out` and returns 1 once mzcc_cache_configure has run
+   (which resolve_toolchain always does, even with the object cache disabled);
+   returns 0 if the fingerprint is not yet valid. */
+int mzcc_cache_fingerprint(uint8_t out[MZCC_SHA256_DIGEST_LEN]);
+
+/* maize-302: prebuilt-runtime-archive (.mza) variants of lookup/store. Same
+   atomic, best-effort, cache-root semantics as the .mzo entry points, but keyed
+   to a distinct on-disk extension so an archive artifact never aliases a per-TU
+   object entry. Honor MAIZE_NO_OBJECT_CACHE exactly as the .mzo entry points do
+   (the caller checks mzcc_cache_enabled() before reaching these). */
+int mzcc_cache_archive_lookup(const char *key, const char *dst_path);
+int mzcc_cache_archive_store(const char *key, const char *src_path);
+
 #endif /* MZCC_CACHE_H */
