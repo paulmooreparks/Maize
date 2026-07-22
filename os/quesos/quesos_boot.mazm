@@ -64,6 +64,15 @@ EXTERN g_current               ; quesos.c: struct pcb * of the running process
 _start:
     LD  @RS R0                 ; R0 = argc            = [RS]
     LEA $08 RS R1              ; R1 = argv (&argv[0]) = RS + 8
+    ; maize-287: compute envp exactly the way crt0.mazm does, so the kernel's entry
+    ; and the ordinary-program entry cannot drift. The launcher start block is
+    ; [argc][argv..][NULL][envp..][NULL], so envp = argv + (argc+1)*8. R2 is not
+    ; touched by the trap-table installs or the stack switch below, so it survives
+    ; to the CALL as quesos_main's third argument.
+    CP  R0 R2                  ; R2 = argc
+    INC R2                     ; R2 = argc + 1        (skip argv[] and its NULL)
+    SHL $03 R2                 ; R2 = (argc + 1) * 8  (bytes to skip)
+    LEA R2 R1 R2               ; R2 = envp            = argv + (argc+1)*8
 
     ; Install the cause-7 handler at trap-vector-table entry 7 (0x1000 + 7*8 = 0x1038).
     CP  quesos_syscall_handler R3
@@ -96,7 +105,7 @@ _start:
     ADD $00010000 R3
     CP  R3 SP
 
-    CALL quesos_main                ; quesos_main(R0=argc, R1=argv); never returns
+    CALL quesos_main                ; quesos_main(R0=argc, R1=argv, R2=envp); never returns
     HALT                            ; safety net (unreachable)
 
 ; ----------------------------------------------------------------------------------

@@ -679,16 +679,71 @@ static int  g_arg_argc;                   /* number of argv strings (offsets [0,
 static int  g_arg_envc;                   /* number of envp strings ([argc, argc+envc)) */
 static u64  g_arg_pack;                   /* total bytes packed into g_arg_strbuf       */
 
-/* Single-argument marshal: argv = { path }, empty envp. */
+/* maize-287: the launcher environment, copied out of the boot start block into
+ * kernel-owned storage at quesos_main entry (the source lives in the launcher
+ * stack region, which child stack builds may reuse; same tear-down discipline as
+ * the worklist path copy into g_pathbuf). marshal_single seeds every top-level
+ * worklist program from this copy, so `maize --env K=V build/quesos.mzx prog`
+ * delivers K=V to prog. Caps: at most QUESOS_MAX_ENV entries and QUESOS_ENVBUF
+ * packed bytes; on overflow WHOLE entries are dropped (never a mid-string
+ * truncation, which would silently corrupt a value) and one boot warning names
+ * the dropped count. */
+#define QUESOS_MAX_ENV   (QUESOS_MAX_ARG - 1)   /* worklist marshal is 1 arg + envc; keep 1+envc <= MAX_ARG */
+#define QUESOS_ENVBUF    QUESOS_ARGBUF
+static char g_boot_envbuf[QUESOS_ENVBUF];   /* packed NUL-terminated K=V strings */
+static u64  g_boot_env_off[QUESOS_MAX_ENV]; /* byte offset of each string        */
+static int  g_boot_envc;                    /* copied entry count                */
+
+static void boot_env_capture(char **envp) {
+    u64 pack = 0;
+    int dropped = 0;
+    g_boot_envc = 0;
+    if (envp == 0) { return; }
+    while (envp[g_boot_envc + dropped] != 0) {
+        const char *src = envp[g_boot_envc + dropped];
+        u64 len = qos_strlen(src) + 1;
+        u64 k;
+        if (g_boot_envc >= QUESOS_MAX_ENV || pack + len > QUESOS_ENVBUF) {
+            ++dropped;      /* drop the WHOLE entry; keep counting for the warning */
+            continue;
+        }
+        for (k = 0; k < len; ++k) { g_boot_envbuf[pack + k] = src[k]; }
+        g_boot_env_off[g_boot_envc] = pack;
+        pack += len;
+        ++g_boot_envc;
+    }
+    if (dropped > 0) {
+        qos_puts("[quesos] warning: launcher environment truncated; dropped ");
+        qos_put_u64((u64)dropped);
+        qos_puts(" entries over the env caps\n");
+    }
+}
+
+/* Single-argument marshal: argv = { path }; envp = the captured launcher
+ * environment (maize-287; previously hard-coded empty). */
 static void marshal_single(const char *path) {
     u64 len = qos_strlen(path) + 1;
     u64 k;
+    int e;
     if (len > QUESOS_ARGBUF) { len = QUESOS_ARGBUF; }
     for (k = 0; k < len; ++k) { g_arg_strbuf[k] = path[k]; }
     g_arg_off[0] = 0;
     g_arg_pack = len;
     g_arg_argc = 1;
     g_arg_envc = 0;
+    /* Seed the launcher environment behind argv[0]. Entries that no longer fit
+     * beside the path (argbuf shared with the path string) are dropped whole;
+     * capture already warned once at boot, so this stays silent. */
+    for (e = 0; e < g_boot_envc; ++e) {
+        const char *src = g_boot_envbuf + g_boot_env_off[e];
+        u64 elen = qos_strlen(src) + 1;
+        if (1 + g_arg_envc >= QUESOS_MAX_ARG) { break; }
+        if (g_arg_pack + elen > QUESOS_ARGBUF) { break; }
+        for (k = 0; k < elen; ++k) { g_arg_strbuf[g_arg_pack + k] = src[k]; }
+        g_arg_off[1 + g_arg_envc] = g_arg_pack;
+        g_arg_pack += elen;
+        ++g_arg_envc;
+    }
 }
 
 /* Map the user stack region and lay out the SysV process-start block + a synthesized
@@ -3095,8 +3150,15 @@ void quesos_syscall(void) {
  * RS is on quesOS's private kernel stack. argv[1..] is the exec worklist; copy the paths
  * into kernel storage before any child stack is built.
  * ================================================================================== */
-void quesos_main(long argc, char **argv) {
+void quesos_main(long argc, char **argv, char **envp) {
     long i;
+
+    /* maize-287: copy the launcher environment into kernel storage FIRST, before
+     * the worklist path copies and long before any child stack is built; the envp
+     * strings live in the boot start block, whose region is not preserved once
+     * user stacks are mapped. quesos_boot.mazm computes R2 = envp with the same
+     * recipe crt0 uses. */
+    boot_env_capture(envp);
 
     g_worklist_count = 0;
 
