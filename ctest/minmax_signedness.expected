@@ -1,0 +1,24 @@
+const_min: 9223372036854775807
+const_min correct: PASS
+runtime_min: 9223372036854775807
+runtime_min correct: PASS
+ll_max < ul_max: PASS
+ul_max < ll_max: PASS
+ll_max > ul_max: PASS
+ul_max > ll_max: PASS
+ll_max <= ul_max: PASS
+ul_max <= ll_max: PASS
+ll_max >= ul_max: PASS
+ul_max >= ll_max: PASS
+ul_zero < ll_max: PASS
+ll_max < ul_zero: PASS
+ul_zero < ul_max: PASS
+ul_max < ul_zero: PASS
+ll_five == ul_five (same value): PASS
+ll_five != ul_five (same value): PASS
+ll_zero == ul_zero: PASS
+ll_max == ul_max (different bits): PASS
+ll_max != ul_max (different bits): PASS
+(long long)-1 < (unsigned int)0u (signed, TRUE): PASS
+(unsigned int)0u < (long long)-1 (signed, FALSE): PASS
+minmax_signedness: PASS

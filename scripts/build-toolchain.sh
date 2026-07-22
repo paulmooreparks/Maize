@@ -176,9 +176,10 @@ build_native_windows() {
 # --- maize-263 C1: content-addressed toolchain binary cache ------------------------
 # cproc/qbe are pinned-submodule build products that every fresh worktree otherwise
 # cold-builds. Cache them keyed on the two submodule SHAs + the Maize QBE-target
-# overlay/patch content + compiler identity + platform (decision D7), so the key
-# rolls automatically on any submodule re-pin or overlay/patch edit (the maize-110
-# stale-patch footgun cannot recur: the registration patch is IN the key). A hit
+# overlay/patch content + the Maize cproc-patch overlay content (maize-297) +
+# compiler identity + platform (decision D7), so the key rolls automatically on any
+# submodule re-pin or overlay/patch edit (the maize-110 stale-patch footgun cannot
+# recur: the qbe registration patch AND every cproc patch are IN the key). A hit
 # copies the three binaries in and skips make/configure entirely; it still falls
 # through to the existing check_exe + `qbe -t maize` smoke check below, which
 # doubles as cache-integrity verification. MAIZE_NO_TOOLCHAIN_CACHE=1 forces a build.
@@ -187,6 +188,7 @@ build_native_windows() {
 # build-userland.sh), so a torn cache from an interrupted populate (binaries copied,
 # marker not yet written) is never mistaken for a hit.
 QBE_MAIZE_DIR="${REPO_ROOT}/toolchain/qbe-maize"
+CPROC_PATCH_DIR="${REPO_ROOT}/toolchain/cproc-patches"
 TOOLCHAIN_CACHE_ROOT="${MAIZE_TOOLCHAIN_CACHE:-$HOME/.cache/maize/toolchain}"
 
 # Resolve a cached/produced binary tolerating a .exe suffix; echo the real path
@@ -220,6 +222,18 @@ toolchain_cache_key() {
         for _f in all.h targ.c abi.c isel.c emit.c data.c qbe-registration.patch; do
             cat "${QBE_MAIZE_DIR}/${_f}" 2>/dev/null || true
         done
+        # maize-297: fold the cproc source-patch overlay content into the key so a
+        # cached pre-patch cproc-qbe is never served as a false hit once a patch
+        # under toolchain/cproc-patches/ lands or changes (same maize-110 footgun
+        # the qbe-registration.patch hashing above already guards against). Sort
+        # by FILENAME (not the concatenated content) so the key is stable
+        # regardless of glob/filesystem ordering, without reordering the bytes
+        # within any one patch.
+        if [ -d "${CPROC_PATCH_DIR}" ]; then
+            find "${CPROC_PATCH_DIR}" -maxdepth 1 -name '*.patch' 2>/dev/null | LC_ALL=C sort | while IFS= read -r _f; do
+                cat "${_f}" 2>/dev/null || true
+            done
+        fi
         command -v "${CC}" 2>/dev/null || printf '%s\n' "${CC}"
         "${CC}" --version 2>/dev/null | head -1 || true
         uname -s
@@ -265,6 +279,15 @@ else
     # before the build, keeping the submodule pinned at its upstream commit.
     echo "=== overlaying Maize qbe target ==="
     "${SCRIPT_DIR}/apply-maize-qbe-target.sh"
+
+    # Apply the Maize cproc source-patch overlay (maize-297): small, targeted
+    # frontend correctness fixes carried as patch files under
+    # toolchain/cproc-patches/, applied here before either build branch below so
+    # both the make/configure path and the native-Windows clang-direct path pick
+    # up the patched sources (both compile the submodule's type.c in place).
+    # Keeps the cproc submodule pinned pristine, mirroring the qbe overlay above.
+    echo "=== overlaying Maize cproc patches ==="
+    "${SCRIPT_DIR}/apply-cproc-patches.sh"
 
     if [ "$NATIVE_WINDOWS" -eq 1 ]; then
         build_native_windows
