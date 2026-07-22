@@ -1,6 +1,7 @@
 # JIT: Tier-Up of Hot Blocks from the Interpreter
 
-Status: design draft, awaiting adversarial review. Umbrella card: maize-181.
+Status: design, revised after adversarial review (maize-181 comment #3178).
+Umbrella card: maize-181.
 This document is the architecture of record for the JIT campaign. It defines
 what the compiled tier must beat, the block model, the correctness contracts
 it inherits, and a measure-gated phase sequence in the pattern of the
@@ -21,6 +22,10 @@ near its floor. Interpreter time lives in handler bodies.
 The maize-317 callgrind attribution (hosted CPU-bound workload, 52.1B host
 instructions for 186M guest instructions, about 280 host instructions per
 guest instruction) breaks those bodies down:
+
+The percentages are callgrind_annotate SELF (exclusive) Ir shares, so the
+rows do not double-count one another; `tick()`'s row excludes the time spent
+inside the helpers it calls.
 
 - `tick()` itself, 31.6 percent: operand decode, subregister mask selection,
   and the branchy per-opcode plumbing that runs before any semantic work.
@@ -81,26 +86,71 @@ size cap.
 ### 3.2 Self-modifying code invalidates by page
 
 Any write into a page that holds compiled blocks invalidates that page's
-blocks. The write sources are enumerable and few: guest stores all funnel
-through `memory_module::write_bytes` and its width-specialized siblings, and
-host-side writers (the $F4/$F5 bulk accelerators, hostfs reads into guest
-memory, the loader, device DMA into the framebuffer region) go through the
-memory module's host-facing entry points. A per-page generation bitmap makes
-the check one test on the write path for pages with no compiled code, which
-is almost all of them. The committed contract fixture is
-`asm/test_selfmod.mzb` (both runners); it was landed for exactly this moment
-during the maize-307 spike.
+blocks, and the check keys on PHYSICAL addresses, which is where the
+platform's conventions make every writer visible. Guest stores reach memory
+through the memory module's write seams after `translate()` has already
+produced a physical address. Host-side writers (the $F3/$F4/$F5 native
+accelerators, the hostfs read and getdents and stat copies in `src/sys.cpp`)
+receive flat PHYSICAL addresses by platform convention: under quesOS the
+guest kernel translates user VAs before forwarding (the maize-247
+`do_bulk_*` pattern), and a bare-mode guest's addresses are identity. The
+adversarial review verified there are exactly three write seams in today's
+code, not one, so the generation-bitmap check is installed at each of the
+three, and adding a fourth seam without the check is the named regression
+risk in section 7. A per-page generation bitmap makes the check one test on
+the write path for pages with no compiled code, which is almost all of them.
+The review also found that the framebuffer device only READS guest memory
+(`mm.read_into` in `src/devices.cpp`); no device-DMA write path into guest
+memory exists today, and this document stops claiming one.
+
+The committed fixture `asm/test_selfmod.mazm` pins the architectural contract
+but executes its target only twice, far below any plausible hotness
+threshold, so as it stands it never exercises a compiled block. J2's
+acceptance criteria include a hot variant (execute the target past the
+threshold, patch it through each of the three write seams in turn, and
+verify the re-executed result), and J3 extends it with a chained-successor
+variant for the unlink contract below.
+
+### 3.2a Chained jumps unlink on invalidation
+
+Direct chaining patches a block's exit jump to its compiled successor, and
+that patched link is a second copy of the successor's identity that the
+page-generation bitmap alone cannot see (the known QEMU tb_invalidate
+gotcha the review raised). Every block therefore keeps a list of its
+incoming chain links, and invalidating a block walks that list and restores
+each predecessor's exit to the lookup stub before the block is discarded.
+Chaining and unlinking land together in J3 as one unit; a chained
+successor is never created before its unlink bookkeeping exists.
+
+### 3.2b Indirect transfers go through the central lookup
+
+Returns, calls through registers, and computed jumps cannot chain
+statically, and the cc-self-compile workloads this campaign targets are
+full of them. Their path is the central block table: an open-addressed hash
+on (physical entry, privilege), sized for the code cache's block budget,
+probed by a short inline sequence at each indirect exit. J0 measures the
+dynamic frequency of indirect transfers alongside block shape so the cost
+model for this path rests on data; if indirect exits dominate, a small
+per-site last-target cache (one compare before the hash probe) is the
+planned second step, and it is cut from J3 if the J0 numbers say it is not
+needed.
 
 ### 3.3 Interrupts and the timer stay boundary-precise
 
-The interpreter checks interrupt delivery at instruction boundaries; compiled
-code checks at block boundaries and at backward branches (the loop backedge is
-the case that matters). The instruction-count timer decrements against a
-budget in the CPU context, so a 250,000-instruction slice (maize-319) spans
-many blocks and the per-block cost is one decrement and branch. This coarsens
-delivery granularity from one instruction to one block, which the platform
-already tolerates: nothing in quesOS or the device model depends on
-sub-block interrupt latency, and the block-size cap bounds the worst case.
+The interpreter checks interrupt delivery at instruction boundaries;
+compiled code checks at block exits. A block ends at EVERY control transfer,
+backward ones included, so no block contains an internal loop and the
+"backedge check" is simply the exit check of a block whose chain target lies
+behind it; coverage numbers are unaffected because a hot loop body is a hot
+block re-entered through its chain. The instruction-count timer decrements
+against a budget in the CPU context, so a 250,000-instruction slice
+(maize-319) spans many blocks and the per-block cost is one decrement and
+branch. Delivery granularity coarsens from one instruction to one block,
+bounded by the block-size cap at 512 guest instructions (and by the page
+boundary, whichever is first): worst-case added interrupt latency is 512
+guest instructions, under ten microseconds at 60 MIPS, invisible next to
+the 4 ms timer slice and irrelevant to the IRQ-driven console and keyboard
+paths, which are already only boundary-precise today.
 
 ### 3.4 Faults need the precise guest PC
 
@@ -170,10 +220,13 @@ instruction count is known at compile time and added at block entry.
   workloads (if it is lower, the block model is wrong and the design returns
   here).
 - J1, minimal emitter, Bare mode only. Straight-line ALU, CP/LD/ST, and
-  conditional branches; everything else exits the block. Gate: a measured
-  MIPS multiple on doom_bench or a synthetic compute benchmark (target at
-  least 2x on the covered subset; if the template tier cannot beat 2x on its
-  best case, stop and re-plan).
+  conditional branches; everything else exits the block. Gate: at least 2x
+  END-TO-END wall-clock on a named benchmark (doom_bench headless), with the
+  covered dynamic-instruction fraction reported alongside the multiple. The
+  gate cannot be met by a synthetic microbenchmark; the covered fraction is
+  reported precisely so a low-coverage-high-multiple result reads as the
+  failure it is, and if end-to-end 2x is out of reach the stream stops for
+  re-planning.
 - J2, hosted correctness. Physical keying, the invalidation bitmap across
   all write sources, inline Sv48 fast-page checks, fault-PC side tables.
   Gate: full asm and C suites green including test_selfmod and the quesOS
@@ -191,10 +244,16 @@ predecode tier in one cheap spike instead of a long build.
 ## 7. Risks, named
 
 - Invalidation completeness is the correctness risk: a missed host-side write
-  path (a future device, a new accelerator) silently executes stale code.
-  Mitigation: the generation-bitmap check lives inside the memory module's
-  write choke points, not at call sites, and test_selfmod plus a new
-  bulk-write-over-code fixture pin the contract.
+  path (a future device, a new accelerator, a fourth write seam added without
+  the check) silently executes stale code. Mitigation: the generation-bitmap
+  check lives inside the memory module's three existing write seams, not at
+  call sites; the J2 hot-selfmod fixture patches code through each seam in
+  turn; and the seam count is asserted in review whenever the memory module
+  changes.
+- Chain-unlink bookkeeping is the second correctness risk, because a stale
+  chained jump bypasses the block table entirely. Mitigation: chaining and
+  unlinking are one J3 unit, and the J3 fixture variant invalidates a block
+  that has live predecessors.
 - Compile-time regressions on churny code (a shell forking short-lived
   children whose code compiles and is thrown away) are the performance risk.
   Mitigation: the hotness threshold, physical keying (fork children share the
