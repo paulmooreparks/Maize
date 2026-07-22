@@ -970,6 +970,19 @@ function Invoke-MmuMzdisTest {
     return [pscustomobject]@{ Name = $name; Pass = $identical; Expected = 'reassembled .mzb byte-identical to original'; Actual = if ($identical) { 'byte-identical' } else { 'content differs' } }
 }
 
+# maize-261 profiler smoke: --profile prints a report on stderr at exit; require the
+# header plus at least one sample row against the committed hello baseline.
+function Invoke-ProfileSmokeTest {
+    $name = 'profile_smoke'
+    $binPath = Join-Path $AsmDir 'hello.mzb'
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $out = (& $MaizeExe --profile=64 --no-root $binPath 2>&1) | Out-String
+    $ErrorActionPreference = $prevEap
+    $pass = ($out -match 'profile report \(') -and ($out -match '%\s+\d')
+    return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = 'profile report header + at least one sample row'; Actual = if ($pass) { 'report present' } else { ($out -split "`n" | Select-Object -Last 2) -join ' | ' } }
+}
+
 function Invoke-MzdisReservedTest {
     $name = 'mzdis_reserved_resync'
     $srcPath = Join-Path $AsmDir 'test_mzdis_reserved.mazm'
@@ -1149,6 +1162,7 @@ $results += Invoke-MzdisRoundtripTest
 $results += Invoke-MmuMzdisTest
 $results += Invoke-MzdisRtSymbolicTest
 $results += Invoke-MzdisReservedTest
+$results += Invoke-ProfileSmokeTest
 $results += Invoke-MzdisTruncatedTest
 $results += Invoke-MzdisMzoRejectTest
 $results += Invoke-MzdisMzxTest

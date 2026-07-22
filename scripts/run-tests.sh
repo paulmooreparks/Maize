@@ -1471,12 +1471,31 @@ run_mzdis_mzx_test() {
     fi
 }
 
+# maize-261 profiler smoke: --profile samples the guest PC and prints a report on
+# stderr at exit. Run the committed hello baseline under a tight interval and require
+# the report header plus at least one sample row.
+run_profile_smoke_test() {
+    name="profile_smoke"
+    TOTAL=$((TOTAL + 1))
+    prof_out=$("$MAIZE_EXE" --profile=64 --no-root "${ASM_DIR}/hello.mzb" 2>&1) || true
+    if printf '%s' "$prof_out" | grep -q 'profile report (' \
+        && printf '%s' "$prof_out" | grep -qE '%[[:space:]]+[0-9]'; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: profile report header + at least one sample row on stderr"
+        echo "        actual:   $(printf '%s' "$prof_out" | tail -2)"
+    fi
+}
+
 run_mzdis_roundtrip_test
 run_mzdis_rt_symbolic_test
 run_mzdis_reserved_test
 run_mzdis_truncated_test
 run_mzdis_mzo_reject_test
 run_mzdis_mzx_test
+run_profile_smoke_test
 
 # --- maize-253: SYS $F6 (sys_ttysize) reports the bound console device's geometry ------
 # One fixture (test_ttysize_console.mazm) issues SYS $F6 and prints

@@ -38,12 +38,15 @@ case "$UNAME" in
 esac
 
 OUT=""
+MAPOUT=""          # --map <path>: mzld symbol-map sidecar (profiling, maize-261)
 while [ $# -gt 0 ]; do
     case "$1" in
         --preset) PRESET="${2:-}"; shift 2 ;;
         --preset=*) PRESET="${1#--preset=}"; shift ;;
         -o) OUT="${2:-}"; shift 2 ;;
         -o*) OUT="${1#-o}"; shift ;;
+        --map) MAPOUT="${2:-}"; shift 2 ;;
+        --map=*) MAPOUT="${1#--map=}"; shift ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -163,7 +166,9 @@ fi
 # --- Link at the non-default base. Entry is _start (mzld default), defined by
 #     quesos_boot.mzo. -------------------------------------------------------------
 out_dir=$(dirname "$OUT"); [ -d "$out_dir" ] || mkdir -p "$out_dir"
-if ! "$MZLD" -b "$QUESOS_BASE" -o "$OUT" \
+MAP_ARGS=""
+if [ -n "$MAPOUT" ]; then MAP_ARGS="--map $MAPOUT"; fi
+if ! "$MZLD" $MAP_ARGS -b "$QUESOS_BASE" -o "$OUT" \
         "${WORK}/quesos_boot.mzo" "${WORK}/syscall.mzo" "${WORK}/quesos.body.mzo" \
         >"${WORK}/quesos.mzld.log" 2>&1 || [ ! -f "$OUT" ]; then
     echo "mzld failed:" >&2; cat "${WORK}/quesos.mzld.log" >&2; exit 1

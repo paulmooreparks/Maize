@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <filesystem>
+#include <map>
 #include <vector>
 #include <iostream>
 #include <fstream>
@@ -200,6 +202,11 @@ static void print_usage(std::ostream &out) {
 		"      --mount-home[=HOST]    map the host home to /home/user, read-write\n"
 		"      --root <hostpath>      use this host dir as the sandbox root instead\n"
 		"                             of the default ~/.maize/root\n"
+		"      --profile[=N]          sample where the program spends its time (every\n"
+		"                             N instructions, default 4096) and print a report\n"
+		"                             at exit; add --profile-map for function names\n"
+		"      --profile-map <path>   symbol map for --profile (write one at link time\n"
+		"                             with `mzld --map <path>`)\n"
 		"      --no-root              disable the sandbox root; the guest starts with\n"
 		"                             an empty filesystem (only explicit --mount grants)\n"
 		"  --                         end options; the next token is <image>\n"
@@ -907,6 +914,8 @@ int main(int argc, char *argv[]) {
 	bool console_dump = false;       // --console-dump: bind the text console headlessly and
 	                                 // dump its grid at exit (headless CI self-check channel)
 	bool show_perf = false;          // --show-perf: draw guest MIPS + FPS in the window corner
+	bool profile_enabled = false;    // --profile[=N]: sample the guest PC every N instructions (maize-261)
+	std::vector<std::pair<maize::u_word, std::string>> profile_map;   // --profile-map rows, sorted by address
 	bool pause_on_halt = false;      // --pause-on-halt: hold the window open after the guest halts
 	bool vsync = true;               // --vsync/--no-vsync: sync graphics presents to the monitor vblank (maize-227)
 	/* maize-236: framebuffer registration-table host policy knobs (device supports both;
@@ -1216,6 +1225,43 @@ int main(int argc, char *argv[]) {
 			cpu::enable_perf_counter();
 			presenter_transport::set_spawn_show_perf(true);
 			++idx;
+			continue;
+		}
+		if (arg == "--profile" || arg.rfind("--profile=", 0) == 0) {
+			/* maize-261: sample where the program spends its time. Every N executed
+			   instructions (default 4096) the current instruction address is recorded;
+			   a sorted report prints when the program ends. Pair with --profile-map
+			   (a map file from `mzld --map`) to see function names instead of raw
+			   addresses. */
+			unsigned long long interval = 4096;
+			if (arg.size() > 10) {
+				try { interval = std::stoull(arg.substr(10)); } catch (...) { interval = 4096; }
+			}
+			profile_enabled = true;
+			cpu::enable_profile(static_cast<maize::u_word>(interval));
+			++idx;
+			continue;
+		}
+		if (arg == "--profile-map" && idx + 1 < argc) {
+			/* Load the `mzld --map` sidecar: "0x<address> <name>" per line. */
+			std::ifstream mf(argv[idx + 1]);
+			if (!mf.is_open()) {
+				std::cerr << "maize: cannot open profile map '" << argv[idx + 1] << "'" << std::endl;
+				return 2;
+			}
+			std::string mline;
+			while (std::getline(mf, mline)) {
+				std::size_t sp = mline.find(' ');
+				if (sp == std::string::npos || sp == 0) { continue; }
+				try {
+					maize::u_word a = std::stoull(mline.substr(0, sp), nullptr, 16);
+					std::string nm = mline.substr(sp + 1);
+					while (!nm.empty() && (nm.back() == '\r' || nm.back() == '\n')) { nm.pop_back(); }
+					if (!nm.empty()) { profile_map.emplace_back(a, nm); }
+				} catch (...) { continue; }
+			}
+			std::sort(profile_map.begin(), profile_map.end());
+			idx += 2;
 			continue;
 		}
 		if (arg == "--fb-no-display") {
@@ -1818,6 +1864,55 @@ int main(int argc, char *argv[]) {
 	   omitted here. Goes to stderr so it never pollutes the guest's stdout (safe under pipes). */
 	if (show_perf && !used_display) {
 		maize::perf::emit(std::cerr);
+	}
+
+	/* maize-261: the sampling-profiler report. Aggregates the sampled-PC histogram by
+	   nearest-preceding symbol from the --profile-map sidecar (mzld --map), or by
+	   256-byte address block when no map was given. stderr, beside the perf report. */
+	if (profile_enabled) {
+		const auto& hist = cpu::profile_histogram();
+		std::uint64_t total = 0;
+		for (const auto& kv : hist) { total += kv.second; }
+		std::cerr << "\nmaize: profile report (" << total << " samples)\n";
+		if (total > 0) {
+			/* Aggregate. Map rows are sorted by address; resolve = last row <= pc. */
+			std::map<std::string, std::uint64_t> by_name;
+			for (const auto& kv : hist) {
+				if (!profile_map.empty()) {
+					auto it = std::upper_bound(profile_map.begin(), profile_map.end(),
+						std::make_pair(kv.first, std::string("\x7f")));
+					if (it != profile_map.begin()) {
+						--it;
+						by_name[it->second] += kv.second;
+					} else {
+						by_name["(below first symbol)"] += kv.second;
+					}
+				} else {
+					char blk[24];
+					std::snprintf(blk, sizeof blk, "0x%012llx",
+						static_cast<unsigned long long>(kv.first & ~0xFFull));
+					by_name[blk] += kv.second;
+				}
+			}
+			std::vector<std::pair<std::string, std::uint64_t>> rows(by_name.begin(), by_name.end());
+			std::sort(rows.begin(), rows.end(),
+				[](const auto& a, const auto& b) { return a.second > b.second; });
+			std::uint64_t cum = 0;
+			std::size_t shown = 0;
+			for (const auto& r : rows) {
+				if (shown++ >= 40) { break; }
+				cum += r.second;
+				char line[160];
+				std::snprintf(line, sizeof line, "  %6.2f%%  %6.2f%%  %10llu  %s\n",
+					100.0 * static_cast<double>(r.second) / static_cast<double>(total),
+					100.0 * static_cast<double>(cum) / static_cast<double>(total),
+					static_cast<unsigned long long>(r.second), r.first.c_str());
+				std::cerr << line;
+			}
+			if (rows.size() > 40) {
+				std::cerr << "  ... " << (rows.size() - 40) << " more rows\n";
+			}
+		}
 	}
 #ifdef __linux__
 	/* maize-140: the trailing-newline convenience (a Linux-only readability nicety on

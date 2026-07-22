@@ -1110,6 +1110,8 @@ namespace maize {
 		void run();
 		void power_off();
 		void enable_perf_counter();   // --show-perf: start counting guest instructions
+		void enable_profile(u_word interval);   // --profile: sample RP every `interval` instructions (maize-261)
+		const std::unordered_map<u_word, std::uint64_t>& profile_histogram();   // sampled PC -> hits
 		u_word instruction_count();   // running guest-instruction count (for MIPS)
 
 		/* Extract the zero-extended value of a named subregister from a port operand.

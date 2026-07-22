@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -255,6 +256,8 @@ static void print_usage(std::ostream &out) {
 		"options:\n"
 		"  -o <out.mzx>   output path for the linked executable (default: a.mzx)\n"
 		"  -e <entry>     entry-point symbol name (default: _start)\n"
+		"  --map <path>   also write a map file: one '0x<address> <name>' line per\n"
+		"                 defined symbol, sorted by address (for profiling tools)\n"
 		"  -b <hex>       link base address in hex (default: 2000)\n"
 		"  -h, --help     show this help and exit\n"
 		"\n"
@@ -264,6 +267,7 @@ static void print_usage(std::ostream &out) {
 int main(int argc, char *argv[]) {
 	std::string out_path = "a.mzx";
 	std::string entry_name = "_start";
+	std::string map_path;              /* --map <path>: write an address/name sidecar */
 	std::vector<std::string> inputs;
 	/* card maize-24 (decision D8): the link base defaults to 0x2000 (see the layout
 	   comment below), overridable with -b <hex> so a resident image such as quesOS can
@@ -281,6 +285,9 @@ int main(int argc, char *argv[]) {
 		}
 		else if (arg == "-e" && i + 1 < argc) {
 			entry_name = argv[++i];
+		}
+		else if (arg == "--map" && i + 1 < argc) {
+			map_path = argv[++i];
 		}
 		else if (arg == "-b" && i + 1 < argc) {
 			std::string v = argv[++i];
@@ -500,6 +507,41 @@ int main(int argc, char *argv[]) {
 		}
 		if (!found) {
 			return fail("entry symbol '" + entry_name + "' is unresolved");
+		}
+	}
+
+	/* --map: write the address/name sidecar for profilers and debuggers. One line per
+	   DEFINED GLOBAL symbol at its final linked address, sorted ascending:
+	   "0x<addr> <name>". Globals only: local labels (assembler block labels, qbe's
+	   Lm* jump targets) would win nearest-preceding resolution and shred a profile
+	   into meaningless per-block rows; function-granularity attribution is the point.
+	   A static C function therefore aggregates into the preceding global. */
+	if (!map_path.empty()) {
+		std::vector<std::pair<std::uint64_t, const std::string*>> map_rows;
+		for (const auto &obj : objects) {
+			for (const auto &sym : obj.symbols) {
+				if (sym.section_index == SHN_UNDEF || sym.section_index >= obj.sections.size()) {
+					continue;
+				}
+				if (sym.name.empty() || sym.binding != BIND_GLOBAL) {
+					continue;
+				}
+				map_rows.emplace_back(obj.sections[sym.section_index].vaddr + sym.value, &sym.name);
+			}
+		}
+		std::sort(map_rows.begin(), map_rows.end(),
+			[](const auto &a, const auto &b) {
+				return a.first != b.first ? a.first < b.first : *a.second < *b.second;
+			});
+		std::ofstream mf(map_path, std::ios::trunc);
+		if (!mf) {
+			return fail("cannot write map file '" + map_path + "'");
+		}
+		char buf[32];
+		for (const auto &row : map_rows) {
+			std::snprintf(buf, sizeof buf, "0x%016llx ",
+				static_cast<unsigned long long>(row.first));
+			mf << buf << *row.second << "\n";
 		}
 	}
 

@@ -1512,6 +1512,19 @@ namespace maize {
             bool perf_count_enabled = false;
             u_word perf_insn_count = 0;
 
+            /* maize-261 sampling profiler: when profile_mask is nonzero, MAIZE_NEXT
+               samples current_instr_pc every (profile_mask + 1) executed instructions
+               (power of two) into the histogram. Rides inside the perf_count_enabled
+               branch, so the fully-disabled cost is zero and the show-perf-only cost is
+               one load + test. The histogram is exact sampled PCs; symbol aggregation
+               happens at report time against the mzld --map sidecar. */
+            u_word profile_mask = 0;                       /* 0 = profiling off */
+            std::unordered_map<u_word, std::uint64_t> profile_hist;
+
+            void profile_sample(u_word pc) {               /* out-of-line on purpose */
+                ++profile_hist[pc];
+            }
+
             /* Multi-slot interrupt controller state (card maize-21 lineage; maize-240
                replaced the single-vector scalar latch with a per-vector pending mask).
                irq_pending is the atomic lock-free DELIVERY SUMMARY: true whenever any
@@ -4058,7 +4071,12 @@ namespace maize {
                 current_instr_pc = regs::rp.w0; \
                 mm.read(translate(regs::rp.w0, access_kind::fetch), regs::ri, subreg_enum::w0); \
                 ++regs::rp.w0; \
-                if (perf_count_enabled) { ++perf_insn_count; } \
+                if (perf_count_enabled) { \
+                    ++perf_insn_count; \
+                    if (profile_mask != 0 && (perf_insn_count & profile_mask) == 0) { \
+                        profile_sample(current_instr_pc); \
+                    } \
+                } \
                 goto *dtbl[regs::ri.b0()]; \
             } while (0)
 
@@ -5626,6 +5644,21 @@ namespace maize {
            unperturbed) and read the running guest-instruction count for the MIPS readout. */
         void enable_perf_counter() {
             perf_count_enabled = true;
+        }
+
+        /* maize-261: arm the sampling profiler. The interval rounds up to a power of
+           two (mask dispatch in MAIZE_NEXT); profiling implies the perf counter, whose
+           branch the sampler rides. */
+        void enable_profile(u_word interval) {
+            if (interval < 2) { interval = 2; }
+            u_word p2 = 1;
+            while (p2 < interval && p2 < (u_word {1} << 30)) { p2 <<= 1; }
+            profile_mask = p2 - 1;
+            perf_count_enabled = true;
+        }
+
+        const std::unordered_map<u_word, std::uint64_t>& profile_histogram() {
+            return profile_hist;
         }
 
         u_word instruction_count() {

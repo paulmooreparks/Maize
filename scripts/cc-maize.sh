@@ -162,6 +162,7 @@ PRESET="$DEFAULT_PRESET"
 MODE="compile"      # compile | build
 RUN=0               # -r / --run
 EMIT=0              # --emit
+MAPOUT=""           # --map <path>: forward to mzld (symbol map sidecar, maize-261)
 DEV=0               # --dev (append the mzdev device-access shim to the link, maize-121)
 EXTRA_CPPDEFS=""    # -D <name>[=val] cpp-define passthrough (maize-153); defaults empty so
                     # every existing caller's cpp command is byte-identical. Threaded into
@@ -175,6 +176,8 @@ while [ $# -gt 0 ]; do
         --build) MODE="build"; shift ;;
         -r|--run) RUN=1; shift ;;
         --emit) EMIT=1; shift ;;
+        --map) MAPOUT="${2:-}"; shift 2 ;;
+        --map=*) MAPOUT="${1#--map=}"; shift ;;
         --dev) DEV=1; shift ;;
         -D)  EXTRA_CPPDEFS="${EXTRA_CPPDEFS} -D $2"; shift 2 ;;   # -D <name>[=val] (maize-153)
         -D*) EXTRA_CPPDEFS="${EXTRA_CPPDEFS} $1";    shift ;;     # -D<name>[=val] (glued form)
@@ -540,7 +543,9 @@ EOF
     MZX="${WORK}/prog.mzx"
     # native_path()/native_path_list(): mzld/maize are native Windows binaries under
     # the windows-llvm-mingw preset (maize-257; see native_path's definition above).
-    if ! "$MZLD" -o "$(native_path "$MZX")" $(native_path_list "$RT_OBJS") $(native_path_list "$USER_OBJS") >"${WORK}/prog.mzld.log" 2>&1 || [ ! -f "$MZX" ]; then
+    MAP_ARGS=""
+    if [ -n "$MAPOUT" ]; then MAP_ARGS="--map $(native_path "$MAPOUT")"; fi
+    if ! "$MZLD" $MAP_ARGS -o "$(native_path "$MZX")" $(native_path_list "$RT_OBJS") $(native_path_list "$USER_OBJS") >"${WORK}/prog.mzld.log" 2>&1 || [ ! -f "$MZX" ]; then
         echo "cc-maize.sh: mzld failed linking the multi-source image" >&2
         cat "${WORK}/prog.mzld.log" >&2; exit 1
     fi
@@ -577,7 +582,9 @@ BODY_MZO=$(compile_tu "$SRC" "$base") || exit 1
 # mzld is a native Windows binary under the windows-llvm-mingw preset (maize-257; see
 # native_path's definition above).
 MZX="${WORK}/${base}.mzx"
-if ! "$MZLD" -o "$(native_path "$MZX")" $(native_path_list "$RT_OBJS") "$(native_path "$BODY_MZO")" >"${WORK}/${base}.mzld.log" 2>&1 || [ ! -f "$MZX" ]; then
+MAP_ARGS=""
+if [ -n "$MAPOUT" ]; then MAP_ARGS="--map $(native_path "$MAPOUT")"; fi
+if ! "$MZLD" $MAP_ARGS -o "$(native_path "$MZX")" $(native_path_list "$RT_OBJS") "$(native_path "$BODY_MZO")" >"${WORK}/${base}.mzld.log" 2>&1 || [ ! -f "$MZX" ]; then
     echo "cc-maize.sh: mzld failed for ${base}" >&2; cat "${WORK}/${base}.mzld.log" >&2; exit 1
 fi
 
