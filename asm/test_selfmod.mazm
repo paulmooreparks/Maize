@@ -1,0 +1,65 @@
+; **********************************************************************************
+; Self-modifying-code contract (filed from the maize-307 investigation).
+;
+; The Maize memory model has no I/D split and no required flush instruction: a
+; store into code bytes takes effect for the NEXT fetch of that address. Nothing
+; else in the asm suite exercises this, and any future decoded/JIT execution tier
+; must preserve it (a stale cached translation of patched code is the classic
+; JIT-correctness bug). This fixture calls a subroutine, overwrites the immediate
+; byte of an instruction inside it (CP $01 RV = $41 $00 $BE $01; the immediate
+; lives at patchme+3), calls it again, and requires the NEW behavior.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- 1. first call returns the original value 1 ----
+    CALL getval
+    CP RV R6                   ; R6 = first result (expect 1)
+
+    ; ---- 2. patch getval's immediate byte from $01 to $02 ----
+    CP patchme R2.H0           ; address of the CP instruction
+    ADD $03 R2                 ; +3 = the immediate byte within CP $imm8 RV
+    CP $02 R1
+    ST R1.B0 @R2               ; code write: must be visible to the next fetch
+
+    ; ---- 3. second call must execute the PATCHED instruction ----
+    CALL getval
+    CP RV R7                   ; R7 = second result (expect 2)
+
+    CP $01 R3
+    CMP R3 R6
+    JNZ fail
+    CP $02 R3
+    CMP R3 R7
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $0E R2                  ; 14 bytes
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $0E R2                  ; 14 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+getval:
+patchme:
+    CP $01 RV                  ; the $01 immediate byte (patchme+3) gets patched to $02
+    RET
+
+pass_string:
+    STRING "selfmod: PASS\n"
+
+fail_string:
+    STRING "selfmod: FAIL\n"

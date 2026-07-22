@@ -293,6 +293,9 @@ run_test "test_copywidth"    "test_copywidth.mazm"    "copywidth: PASS"         
 # (not a fixed 8 bytes). Hand-written sub-width regAddr ALU forms the backend never
 # emits, incl. a high-offset destination (R0.B3) that locks the offset-0 read landing.
 run_test "test_alu_memsrc_width" "test_alu_memsrc_width.mazm" "alu memsrc width: PASS"  0
+# Self-modifying-code contract (from the maize-307 investigation): a store into code
+# bytes takes effect for the NEXT fetch; any future decoded/JIT tier must preserve this.
+run_test "test_selfmod"      "test_selfmod.mazm"      "selfmod: PASS"                 0
 run_test "oob_subreg_guard"  "test_oob_subreg.mazm"   "oob subreg: PASS"              0
 run_test "reject_ld_value"   "test_reject_ldval.mazm" "reads from a memory address"   0 1
 run_test "test_ldz"          "test_ldz.mazm"          "ldz: PASS"                     0
