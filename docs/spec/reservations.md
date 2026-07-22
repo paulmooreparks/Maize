@@ -62,14 +62,13 @@ spare condition encodings that the Jcc / SETcc families left open, and the other
 
 After the floating-point claim, four base slots were earmarked to a known v1.x claimant
 class each, forming a labelled reservation band. Earmarking records intent only; it defines
-no encoding. Card maize-180 (the paging MMU foundation) has since landed the `$26` and `$28`
-claimants, so **two fully-free base slots remain** (`$37`, `$38`); the other two still decode
+no encoding. The `$26` and `$28` claimants (the paging MMU foundation) have since landed, so **two fully-free base slots remain** (`$37`, `$38`); the other two still decode
 as `reserved` until their owning extension lands.
 
 | Base slot | Reserved for | Status |
 |-----------|--------------|--------|
-| `$26` | Privileged control-register access mechanism (move-to / move-from control register) | **Landed** (card maize-180): MOVTCR `$26`/`$66`, MOVFCR `$A6` (`$E6` reserved) |
-| `$28` | Paging / MMU control (paging-enable, TLB-invalidate) | **Landed** (card maize-180): TLBINV `$28`, TLBINVA `$68` (`$A8`/`$E8` reserved). Paging-enable is a MOVTCR write to CR0.MODE, no dedicated opcode; the Sv48 walk stays reserved for maize-194 |
+| `$26` | Privileged control-register access mechanism (move-to / move-from control register) | **Landed:** MOVTCR `$26`/`$66`, MOVFCR `$A6` (`$E6` reserved) |
+| `$28` | Paging / MMU control (paging-enable, TLB-invalidate) | **Landed:** TLBINV `$28`, TLBINVA `$68` (`$A8`/`$E8` reserved). Paging-enable is a MOVTCR write to CR0.MODE, no dedicated opcode; the Sv48 walk itself is live |
 | `$37` | SMP and memory-ordering primitives (fences, acquire-release, LL-SC) | Reserved |
 | `$38` | Versioning and capability query hook | Reserved |
 
@@ -108,19 +107,26 @@ row `$E7`; the FGETCSR / FSETCSR upper
 rows `$95` and `$D5`; and the reserved FP rows `$E2`, `$F9`, `$BA`, `$FA`, `$B3`, `$F3`.
 
 The two spare rows of the `$24` INT slot, `$A4` and `$E4`, were allocated as the v1.x
-zero-operand pair SETSYSG / CLRSYSG (card maize-24): they set / clear the RF syscall-guest
+zero-operand pair SETSYSG / CLRSYSG: they set / clear the RF syscall-guest
 bit that selects whether `SYS` dispatches to the native provider (clear, the boot default)
 or traps through cause 7 to a guest-installed handler (set). This is a v1.x-compatible
 extension (default-clear preserves every v1.0 binary); it spends no fully-free base slot
-(the `$26` / `$28` control-register and MMU slots later landed via card maize-180, and
+(the `$26` / `$28` control-register and MMU slots have since landed, and
 `$37` / `$38` stay reserved for their v1.x claimants).
 
 The reserved CPZ address-form rows `$93` and `$D3` were spent as LDZ, the zero-extending
-load (card maize-204): LDZ reads N bytes (N = the destination subregister width) and
+load: LDZ reads N bytes (N = the destination subregister width) and
 zero-extends into the full register, sharing CPZ's base slot `$13` the way LD shares CP's
 `$01`. Unlike SETSYSG it is default-available (no opt-in bit) and is v1.x-compatible
 because no v1.0 binary can contain `$93` / `$D3`: both decoded as reserved /
-illegal-instruction from the removal of the original LDZ (card maize-29) until this spend.
+illegal-instruction from the removal of the original LDZ until this spend.
+
+The reserved PUSH-slot row `$A0` and the reserved `$32`-slot row `$B2` were spent as
+PUSHALL and POPALL, the zero-operand multi-register save and restore of the fixed
+thirteen-register process-context block (see the instruction reference for the block ABI). The spend follows the LDZ pattern exactly: in-family rows, no free base
+slot consumed (`$37` and `$38` keep their SMP and versioning earmarks), default-available,
+and v1.x-compatible because both rows decoded as reserved until this spend. The `$32`
+slot's remaining spare row `$F2` stays reserved.
 
 ## 2. Memory-ordering and atomics contract
 
@@ -284,10 +290,10 @@ field**. v1.0 therefore reserves a single privileged **control-register access m
 and its register-numbering space, defining nothing yet:
 
 - **The access mechanism** is a privileged move-to-control-register and move-from-control-
-  register pair, MOVTCR / MOVFCR at base slot `$26` (section 1). **Landed** by card maize-180:
+  register pair, MOVTCR / MOVFCR at base slot `$26` (section 1). **Landed:**
   executing either with the privilege bit clear raises the cause-4 privileged-operation fault.
-- **The numbering space** is a flat control-register index. Card maize-180 assigns the first
-  three: CR0 `SATP` (address-translation control), CR1 `FAULT_VA`, CR2 `FAULT_ERR`. Indices
+- **The numbering space** is a flat control-register index. The first
+  three are assigned: CR0 `SATP` (address-translation control), CR1 `FAULT_VA`, CR2 `FAULT_ERR`. Indices
   above 2 stay reserved for privileged control registers defined by later v1.x extensions
   (segment base/limit, thread pointer); a write to an unassigned index is discarded and a read
   yields 0, mirroring the unpopulated-port convention.
@@ -319,21 +325,21 @@ extension can define the rung inside or outside v1.0 without any renumbering.
 ## 7. Paging and MMU headroom, and the versioning hook
 
 So a future Sv48-style paging extension can arrive without touching v1.0 binaries, v1.0
-reserved the following. Card maize-180 (the paging MMU foundation) landed the opcode and
+reserved the following. The paging MMU foundation landed the opcode and
 control-register pieces; the Sv48 translation itself (the four-level walk, the software TLB
-behaviour, the page-fault trap) has since landed via card maize-194 on that foundation:
+behaviour, the page-fault trap) has since landed on that foundation:
 
 - **Opcode headroom** for a paging-enable control and a TLB-invalidate instruction, drawn
-  from base slot `$28` (section 1). **Landed** (card maize-180 opcodes; card maize-194 behaviour):
+  from base slot `$28` (section 1). **Landed:**
   TLBINV `$28` (flush all) / TLBINVA `$68` (flush one), live under Sv48. Paging-enable needs no
   dedicated opcode; it is a MOVTCR write to CR0.MODE.
 - **A privileged control-register namespace** for the page-table-base register and the
   paging-enable bit, allocated from the section 5 control-register numbering space alongside
-  the segment base and limit registers. **Landed** (card maize-180): CR0 `SATP` carries both
+  the segment base and limit registers. **Landed:** CR0 `SATP` carries both
   the MODE (paging-enable) field and the root page-table PPN.
 - **A page-fault trap class**, reserved from the trap taxonomy's future range (causes 8
   through 31), reporting the faulting address and an error code, joining the reserved bounds
-  (cause 5) and stack (cause 6) classes. **Landed** (card maize-194): cause 8, with the
+  (cause 5) and stack (cause 6) classes. **Landed:** cause 8, with the
   faulting VA in CR1 FAULT_VA and a PRESENT / ACCESS_KIND / USER error code in CR2 FAULT_ERR.
 - **A versioning and capability hook.** v1.0 reserves a read-only way for software to detect
   the machine's extension level: an ISA major and minor version plus a supported-extension

@@ -870,10 +870,19 @@ namespace maize {
 			const opcode push_opcode			{0x20};
 			const opcode push_regVal			{push_opcode | opcode_flag_srcReg};
 			const opcode push_immVal			{push_opcode | opcode_flag_srcImm};
+			/* maize-272: PUSHALL spends the PUSH slot's reserved row 2 ($A0), the
+			   micro-op-headroom pattern LDZ/SETSYSG established (in-family spend, no
+			   free base slot consumed; $37/$38 stay earmarked per reservations.md).
+			   Zero-operand: pushes the 13-register process-context block R0..R9,RT,
+			   RV,RB (R0 pushed last, so RS lands on the R0 slot), the exact frame
+			   quesOS's trap handlers save. POPALL ($B2, the POP slot's reserved row
+			   2) is the exact inverse. */
+			const opcode pushall_opcode {static_cast<opcode>(0xA0)};
 
 			/* Unary register-only slot B (card maize-64): CLR (row0 $32), POP (row1 $72);
-			   rows 2/3 ($B2/$F2) reserved. */
+			   row 3 ($F2) reserved; row 2 ($B2) spent as POPALL (maize-272, above). */
 			const opcode clr_opcode {0x32};
+			const opcode popall_opcode {static_cast<opcode>(0xB2)};
 
 			const opcode int_opcode				{0x24};
 			const opcode int_regVal				{int_opcode | opcode_flag_srcReg};

@@ -104,9 +104,8 @@ fills erased or uninitialized memory, so a run of `$FF` bytes reached as code ra
 breakpoint rather than wandering, mirroring `HALT` (`$00`) at the other end.
 
 **Cause 4, Privileged operation in user mode (fault).** It fires when a privileged
-instruction executes with the RF privilege bit clear. Enforcement is **live**: card
-maize-21 gated IN / OUT / OUTR, and card maize-180 extended the head-of-dispatch privilege
-gate to the control-register and TLB instructions (MOVTCR / MOVFCR, TLBINV / TLBINVA) and to
+instruction executes with the RF privilege bit clear. Enforcement is **live**: a head-of-dispatch privilege
+gate covers IN / OUT / OUTR and extends to the control-register and TLB instructions (MOVTCR / MOVFCR, TLBINV / TLBINVA) and to
 the previously-ungated HALT, SETINT / CLRINT and SETSYSG / CLRSYSG, and made IRET privileged
 (closing the forged-RF escalation: user code cannot forge a privileged RF word and IRET into
 supervisor mode). The privilege boundary also covers the direct-write vector: RF is an
@@ -142,7 +141,7 @@ today dispatches directly to the BIOS / syscall surface (`src/sys.cpp`) rather t
 through the trap table; routing it through the trap table is a future path.
 
 **Cause 8, Page fault (fault, live under Sv48).** Raised by the Sv48 address-translation
-layer (card maize-194) when CR0 SATP.MODE = 1 (Sv48) and a guest memory access cannot be
+layer when CR0 SATP.MODE = 1 (Sv48) and a guest memory access cannot be
 translated. Two failure classes: no valid mapping and a permission violation. No valid
 mapping covers a PTE with V=0, a non-leaf PTE reached at walk level 0, and two structurally
 invalid PTE encodings that are rejected rather than honored: a leaf with W=1 and R=0 (the
@@ -340,7 +339,7 @@ The reference VM (`src/cpu.cpp`, `src/maize_cpu.h`) grounds this chapter:
   vector through the table at 32..255; the synchronous faults keep the throw-and-exit
   no-handler behavior until an OS handler-install path exists.
 - **Privileged operation (cause 4)**: the RF privilege bit is set on power-up. IN / OUT /
-  OUTR enforce it (card maize-21), and card maize-180 extends the gate to MOVTCR / MOVFCR,
+  OUTR enforce it, and the gate extends to MOVTCR / MOVFCR,
   TLBINV / TLBINVA, HALT, SETINT / CLRINT, SETSYSG / CLRSYSG, and IRET: executed with the bit
   clear they raise cause 4. A trap or interrupt entry raises privilege to supervisor for the
   handler; user mode is reached only by an IRET (now privileged, so executable only from
@@ -349,7 +348,7 @@ The reference VM (`src/cpu.cpp`, `src/maize_cpu.h`) grounds this chapter:
   sparse memory model has no out-of-bounds access and no stack bound, so neither fires.
 - **SYS / syscall entry (cause 7)**: reserved number; `SYS` ($34) dispatches directly to
   the BIOS / syscall surface today, with trap-vector delivery reserved.
-- **Page fault (cause 8)**: live under Sv48 (card maize-194). When CR0 SATP.MODE = 1 the
+- **Page fault (cause 8)**: live under Sv48. When CR0 SATP.MODE = 1 the
   memory-access path translates every guest access through a 64-entry software TLB backed
   by a 4-level Sv48 walk; a not-present or permission failure calls `raise_page_fault`,
   which latches CR1 FAULT_VA and CR2 FAULT_ERR and vectors through entry[8] so a kernel

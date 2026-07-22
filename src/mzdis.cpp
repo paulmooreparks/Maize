@@ -281,6 +281,8 @@ namespace {
         add_reg_only("TLBINVA", instr_ns::tlbinva_opcode);
 
         add_zero_operand("NOP", instr_ns::nop_opcode);
+        add_zero_operand("PUSHALL", instr_ns::pushall_opcode);   // maize-272 $A0
+        add_zero_operand("POPALL", instr_ns::popall_opcode);     // maize-272 $B2
         add_zero_operand("BRK", instr_ns::brk_opcode);
         add_zero_operand("HALT", instr_ns::halt_opcode);
 

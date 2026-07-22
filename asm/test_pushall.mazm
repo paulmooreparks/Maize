@@ -1,0 +1,132 @@
+; **********************************************************************************
+; Regression test for card maize-272: PUSHALL ($A0) / POPALL ($B2).
+;
+; PUSHALL pushes the 13-register process-context block R0..R9, RT, RV, RB (R0
+; pushed last, so RS lands on the R0 slot; block ascends R0..RB); POPALL is the
+; exact inverse; both are flag-neutral. This fixture locks three contracts:
+; 1. Flag neutrality: a staged Zero flag survives both instructions.
+; 2. The frame ABI: after PUSHALL, RS has dropped by 104 ($68) and the word at
+;    RS + 8k holds the k-th register of the block order (spot-checked at R0, R5,
+;    R9, RT, RV, RB), byte-identical to the 13-PUSH sequence quesOS's trap
+;    handlers used before this instruction existed.
+; 3. Round trip: POPALL restores every register and RS exactly.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- 1. flag neutrality: Z staged by CMP must survive PUSHALL and POPALL ----
+    CP $05 R1
+    CMP $05 R1                 ; Z = 1
+    PUSHALL
+    JNZ fail                   ; PUSHALL must not disturb the staged flags
+    POPALL
+    JNZ fail                   ; nor POPALL
+
+    ; ---- 2. save RS, load the 13 distinct patterns, PUSHALL ----
+    CP RS R1
+    CP saved_rs R2.H0
+    ST R1 @R2                  ; saved_rs = RS before the block push
+
+    CP $10 R0
+    CP $11 R1
+    CP $12 R2
+    CP $13 R3
+    CP $14 R4
+    CP $15 R5
+    CP $16 R6
+    CP $17 R7
+    CP $18 R8
+    CP $19 R9
+    CP $1A RT
+    CP $1B RV
+    CP $1C RB
+    PUSHALL
+
+    ; ---- 3. RS dropped by exactly 104 ----
+    CP saved_rs R1.H0
+    LD @R1 R1                  ; R1 = old RS
+    SUB $68 R1                 ; expected new RS
+    CP RS R2
+    CMP R2 R1
+    JNZ fail
+
+    ; ---- 4. frame layout: word at RS + 8k == block register k ----
+    CP RS R1
+    LD @R1 R2                  ; slot 0 = R0
+    CMP $10 R2
+    JNZ fail
+    ADD $28 R1                 ; +40 -> slot 5 = R5
+    LD @R1 R2
+    CMP $15 R2
+    JNZ fail
+    ADD $20 R1                 ; +32 -> slot 9 = R9
+    LD @R1 R2
+    CMP $19 R2
+    JNZ fail
+    ADD $08 R1                 ; slot 10 = RT
+    LD @R1 R2
+    CMP $1A R2
+    JNZ fail
+    ADD $08 R1                 ; slot 11 = RV
+    LD @R1 R2
+    CMP $1B R2
+    JNZ fail
+    ADD $08 R1                 ; slot 12 = RB
+    LD @R1 R2
+    CMP $1C R2
+    JNZ fail
+
+    ; ---- 5. round trip: clobber, POPALL, verify restoration + RS ----
+    CLR R0
+    CLR R5
+    CLR R9
+    CLR RT
+    CLR RV
+    CLR RB
+    POPALL
+    CMP $10 R0
+    JNZ fail
+    CMP $15 R5
+    JNZ fail
+    CMP $19 R9
+    JNZ fail
+    CMP $1A RT
+    JNZ fail
+    CMP $1B RV
+    JNZ fail
+    CMP $1C RB
+    JNZ fail
+    CP saved_rs R1.H0
+    LD @R1 R1                  ; old RS
+    CP RS R2
+    CMP R2 R1
+    JNZ fail
+
+    ; ---- all checks passed ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP pass_string R1.H0
+    CP $0E R2                  ; 14 bytes
+    SYS $01
+    HALT
+
+fail:
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $0E R2                  ; 14 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+saved_rs:
+    STRING "12345678"          ; 8-byte scratch cell (overwritten by the ST above)
+
+pass_string:
+    STRING "pushall: PASS\n"
+
+fail_string:
+    STRING "pushall: FAIL\n"

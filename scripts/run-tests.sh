@@ -296,6 +296,9 @@ run_test "test_alu_memsrc_width" "test_alu_memsrc_width.mazm" "alu memsrc width:
 # Self-modifying-code contract (from the maize-307 investigation): a store into code
 # bytes takes effect for the NEXT fetch; any future decoded/JIT tier must preserve this.
 run_test "test_selfmod"      "test_selfmod.mazm"      "selfmod: PASS"                 0
+# maize-272 PUSHALL/POPALL: flag neutrality, the 13-register frame ABI (word at RS+8k
+# per block order R0..R9,RT,RV,RB), and the full round trip incl. RS.
+run_test "test_pushall"      "test_pushall.mazm"      "pushall: PASS"                 0
 run_test "oob_subreg_guard"  "test_oob_subreg.mazm"   "oob subreg: PASS"              0
 run_test "reject_ld_value"   "test_reject_ldval.mazm" "reads from a memory address"   0 1
 run_test "test_ldz"          "test_ldz.mazm"          "ldz: PASS"                     0

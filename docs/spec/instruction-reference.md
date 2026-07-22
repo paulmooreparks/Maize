@@ -73,7 +73,7 @@ model.
   (the number of bytes read is fixed by the destination subregister width), then
   **zero-extend** the result into the full destination register, clearing the bytes above
   the loaded value rather than preserving them. Equivalent to `LD dst.<width>` followed by
-  `CPZ dst.<width> dst`, in one instruction (card maize-204).
+  `CPZ dst.<width> dst`, in one instruction.
 - **Forms:** `$93` LDZ regAddr reg (address in a register); `$D3` LDZ immAddr reg
   (immediate address). Shares CPZ's base slot `$13` the way LD shares CP's `$01`; only the
   two address forms are defined.
@@ -150,6 +150,25 @@ model.
 - **Flags:** C/N/V/Z/P unaffected.
 - **Encoding:** opcode byte, one register operand byte.
 - **Traps:** none.
+
+### PUSHALL / POPALL (multi-register save and restore)
+- **Operation:** PUSHALL pushes the fixed thirteen-register process-context block in one
+  instruction: R0 through R9, RT, RV, RB, pushed in descending block order so R0 lands
+  last and RS ends pointing at the R0 slot. After PUSHALL, RS has decreased by 104 and
+  the word at RS + 8k holds block register k (k = 0 is R0, k = 9 is R9, k = 10 is RT,
+  k = 11 is RV, k = 12 is RB). POPALL is the exact inverse: it restores the thirteen
+  registers from the block at RS and increases RS by 104. The effect is byte-identical
+  to the corresponding sequence of thirteen PUSH or POP instructions. The register set
+  and order are fixed by the instruction definition; this block layout is the
+  process-context ABI a kernel's trap path saves and its context switch restores.
+- **Forms:** `$A0` PUSHALL (row 2 of the PUSH base `$20`); `$B2` POPALL (row 2 of base
+  `$32`). Both are zero-operand.
+- **Flags:** C/N/V/Z/P unaffected.
+- **Encoding:** one opcode byte, no operand bytes.
+- **Traps:** the whole 104-byte range is validated before any effect. Under address
+  translation, a page fault on any byte of the range fires before any memory write
+  (PUSHALL) or any register commit (POPALL), with RS unchanged, so the instruction
+  re-executes cleanly after the fault is serviced.
 
 ---
 
@@ -548,7 +567,7 @@ reserved for the future segment/bounds work (Chapter 12).
 
 Instructions marked **(privileged)** require the RF privilege bit set. Executed in user mode
 (privilege bit clear) they raise the **privileged-operation fault (cause 4)**. Enforcement is
-**live** (card maize-180): a head-of-dispatch privilege gate is applied at every privileged
+**live**: a head-of-dispatch privilege gate is applied at every privileged
 instruction below, and a trap or interrupt entry raises privilege to supervisor for the
 handler, so the handler's own IRET runs privileged and drops back to user by restoring a
 saved RF whose privilege bit is clear. The enforced privileged set is IN / OUT / OUTR,
@@ -602,7 +621,7 @@ unmasked (this is what lets a handler's IRET restore the full saved RF).
 - **Traps:** privileged-operation fault (cause 4) in user mode. Making IRET privileged closes
   the forged-RF escalation: only supervisor code (which every trap/interrupt handler is, since
   entry raises privilege) can execute it, so user code cannot forge a privileged RF word on its
-  stack and IRET into supervisor mode (card maize-180).
+  stack and IRET into supervisor mode.
 
 ### SETINT / CLRINT
 - **Operation:** SETINT sets the RF interrupt-enable bit (enabling maskable external
@@ -619,7 +638,7 @@ unmasked (this is what lets a handler's IRET restore the full saved RF).
 - **Traps:** none. (Not privileged; C is a user-mode arithmetic flag.)
 
 ### SETSYSG / CLRSYSG (syscall-provider select, privileged)
-- **Operation:** SETSYSG sets the RF syscall-guest bit; CLRSYSG clears it (card maize-24). The
+- **Operation:** SETSYSG sets the RF syscall-guest bit; CLRSYSG clears it. The
   bit selects which provider SYS dispatches to: clear (boot default) calls the native
   `sys::call` provider byte-identical to v1.0; set routes SYS through the shared trap table at
   cause 7 into a guest-installed handler (the syscall number rides the frame's aux word; args
@@ -659,7 +678,7 @@ unmasked (this is what lets a handler's IRET restore the full saved RF).
   through MOVTCR / MOVFCR, distinct from device ports and the syscall surface: CR0 `SATP`
   (address-translation control), CR1 `FAULT_VA`, CR2 `FAULT_ERR` (Chapter 12). A write to an
   undefined CR index (> 2) is discarded, mirroring the unpopulated-port convention. CR0 `SATP`
-  is live (card maize-194): writing MODE = 1 (Sv48) into bits [3:0] with a root page-table PPN
+  is live: writing MODE = 1 (Sv48) into bits [3:0] with a root page-table PPN
   in bits [63:12] activates the 4-level Sv48 walk on every subsequent guest memory access;
   MODE = 0 (Bare, the reset default) is the identity passthrough. A CR0 write also flushes the
   whole software TLB. Reserved SATP bits [11:4] are forced to 0 on write.
@@ -679,7 +698,7 @@ unmasked (this is what lets a handler's IRET restore the full saved RF).
 - **Traps:** privileged-operation fault (cause 4) in user mode.
 
 ### TLBINV (invalidate all TLB entries, privileged)
-- **Operation:** invalidate every software-TLB entry (card maize-194). The 64-entry
+- **Operation:** invalidate every software-TLB entry. The 64-entry
   direct-mapped software TLB caches successful level-0 (4 KiB) Sv48 leaf translations; this
   instruction clears every entry, forcing a fresh walk on the next access to any VA. (A CR0
   SATP write flushes the whole TLB implicitly; TLBINV is the explicit same-address-space
@@ -690,7 +709,7 @@ unmasked (this is what lets a handler's IRET restore the full saved RF).
 
 ### TLBINVA (invalidate one TLB entry, privileged)
 - **Operation:** invalidate the single software-TLB entry whose tag is the VA in the register
-  operand, shifted right by the page size (card maize-194). Used after a kernel edits one
+  operand, shifted right by the page size. Used after a kernel edits one
   page's mapping, to drop just that VA's cached translation without flushing the whole TLB.
 - **Forms:** `$68` regVal (one register operand naming the VA). `$A8` / `$E8` reserved.
 - **Flags:** C/N/V/Z/P unaffected.

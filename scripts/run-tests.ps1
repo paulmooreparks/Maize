@@ -85,6 +85,8 @@ $Tests = @(
     # Self-modifying-code contract (from the maize-307 investigation): a store into code
     # bytes takes effect for the NEXT fetch; any future decoded/JIT tier must preserve this.
     [pscustomobject]@{ Name = 'test_selfmod';       File = 'test_selfmod.mazm';       Expected = 'selfmod: PASS';                 Golden = $false }
+    # maize-272 PUSHALL/POPALL: flag neutrality, the 13-register frame ABI, full round trip.
+    [pscustomobject]@{ Name = 'test_pushall';       File = 'test_pushall.mazm';       Expected = 'pushall: PASS';                 Golden = $false }
     [pscustomobject]@{ Name = 'oob_subreg_guard';   File = 'test_oob_subreg.mazm';    Expected = 'oob subreg: PASS';              Golden = $false }
     [pscustomobject]@{ Name = 'reject_ld_value';    File = 'test_reject_ldval.mazm';   Expected = 'reads from a memory address';   Golden = $false; ExpectAsmError = $true }
     [pscustomobject]@{ Name = 'test_ldz';           File = 'test_ldz.mazm';            Expected = 'ldz: PASS';                     Golden = $false }

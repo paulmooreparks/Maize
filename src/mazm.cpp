@@ -380,6 +380,8 @@ namespace {
         { "OUTR",   {cpu::instr::outr_opcode   , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "IN",     {cpu::instr::in_opcode     , opcode_2param_tokenizer, regimm_reg_compiler}},
         { "PUSH",   {cpu::instr::push_opcode   , opcode_1param_tokenizer, regimm_compiler}},
+        { "PUSHALL",{cpu::instr::pushall_opcode, opcode_0param_tokenizer, no_operand_compiler}},   // maize-272
+        { "POPALL", {cpu::instr::popall_opcode , opcode_0param_tokenizer, no_operand_compiler}},   // maize-272
         { "CLR",    {cpu::instr::clr_opcode    , opcode_1param_tokenizer, reg_compiler}},
         { "SETZ",   {cpu::instr::setz_opcode   , opcode_1param_tokenizer, reg_compiler}},
         { "SETNZ",  {cpu::instr::setnz_opcode  , opcode_1param_tokenizer, reg_compiler}},

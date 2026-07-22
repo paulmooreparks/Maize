@@ -124,19 +124,8 @@ _start:
 ;     [RS + 128]    saved PC
 ; ----------------------------------------------------------------------------------
 quesos_syscall_handler:
-    PUSH RB
-    PUSH RV
-    PUSH RT
-    PUSH R9
-    PUSH R8
-    PUSH R7
-    PUSH R6
-    PUSH R5
-    PUSH R4
-    PUSH R3
-    PUSH R2
-    PUSH R1
-    PUSH R0                     ; RS -> R0 slot = the saved-context block base
+    PUSHALL                     ; maize-272: the 13-reg context block in one instruction
+                                ; (R0..R9,RT,RV,RB ascending; RS -> R0 slot = block base)
 
     CP  g_current R0            ; R0 = &g_current  (user R0 already saved)
     LD  @R0 R0                  ; R0 = g_current (pcb*)
@@ -165,19 +154,8 @@ quesos_switch_to:
     MOVTCR R1 $00              ; CR0 = satp: switch/enable this address space
     LD  @R0 R2                 ; R2 = pcb->saved_rs (offset 0)
     CP  R2 SP                  ; RS = saved-context block base
-    POP R0
-    POP R1
-    POP R2
-    POP R3
-    POP R4
-    POP R5
-    POP R6
-    POP R7
-    POP R8
-    POP R9
-    POP RT
-    POP RV
-    POP RB                     ; RS -> aux slot (13 GP words popped)
+    POPALL                     ; maize-272: restore the 13-reg context block in one
+                               ; instruction; RS -> aux slot (13 GP words popped)
     ADD $10 RS                 ; discard aux + cause; RS -> [saved RF][saved PC]
     IRET                       ; restore RF (drop to user) + PC; enter/resume the process
 
@@ -214,19 +192,8 @@ quesos_arm_timer:
 ; quesos_timer_tick marks the preempted process runnable and enters the next one.
 ; ----------------------------------------------------------------------------------
 quesos_timer_handler:
-    PUSH RB
-    PUSH RV
-    PUSH RT
-    PUSH R9
-    PUSH R8
-    PUSH R7
-    PUSH R6
-    PUSH R5
-    PUSH R4
-    PUSH R3
-    PUSH R2
-    PUSH R1
-    PUSH R0                     ; RS -> R0 slot = the saved-context block base
+    PUSHALL                     ; maize-272: the 13-reg context block in one instruction
+                                ; (R0..R9,RT,RV,RB ascending; RS -> R0 slot = block base)
 
     CP  g_current R0
     LD  @R0 R0                  ; R0 = g_current (pcb*)
@@ -252,19 +219,7 @@ timer_no_save:
 ; The g_current NULL guard covers the idle-spin case (no process was running).
 ; ----------------------------------------------------------------------------------
 quesos_console_handler:
-    PUSH RB
-    PUSH RV
-    PUSH RT
-    PUSH R9
-    PUSH R8
-    PUSH R7
-    PUSH R6
-    PUSH R5
-    PUSH R4
-    PUSH R3
-    PUSH R2
-    PUSH R1
-    PUSH R0
+    PUSHALL                     ; maize-272: the 13-reg context block in one instruction
 
     CP  g_current R0
     LD  @R0 R0
@@ -291,19 +246,7 @@ console_no_save:
 ; IRQ is acknowledged by delivery (no status-port ack). The g_current NULL guard covers idle.
 ; ----------------------------------------------------------------------------------
 quesos_keyboard_handler:
-    PUSH RB
-    PUSH RV
-    PUSH RT
-    PUSH R9
-    PUSH R8
-    PUSH R7
-    PUSH R6
-    PUSH R5
-    PUSH R4
-    PUSH R3
-    PUSH R2
-    PUSH R1
-    PUSH R0
+    PUSHALL                     ; maize-272: the 13-reg context block in one instruction
 
     CP  g_current R0
     LD  @R0 R0

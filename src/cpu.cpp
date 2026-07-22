@@ -3962,6 +3962,8 @@ namespace maize {
                 dtbl[instr::sys_immVal] = &&LBL_sys_immVal;
                 dtbl[instr::sys_regVal] = &&LBL_sys_regVal;
                 dtbl[instr::pop_opcode] = &&LBL_pop_opcode;
+                dtbl[instr::pushall_opcode] = &&LBL_pushall_opcode;   /* maize-272 $A0 */
+                dtbl[instr::popall_opcode] = &&LBL_popall_opcode;     /* maize-272 $B2 */
                 dtbl[instr::push_regVal] = &&LBL_push_regVal;
                 dtbl[instr::push_immVal] = &&LBL_push_immVal;
                 dtbl[instr::call_regVal] = &&LBL_call_regVal;
@@ -4863,6 +4865,71 @@ namespace maize {
                         auto src_size = op1_subreg_size();
                         copy_memval_reg(regs::rs.w0, src_size, op1_reg(), op1_subreg_flag(), access_kind::load);
                         regs::rs.w0 += src_size;
+                        MAIZE_NEXT();
+                    }
+
+                    /* maize-272 PUSHALL ($A0) / POPALL ($B2): zero-operand save/restore of
+                       the 13-register process-context block, ascending from RS after the
+                       push: R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 RT RV RB (R0 pushed last, so RS
+                       points at the R0 slot). Byte-identical to the 13-PUSH / 13-POP
+                       sequences quesOS's trap path used, so the trap-frame ABI is
+                       unchanged. Flag-neutral, like PUSH/POP.
+
+                       Fault atomicity (the maize-194 push discipline, extended): the whole
+                       104-byte range is translated FIRST (both end pages; at most two under
+                       4KB paging), so a stack page fault fires before any byte is written
+                       or any register committed; RS commits last. Re-execution after the
+                       fault repeats the instruction cleanly. Pages may be physically
+                       discontiguous, so the block is split at the page boundary and each
+                       chunk goes through its own translation. */
+                    LBL_pushall_opcode: {
+                        constexpr size_t ctx_bytes {13u * 8u};
+                        reg* const ctx_order[13] = {
+                            &regs::r0, &regs::r1, &regs::r2, &regs::r3, &regs::r4,
+                            &regs::r5, &regs::r6, &regs::r7, &regs::r8, &regs::r9,
+                            &regs::rt, &regs::rv, &regs::rb };
+                        u_byte ctx_buf[ctx_bytes];
+                        for (size_t ci = 0; ci < 13u; ++ci) {
+                            std::memcpy(ctx_buf + ci * 8u, &ctx_order[ci]->w0, 8u);   /* LE host */
+                        }
+                        u_word base = regs::rs.w0 - ctx_bytes;
+                        /* All-or-nothing probes: both end pages translate (and so fault)
+                           BEFORE any byte is written. Per-word writes below then translate
+                           each slot themselves, which keeps a base that wraps the 64-bit
+                           space (the flat-.mzb top-of-memory stack, cf. test_stack64)
+                           exactly as correct as thirteen individual PUSHes. */
+                        (void)translate(base, access_kind::store);
+                        (void)translate(base + ctx_bytes - 1u, access_kind::store);
+                        for (size_t ci = 0; ci < 13u; ++ci) {
+                            u_word slot = base + ci * 8u;   /* natural wraparound */
+                            mm.write_from(translate(slot, access_kind::store), ctx_buf + ci * 8u, 8u);
+                        }
+                        regs::rs.w0 = base;   /* commit only after the writes succeed */
+                        MAIZE_NEXT();
+                    }
+
+                    LBL_popall_opcode: {
+                        constexpr size_t ctx_bytes {13u * 8u};
+                        reg* const ctx_order[13] = {
+                            &regs::r0, &regs::r1, &regs::r2, &regs::r3, &regs::r4,
+                            &regs::r5, &regs::r6, &regs::r7, &regs::r8, &regs::r9,
+                            &regs::rt, &regs::rv, &regs::rb };
+                        u_byte ctx_buf[ctx_bytes];
+                        u_word base = regs::rs.w0;
+                        /* All-or-nothing probes first (see PUSHALL above), then per-word
+                           reads into the local buffer; registers commit only after every
+                           read succeeded. Per-word translation keeps a wrapping base
+                           correct, mirroring thirteen individual POPs. */
+                        (void)translate(base, access_kind::load);
+                        (void)translate(base + ctx_bytes - 1u, access_kind::load);
+                        for (size_t ci = 0; ci < 13u; ++ci) {
+                            u_word slot = base + ci * 8u;   /* natural wraparound */
+                            mm.read_into(translate(slot, access_kind::load), ctx_buf + ci * 8u, 8u);
+                        }
+                        for (size_t ci = 0; ci < 13u; ++ci) {
+                            std::memcpy(&ctx_order[ci]->w0, ctx_buf + ci * 8u, 8u);
+                        }
+                        regs::rs.w0 = base + ctx_bytes;
                         MAIZE_NEXT();
                     }
 

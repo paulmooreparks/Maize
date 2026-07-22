@@ -35,7 +35,7 @@ slot; consult Chapter 7 or Chapter 8 for each instruction's full entry.
 | `$10` | TEST | ALU | `$10` `$50` `$90` `$D0` |
 | `$11` | CMPXCHG | 3-op | `$11` `$51` `$91` `$D1` |
 | `$12` | LEA | 3-op | `$12` `$52` `$92` `$D2` |
-| `$13` | CPZ / LDZ | copy / load | `$13` CPZ regVal, `$53` CPZ immVal; `$93` LDZ regAddr, `$D3` LDZ immAddr (zero-extending load, maize-204) |
+| `$13` | CPZ / LDZ | copy / load | `$13` CPZ regVal, `$53` CPZ immVal; `$93` LDZ regAddr, `$D3` LDZ immAddr (zero-extending load) |
 | `$14` | OUT | port | `$14` `$54` `$94` `$D4` (privileged) |
 | `$15` | FGETCSR / FSETCSR | FP reg | FGETCSR `$15`, FSETCSR `$55` (`$95`/`$D5` reserved) |
 | `$16` | JMP | jump | `$16` `$56` `$96` `$D6` |
@@ -48,15 +48,15 @@ slot; consult Chapter 7 or Chapter 8 for each instruction's full entry.
 | `$1D` | CALL | call | `$1D` `$5D` `$9D` `$DD` |
 | `$1E` | OUTR | port | `$1E` `$5E` `$9E` `$DE` (privileged) |
 | `$1F` | IN | port | `$1F` `$5F` `$9F` `$DF` (privileged) |
-| `$20` | PUSH | stack | `$20` regVal, `$60` immVal |
+| `$20` | PUSH / PUSHALL | stack | `$20` regVal, `$60` immVal, `$A0` PUSHALL (zero-operand) |
 | `$21` | FDIV | FP ALU | `$21` `$61` `$A1` `$E1` |
 | `$22` | FSQRT / FNEG / FABS | FP unary | `$22` / `$62` / `$A2` (`$E2` reserved) |
 | `$23` | FMADD | FP 3-op | `$23` `$63` `$A3` `$E3` |
-| `$24` | INT / SETSYSG / CLRSYSG | interrupt / zero-op | INT `$24` regVal, `$64` immVal (privileged; dispatch deferred); SETSYSG `$A4`, CLRSYSG `$E4` (v1.x syscall-provider select, card maize-24) |
+| `$24` | INT / SETSYSG / CLRSYSG | interrupt / zero-op | INT `$24` regVal, `$64` immVal (privileged; dispatch deferred); SETSYSG `$A4`, CLRSYSG `$E4` (v1.x syscall-provider select) |
 | `$25` | FMSUB | FP 3-op | `$25` `$65` `$A5` `$E5` |
-| `$26` | MOVTCR / MOVFCR | control-register | MOVTCR `$26` regVal-imm, `$66` immVal-imm; MOVFCR `$A6` immVal-reg (`$E6` reserved) (privileged; control-register access, card maize-180) |
+| `$26` | MOVTCR / MOVFCR | control-register | MOVTCR `$26` regVal-imm, `$66` immVal-imm; MOVFCR `$A6` immVal-reg (`$E6` reserved) (privileged; control-register access) |
 | `$27` | RET / IRET / NOP | zero-op | RET `$27`, IRET `$67`, NOP `$A7` (`$E7` reserved) |
-| `$28` | TLBINV / TLBINVA | paging / MMU | TLBINV `$28` zero-op (flush all), TLBINVA `$68` regVal (flush one, VA in the register) (`$A8`/`$E8` reserved) (privileged; live under Sv48, card maize-194) |
+| `$28` | TLBINV / TLBINVA | paging / MMU | TLBINV `$28` zero-op (flush all), TLBINVA `$68` regVal (flush one, VA in the register) (`$A8`/`$E8` reserved) (privileged; live under Sv48) |
 | `$29` | SETINT / CLRINT / SETCRY / CLRCRY | zero-op | `$29` / `$69` / `$A9` / `$E9` |
 | `$2A` | FCMP | FP compare | `$2A` `$6A` `$AA` `$EA` |
 | `$2B` | SETcc column 0 | set | SETZ `$2B`, SETB `$6B`, SETGE `$AB`, SETAE `$EB` |
@@ -66,7 +66,7 @@ slot; consult Chapter 7 or Chapter 8 for each instruction's full entry.
 | `$2F` | CMPIND | compare-ind | `$2F` regVal regAddr, `$6F` immVal regAddr |
 | `$30` | TSTIND | test-ind | `$30` regVal regAddr, `$70` immVal regAddr |
 | `$31` | INC / DEC / NOT / NEG | unary | INC `$31`, DEC `$71`, NOT `$B1`, NEG `$F1` |
-| `$32` | CLR / POP | unary | CLR `$32`, POP `$72` (`$B2`/`$F2` reserved) |
+| `$32` | CLR / POP / POPALL | unary | CLR `$32`, POP `$72`, POPALL `$B2` (zero-operand; `$F2` reserved) |
 | `$33` | FMIN / FMAX | FP min/max | FMIN `$33`, FMAX `$73` (`$B3`/`$F3` reserved) |
 | `$34` | SYS | syscall | `$34` regVal, `$74` immVal (user-callable; trap cause 7) |
 | `$35` | UDIV | ALU | `$35` `$75` `$B5` `$F5` |
@@ -88,7 +88,7 @@ A few instructions occupy a single fixed byte rather than a base-slot family:
 | Byte | Mnemonic | Shape |
 |:----:|:---------|:------|
 | `$E0` | XCHG | reg reg |
-| `$E4` | CLRSYSG | zero-op (v1.x syscall-provider select, row 3 of the `$24` slot; card maize-24) |
+| `$E4` | CLRSYSG | zero-op (v1.x syscall-provider select, row 3 of the `$24` slot) |
 | `$FF` | BRK | zero-op (breakpoint trap, cause 3) |
 
 ## A.3 Reserved bytes
