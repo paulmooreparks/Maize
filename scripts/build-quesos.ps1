@@ -37,7 +37,8 @@
 [CmdletBinding()]
 param(
     [string]$Preset = '',
-    [string]$Out = ''
+    [string]$Out = '',
+    [string]$Map = ''          # maize-261: forward to mzld's symbol-map sidecar (--map)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,6 +88,10 @@ if ($Preset -ne '') {
     $cmd += " --preset '$Preset'"
 }
 $cmd += " -o '$outPosix'"
+if ($Map -ne '') {
+    $mapPosix = ($Map -replace '\\', '/')
+    $cmd += " --map '$mapPosix'"
+}
 
 # Windows PowerShell 5.1 turns any native-command stderr into a terminating
 # NativeCommandError while ErrorActionPreference is 'Stop'; the build writes progress to
