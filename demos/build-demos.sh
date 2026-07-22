@@ -22,7 +22,9 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
-CC_MAIZE="${REPO_ROOT}/scripts/cc-maize.sh"
+# maize-320: honor the maize-314 MAIZE_CC binding (mirrors run-ctest.sh:148) so the
+# whole guest world routes through the compiled mzcc when the harness selects it.
+CC_MAIZE="${MAIZE_CC:-${REPO_ROOT}/scripts/cc-maize.sh}"
 
 die() { echo "build-demos.sh: $*" >&2; exit 2; }
 
