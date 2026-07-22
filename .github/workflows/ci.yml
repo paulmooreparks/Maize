@@ -36,6 +36,13 @@ jobs:
         run: scripts/run-tests.sh --preset linux-release
 
       - name: C hello world end-to-end (cproc -> qbe -t maize -> mazm -> maize)
+        # maize-314: point the ctest suite at the compiled mzcc (built above by
+        # run-tests.sh's untargeted `cmake --build`, which already covers every
+        # target in the linux-debug preset) instead of the cc-maize.sh shell
+        # driver, so the suite inherits the maize-302 runtime archive and the
+        # maize-274 object cache.
+        env:
+          MAIZE_CC: ${{ github.workspace }}/build/linux-debug/mzcc
         run: scripts/run-ctest.sh --skip-build
 
   linux-sanitizers:
@@ -58,6 +65,11 @@ jobs:
         run: scripts/run-tests.sh --preset linux-asan-ubsan
 
       - name: C toolchain end-to-end under ASan+UBSan
+        # maize-314: same flip as the plain linux job, keyed off this job's
+        # own instrumented preset/build dir so the ctest suite runs through
+        # the sanitizer-built mzcc, not cc-maize.sh.
+        env:
+          MAIZE_CC: ${{ github.workspace }}/build/linux-asan-ubsan/mzcc
         run: scripts/run-ctest.sh --preset linux-asan-ubsan --skip-build
 
   windows:
@@ -102,5 +114,15 @@ jobs:
         run: scripts/run-tests.ps1 -Preset windows-llvm-mingw-release
 
       - name: C hello world end-to-end (cproc -> qbe -t maize -> mazm -> maize)
+        # maize-314: same flip, Windows leg. run-tests.ps1 above already built
+        # mzcc.exe into this preset's build dir (its cmake --build is also
+        # untargeted, so mzcc rides along with maize/mazm/mzld/maizeg/mzdis).
+        # MAIZE_CC is computed with bash's own $(pwd) rather than a github.workspace
+        # env: value: github.workspace resolves with native backslash separators on
+        # windows-latest, and there is no expression-language replace() to normalize
+        # them, whereas bash's pwd gives the same forward-slash absolute form
+        # run-ctest.sh's own REPO_ROOT/BUILD_DIR resolution already uses.
         shell: bash
-        run: scripts/run-ctest.sh --preset windows-llvm-mingw-debug --skip-build
+        run: |
+          export MAIZE_CC="$(pwd)/build/windows-llvm-mingw-debug/mzcc.exe"
+          scripts/run-ctest.sh --preset windows-llvm-mingw-debug --skip-build
