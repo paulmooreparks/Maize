@@ -248,6 +248,7 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
  * job-control numbers ($FA/$FB) drawn from the SYSCALL-ABI.md $F0-$FF ledger. */
 #define SYS_rt_sigaction   0x0D
 #define SYS_rt_sigprocmask 0x0E
+#define SYS_rt_sigsuspend  0x82   /* maize-316: BLOCKING suspend (the Linux x86-64 number) */
 #define SYS_rt_sigreturn   0x0F
 #define SYS_kill           0x3E
 #define SYS_setpgid        0x6D
@@ -323,6 +324,7 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define QOS_ENOSPC 28          /* registration table full                                 */
 #define QOS_EBADF   9          /* release with nothing registered                         */
 #define QOS_ESRCH   3          /* maize-174: kill target pid/pgid names no process        */
+#define QOS_EINTR   4          /* maize-316: rt_sigsuspend's POSIX return (always -EINTR) */
 #define QOS_ENOENT  2          /* maize-94: execve target path does not exist             */
 #define QOS_ENOEXEC 8          /* maize-94: execve target is not a loadable .mzx image    */
 
@@ -368,6 +370,9 @@ enum proc_state { P_FREE = 0, P_RUNNABLE, P_BLOCKED, P_ZOMBIE };
 #define BLK_CONNECT 5            /* maize-238: parked in connect() (woken by accept())   */
 #define BLK_ACCEPT  6            /* maize-238: parked in accept() (woken by connect())   */
 #define BLK_POLL    7            /* maize-238: parked in poll()/select() (readiness wake)*/
+#define BLK_SIGSUSPEND 8         /* maize-316: parked in rt_sigsuspend (woken by a raise
+                                    that makes a pending signal deliverable under the
+                                    temporarily-installed mask) */
 
 /* saved_rs (offset 0) and root_pa (offset 8) are read by the quesos_switch_to metal at
  * those exact byte offsets; keep them first and in this order. */
@@ -391,6 +396,7 @@ struct pcb {
     long pgid;                   /* maize-174: process group id (fg-group signal target)*/
     unsigned long pending;       /* maize-174: pending-signal bitmask (bit sig-1)      */
     unsigned long blocked;       /* maize-174: sigprocmask block mask                  */
+    unsigned long suspend_mask_save; /* maize-316: pre-sigsuspend mask, restored at wake */
     u64  handler[32];            /* maize-174: per-signal action VA (0=DFL, 1=IGN)     */
     long term_signal;            /* maize-174: terminating signal (0 = normal _exit)   */
     u64  sig_saved_rs;           /* maize-174: saved_rs to restore on rt_sigreturn     */
@@ -427,6 +433,7 @@ static long g_next_pid = 1;
 static void schedule(void);       /* round-robin scheduler; noreturn (defined below)    */
 static void fb_release_held(struct pcb *p);   /* maize-236: release a held fb slot (exit/exec) */
 static void deliver_pending_signal(struct pcb *p);   /* maize-174: apply a pending signal on resume */
+static int lowest_set_bit(unsigned long m);          /* maize-316: also used by the sigsuspend wake */
 static void terminate_by_signal(struct pcb *p, int sig);   /* maize-174: default-terminate (noreturn) */
 static void reap_tail(struct pcb *self);             /* maize-174: shared zombie/reap/SIGCHLD tail */
 
@@ -1328,6 +1335,42 @@ static int g_tty_isig = 1;
  * blocking syscalls are not interrupted (the SA_RESTART-implicit, no-EINTR model). */
 static void raise_on_pcb(struct pcb *p, int sig) {
     if (p->state == P_RUNNABLE || p->state == P_BLOCKED) { p->pending |= (1ul << (sig - 1)); }
+    /* maize-316: complete a parked rt_sigsuspend when this raise makes a signal
+     * deliverable under the temporarily-installed suspend mask. Restore the saved
+     * mask, deliver the POSIX -EINTR return into the saved frame's RV slot (the
+     * deliver_wait pattern), and mark the process runnable; the resume-time
+     * deliver_pending_signal hook then dispatches the handler. v1 ordering note:
+     * the handler therefore runs under the RESTORED mask rather than the temporary
+     * one; this matches the retired polling shim's effective semantics, and the
+     * SIGCHLD-reap use case (oksh j_waitj) is indifferent to the difference. */
+    if (p->state == P_BLOCKED && p->block_kind == BLK_SIGSUSPEND
+        && (p->pending & ~p->blocked) != 0ul) {
+        /* RV = -EINTR into the sigsuspend SYSCALL frame first (p->saved_rs still points
+         * at it), THEN dispatch the handler under the temporary mask (push_signal_frame
+         * repoints saved_rs above the syscall frame), THEN restore the saved mask.
+         * Dispatch-before-restore is load-bearing: the caller blocked this signal around
+         * the wait (the oksh SIGCHLD pattern), so a restored-mask delivery would never
+         * run the handler and the caller's recheck loop would livelock. An IGN/DFL-ignore
+         * raise wakes without a handler frame (spurious -EINTR return, POSIX-permitted;
+         * the pending bit is consumed, so no livelock). */
+        unsigned long ready = p->pending & ~p->blocked;
+        int wsig = lowest_set_bit(ready);
+        as_write64(p, p->saved_rs + 11ul * 8ul, (u64)(-(long)QOS_EINTR));
+        if (p->handler[wsig] > 1ul) {
+            /* A real handler: dispatch it now, under the temporary mask. */
+            deliver_pending_signal(p);
+        } else if (p->handler[wsig] == 1ul || wsig == SIGCHLD) {
+            /* IGN (or DFL-ignore SIGCHLD): consume the bit here, or a caller that
+             * re-parks with the same mask would wake on it forever. */
+            p->pending &= ~(1ul << (wsig - 1));
+        }
+        /* DFL-terminate (and SIGKILL, which the deliver path special-cases) is left
+         * pending: it must run with p as the CURRENT process (terminate_by_signal is
+         * noreturn), so the resume-time deliver_pending_signal hook handles it. */
+        p->blocked = p->suspend_mask_save;
+        p->block_kind = BLK_NONE;
+        p->state = P_RUNNABLE;
+    }
 }
 static int raise_on_pgid(long pgid, int sig) {
     int i, found = 0;
@@ -2274,6 +2317,7 @@ static void deliver_wait(struct pcb *parent, struct pcb *child) {
         as_write32(parent, parent->wait_status_uva, wait_status(child));
     }
     child->state = P_FREE;
+    parent->block_kind = BLK_NONE;   /* maize-316: the BLK_WAIT park is complete */
     parent->state = P_RUNNABLE;
 }
 
@@ -2299,6 +2343,7 @@ static long do_wait(long wpid, u64 status_uva) {
 
     parent->wait_for = wpid;
     parent->wait_status_uva = status_uva;
+    parent->block_kind = BLK_WAIT;   /* maize-316: reap_tail's deliver_wait guard keys on this */
     parent->state = P_BLOCKED;
     schedule();   /* noreturn: the waker (do_exit) delivers this call's result later */
     return 0;     /* unreachable */
@@ -2906,8 +2951,15 @@ static void reap_tail(struct pcb *self) {
     fdtable_close_all(self);   /* closing a pipe write end wakes blocked readers (EOF) */
     fb_release_held(self);     /* maize-236: free any framebuffer registration */
     parent = find_by_pid(self->parent);
-    if (parent != 0) { parent->pending |= (1ul << (SIGCHLD - 1)); }   /* maize-174 SIGCHLD */
-    if (parent != 0 && parent->state == P_BLOCKED
+    /* maize-316: raise SIGCHLD through raise_on_pcb, not a bare pending |=, so a parent
+     * parked in rt_sigsuspend (the oksh foreground wait) is woken and its handler
+     * dispatched; a bare bit-set left it parked forever. */
+    if (parent != 0) { raise_on_pcb(parent, SIGCHLD); }
+    /* deliver_wait only completes a parent that is parked IN WAIT4 (block_kind check,
+     * maize-316): wait_for is stale from the parent's LAST wait, so without the guard a
+     * parent blocked in sigsuspend (or on a pipe) would receive a wait4 result written
+     * into the wrong syscall frame. */
+    if (parent != 0 && parent->state == P_BLOCKED && parent->block_kind == BLK_WAIT
         && (parent->wait_for <= 0 || parent->wait_for == self->pid)) {
         deliver_wait(parent, self);   /* frees self, wakes parent */
     } else if (self->parent == 0) {
@@ -3035,6 +3087,34 @@ static long do_rt_sigprocmask(long how, u64 set_uva, u64 oldset_uva) {
     return 0;
 }
 
+/* SYS_rt_sigsuspend (maize-316): atomically install `mask` as the blocked set and BLOCK
+ * until a raise makes a pending signal deliverable under it; the raise path (raise_on_pcb)
+ * restores the saved mask, writes -EINTR into the saved frame's RV, and marks the process
+ * runnable, and the resume hook dispatches the handler. Replaces the RT's polling shim,
+ * which made oksh's foreground wait a busy loop of sigprocmask pairs (~16 percent of a
+ * hosted DOOM session). A signal already deliverable under the new mask completes without
+ * parking. SIGKILL stays unblockable, as in do_rt_sigprocmask. */
+static long do_rt_sigsuspend(u64 mask_uva) {
+    struct pcb *self = g_current;
+    unsigned long mask = (mask_uva != 0) ? *(unsigned long *)(mask_uva) : 0ul;
+    mask &= ~(1ul << (SIGKILL - 1));
+    self->suspend_mask_save = self->blocked;
+    self->blocked = mask;
+    if ((self->pending & ~self->blocked) != 0ul) {
+        /* Deliverable now: dispatch UNDER THE TEMPORARY MASK, then restore. Restoring
+         * first would re-block the signal (the caller blocked it around this wait, the
+         * oksh SIGCHLD pattern), the handler would never run, and the caller's
+         * recheck-and-suspend loop would livelock. */
+        deliver_pending_signal(self);
+        self->blocked = self->suspend_mask_save;
+        return -(long)QOS_EINTR;
+    }
+    self->block_kind = BLK_SIGSUSPEND;
+    self->state = P_BLOCKED;
+    schedule();   /* noreturn: raise_on_pcb completes this call at wake */
+    return 0;     /* unreachable */
+}
+
 static long do_setpgid(long pid, long pgid) {
     struct pcb *p = (pid == 0) ? g_current : find_by_pid(pid);
     if (p == 0) { return -(long)QOS_ESRCH; }
@@ -3110,6 +3190,7 @@ void quesos_syscall(void) {
         case SYS_kill:           result = do_kill((long)a0, (int)a1);          break;
         case SYS_rt_sigaction:   result = do_rt_sigaction((long)a0, a1, a2);   break;
         case SYS_rt_sigprocmask: result = do_rt_sigprocmask((long)a0, a1, a2); break;
+        case SYS_rt_sigsuspend:  result = do_rt_sigsuspend(a0);               break;
         case SYS_rt_sigreturn:
             g_current->saved_rs = g_current->sig_saved_rs;   /* pop the signal frame */
             g_current->in_handler = 0;

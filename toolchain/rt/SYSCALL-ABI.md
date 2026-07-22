@@ -255,6 +255,7 @@ the Linux x86-64 table per the numbering policy.
 | `$0D` | `sys_rt_sigaction` | `R0`=sig, `R1`=act, `R2`=oldact | `RV`=0 or `-errno` (maize-174) |
 | `$0E` | `sys_rt_sigprocmask` | `R0`=how, `R1`=set, `R2`=oldset | `RV`=0 or `-errno` (maize-174) |
 | `$0F` | `sys_rt_sigreturn` | none (pops the kernel-pushed signal frame) | does not return normally (maize-174) |
+| `$82` | `sys_rt_sigsuspend` | `R0`=`const sigset_t *mask` | BLOCKS until a signal is deliverable under the temporarily-installed mask; `RV`=`-EINTR` (maize-316) |
 | `$3E` | `sys_kill` | `R0`=pid (`<0`=pgid `-pid`, `0`=own group), `R1`=sig | `RV`=0 or `-errno` (maize-174) |
 | `$6D` | `sys_setpgid` | `R0`=pid (`0`=self), `R1`=pgid (`0`=use pid) | `RV`=0 or `-errno` (maize-174) |
 | `$79` | `sys_getpgid` | `R0`=pid (`0`=self) | `RV`=pgid or `-errno` (maize-174) |

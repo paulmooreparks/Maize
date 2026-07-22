@@ -13,6 +13,8 @@
 #ifndef MAIZE_SIGNAL_H
 #define MAIZE_SIGNAL_H
 
+#include "errno.h"   /* maize-316: sigsuspend's POSIX errno = EINTR contract */
+
 typedef void (*__sighandler_t)(int);
 typedef unsigned long sigset_t;
 
@@ -78,6 +80,7 @@ struct sigaction {
 /* Guest-only raw stubs (syscall.mazm); forward-declared so this header stays standalone. */
 long sys_rt_sigaction(long sig, const void *act, void *oldact);
 long sys_rt_sigprocmask(long how, const void *set, void *oldset);
+long sys_rt_sigsuspend(const void *mask);   /* maize-316: blocking suspend (SYS $82) */
 long sys_kill(long pid, long sig);
 long sys_getpid(void);
 
@@ -151,22 +154,20 @@ raise(int sig)
     return (int)sys_kill(sys_getpid(), (long)sig);
 }
 
-/* sigsuspend (maize-94): atomically install `mask` as the blocked set and wait for a
- * signal, then restore the previous mask and return -1 (POSIX EINTR contract). oksh's
- * foreground-wait loop (jobs.c) blocks SIGCHLD, then calls sigsuspend with a mask that
- * unblocks it so a pending SIGCHLD (raised when its child exited) is delivered and its
- * handler reaps the child. quesOS delivers a now-unblocked pending signal synchronously
- * inside SYS_rt_sigprocmask, so the handler runs during the first sigprocmask below (on
- * its syscall return) before the mask is restored: the wait loop then observes the reaped
- * child and exits. With no signal pending it returns at once, which is a safe spurious
- * wakeup for the caller's re-checking loop. */
+/* sigsuspend (maize-316; replaces the maize-94 polling shim): atomically install `mask`
+ * as the blocked set and BLOCK in the kernel until a raise makes a pending signal
+ * deliverable under it (SYS $82, quesOS BLK_SIGSUSPEND). The kernel dispatches the
+ * handler under the temporary mask, restores the previous mask, and completes the call
+ * with -EINTR; per POSIX this function always returns -1 with errno = EINTR. The old
+ * shim returned immediately when nothing was pending, which turned oksh's foreground
+ * wait (`while (running) sigsuspend(...)`) into a busy loop of two sigprocmask traps
+ * per iteration, ~16 percent of all instructions in a hosted DOOM session. */
 static inline int
 sigsuspend(const sigset_t *mask)
 {
-    sigset_t save = 0;
     sigset_t m = (mask != 0) ? *mask : 0;
-    sigprocmask(SIG_SETMASK, &m, &save);   /* unblock -> pending signal delivered here */
-    sigprocmask(SIG_SETMASK, &save, 0);    /* restore the caller's mask */
+    (void)sys_rt_sigsuspend(&m);
+    errno = EINTR;
     return -1;
 }
 

@@ -164,6 +164,7 @@ GLOBAL sys_kill
 GLOBAL sys_rt_sigaction
 GLOBAL sys_rt_sigprocmask
 GLOBAL sys_rt_sigreturn
+GLOBAL sys_rt_sigsuspend
 GLOBAL sys_setpgid
 GLOBAL sys_getpgid
 GLOBAL sys_tcgetpgrp
@@ -355,6 +356,10 @@ sys_rt_sigprocmask:
 
 sys_rt_sigreturn:
     SYS $0F                 ; pops the signal frame; resumes the interrupted context
+    RET
+
+sys_rt_sigsuspend:
+    SYS $82                 ; R0=mask*; BLOCKS until a deliverable signal; RV = -EINTR (maize-316)
     RET
 
 sys_setpgid:

@@ -103,6 +103,7 @@ long sys_kill(long pid, long sig);
 long sys_rt_sigaction(long sig, const void *act, void *oldact);
 long sys_rt_sigprocmask(long how, const void *set, void *oldset);
 long sys_rt_sigreturn(void);
+long sys_rt_sigsuspend(const void *mask);   /* maize-316: BLOCKS until a deliverable signal; returns -EINTR */
 long sys_setpgid(long pid, long pgid);
 long sys_getpgid(long pid);
 long sys_tcgetpgrp(void);
