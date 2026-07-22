@@ -233,7 +233,13 @@ compile_c() {
 # exit status becomes 128+9=137 (the "died from SIGKILL" status) instead of 124;
 # confirmed directly against a SIGTERM-ignoring stub on this host. Both codes are
 # treated as the same "timed out" diagnostic below.
-MAIZE_FIXTURE_COMPILE_TIMEOUT="${MAIZE_FIXTURE_COMPILE_TIMEOUT:-120}"
+#
+# Test-stage finding (comment #3142, cycle 4): a single-fixture compile through this
+# path was observed at ~80-100s on this host, comfortably under the prior 120s default
+# but with thin margin (as little as ~20s) for a slower host or a noisier moment.
+# Bumped to 180s for real headroom; still a generous ceiling relative to observed cost,
+# not a tight ratchet, and still env-overridable.
+MAIZE_FIXTURE_COMPILE_TIMEOUT="${MAIZE_FIXTURE_COMPILE_TIMEOUT:-180}"
 MAIZE_FIXTURE_COMPILE_KILL_GRACE="${MAIZE_FIXTURE_COMPILE_KILL_GRACE:-10}"
 cc_maize_compile_bounded() {
     _cmb_label="$1"; _cmb_out="$2"; _cmb_src="$3"; _cmb_log="$4"
@@ -3070,11 +3076,31 @@ run_userland94_fixtures() {
     # a plain `timeout` only sends SIGTERM and waits, which a compile wedged in the
     # actual dofork resource-exhaustion condition may never honor; SIGKILL after the
     # grace window is the real backstop.
-    UBUILD_TIMEOUT="${MAIZE_UBUILD_TIMEOUT:-300}"
+    #
+    # Test-stage finding (comment #3142, cycle 4): this timeout bounds a whole-BATCH
+    # build (every wave-1 tool compiled in one $ubuild call), not a single compile, so
+    # its budget has to be sized for the batch, not for one tool. A flat 300s default
+    # is a per-tool-ish number; on this host a legitimate cold, uncached build (no
+    # object cache; cc-maize.sh recompiles the RT from scratch per tool) costs
+    # ~80-100s PER TOOL, so 300s fired at rc=124 after only 3/11 tools on a healthy,
+    # non-hung build, a spurious new failure. The fix: scale the budget to the actual
+    # tool count (so it stays correct as wave-3 grows the set) with a generous
+    # per-tool allowance and a floor, rather than a fixed number sized for today's
+    # count. This is a stall-catcher for indefinite fork-resource exhaustion, not a
+    # compile-speed gate, so err generous.
+    UBUILD_TOOLS="true false echo cat pwd printf cp mv rm ls oksh"
+    _ubuild_tool_count=$(set -- $UBUILD_TOOLS; echo $#)
+    UBUILD_PER_TOOL_TIMEOUT="${MAIZE_UBUILD_PER_TOOL_TIMEOUT:-180}"
+    UBUILD_TIMEOUT_FLOOR="${MAIZE_UBUILD_TIMEOUT_FLOOR:-600}"
+    _ubuild_scaled=$((_ubuild_tool_count * UBUILD_PER_TOOL_TIMEOUT))
+    if [ "$_ubuild_scaled" -lt "$UBUILD_TIMEOUT_FLOOR" ]; then
+        _ubuild_scaled="$UBUILD_TIMEOUT_FLOOR"
+    fi
+    UBUILD_TIMEOUT="${MAIZE_UBUILD_TIMEOUT:-$_ubuild_scaled}"
     UBUILD_KILL_GRACE="${MAIZE_UBUILD_KILL_GRACE:-10}"
     set +e
     timeout -k "$UBUILD_KILL_GRACE" "$UBUILD_TIMEOUT" sh "$ubuild" --preset "$PRESET" \
-            --out "$bindir" true false echo cat pwd printf cp mv rm ls oksh >>"$log" 2>&1
+            --out "$bindir" $UBUILD_TOOLS >>"$log" 2>&1
     _ubuild_rc=$?
     set -e
     if [ "$_ubuild_rc" -ne 0 ]; then
