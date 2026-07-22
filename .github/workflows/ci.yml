@@ -1,15 +1,15 @@
 name: CI
 
 on:
-  push:
-    # merge-check/**: pre-master validation refs (maize-257). A card's fix
-    # branch gets pushed here so CI runs on the real runner before the card
-    # lands on master, ending the red-master fix-forward loop. These refs
-    # are deleted after the card that pushed them lands; they are not a
-    # long-lived branch class like master/next.
-    branches: [master, next, "merge-check/**"]
-  pull_request:
-    branches: [master, next]
+  # maize-318: CI moved off the per-push trigger (every card merge no longer
+  # fires a ~27-minute three-job run) to a nightly batch plus an on-demand
+  # trigger. workflow_dispatch now covers the on-demand role the old
+  # merge-check/** push trigger (maize-257) served, so that trigger is
+  # removed rather than kept alongside it. Maize is trunk-based (commits go
+  # straight to master), so there is no pull_request trigger to reconcile.
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
 
 jobs:
   linux:
