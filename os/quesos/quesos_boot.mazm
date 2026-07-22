@@ -178,7 +178,14 @@ quesos_poweroff:
 ; never fires mid-handler.
 ; ----------------------------------------------------------------------------------
 quesos_arm_timer:
-    CP  $00001388 R0           ; slice = 5000 instructions
+    ; maize-319: slice = 250,000 instructions (~4ms at hosted 60 MIPS, ~2ms at bare
+    ; 120 MIPS; the same order as Linux HZ=250). The prior 5000-instruction slice
+    ; preempted ~12,000x/second and the tick machinery alone consumed ~14% of all
+    ; hosted-DOOM instructions. Preemption fairness holds (CPU-bound processes still
+    ; swap ~240x/second) and interactive wakeups are IRQ/event-driven, not tick-driven;
+    ; the only tick-derived semantics is poll()/select() finite-timeout granularity,
+    ; which moves to ~one slice (POSIX permits rounding up to clock granularity).
+    CP  $0003D090 R0           ; slice = 250,000 instructions
     OUT R0.H0 $40              ; period register (32-bit)
     CP  $03 R0                 ; bit0 enable | bit1 periodic
     OUT R0.B0 $41              ; control register
