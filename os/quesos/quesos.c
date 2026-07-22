@@ -457,6 +457,10 @@ static long g_worklist_count;
 #define QUESOS_IOBUF_CAP 4096u
 static u8 g_iobuf[QUESOS_IOBUF_CAP];
 
+/* maize-315: fills at or above this size go through the native bulk-set accelerator ($F5)
+ * instead of the per-byte loop. Below it, the SYS trap overhead is not worth it. */
+#define QUESOS_BULK_MIN 256u
+
 /* .mzx on-disk constants (src/maize_obj.h / src/maize.cpp load_mzx). */
 #define MZX_HEADER_SIZE  24u
 #define MZX_SEGMENT_SIZE 40u
@@ -473,6 +477,15 @@ void *memcpy(void *dst, const void *src, unsigned long n) {
 
 void *memset(void *dst, int c, unsigned long n) {
     u8 *d = (u8 *)dst;
+    /* maize-315: for large fills, forward to the native bulk-set accelerator ($F5) at host
+     * memset speed rather than looping byte by byte (frame zeroing in alloc_frame was the
+     * single hottest row in the boot/exec-load profile). Kernel pointers are identity-mapped
+     * physical addresses, i.e. exactly the flat addresses $F5 wants, so this is a direct
+     * forward. $F5 performs NO partial write on rejection, so a bounds/wrap refusal falls
+     * through to the portable byte loop with nothing lost. */
+    if (n >= QUESOS_BULK_MIN && sys_bulk_set(dst, c, (unsigned long)n) == (long)n) {
+        return dst;
+    }
     while (n--) { *d++ = (u8)c; }
     return dst;
 }
@@ -647,6 +660,72 @@ static u64 as_read64(struct pcb *p, u64 va) {
 static void as_write16(struct pcb *p, u64 va, u16 val) {
     as_write8(p, va, (u8)(val & 0xFF));
     as_write8(p, va + 1, (u8)((val >> 8) & 0xFF));
+}
+
+/* maize-315: bulk image-load helpers. The exec loader used to write every byte of a loaded
+ * segment through as_write8, a full software page-table walk PER BYTE, so loading DOOM's
+ * ~691 KB image cost ~180M instructions. These mirror do_bulk_set's per-page walk: resolve
+ * each destination page's physical frame ONCE, clip the request to that page, and forward a
+ * single native bulk-accelerator call, coalescing physically adjacent pages into one call.
+ * alloc_frame is a bump allocator, so a segment's freshly mapped pages are physically
+ * contiguous and collapse to a single native copy/set. Both walk process p's page table,
+ * which need NOT be the live CR0 (exactly as as_write8 does, for the spawn path where the
+ * child being built is not yet current). The loader has just mapped these pages itself, so
+ * no PTE_U validation is needed here (unlike do_bulk_copy, which serves untrusted user VAs).
+ * Source bytes for as_write_bytes come from a kernel identity buffer (g_iobuf), whose address
+ * is already a flat physical address the $F4 accelerator can read directly. */
+static void as_write_bytes(struct pcb *p, u64 va, const u8 *src, u64 n) {
+    u64 req_end = va + n;
+    u64 first, last, pv;
+    u64 run_pa = 0, run_src = 0, run_len = 0, run_next_pa = 0;
+    if (n == 0) { return; }
+    first = va & ~0xFFFul;
+    last  = (va + n - 1) & ~0xFFFul;
+    for (pv = first; pv <= last; pv += PAGE_SIZE) {
+        u64 page_pa     = pte_get(va_l0(p, pv), (pv >> 12) & 0x1FF) & ~0xFFFul;
+        u64 page_end    = pv + PAGE_SIZE;
+        u64 chunk_start = (pv > va) ? pv : va;
+        u64 chunk_end   = (page_end < req_end) ? page_end : req_end;
+        u64 chunk_pa    = page_pa + (chunk_start - pv);
+        u64 chunk_len   = chunk_end - chunk_start;
+        u64 chunk_src   = (u64)src + (chunk_start - va);
+        if (run_len != 0 && chunk_pa == run_next_pa) {
+            run_len += chunk_len;                                    /* extend the current run */
+        } else {
+            if (run_len != 0) { sys_bulk_copy((void *)run_pa, (const void *)run_src, run_len); }
+            run_pa  = chunk_pa;
+            run_src = chunk_src;
+            run_len = chunk_len;
+        }
+        run_next_pa = chunk_pa + chunk_len;
+    }
+    if (run_len != 0) { sys_bulk_copy((void *)run_pa, (const void *)run_src, run_len); }
+}
+
+static void as_fill_bytes(struct pcb *p, u64 va, u8 byte, u64 n) {
+    u64 req_end = va + n;
+    u64 first, last, pv;
+    u64 run_pa = 0, run_len = 0, run_next_pa = 0;
+    if (n == 0) { return; }
+    first = va & ~0xFFFul;
+    last  = (va + n - 1) & ~0xFFFul;
+    for (pv = first; pv <= last; pv += PAGE_SIZE) {
+        u64 page_pa     = pte_get(va_l0(p, pv), (pv >> 12) & 0x1FF) & ~0xFFFul;
+        u64 page_end    = pv + PAGE_SIZE;
+        u64 chunk_start = (pv > va) ? pv : va;
+        u64 chunk_end   = (page_end < req_end) ? page_end : req_end;
+        u64 chunk_pa    = page_pa + (chunk_start - pv);
+        u64 chunk_len   = chunk_end - chunk_start;
+        if (run_len != 0 && chunk_pa == run_next_pa) {
+            run_len += chunk_len;                                    /* extend the current run */
+        } else {
+            if (run_len != 0) { sys_bulk_set((void *)run_pa, (int)byte, run_len); }
+            run_pa  = chunk_pa;
+            run_len = chunk_len;
+        }
+        run_next_pa = chunk_pa + chunk_len;
+    }
+    if (run_len != 0) { sys_bulk_set((void *)run_pa, (int)byte, run_len); }
 }
 
 /* Ensure the page containing user VA `va` is mapped (allocate + map on first touch). */
@@ -829,7 +908,7 @@ static int load_segments(struct pcb *p, const char *path, u64 *entry_out) {
     for (i = 0; i < seg_count; ++i) {
         u8 seg[MZX_SEGMENT_SIZE];
         u64 so = shoff + (u64)i * MZX_SEGMENT_SIZE;
-        u64 vaddr, file_off, mem_size, file_size, j, va, done;
+        u64 vaddr, file_off, mem_size, file_size, va, done;
 
         /* Read the segment table entry; a short read means a malformed/truncated image. */
         if (read_exact_at(fd, so, seg, MZX_SEGMENT_SIZE) != 0) { sys_close(fd); return -1; }
@@ -859,9 +938,10 @@ static int load_segments(struct pcb *p, const char *path, u64 *entry_out) {
             ensure_user_page(p, va);
         }
         /* maize-251: stream file_size bytes from file_off straight into the user frames in
-         * g_iobuf-sized chunks (each byte written through the process's page table via
-         * as_write8, so it lands correctly even when CR0 is not yet this process's table).
-         * A short read (past EOF) rejects the image. */
+         * g_iobuf-sized chunks. maize-315: each chunk is copied through the process's page
+         * table by as_write_bytes (per-page translate + native $F4), so it lands correctly
+         * even when CR0 is not yet this process's table. A short read (past EOF) rejects the
+         * image. */
         if (file_size > 0) {
             if (sys_lseek(fd, (long)file_off, 0 /* SEEK_SET */) < 0) { sys_close(fd); return -1; }
             done = 0;
@@ -871,12 +951,17 @@ static int load_segments(struct pcb *p, const char *path, u64 *entry_out) {
                 if (want > QUESOS_IOBUF_CAP) { want = QUESOS_IOBUF_CAP; }
                 r = sys_read(fd, g_iobuf, (long)want);
                 if (r <= 0) { sys_close(fd); return -1; }
-                for (j = 0; j < (u64)r; ++j) { as_write8(p, vaddr + done + j, g_iobuf[j]); }
+                /* maize-315: copy this file chunk into the target frames one native call per
+                 * physical run instead of a per-byte as_write8 walk (see as_write_bytes). */
+                as_write_bytes(p, vaddr + done, g_iobuf, (u64)r);
                 done += (u64)r;
             }
         }
-        /* Zero-fill the BSS tail [file_size, mem_size). */
-        for (j = file_size; j < mem_size; ++j) { as_write8(p, vaddr + j, 0); }
+        /* maize-315: zero-fill the BSS tail [file_size, mem_size) via the native accelerator.
+         * (alloc_frame already hands back zeroed frames, so this is defensive re-zeroing that
+         * keeps load_segments correct independent of the allocator's zero-on-alloc behavior;
+         * at host-memset speed the cost is one native call per physical run.) */
+        if (mem_size > file_size) { as_fill_bytes(p, vaddr + file_size, 0, mem_size - file_size); }
         if (vaddr + mem_size > top_va) { top_va = vaddr + mem_size; }
     }
     sys_close(fd);
