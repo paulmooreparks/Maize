@@ -151,8 +151,27 @@ MAZM=$(resolve_exe "${BUILD_DIR}/mazm") || {
     echo "run-ctest.sh: mazm not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 MAIZE=$(resolve_exe "${BUILD_DIR}/maize") || {   # maize-225/230: SDL-free console build (no WSLg window)
     echo "run-ctest.sh: maize (console build) not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+# maize-360: bake --bare into every maize/maizeg invocation. quesOS is now the default
+# boot ROM, so a plain `maize <image>` boots quesOS and runs <image> on top of it; every
+# pre-360 fixture here launches a raw VM image directly, which --bare preserves. A single
+# exec-wrapper per binary (same technique as the MAIZE_JIT leg) bakes --bare in, so the ~89
+# call sites need no edits. The wrapper execs the REAL binary, so argv[0] (and the
+# maizeg-beside-argv0 presenter lookup) is unchanged. BARE_MAIZE keeps the bare, non-JIT
+# wrapper for the JIT-equivalence tests below, which deliberately bypass the JIT wrap but
+# still need to run bare. New maize-360 default-ROM fixtures use DEFAULT_MAIZE (the raw
+# binary, no --bare) instead. Keep in sync with run-tests.{sh,ps1}.
+mkdir -p "${BUILD_DIR}/ctest-run"
+DEFAULT_MAIZE="$MAIZE"                                  # raw binary, no --bare (default-ROM fixtures)
+BARE_MAIZE="${BUILD_DIR}/ctest-run/maize-bare-wrap.sh"
+{
+    echo '#!/bin/sh'
+    echo "exec \"${MAIZE}\" --bare \"\$@\""
+} > "$BARE_MAIZE"
+chmod +x "$BARE_MAIZE"
+MAIZE="$BARE_MAIZE"
 # maize-330: optional JIT leg, same env contract as run-tests.{sh,ps1}. MAIZE_JIT=1
-# runs every C-fixture execution under --jit; MAIZE_JIT=check under --jit-check.
+# runs every C-fixture execution under --jit; MAIZE_JIT=check under --jit-check. It layers
+# on the --bare wrapper above (maize-360), so a JIT run is bare + jit.
 if [ -n "${MAIZE_JIT:-}" ]; then
     _jit_flag="--jit"
     if [ "${MAIZE_JIT}" = "check" ]; then _jit_flag="--jit-check"; fi
@@ -173,6 +192,15 @@ fi
 # prove maizeg reads ~/.maize/maizeg.config while the console maize reads ~/.maize/maize.config.
 MAIZEG=$(resolve_exe "${BUILD_DIR}/maizeg") || {
     echo "run-ctest.sh: maizeg (graphical build) not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+# maize-360: run_launcher_per_binary runs `$MAIZEG <image>` directly, so it needs --bare
+# too (same wrapper technique as MAIZE above).
+_maizeg_bare="${BUILD_DIR}/ctest-run/maizeg-bare-wrap.sh"
+{
+    echo '#!/bin/sh'
+    echo "exec \"${MAIZEG}\" --bare \"\$@\""
+} > "$_maizeg_bare"
+chmod +x "$_maizeg_bare"
+MAIZEG="$_maizeg_bare"
 MZLD=$(resolve_exe "${BUILD_DIR}/mzld") || {
     echo "run-ctest.sh: mzld not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 
@@ -2357,9 +2385,10 @@ run_launcher_per_binary
 # Two proofs, like quesos_satp_jit_equiv below: (1) the marker, and (2) byte-identical
 # stdout under the interpreter (n = 1 per instruction) versus --jit bare (n > 1 per
 # block), which is exactly the interpreter/JIT equivalence this card must preserve. The
-# raw maize binary is resolved directly (not $MAIZE, which the MAIZE_JIT wrapper may have
-# pinned to one mode) so the comparison always runs interpreter-vs-JIT regardless of the
-# harness env.
+# comparison runs through BARE_MAIZE (maize-360: the --bare, non-JIT wrapper, so the raw
+# VM image still launches directly) rather than $MAIZE, which the MAIZE_JIT wrapper may
+# have pinned to one mode, so the comparison always runs interpreter-vs-JIT regardless of
+# the harness env.
 run_timer_cadence_equiv() {
     src="test_timer_period_large.mazm"
     cp "${REPO_ROOT}/asm/${src}" "${WORK_DIR}/${src}"
@@ -2370,7 +2399,7 @@ run_timer_cadence_equiv() {
         cat "${WORK_DIR}/timer_cadence.asm.log" >&2
         FAIL_COUNT=$((FAIL_COUNT + 1)); return
     fi
-    raw_maize=$(resolve_exe "${BUILD_DIR}/maize") || raw_maize=""
+    raw_maize="$BARE_MAIZE"   # maize-360: bare (so it runs the raw image), non-JIT wrapper
     if [ -z "$raw_maize" ]; then
         echo "[FAIL] timer_cadence_equiv: raw maize binary not found in ${BUILD_DIR}"
         FAIL_COUNT=$((FAIL_COUNT + 1)); return
@@ -2568,6 +2597,92 @@ run_quesos_argcheck() {
 }
 
 run_quesos_argcheck
+
+# maize-360: quesOS-as-default-substrate. Two new behaviors ride on the SAME argcheck
+# envp/argv dumper. This fixture drives the NEW default (ROM-wrapping) path directly via
+# DEFAULT_MAIZE (the raw binary, deliberately NOT the --bare wrapper), with --rom naming
+# the freshly built quesOS as the ROM, so it does not depend on quesos.mzx sitting beside
+# the test binary. Legs:
+#   1. QUESOS_INIT default init: an empty worklist (no app named, session mode) spawns the
+#      program QUESOS_INIT points at instead of powering off; argcheck's argv is exactly
+#      [<init-path>] (single token, no forced args).
+#   2. QUESOS_INIT is consumed: it never appears in the launched program's envp, while a
+#      distinct -e entry (QOSVAR=set) does. Proven the argcheck.c / maize-359 way.
+#   3. Login-env gap-fill: the five defaults (HOME/USER/LOGNAME/SHELL/PATH) appear in the
+#      envp, but an explicit -e HOME=/custom overrides the HOME default (gap-fill only).
+run_quesos_default_init() {
+    name="quesos_default_init"
+
+    ac="${REPO_ROOT}/os/quesos/argcheck.c"
+    builder="${REPO_ROOT}/os/quesos/build-quesos.sh"
+    if [ ! -f "$ac" ] || [ ! -f "$builder" ]; then
+        echo "[FAIL] ${name}: missing os/quesos/argcheck.c or build-quesos.sh" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    progs="${WORK_DIR}/quesos-definit"
+    rm -rf "$progs"; mkdir -p "$progs"
+    log="${WORK_DIR}/quesos-definit.build.log"
+
+    if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/argcheck.mzx" "$ac" >"$log" 2>&1; then
+        echo "[FAIL] ${name}: argcheck compile failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    quesos="${WORK_DIR}/quesos-definit.mzx"
+    if ! sh "$builder" --preset "$PRESET" -o "$quesos" >>"$log" 2>&1 || [ ! -f "$quesos" ]; then
+        echo "[FAIL] ${name}: quesOS link failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    nat=$(host_to_native "$progs")
+
+    # Leg 1 + 2: QUESOS_INIT set, empty worklist (no app token). argcheck runs as the
+    # default init with argv == [/progs/argcheck.mzx]; its envp carries QOSVAR=set but
+    # NOT QUESOS_INIT, framed by quesOS's init/reap lines.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(MSYS2_ARG_CONV_EXCL='/progs' "$DEFAULT_MAIZE" --rom "$quesos" --no-root \
+        --mount "${nat}=/progs:ro" -e QUESOS_INIT=/progs/argcheck.mzx -e QOSVAR=set \
+        </dev/null 2>/dev/null | grep -v '^$')
+    set -e
+    expected=$(printf '%s\n' \
+        '[quesos] init: cause-7 handler resident; running 1 program(s)' \
+        '/progs/argcheck.mzx' \
+        'QOSVAR=set' \
+        'HOME=/home/user' \
+        'USER=user' \
+        'LOGNAME=user' \
+        'SHELL=/bin/oksh.mzx' \
+        'PATH=/bin' \
+        '[quesos] reaped /progs/argcheck.mzx status=0')
+    if [ "$out" = "$expected" ]; then
+        echo "[PASS] ${name}_init (QUESOS_INIT spawns default init; consumed from envp; login-env gap-filled)"
+    else
+        echo "[FAIL] ${name}_init"
+        echo "        expected transcript:"; printf '%s\n' "$expected" | sed 's/^/          | /'
+        echo "        actual transcript:";   printf '%s\n' "$out"      | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # Leg 3: an explicit -e HOME wins over the gap-filled default.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    homeout=$(MSYS2_ARG_CONV_EXCL='/progs' "$DEFAULT_MAIZE" --rom "$quesos" --no-root \
+        --mount "${nat}=/progs:ro" -e QUESOS_INIT=/progs/argcheck.mzx -e HOME=/custom \
+        </dev/null 2>/dev/null)
+    set -e
+    if printf '%s\n' "$homeout" | grep -qxF 'HOME=/custom' \
+        && ! printf '%s\n' "$homeout" | grep -qxF 'HOME=/home/user'; then
+        echo "[PASS] ${name}_explicit_home (an -e HOME entry overrides the login-env default)"
+    else
+        echo "[FAIL] ${name}_explicit_home (expected HOME=/custom, not the /home/user default)"
+        printf '%s\n' "$homeout" | grep -E '^HOME=' | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_quesos_default_init
 
 # maize-93 process ladder: the multi-process quesOS acceptance fixtures. Each is a C
 # program compiled by the ordinary cc-maize.sh pipeline (stock .mzx) and run UNDER
@@ -2900,12 +3015,12 @@ run_quesos_ac_fixtures() {
     # runs to a deterministic PASS. (2) The real oracle: byte-identical stdout under plain
     # --jit vs the interpreter. --jit-check disables both the probe and chaining, so it cannot
     # exercise this path; a probe entry pointing at the wrong physical block after an SATP
-    # switch would change a child's hash and diverge the two streams. Resolve the raw maize
-    # binary directly (not $MAIZE, which the MAIZE_JIT wrapper may have pinned to one mode) so
-    # this comparison always runs interpreter-vs-JIT regardless of the harness env.
+    # switch would change a child's hash and diverge the two streams. Run through BARE_MAIZE
+    # (maize-360: the --bare, non-JIT wrapper) rather than $MAIZE, which the MAIZE_JIT wrapper
+    # may have pinned to one mode, so this comparison always runs interpreter-vs-JIT.
     quesos_ac_case quesos_satp_stress "satp-stress: PASS" satp_stress
 
-    raw_maize=$(resolve_exe "${BUILD_DIR}/maize") || raw_maize=""
+    raw_maize="$BARE_MAIZE"   # maize-360: bare (so it runs the raw image), non-JIT wrapper
     TOTAL=$((TOTAL + 1))
     if [ -z "$raw_maize" ]; then
         echo "[FAIL] quesos_satp_jit_equiv: raw maize binary not found in ${BUILD_DIR}"

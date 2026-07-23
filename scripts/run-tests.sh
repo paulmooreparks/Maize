@@ -171,10 +171,28 @@ fi
 
 mkdir -p "$TEST_RUN_DIR"
 
+# --- maize-360: bake --bare into every maize invocation. quesOS is now the default
+# boot ROM, so a plain `maize <image>` boots quesOS and runs <image> on top of it. The
+# whole pre-360 suite launches raw VM images directly, which is exactly what --bare
+# preserves. A single exec-wrapper here (the same technique the MAIZE_JIT leg below uses)
+# bakes --bare into MAIZE_EXE, so every call site runs bare without touching the ~21
+# individual invocations. The wrapper execs the REAL binary, so its argv[0] (and thus the
+# maizeg-beside-argv0 presenter lookup) is unchanged. New maize-360 fixtures that exercise
+# the default ROM path invoke maize directly, not through this variable. Keep in sync with
+# run-tests.ps1 (the Windows twin).
+BARE_WRAP="${TEST_RUN_DIR}/maize-bare-wrap.sh"
+{
+    echo '#!/bin/sh'
+    echo "exec \"${MAIZE_EXE}\" --bare \"\$@\""
+} > "$BARE_WRAP"
+chmod +x "$BARE_WRAP"
+MAIZE_EXE="$BARE_WRAP"
+
 # --- maize-330: optional JIT leg. MAIZE_JIT=1 runs every maize invocation under --jit;
 # MAIZE_JIT=check runs under --jit-check (differential verification). Implemented as an
 # exec wrapper so the suite's call sites stay unchanged. MAIZE_JIT_THRESHOLD overrides
 # the hotness threshold (1 = compile everything, the aggressive correctness setting).
+# It layers on top of the --bare wrapper above (maize-360), so a JIT run is bare + jit.
 # Keep in sync with run-tests.ps1 (the Windows twin).
 if [ -n "${MAIZE_JIT:-}" ]; then
     JIT_FLAG="--jit"

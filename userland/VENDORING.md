@@ -51,11 +51,16 @@ live at `/bin/<name>.mzx` inside the `--mount` grant (decision 8939).
 ## Running the shell (interactive vs scripted)
 
 Interactive use is the DEFAULT input path on the console binary, driven from a real
-terminal, with NO `--input` flag:
+terminal, with NO `--input` flag. quesOS is now the default boot ROM, so a plain
+`maize` with no app named boots quesOS to a login shell, and naming an app runs it on
+top of quesOS:
 
 ```
-maize --mount <bin-dir>=/bin:ro quesos.mzx /bin/oksh.mzx
+maize --mount <bin-dir>=/bin:ro                    # login shell (quesOS default init)
+maize --mount <bin-dir>=/bin:ro /bin/oksh.mzx      # run oksh explicitly on quesOS
 ```
+
+(To run a raw image with no guest OS underneath, pass `--bare <image>`.)
 
 The console device is quesOS's tty (doc 16). On the default path host stdin feeds the
 console device on demand: the guest runs freely and its own output (the prompt) is never

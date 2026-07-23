@@ -239,16 +239,31 @@ if (-not (Test-Path $TestRunDir)) {
     New-Item -ItemType Directory -Path $TestRunDir -Force | Out-Null
 }
 
+# --- maize-360: bake --bare into every maize invocation. quesOS is now the default boot
+# ROM, so a plain `maize <image>` boots quesOS and runs <image> on top of it; the whole
+# pre-360 suite launches raw VM images directly, which --bare preserves. A single .cmd
+# exec-wrapper here (the same technique the MAIZE_JIT leg below uses) bakes --bare into
+# $MaizeExe, so every call site (both `&` and ProcessStartInfo) runs bare without editing
+# the ~20 invocations. The wrapper execs the REAL binary, so its argv[0] is unchanged. New
+# maize-360 fixtures that exercise the default ROM path invoke maize directly. This is the
+# twin of the --bare wrapper in run-tests.sh; keep the two in sync.
+$RealMaizeExe = $MaizeExe
+$bareWrap = Join-Path $TestRunDir 'maize-bare-wrap.cmd'
+"@echo off`r`n`"$RealMaizeExe`" --bare %*" | Set-Content -Path $bareWrap -Encoding ascii
+$MaizeExe = $bareWrap
+
 # --- maize-330: optional JIT leg. MAIZE_JIT=1 runs every maize invocation under --jit;
 # MAIZE_JIT=check runs under --jit-check (differential verification). Implemented as a
 # .cmd exec wrapper so the suite's call sites (both `&` calls and ProcessStartInfo)
 # stay unchanged. MAIZE_JIT_THRESHOLD overrides the hotness threshold (1 = compile
-# everything, the aggressive correctness setting). Keep in sync with run-tests.sh.
+# everything, the aggressive correctness setting). It layers --bare + jit onto the REAL
+# binary in one wrapper (maize-360), so a JIT run is bare + jit. Keep in sync with
+# run-tests.sh.
 if ($env:MAIZE_JIT) {
     $jitFlag = if ($env:MAIZE_JIT -eq 'check') { '--jit-check' } else { '--jit' }
     $jitThreshold = if ($env:MAIZE_JIT_THRESHOLD) { $env:MAIZE_JIT_THRESHOLD } else { '50' }
     $jitWrap = Join-Path $TestRunDir 'maize-jit-wrap.cmd'
-    "@echo off`r`nset MAIZE_JIT_QUIET=1`r`n`"$MaizeExe`" $jitFlag --jit-threshold $jitThreshold %*" |
+    "@echo off`r`nset MAIZE_JIT_QUIET=1`r`n`"$RealMaizeExe`" --bare $jitFlag --jit-threshold $jitThreshold %*" |
         Set-Content -Path $jitWrap -Encoding ascii
     $MaizeExe = $jitWrap
     Write-Host "run-tests.ps1: running maize under $jitFlag (threshold $jitThreshold)"

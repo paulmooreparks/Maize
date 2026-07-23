@@ -228,6 +228,13 @@ needs a POSIX shell). The per-piece quesOS, userland, and demo builds run
 through the native `mzcc` binary and shell out to nothing. No WSL, no MSYS2,
 and no other separate install is required.
 
+quesOS is the default boot ROM once `quesos.mzx` sits beside the maize binary
+(or a `rom=` entry in `~/.maize/config` points at it). With that in place a plain
+`maize` boots quesOS to a login shell, and `maize <app>` runs the app on top of
+quesOS, so an app gets memory paging, an idle CPU while it waits, and the OS
+services. There is no `quesos.mzx` token to type in the common case. To run a raw
+VM image directly, with no guest OS underneath, pass `maize --bare <image>`.
+
 ### Windows, primary path: llvm-mingw
 
     scripts\bootstrap-toolchain.ps1

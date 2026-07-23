@@ -12,8 +12,12 @@
     but you drive it entirely from PowerShell.
 
     With no arguments the image is written beside its source at os\quesos\quesos.mzx.
-    Once built, load it directly with `maize <path>`; a quesOS image is portable Maize
-    bytecode and runs on the native Windows maize.exe no matter which host built it.
+    quesOS is the default boot ROM: once quesos.mzx sits beside maize.exe (or a rom=
+    entry in ~/.maize/config points at it), a plain `maize` boots it to a login shell
+    and `maize <app>` runs the app on top of quesOS, with no quesos.mzx token to type.
+    To run this image directly, with no guest OS underneath, use `maize --bare <path>`.
+    A quesOS image is portable Maize bytecode and runs on the native Windows maize.exe
+    no matter which host built it.
 
     Requires Git for Windows (ships Git Bash) with the Maize C cross-toolchain
     provisioned (run scripts\install-mazm.ps1 once to set that up). If Git Bash is
@@ -28,7 +32,9 @@
 
 .EXAMPLE
     .\scripts\build-quesos.ps1
-    Builds os\quesos\quesos.mzx, then run it with: maize os\quesos\quesos.mzx
+    Builds os\quesos\quesos.mzx. With the image beside maize.exe, boot it to a login
+    shell with: maize   (or run an app on it with: maize <app>). To run this image
+    directly with no guest OS, use: maize --bare os\quesos\quesos.mzx
 
 .EXAMPLE
     .\scripts\build-quesos.ps1 -Out C:\tmp\quesos.mzx
