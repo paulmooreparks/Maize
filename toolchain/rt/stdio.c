@@ -14,26 +14,35 @@
  * contract, so the conversion switch is written exactly once against out_ch.
  */
 #include "stdio.h"
-#include "string.h"   /* strlen, memcpy, strerror (perror, maize-172) */
+#include "string.h"   /* strlen, memcpy, memchr, strerror (perror, maize-172) */
+#include "unistd.h"   /* isatty (stdout tty probe, maize-276) */
 #include "stdlib.h"   /* malloc/free/realloc, atexit (maize-120) */
 #include "syscall.h"  /* sys_write, read/write/lseek/close (maize-120) */
 #include "fcntl.h"    /* O_* open flags, SEEK_* whence (maize-120) */
 #include "ctype.h"    /* isspace (sscanf whitespace handling, maize-148) */
 #include "errno.h"    /* errno (perror, maize-172) */
 
-/* FILE::flags bits (maize-120). readable/writable are the mode; eof/error are the
- * sticky status bits feof/ferror report; unbuffered marks stdout/stderr (direct
- * sys_write, no buffer) apart from the fully buffered fopen'd streams. */
-#define _F_READ   0x01
-#define _F_WRITE  0x02
-#define _F_EOF    0x04
-#define _F_ERR    0x08
-#define _F_UNBUF  0x10
+/* FILE::flags bits (maize-120, maize-276). readable/writable are the mode; eof/error
+ * are the sticky status bits feof/ferror report. unbuffered marks a direct-sys_write
+ * stream (stderr, or stdout after setvbuf(_IONBF)); linebuf marks a line-buffered
+ * stream (flush on newline); pending marks stdout before its buffering mode has been
+ * chosen on the first write. A stream with neither unbuffered nor pending set is
+ * fully buffered (the fopen'd streams, and stdout on a non-tty). */
+#define _F_READ    0x01
+#define _F_WRITE   0x02
+#define _F_EOF     0x04
+#define _F_ERR     0x08
+#define _F_UNBUF   0x10
+#define _F_LBF     0x20
+#define _F_PENDING 0x40
 
 /* Static stream objects; the public handles are pointers to them (decision 7359).
- * Both are unbuffered write streams, so the widened tail is zero/NULL and only the
- * flags carry _F_WRITE|_F_UNBUF. Field order matches struct _FILE in stdio.h. */
-static FILE _stdout = { STDOUT_FILENO, _F_WRITE | _F_UNBUF, 0, NULL, 0, 0, 0, NULL };
+ * stdout (maize-276) is now buffered: it carries a real static BUFSIZ buffer and
+ * starts _F_PENDING so the first write picks line- vs fully-buffered from isatty.
+ * stderr stays unbuffered (direct sys_write, NULL buffer) so diagnostics escape
+ * immediately. Field order matches struct _FILE in stdio.h. */
+static unsigned char _stdout_buf[BUFSIZ];
+static FILE _stdout = { STDOUT_FILENO, _F_WRITE | _F_PENDING, 0, _stdout_buf, BUFSIZ, 0, 0, NULL };
 static FILE _stderr = { STDERR_FILENO, _F_WRITE | _F_UNBUF, 0, NULL, 0, 0, 0, NULL };
 FILE *stdout = &_stdout;
 FILE *stderr = &_stderr;
@@ -51,6 +60,32 @@ FILE *stdin = &_stdin;
  * the atexit flush hook the first time a buffered stream is created (maize-120). */
 static FILE *g_streams = NULL;
 static int   g_flush_armed = 0;
+
+/* Arm the atexit hook that flushes buffered write streams on a normal return-from-
+ * main / exit() (maize-120). Idempotent; _Exit()/abort() bypass atexit and so skip
+ * the flush. Buffered stdout (maize-276) shares this hook, so it is armed both here
+ * (on the first buffered stdout write) and by fopen. */
+static void
+arm_flush_hook(void)
+{
+    if (!g_flush_armed) {
+        g_flush_armed = 1;
+        atexit(__stdio_flush_all);
+    }
+}
+
+/* Choose stdout's buffering mode on its first write (maize-276): line-buffered when
+ * it is a tty (interactive echo at newline granularity), fully buffered otherwise
+ * (pipes, redirects, hostfs files). Runs once, clearing _F_PENDING; only stdout ever
+ * carries _F_PENDING, so no other stream reaches here. Also arms the exit flush. */
+static void
+decide_buffering(FILE *stream)
+{
+    if (isatty(stream->fd))
+        stream->flags |= _F_LBF;
+    stream->flags &= ~_F_PENDING;
+    arm_flush_hook();
+}
 
 int
 fputc(int c, FILE *stream)
@@ -117,17 +152,34 @@ puts(const char *s)
  * memory address. A file-scope const array is loaded plainly and sidesteps it. */
 static const char fmt_nullstr[] = "(null)";
 
-/* The output sink (decision 7759). buf/cap/pos are the write cursor; total is the
- * running character count (the eventual return value); fd selects the mode. */
+/* The output sink (decision 7759, extended maize-276). buf/cap/pos are the write
+ * cursor; total is the running character count (the eventual return value); fd
+ * selects the mode. stream (maize-276) is non-NULL for a BUFFERED target stream: a
+ * filled stack chunk is delivered through fwrite so printf coalesces into the
+ * stream's own buffer instead of one sys_write per chunk. When stream is NULL and
+ * fd >= 0 the chunk goes straight to the fd (unbuffered stderr, byte-identical to
+ * the pre-maize-276 path); fd == -1 is snprintf's pure-buffer mode. */
 struct fmtout {
     char   *buf;    /* user buffer (snprintf) or a stack buffer (printf/fprintf) */
     size_t  cap;    /* n (snprintf) or PRINTF_BUFSZ (printf/fprintf) */
     size_t  pos;    /* live bytes in buf */
     size_t  total;  /* total chars produced == return value */
     int     fd;     /* target fd in flush-mode; -1 == pure-buffer (snprintf) mode */
+    FILE   *stream; /* non-NULL: deliver chunks via fwrite into this buffered stream */
 };
 
-/* Append one char. In flush-mode the full buffer is written out and reset when it
+/* Deliver the current stack chunk (o->buf[0 .. o->pos]) to its destination: through
+ * fwrite into a buffered stream, else straight to the fd. */
+static void
+out_flush_chunk(struct fmtout *o)
+{
+    if (o->stream != NULL)
+        fwrite(o->buf, 1, o->pos, o->stream);
+    else
+        sys_write(o->fd, o->buf, o->pos);
+}
+
+/* Append one char. In flush-mode the full buffer is delivered and reset when it
  * fills (chunked flush); in buffer-mode the char is stored only while a NUL still
  * fits, but total keeps counting so the return value is the would-be length. */
 static void
@@ -137,7 +189,7 @@ out_ch(struct fmtout *o, char c)
     if (o->fd >= 0) {                       /* flush-mode: printf/fprintf */
         o->buf[o->pos++] = c;
         if (o->pos == o->cap) {
-            sys_write(o->fd, o->buf, o->pos);
+            out_flush_chunk(o);
             o->pos = 0;
         }
     } else {                                /* buffer-mode: snprintf */
@@ -154,7 +206,7 @@ fmt_finish(struct fmtout *o)
 {
     if (o->fd >= 0) {
         if (o->pos > 0)
-            sys_write(o->fd, o->buf, o->pos);
+            out_flush_chunk(o);
     } else {
         if (o->cap > 0)
             o->buf[o->pos] = '\0';
@@ -426,6 +478,7 @@ vsnprintf(char *str, size_t n, const char *fmt, va_list ap)
     o.pos = 0;
     o.total = 0;
     o.fd = -1;                  /* buffer-mode */
+    o.stream = NULL;
     vformat(&o, fmt, ap);
     return fmt_finish(&o);
 }
@@ -436,18 +489,21 @@ vfprintf(FILE *stream, const char *fmt, va_list ap)
     char sbuf[PRINTF_BUFSZ];
     struct fmtout o;
 
-    /* On a buffered stream, drain any pending write-buffer bytes first so formatted
-     * output cannot land ahead of earlier fwrite bytes (decision 8288); then emit via
-     * the existing chunked direct-to-fd path. For unbuffered stdout/stderr this branch
-     * is skipped and the body is byte-for-byte the pre-maize-120 formatter. */
-    if (!(stream->flags & _F_UNBUF))
-        fflush(stream);
+    /* Decide stdout's buffering mode on first use (maize-276). */
+    if (stream->flags & _F_PENDING)
+        decide_buffering(stream);
 
+    /* On a buffered stream, route formatted chunks through fwrite into the stream's
+     * own buffer (maize-276): printf then coalesces into few sys_writes and lands
+     * naturally after any earlier fwrite bytes, so the decision-8288 pre-drain is no
+     * longer needed. Unbuffered stderr keeps stream == NULL and chunk-writes straight
+     * to the fd, byte-for-byte the pre-maize-276 formatter. */
     o.buf = sbuf;
     o.cap = PRINTF_BUFSZ;
     o.pos = 0;
     o.total = 0;
     o.fd = stream->fd;         /* flush-mode */
+    o.stream = (stream->flags & _F_UNBUF) ? NULL : stream;
     vformat(&o, fmt, ap);
     return fmt_finish(&o);
 }
@@ -1042,7 +1098,12 @@ fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
     if (total == 0)
         return 0;
 
-    /* Unbuffered stdout/stderr: one direct write, byte-identical to the old path. */
+    /* Decide stdout's buffering mode on first use (maize-276). */
+    if (stream->flags & _F_PENDING)
+        decide_buffering(stream);
+
+    /* Unbuffered stderr (or stdout after setvbuf(_IONBF)): one direct write,
+     * byte-identical to the old path. */
     if (stream->flags & _F_UNBUF) {
         long w = write(stream->fd, ptr, total);
         if (w < 0) {
@@ -1069,6 +1130,14 @@ fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
         stream->bufpos += chunk;
         put += (size_t)chunk;
     }
+
+    /* Line-buffered (a tty stdout): a newline in the bytes just buffered flushes the
+     * pending buffer eagerly (maize-276, decision 9813). Flushing the whole buffer
+     * rather than only through the last newline is correct because a line-buffered
+     * stream flushes at newline granularity, so nothing meaningful lingers after. */
+    if ((stream->flags & _F_LBF) && memchr(in, '\n', put) != NULL)
+        flush_wbuf(stream);
+
     return put / size;
 }
 
@@ -1174,6 +1243,8 @@ fflush(FILE *stream)
     int rc = 0;
 
     if (stream == NULL) {                    /* flush every open buffered stream */
+        if (_stdout.mode == 2 && flush_wbuf(&_stdout) != 0)
+            rc = -1;                         /* buffered stdout (maize-276) */
         p = g_streams;
         while (p != NULL) {
             if (p->mode == 2 && flush_wbuf(p) != 0)
@@ -1215,11 +1286,53 @@ __stdio_flush_all(void)
 {
     FILE *p = g_streams;
 
+    if (_stdout.mode == 2)
+        flush_wbuf(&_stdout);           /* buffered stdout (maize-276) */
     while (p != NULL) {
         if (p->mode == 2)
             flush_wbuf(p);
         p = p->next;
     }
+}
+
+/* setvbuf / setbuf (maize-276): pick a stream's buffering mode. Any bytes already
+ * buffered are flushed first so a mid-stream mode switch never strands them (C leaves
+ * a post-I/O call undefined, but flushing keeps output correct either way). _IONBF
+ * sets the direct-write flag; _IOLBF / _IOFBF clear it and select line vs full, and
+ * install the caller buffer when one is supplied. An explicit call also clears the
+ * lazy-decision _F_PENDING bit and arms the exit flush. */
+int
+setvbuf(FILE *stream, char *buf, int mode, size_t size)
+{
+    if (stream->mode == 2 && stream->bufpos > 0)
+        flush_wbuf(stream);
+
+    if (mode == _IONBF) {
+        stream->flags |= _F_UNBUF;
+        stream->flags &= ~(_F_LBF | _F_PENDING);
+        return 0;
+    }
+
+    if (buf != NULL && size > 0) {
+        stream->buf = (unsigned char *)buf;
+        stream->bufcap = (long)size;
+        stream->bufpos = 0;
+        stream->buflen = 0;
+    }
+    stream->flags &= ~_F_UNBUF;
+    if (mode == _IOLBF)
+        stream->flags |= _F_LBF;
+    else
+        stream->flags &= ~_F_LBF;           /* _IOFBF */
+    stream->flags &= ~_F_PENDING;
+    arm_flush_hook();
+    return 0;
+}
+
+void
+setbuf(FILE *stream, char *buf)
+{
+    setvbuf(stream, buf, buf ? _IOFBF : _IONBF, BUFSIZ);
 }
 
 /* perror (maize-172): "s: <errno message>\n" on stderr, prefix omitted when s is

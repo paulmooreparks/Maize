@@ -46,6 +46,14 @@
 /* Full-buffer size for fopen'd streams (classic single-direction stdio buffer). */
 #define BUFSIZ 4096
 
+/* setvbuf buffering modes (maize-276). _IONBF is unbuffered (direct sys_write),
+ * _IOLBF line-buffered (flush on newline), _IOFBF fully buffered (flush when
+ * full). stdout defaults to _IOLBF on a tty and _IOFBF otherwise (chosen on the
+ * first write); stderr stays _IONBF. */
+#define _IONBF 0
+#define _IOLBF 1
+#define _IOFBF 2
+
 /* fseek/lseek whence values (maize-147). Identical tokens to fcntl.h's (0/1/2), so a
  * TU including both <stdio.h> and <fcntl.h> sees a legal identical-token redefinition;
  * the #ifndef is belt-and-suspenders. DOOM's w_file_stdc.c:162 references these via
@@ -138,6 +146,14 @@ long   ftell(FILE *stream);
  * shorthand borrowed oksh's history.c uses. Body in stdio.c. */
 void   rewind(FILE *stream);
 int    fflush(FILE *stream);   /* NULL flushes every open buffered stream */
+
+/* setvbuf / setbuf (maize-276): choose a stream's buffering mode. Per C both are
+ * only honored before any I/O on the stream. setvbuf's `buf`/`size` install a
+ * caller buffer for _IOLBF/_IOFBF (ignored for _IONBF); passing buf == NULL keeps
+ * the stream's own buffer. setbuf is setvbuf(stream, buf, buf ? _IOFBF : _IONBF,
+ * BUFSIZ). */
+int    setvbuf(FILE *stream, char *buf, int mode, size_t size);
+void   setbuf(FILE *stream, char *buf);
 int    feof(FILE *stream);
 int    ferror(FILE *stream);
 void   clearerr(FILE *stream);
