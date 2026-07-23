@@ -59,32 +59,19 @@ FILE *stdin = &_stdin;
 /* Head of the open (fopen'd) buffered-stream list, and the one-shot guard that arms
  * the atexit flush hook the first time a buffered stream is created (maize-120). */
 static FILE *g_streams = NULL;
-static int   g_flush_armed = 0;
-
-/* Arm the atexit hook that flushes buffered write streams on a normal return-from-
- * main / exit() (maize-120). Idempotent; _Exit()/abort() bypass atexit and so skip
- * the flush. Buffered stdout (maize-276) shares this hook, so it is armed both here
- * (on the first buffered stdout write) and by fopen. */
-static void
-arm_flush_hook(void)
-{
-    if (!g_flush_armed) {
-        g_flush_armed = 1;
-        atexit(__stdio_flush_all);
-    }
-}
 
 /* Choose stdout's buffering mode on its first write (maize-276): line-buffered when
  * it is a tty (interactive echo at newline granularity), fully buffered otherwise
  * (pipes, redirects, hostfs files). Runs once, clearing _F_PENDING; only stdout ever
- * carries _F_PENDING, so no other stream reaches here. Also arms the exit flush. */
+ * carries _F_PENDING, so no other stream reaches here. The exit-time flush is handled
+ * directly by exit() calling __stdio_flush_all() after the atexit chain (maize-276),
+ * so no atexit registration is needed here. */
 static void
 decide_buffering(FILE *stream)
 {
     if (isatty(stream->fd))
         stream->flags |= _F_LBF;
     stream->flags &= ~_F_PENDING;
-    arm_flush_hook();
 }
 
 int
@@ -1008,9 +995,9 @@ fopen(const char *path, const char *mode)
     f->next = g_streams;                    /* thread onto the open-stream list */
     g_streams = f;
 
-    /* Arm the atexit flush hook once, now that a buffered stream exists (maize-120,
-     * decision 8283): exit() then flushes on a return-from-main; _Exit/abort bypass. */
-    arm_flush_hook();
+    /* No atexit arming needed (maize-276): exit() flushes every buffered stream via
+     * __stdio_flush_all() after the atexit chain, so a fopen'd stream that is never
+     * fclose'd still lands its bytes on a normal exit; _Exit/abort bypass, unchanged. */
     return f;
 }
 
@@ -1277,9 +1264,11 @@ clearerr(FILE *stream)
     stream->flags &= ~(_F_EOF | _F_ERR);
 }
 
-/* Registered on the atexit registry by the first fopen (maize-120). Walks the open-
- * stream list and flushes each buffered write stream so a program that returns from
- * main without fclose still lands its bytes on the host. _Exit/abort bypass atexit. */
+/* Called directly by exit() after the atexit chain (maize-276; was an atexit entry
+ * armed by the first fopen under maize-120). Flushes the static stdout/stderr and
+ * every buffered write stream on the open list, so a program that returns from main
+ * without fclose still lands its bytes on the host. _Exit/abort skip exit() and so
+ * skip this flush. */
 void
 __stdio_flush_all(void)
 {
@@ -1301,7 +1290,7 @@ __stdio_flush_all(void)
  * a post-I/O call undefined, but flushing keeps output correct either way). _IONBF
  * sets the direct-write flag; _IOLBF / _IOFBF clear it and select line vs full, and
  * install the caller buffer when one is supplied. An explicit call also clears the
- * lazy-decision _F_PENDING bit and arms the exit flush. */
+ * lazy-decision _F_PENDING bit. The exit-time flush is handled by exit() directly. */
 int
 setvbuf(FILE *stream, char *buf, int mode, size_t size)
 {
@@ -1341,7 +1330,6 @@ setvbuf(FILE *stream, char *buf, int mode, size_t size)
     else
         stream->flags &= ~_F_LBF;           /* _IOFBF */
     stream->flags &= ~_F_PENDING;
-    arm_flush_hook();
     return 0;
 }
 

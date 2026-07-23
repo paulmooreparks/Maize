@@ -1,14 +1,15 @@
 /* toolchain/rt/stdio.h -- <stdio.h> core for the Maize C runtime (maize-76,
  * decisions 7341 / 7359; file-backed FILE* layer maize-120).
  *
- * stdout/stderr stay UNBUFFERED (decision 7341): each putchar is one sys_write and
- * fputs is one sys_write of the whole string, so every existing fixture's stdout is
- * byte-for-byte identical. fopen'd streams (maize-120) are FULLY BUFFERED with one
- * BUFSIZ single-direction buffer. Because a buffered write stream can hold undrained
- * bytes when main returns, stdio registers __stdio_flush_all on maize-100's atexit
- * registry at first fopen; exit() therefore flushes it, while _Exit()/abort() (which
- * bypass the registry) do not. stdout/stderr being unbuffered, the hook is never
- * load-bearing for them.
+ * stdout is BUFFERED (maize-276, superseding decision 7341): it carries a static
+ * BUFSIZ buffer and picks its mode on the first write, line-buffered when isatty(1)
+ * and fully buffered otherwise, so a run of writes coalesces into few sys_writes.
+ * stderr stays UNBUFFERED so diagnostics escape immediately. fopen'd streams
+ * (maize-120) are FULLY BUFFERED with one BUFSIZ single-direction buffer. Because a
+ * buffered write stream can hold undrained bytes when main returns, exit() calls
+ * __stdio_flush_all() directly AFTER running the atexit chain (C 7.22.4.4 order);
+ * _Exit()/abort() skip exit() and so do not flush. setvbuf/setbuf select the mode
+ * (_IONBF restores unbuffered direct writes).
  *
  * FILE was the minimal M1 stream (decision 7359, just an fd); maize-120 widens it to
  * carry the buffer + flags the file-backed layer needs, as decision 7359 anticipated
@@ -162,9 +163,10 @@ void   clearerr(FILE *stream);
  * omitted when s is NULL or empty). kilo uses it on file-open failure. */
 void   perror(const char *s);
 
-/* Registered on the atexit registry at first fopen (maize-120): walks the open-stream
- * list and flushes each buffered write stream, so bytes land even if main returns
- * without fclose. _Exit()/abort() bypass atexit and so do not flush. */
+/* Called by exit() after the atexit chain (maize-276; formerly an atexit entry armed
+ * at first fopen under maize-120): flushes the static stdout/stderr and every open
+ * buffered write stream, so bytes land even if main returns without fclose.
+ * _Exit()/abort() skip exit() and so do not flush. */
 void   __stdio_flush_all(void);
 
 #endif /* MAIZE_STDIO_H */

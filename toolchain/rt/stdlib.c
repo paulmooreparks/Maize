@@ -35,6 +35,11 @@
 #include "syscall.h"  /* sys_brk, _exit, sys_clock_ms, open */
 #include "fcntl.h"    /* maize-94: O_* flags for mkstemp */
 
+/* Libc-internal stdio flush (body in stdio.c). exit() calls it directly AFTER the
+ * atexit chain (maize-276) so buffered streams flush in C-standard order; forward-
+ * declared here to avoid pulling all of <stdio.h> (FILE et al.) into stdlib.c. */
+void __stdio_flush_all(void);
+
 /* --- termination -------------------------------------------------------------- */
 /* These are noreturn: _exit issues SYS $3C, which halts the VM, so control never
  * reaches the fall-through `return`. The `_Noreturn` keyword is honest here: cproc
@@ -68,15 +73,20 @@ _Exit(int status)
 _Noreturn void
 exit(int status)
 {
-    /* Run registered handlers in LIFO order, then hand off to _exit. The counter
-       is decremented before each indirect call, so a handler that itself calls
-       exit() resumes with the remaining handlers rather than looping. No stdio
-       flush: stdio is unbuffered at M1, and the buffered-stdio flush-on-exit hook
-       is maize-120's (delivered by it registering a flush via atexit). */
+    /* Run registered handlers in LIFO order, then flush stdio, then hand off to
+       _exit. The counter is decremented before each indirect call, so a handler
+       that itself calls exit() resumes with the remaining handlers rather than
+       looping. Per C (7.22.4.4), atexit handlers run first and open streams are
+       flushed AFTER them; a handler that prints to buffered stdout must have its
+       output flushed, so the flush is a direct call here, NOT an atexit entry
+       (maize-276: registering the flush via atexit made LIFO order run it before a
+       handler registered earlier, silently dropping that handler's output).
+       _Exit/abort bypass both the handlers and this flush. */
     while (g_atexit_n > 0) {
         void (*fn)(void) = g_atexit[--g_atexit_n];
         fn();
     }
+    __stdio_flush_all();
     _exit(status);
 }
 
