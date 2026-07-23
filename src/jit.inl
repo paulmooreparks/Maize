@@ -559,6 +559,22 @@ inline void jit_probe_remove(u_word key) {
     }
 }
 
+/* maize-346: fault-safe VA->PA translate for the paged probe tail. A paged block's
+   indirect exit (RET/JMP/CALL) or cross-guest-page direct branch consults the physical-
+   keyed probe, which needs the target's physical address; the fast (cache-hit) translate
+   runs inline in emitted code, and only a fast-page miss lands here through
+   jit_faultsafe_call. translate() can raise a fetch page fault (the target VA is unmapped
+   or non-executable, a legitimate guest scenario); jit_faultsafe_call's try/catch absorbs
+   the throw and sets jit_pending_fault, so no page_fault_redirect unwinds the emitted
+   frame. current_instr_pc is set to the target so the FAULT-class saved PC matches the
+   dispatcher's own block-entry fetch fault (jit_dispatch sets it before its key translate).
+   On success the physical address returns via jit_probe_pa. */
+u_word jit_probe_pa = 0;
+void jit_probe_translate() {
+    current_instr_pc = regs::rp.w0;
+    jit_probe_pa = translate(regs::rp.w0, access_kind::fetch);
+}
+
 struct jit_store_rec { u_word addr; u_word value; u_word old; u_byte width; };
 std::vector<jit_store_rec> jit_journal_a;    /* compiled run */
 std::vector<jit_store_rec> jit_journal_b;    /* interpreter oracle run */
@@ -1523,6 +1539,79 @@ void jit_emit_events_inline(jit_emitter& e, u_word n, std::vector<u_byte*>& brk_
     jit_patch_branch(no_irq, e.buf);
 }
 
+/* Emit block-exit boundary events, leaving the anchor (r11) live and pushing every
+   chain-break site (running-cleared / deliverable-IRQ, plus the rax!=0 break on the
+   thunk path) into brk_sites. Requires jit_anchor_ok. Shared by every probe-consulting
+   exit tail (bare + paged, indirect + cross-page) so they emit identical event effects. */
+void jit_emit_exit_events(jit_emitter& e, u_word n, std::vector<u_byte*>& brk_sites) {
+    if (jit_no_inline_events) {
+        u_word args[1] = { n };
+        e.call_fn(reinterpret_cast<void*>(&jit_boundary_events), 1, args);
+        e.mov_ri(11, reinterpret_cast<u_word>(jit_anchor));
+        e.test_rr(0, 0);
+        brk_sites.push_back(e.jcc_placeholder(0x5));      /* jnz (rax != 0) -> dispatcher */
+    } else {
+        jit_emit_events_inline(e, n, brk_sites);
+    }
+}
+
+/* maize-346: paged variant of the probe tail (r11 anchor live). RP holds the target VA;
+   translate it VA->PA inline through the maize-341 fault-safe fast-page machinery, form
+   the paged physical key ((pa<<2)|(priv<<1)|1), and probe the same direct-mapped cache the
+   bare tail uses. A fast-page HIT stays entirely in emitted code with no call; a MISS routes
+   through jit_probe_translate under jit_faultsafe_call. On a translate fault the fault is
+   already delivered (jit_pending_fault set, RP at the handler), so we ret to the dispatcher,
+   which resumes there exactly as an interpreted transfer's fetch fault would. On a clean
+   slow translate the physical address returns via jit_probe_pa and rejoins the key+probe.
+   Every probe miss and each brk site lands on the trailing ret (back to the dispatcher). */
+void jit_emit_probe_tail_paged(jit_emitter& e, std::vector<u_byte*>& brk_sites) {
+    e.load_anchor(0, jit_disp(&regs::rp.w0), 8, false);   /* rax = target VA */
+    std::vector<u_byte*> xlate_slow;
+    jit_emit_fastpage(e, 0, access_kind::fetch, xlate_slow);   /* HIT: rax = PA (clobbers rdx, r10) */
+    u_byte* have_pa = e.buf;                               /* convergence: rax = target PA */
+    /* key = (pa << 2) | (privilege << 1) | 1. pa<<2 clears bits 0-1 and priv<<1 sets only
+       bit 1, so bit 0 is zero and adding 1 sets the paged mode bit with no carry. */
+    e.mov_rr(1, 0);
+    e.shift_ri(4, 1, 2);                                   /* rcx = pa << 2 */
+    e.load_anchor(2, jit_disp(&regs::rf.w0), 8, false);
+    e.shift_ri(5, 2, 31);                                  /* privilege (RF bit 32) -> bit 1 */
+    e.and_ri32_32(2, 2);
+    e.or_rr(1, 2);
+    e.add_ri32(1, 1);                                      /* rcx = key (paged mode bit set) */
+    e.mov_ri(2, JIT_PROBE_MULT);
+    e.imul_rr(2, 1);
+    e.shift_ri(5, 2, static_cast<u_byte>(64 - JIT_PROBE_BITS));
+    e.cmp_anchor_idx8(1, 2, jit_disp(jit_probe_keys));
+    u_byte* miss = e.jcc_placeholder(0x5);                 /* jne -> dispatcher */
+    e.load_anchor_idx8(0, 2, jit_disp(jit_probe_code));
+    e.jmp_rax();
+    u_byte* out = e.buf;
+    for (u_byte* s : brk_sites) { jit_patch_branch(s, out); }
+    jit_patch_branch(miss, out);
+    e.ret();
+    /* Fast-page miss: rax still holds the target VA (jit_emit_fastpage only rewrites the
+       address register on its hit branch). Fault-safe slow translate, then rejoin. */
+    u_byte* slow_lbl = e.buf;
+    for (u_byte* s : xlate_slow) { jit_patch_branch(s, slow_lbl); }
+    e.store_const(&jit_fs_fn, reinterpret_cast<u_word>(&jit_probe_translate));
+    e.store_const(&jit_fs_n, 0);
+    jit_call_thunk(e, reinterpret_cast<void*>(&jit_faultsafe_call), 0, nullptr);
+    jit_emit_fault_check(e);                               /* fault delivered -> ret to dispatcher */
+    e.load_anchor(0, jit_disp(&jit_probe_pa), 8, false);  /* rax = translated PA */
+    u_byte* back = e.jump_placeholder();
+    jit_patch_branch(back, have_pa);
+}
+
+/* maize-346: emit boundary events then the paged probe tail. RP must already hold the
+   target VA (the indirect-transfer thunk sets it, or jit_emit_edge stores it for a
+   cross-page direct branch). Caller guarantees jit_anchor_ok, !jit_check_mode,
+   !jit_no_probe, jit_compiling_paged. */
+void jit_emit_paged_probe_exit(jit_emitter& e, u_word n) {
+    std::vector<u_byte*> brk_sites;
+    jit_emit_exit_events(e, n, brk_sites);
+    jit_emit_probe_tail_paged(e, brk_sites);
+}
+
 /* Emit a direct exit to a known guest target and record its chainable edge:
    set RP; run boundary events; if the chain must break, return to the dispatcher;
    otherwise take the patchable jump (initially to a local return; later chained
@@ -1537,10 +1626,22 @@ void jit_emit_edge(jit_emitter& e, jit_block& b, u_word target_va, u_word n) {
        the live SATP, which can change, so those return to the dispatcher to recompute the
        physical key. This captures the hot in-page loop while staying correct. */
     if (b.paged && (target_va & ~static_cast<u_word>(0xFFF)) != (b.entry_va & ~static_cast<u_word>(0xFFF))) {
+        /* maize-346: cross-guest-page paged direct branch. A hard cross-page chain would be
+           valid only while the target's VA->PA mapping holds; an SATP switch changes the
+           correct target and the unlink machinery only re-chains on target delete+recompile,
+           so a hard chain would die permanently on the first context switch. Route through
+           the physical-keyed paged probe tail instead: it re-translates every exit and bakes
+           in no mapping, so it is self-recovering across SATP changes. (Same-guest-page paged
+           branches fall through to the hard chain below: one virtual page maps to one physical
+           page, so that chain stays valid under any SATP, the J2 argument.) */
         e.store_const(&regs::rp.w0, target_va);
-        u_word args[1] = { n };
-        e.call_fn(reinterpret_cast<void*>(&jit_boundary_events), 1, args);
-        e.ret();
+        if (jit_anchor_ok && !jit_check_mode && !jit_no_probe) {
+            jit_emit_paged_probe_exit(e, n);
+        } else {
+            u_word args[1] = { n };
+            e.call_fn(reinterpret_cast<void*>(&jit_boundary_events), 1, args);
+            e.ret();
+        }
         return;
     }
     /* Set RP with an absolute-addressed store (no dependency on the anchor register
@@ -1615,25 +1716,22 @@ void jit_emit_probe_tail(jit_emitter& e, std::vector<u_byte*>& brk_sites) {
 }
 
 void jit_emit_indirect_exit(jit_emitter& e, u_word n) {
-    /* Paged blocks skip the probe: RP is a VA and the physical key depends on the live
-       SATP, so the dispatcher recomputes it (maize-341). */
-    if (jit_check_mode || !jit_anchor_ok || jit_compiling_paged) {
+    /* Check mode and the no-anchor fallback always round-trip the dispatcher. */
+    if (jit_check_mode || !jit_anchor_ok) {
         u_word args[1] = { n };
         e.call_fn(reinterpret_cast<void*>(&jit_boundary_events), 1, args);
         e.ret();
         return;
     }
-    std::vector<u_byte*> brk_sites;
-    if (jit_no_inline_events) {
-        u_word args[1] = { n };
-        e.call_fn(reinterpret_cast<void*>(&jit_boundary_events), 1, args);
-        e.mov_ri(11, reinterpret_cast<u_word>(jit_anchor));
-        e.test_rr(0, 0);
-        brk_sites.push_back(e.jcc_placeholder(0x5));      /* jnz (rax != 0) -> dispatcher */
-    } else {
-        jit_emit_events_inline(e, n, brk_sites);
+    /* maize-346: paged blocks now consult the probe too, via the fault-safe paged tail
+       (RP is a VA it translates inline); bare blocks read RP as already-physical. */
+    if (jit_compiling_paged && !jit_no_probe) {
+        jit_emit_paged_probe_exit(e, n);
+        return;
     }
-    if (jit_no_probe) {
+    std::vector<u_byte*> brk_sites;
+    jit_emit_exit_events(e, n, brk_sites);
+    if (jit_no_probe || jit_compiling_paged) {
         u_byte* out = e.buf;
         for (u_byte* s : brk_sites) { jit_patch_branch(s, out); }
         e.ret();
@@ -2167,9 +2265,13 @@ jit_block* jit_compile(u_word entry_pc) {
     g_jit.table[b->key] = b;
     g_jit.code_pages[b->page].push_back(b->key);
     jit_page_bitmap[jit_bitmap_slot(b->page)] = 1;
-    /* Paged blocks are never probed for (indirect exits recompute the physical key at the
-       dispatcher), but they DO chain their same-guest-page direct edges (maize-341). */
-    if (!jit_check_mode && !b->paged) { jit_probe_insert(b->key, reinterpret_cast<const void*>(b->code)); }
+    /* Insert into the indirect-transfer probe. maize-346: paged blocks are now probed too
+       (the block key is physical-keyed and folds in the paged bit, so an SATP change cannot
+       make a hit point at the wrong block; jit_invalidate_page already evicts paged entries
+       by physical page). The paged probe tail translates the target VA->PA at every exit and
+       matches this physical key. Check mode still skips the probe (every check run is one
+       block). Paged blocks also chain their same-guest-page direct edges (maize-341). */
+    if (!jit_check_mode) { jit_probe_insert(b->key, reinterpret_cast<const void*>(b->code)); }
     g_jit.blocks_compiled += 1;
 
     /* Chaining (skipped wholesale in check mode: every check run must be exactly one
@@ -2525,6 +2627,7 @@ void enable_jit(bool check_mode) {
         jchk(jit_probe_keys + (std::size_t(1) << JIT_PROBE_BITS) - 1);
         jchk(jit_probe_code);
         jchk(jit_probe_code + (std::size_t(1) << JIT_PROBE_BITS) - 1);
+        jchk(&jit_probe_pa);                 /* maize-346: paged probe tail reads it anchor-relative */
         jchk(&jit_journal);
     }
     if (!jit_anchor_ok) {

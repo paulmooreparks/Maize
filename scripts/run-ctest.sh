@@ -2457,7 +2457,7 @@ run_quesos_ac_fixtures() {
                fb_mmap_paint fb_noncontig_reject fb_mmap_isolation fb_mmap_enomem \
                bulk_forward bulk_noncontig bulk_bounds bulk_kernel_range \
                bigalloc fb_present kbd_acl bigfootprint_fork loader_guard bigimage \
-               palette_blit_guard; do
+               palette_blit_guard satp_stress; do
         if ! cc_maize_compile_bounded "quesos_ac: ${src}.c" "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" "$log"; then
             TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
@@ -2740,6 +2740,42 @@ run_quesos_ac_fixtures() {
         echo "[FAIL] quesos_stdin_owner"
         printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # maize-346 (AC 9830): SATP-safety of the paged JIT cross-page + indirect-transfer probe.
+    # satp_stress forks NCHILD children that each run a long hot loop of indirect (function-
+    # pointer) dispatches under quesOS paging; the scheduler forces SATP context switches
+    # while paged probe entries and cross-page transfers are live. Two proofs. (1) Marker: it
+    # runs to a deterministic PASS. (2) The real oracle: byte-identical stdout under plain
+    # --jit vs the interpreter. --jit-check disables both the probe and chaining, so it cannot
+    # exercise this path; a probe entry pointing at the wrong physical block after an SATP
+    # switch would change a child's hash and diverge the two streams. Resolve the raw maize
+    # binary directly (not $MAIZE, which the MAIZE_JIT wrapper may have pinned to one mode) so
+    # this comparison always runs interpreter-vs-JIT regardless of the harness env.
+    quesos_ac_case quesos_satp_stress "satp-stress: PASS" satp_stress
+
+    raw_maize=$(resolve_exe "${BUILD_DIR}/maize") || raw_maize=""
+    TOTAL=$((TOTAL + 1))
+    if [ -z "$raw_maize" ]; then
+        echo "[FAIL] quesos_satp_jit_equiv: raw maize binary not found in ${BUILD_DIR}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    else
+        satp_int="${WORK_DIR}/satp_stress.interp.out"
+        satp_jit="${WORK_DIR}/satp_stress.jit.out"
+        set +e
+        MSYS2_ARG_CONV_EXCL='/progs' timeout 120 "$raw_maize" --no-root \
+            --mount "${nat}=/progs:ro" "$quesos" /progs/satp_stress.mzx >"$satp_int" 2>/dev/null
+        MSYS2_ARG_CONV_EXCL='/progs' timeout 120 "$raw_maize" --jit --jit-threshold 50 --no-root \
+            --mount "${nat}=/progs:ro" "$quesos" /progs/satp_stress.mzx >"$satp_jit" 2>/dev/null
+        set -e
+        if grep -qF "satp-stress: PASS" "$satp_int" && cmp -s "$satp_int" "$satp_jit"; then
+            echo "[PASS] quesos_satp_jit_equiv (--jit stdout byte-identical to interpreter under SATP churn)"
+        else
+            echo "[FAIL] quesos_satp_jit_equiv"
+            echo "        interp: \"$(tr '\n' '|' < "$satp_int")\""
+            echo "        jit:    \"$(tr '\n' '|' < "$satp_jit")\""
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
     fi
 }
 
