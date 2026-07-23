@@ -248,10 +248,20 @@ instruction count is known at compile time and added at block entry.
   virtual counter with no real wait, so the bench executes 120 real DOOM frames
   as fast as the VM allows and its own boot/frame timing (real host time) then
   measures pure throughput. That is the throughput instrument for this gate.
-- J2, hosted correctness. Physical keying, the invalidation bitmap across
-  all write sources, inline Sv48 fast-page checks, fault-PC side tables.
-  Gate: full asm and C suites green including test_selfmod and the quesOS
-  families, plus a hosted MIPS win on the oksh loop.
+- J2, hosted correctness (maize-341, done). Compiled execution under Sv48:
+  block keys fold in the paging-mode bit; every paged memory op is fault-safe
+  (a C++ wrapper absorbs the page_fault_redirect throw so it never unwinds an
+  emitted frame, and the fault is delivered from the pure-C++ dispatcher at the
+  faulting guest PC); the hot register-indirect load/store inline the Sv48
+  fast-page translate (a fast-page + L1 hit is fault-free, so only a miss takes
+  the wrapper); paged blocks chain same-guest-page direct edges (same virtual
+  page = same physical page under any SATP). The store-driven invalidation is
+  physical-key-correct at all three write seams under paging, host-side seams
+  included. Measured: quesOS-paged compute goes from 11 to 214 MIPS (19x over
+  the paged interpreter), landing ~3x behind bare/flat+JIT (633 MIPS), so the
+  paging cost is the per-access translate, not a wall. Gate met: full asm and
+  C suites green under --jit with paging, asm green under --jit-check under
+  Sv48, and the hosted MIPS win.
 - J3, folded into J1 (2026-07-23). Its register-pinning and lazy-flags-in-codegen
   work is the inline emitter J1 now ships; what remains for a later card is
   deepening it (a persistent register allocation across chained blocks, wider
