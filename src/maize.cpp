@@ -1944,6 +1944,12 @@ int main(int argc, char *argv[]) {
 		maize::perf::emit(std::cerr);
 	}
 
+	/* maize-358: fast-page probe/miss-rate report (AC3). Printed under --show-perf
+	   regardless of display mode; self-silences when the run did no paged translation. */
+	if (show_perf) {
+		cpu::fast_page_report(std::cerr);
+	}
+
 	/* maize-324: the JIT J0 block-shape survey report (stderr, beside the perf report). */
 	if (jit_survey_enabled) {
 		cpu::jit_survey_report(std::cerr);

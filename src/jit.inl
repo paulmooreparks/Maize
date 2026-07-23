@@ -1069,8 +1069,10 @@ inline void jit_emit_stage_field(jit_emitter& e, const void* field, u_byte reg_o
 /* maize-341: inline Sv48 fast-page translate for a paged block. Transforms addr_reg from
    a guest VA to a physical address in place using the maize-317 per-access-kind fast-page
    cache, exactly mirroring translate()'s inline fast path (key = ((VPN & mask) << 1 |
-   privilege) + 1, compared to fast_pages[kind].key; hit -> pa_page | offset). A miss goes
-   to slow_sites (the fault-safe thunk, which runs translate_slow and may fault). A
+   privilege) + 1, compared against every way of fast_pages[kind]; a hit in any way ->
+   pa_page | offset). maize-358 widened this to probe all fast_page_ways inline. A miss
+   through every way goes to slow_sites (the fault-safe thunk, which runs translate_slow and
+   may fault). A
    fast-page HIT proves the page is mapped with permission for this kind, so the subsequent
    L1-hit access cannot fault. The block's mode is fixed (paged), so no runtime MODE test
    is needed. Uses rdx and r10 as scratch (addr_reg is rax or rcx at every call site).
@@ -1088,9 +1090,25 @@ inline void jit_emit_fastpage(jit_emitter& e, u_byte addr_reg, access_kind kind,
     e.and_ri32_32(10, 1);                                   /* r10 = privilege (RF bit 32) */
     e.or_rr(2, 10);                                         /* rdx = (vpn<<1)|priv */
     e.add_ri32(2, 1);                                       /* rdx = key */
-    e.cmp_anchor(2, jit_disp(&fast_pages[k].key));
-    slow_sites.push_back(e.jcc_placeholder(0x5));           /* jne slow */
-    e.load_anchor(10, jit_disp(&fast_pages[k].pa_page), 8, false);   /* r10 = pa_page */
+    /* maize-358: probe every way inline (rdx = key). Each way: cmp; on a hit load that
+       way's pa_page into r10 and jump to the shared tail; on a miss fall to the next way's
+       cmp, or (last way) branch to slow_sites. A miss through every way reaches slow_sites
+       exactly as the single-way probe did, so the fault-safe C++ path is untouched. */
+    std::vector<u_byte*> to_tail;                           /* per-way hit -> shared tail */
+    for (std::size_t w = 0; w < fast_page_ways; ++w) {
+        bool const last = (w + 1 == fast_page_ways);
+        e.cmp_anchor(2, jit_disp(&fast_pages[k][w].key));
+        u_byte* miss = e.jcc_placeholder(0x5);              /* jne: this way missed */
+        e.load_anchor(10, jit_disp(&fast_pages[k][w].pa_page), 8, false);   /* r10 = pa_page */
+        if (last) {
+            slow_sites.push_back(miss);                     /* last way missed -> slow */
+        } else {
+            to_tail.push_back(e.jump_placeholder());        /* hit: skip the other ways */
+            jit_patch_branch(miss, e.buf);                  /* miss: fall to next way's cmp */
+        }
+    }
+    u_byte* const tail = e.buf;                             /* r10 = the hit way's pa_page */
+    for (u_byte* j : to_tail) { jit_patch_branch(j, tail); }
     e.and_ri32(addr_reg, 0xFFF);                            /* addr_reg = va offset */
     e.or_rr(addr_reg, 10);                                  /* addr_reg = pa_page | offset = PA */
 }
@@ -2618,8 +2636,8 @@ void enable_jit(bool check_mode) {
         jchk(mm.jit_l1_base_data() + memory_module::jit_l1_mask());
         jchk(jit_page_bitmap);
         jchk(jit_page_bitmap + (std::size_t(1) << 20) - 1);
-        jchk(&fast_pages[0].key);            /* maize-341: inline fast-page translate */
-        jchk(&fast_pages[2].pa_page);
+        jchk(&fast_pages[0][0].key);         /* maize-341/358: inline N-way fast-page translate */
+        jchk(&fast_pages[2][fast_page_ways - 1].pa_page);
         jchk(&regs::rf.w0);
         jchk(jit_probe_keys);
         jchk(jit_probe_keys + (std::size_t(1) << JIT_PROBE_BITS) - 1);

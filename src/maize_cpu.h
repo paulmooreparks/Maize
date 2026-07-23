@@ -1134,6 +1134,7 @@ namespace maize {
 		void set_jit_threshold(u_word t);            // block hotness threshold (default 50)
 		void jit_report(std::ostream& out);          // printed at exit when --jit ran
 		u_word instruction_count();   // running guest-instruction count (for MIPS)
+		void fast_page_report(std::ostream& out);   // maize-358: fast-page probe/miss rates (--show-perf)
 
 		/* Extract the zero-extended value of a named subregister from a port operand.
 		   Host-backed device hooks call this to read the guest's written value as a plain

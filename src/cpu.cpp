@@ -1002,11 +1002,45 @@ namespace maize {
                 u_word key = 0;
                 u_word pa_page = 0;
             };
-            fast_page fast_pages[3] {};   // indexed by access_kind (fetch/load/store)
+            /* maize-358: N ways per access kind. DOOM's inner draw loop issues several
+               same-kind (load) accesses to different pages per pixel (texture source plus
+               the colormap/light-level tables); a single entry per kind thrashed, so nearly
+               every load missed the inline fast path and paid the ~700-instruction
+               translate_slow dispatch. N is chosen from the AC3 miss-rate counter on the
+               real doom-quesos render workload, not guessed: the load miss rate cliffs from
+               55.5% (N=1) and 52.8% (N=2, still thrashing: three hot pages in a two-way set
+               is a conflict pathology) to 6.0% at N=3, then only 4.6%/2.9% at N=4/N=8. The
+               knee is three, so the hot loop rotates through three distinct load pages.
+               Round-robin refill; the interpreter and the JIT read this same memory, so
+               widening it lifts both tiers. */
+            static constexpr std::size_t fast_page_ways = 3;
+            fast_page fast_pages[3][fast_page_ways] {};   // indexed by [access_kind][way]
+            /* Round-robin refill pointer per kind. It advances ONLY on a refill (a miss
+               that reaches translate_slow or the walk's leaf install), never on a hit, so
+               every hit stays a pure read with no recency write (the reason for round-robin
+               over LRU). */
+            u_byte fast_page_victim[3] = {0, 0, 0};
             inline u_word fast_page_key(u_word va) {
                 return ((((va >> 12) & vpn_tag_mask) << 1)
                         | (privilege_flag ? u_word {1} : u_word {0})) + 1;
             }
+
+            /* --show-perf instrumentation, declared here (ahead of translate() just below)
+               so the inline fast path can gate its maize-358 probe/miss accounting on
+               perf_count_enabled. perf_count_enabled gates the per-instruction counter and
+               the fast-page counters so a normal run pays nothing but a predicted-not-taken
+               branch; it is set once by enable_perf_counter(). perf_insn_count is a plain
+               64-bit counter written only by the CPU thread and read (relaxed,
+               aligned-atomic on the host) by the display thread for the MIPS readout. */
+            bool perf_count_enabled = false;
+            u_word perf_insn_count = 0;
+
+            /* maize-358: per-kind fast-page probe accounting (AC3), gated behind
+               perf_count_enabled (zero cost when off). Interpreter-tier counts; the JIT
+               shares the same fast_pages memory, so its hit rate tracks these. Reported by
+               fast_page_report() at exit under --show-perf. */
+            u_word fast_page_probes[3] = {0, 0, 0};
+            u_word fast_page_misses[3] = {0, 0, 0};
 
             /* Page fault is FAULT-class: the saved PC is the faulting instruction's own
                entry PC, captured at the top of MAIZE_NEXT() before the opcode fetch, not
@@ -1026,12 +1060,20 @@ namespace maize {
                 if ((control_regs[0].w0 & 0xF) != 1) {
                     return va;   // Bare / undefined MODE: passthrough, zero added cost
                 }
-                /* maize-317: one-compare fast path for the overwhelmingly common case
-                   (same page, same kind, same privilege as the last access). */
-                fast_page const& fp = fast_pages[static_cast<size_t>(kind)];
-                if (fp.key == fast_page_key(va)) {
-                    return fp.pa_page | (va & static_cast<u_word>(0xFFF));
+                /* maize-317 / maize-358: N-way fast path for the overwhelmingly common
+                   case (a recently-translated page for this kind and privilege). Compute
+                   the key once, then probe every way; a hit in any way returns the same PA
+                   the single-entry cache would have. */
+                std::size_t const k = static_cast<std::size_t>(kind);
+                u_word const key = fast_page_key(va);
+                if (perf_count_enabled) { ++fast_page_probes[k]; }
+                for (std::size_t w = 0; w < fast_page_ways; ++w) {
+                    fast_page const& fp = fast_pages[k][w];
+                    if (fp.key == key) {
+                        return fp.pa_page | (va & static_cast<u_word>(0xFFF));
+                    }
                 }
+                if (perf_count_enabled) { ++fast_page_misses[k]; }
                 return translate_slow(va, kind);
             }
 
@@ -1653,13 +1695,11 @@ namespace maize {
 
             bool is_power_on = false;
 
-            /* --show-perf instrumentation. perf_count_enabled gates the per-instruction
-               counter so a normal run pays nothing but a predicted-not-taken branch; it is
-               set once by enable_perf_counter(). perf_insn_count is a plain 64-bit counter
-               written only by the CPU thread and read (relaxed, aligned-atomic on the host)
-               by the display thread for the MIPS readout. */
-            bool perf_count_enabled = false;
-            u_word perf_insn_count = 0;
+            /* --show-perf instrumentation. perf_count_enabled and perf_insn_count are
+               declared up by the fast_pages block (maize-358) so translate()'s inline fast
+               path can gate its probe/miss accounting on perf_count_enabled. perf_insn_count
+               is a plain 64-bit counter written only by the CPU thread and read (relaxed,
+               aligned-atomic on the host) by the display thread for the MIPS readout. */
 
             /* maize-261 sampling profiler: when profile_mask is nonzero, MAIZE_NEXT
                samples current_instr_pc every (profile_mask + 1) executed instructions
@@ -2001,8 +2041,15 @@ namespace maize {
                        valid for a superpage leaf too, since any 4 KiB window inside it
                        translates uniformly (pa minus the low 12 bits IS that window's
                        page base). leaf_permits above licenses later same-kind hits. */
-                    fast_pages[static_cast<size_t>(kind)] =
-                        { fast_page_key(va), pa & ~static_cast<u_word>(0xFFF) };
+                    {
+                        /* maize-358: install into the round-robin victim way, then advance
+                           the victim for this kind. */
+                        std::size_t const k = static_cast<std::size_t>(kind);
+                        fast_pages[k][fast_page_victim[k]] =
+                            { fast_page_key(va), pa & ~static_cast<u_word>(0xFFF) };
+                        fast_page_victim[k] =
+                            static_cast<u_byte>((fast_page_victim[k] + 1) % fast_page_ways);
+                    }
                     if (level == 0) {
                         /* Only a 4 KiB leaf is cached; superpages never (decision). */
                         size_t idx = (va >> 12) & (tlb_size - 1);
@@ -2039,8 +2086,12 @@ namespace maize {
                     raise_page_fault(va, kind, true);
                 }
                 /* maize-317: install the inline fast-page entry for this (kind, page,
-                   privilege); the permission check above is what licenses later hits. */
-                fast_pages[static_cast<size_t>(kind)] = { fast_page_key(va), e.ppn };
+                   privilege); the permission check above is what licenses later hits.
+                   maize-358: pick the round-robin victim way and advance it. */
+                std::size_t const k = static_cast<std::size_t>(kind);
+                fast_pages[k][fast_page_victim[k]] = { fast_page_key(va), e.ppn };
+                fast_page_victim[k] =
+                    static_cast<u_byte>((fast_page_victim[k] + 1) % fast_page_ways);
                 return e.ppn | (va & static_cast<u_word>(0xFFF));
             }
             return sv48_walk(va, kind);
@@ -2052,9 +2103,12 @@ namespace maize {
             for (size_t i = 0; i < tlb_size; ++i) {
                 software_tlb[i].valid = false;
             }
-            /* maize-317: the inline fast-page entries obey the same flush contract. */
-            for (auto& f : fast_pages) {
-                f.key = 0;
+            /* maize-317 / maize-358: the inline fast-page entries obey the same flush
+               contract; every (kind, way) pair must be cleared. */
+            for (auto& kind_ways : fast_pages) {
+                for (auto& f : kind_ways) {
+                    f.key = 0;
+                }
             }
         }
 
@@ -2065,12 +2119,14 @@ namespace maize {
             if (software_tlb[idx].valid && software_tlb[idx].tag == ((va >> 12) & vpn_tag_mask)) {
                 software_tlb[idx].valid = false;
             }
-            /* maize-317: clear any inline fast-page entry caching this page, for either
-               privilege (the key's low bit), any kind. */
+            /* maize-317 / maize-358: clear any inline fast-page entry caching this page,
+               for either privilege (the key's low bit), any kind, across ALL ways. */
             u_word vpn = (va >> 12) & vpn_tag_mask;
-            for (auto& f : fast_pages) {
-                if (f.key != 0 && ((f.key - 1) >> 1) == vpn) {
-                    f.key = 0;
+            for (auto& kind_ways : fast_pages) {
+                for (auto& f : kind_ways) {
+                    if (f.key != 0 && ((f.key - 1) >> 1) == vpn) {
+                        f.key = 0;
+                    }
                 }
             }
         }
@@ -5950,6 +6006,27 @@ namespace maize {
 
         u_word instruction_count() {
             return perf_insn_count;
+        }
+
+        /* maize-358: fast-page probe report (AC3), printed at exit under --show-perf beside
+           the other perf output. Interpreter-tier probe/miss counts per access kind; the
+           JIT shares the same fast_pages cache, so its hit rate tracks these. Silent when
+           perf counting never ran or the run did no Sv48 translation (nothing to report). */
+        void fast_page_report(std::ostream& out) {
+            if (!perf_count_enabled) { return; }
+            u_word total = fast_page_probes[0] + fast_page_probes[1] + fast_page_probes[2];
+            if (total == 0) { return; }
+            static const char* const kind_name[3] = { "fetch", "load", "store" };
+            out << "maize: fast-page report (interpreter tier; JIT shares the cache)\n";
+            for (std::size_t k = 0; k < 3; ++k) {
+                u_word p = fast_page_probes[k];
+                u_word m = fast_page_misses[k];
+                out << "  " << kind_name[k] << " : " << m << " misses / " << p << " probes";
+                if (p > 0) {
+                    out << " (" << (m * 1000 / p) / 10.0 << "% miss rate)";
+                }
+                out << "\n";
+            }
         }
 
         /* Stop the VM: drop out of tick()'s instruction loop (running_flag) and
