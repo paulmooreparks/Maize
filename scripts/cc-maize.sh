@@ -559,7 +559,11 @@ EOF
 
     if [ "$RUN" -eq 1 ]; then
         set +e
-        "$MAIZE" "$(native_path "$MZX")"
+        # maize-360: run the freshly linked image BARE. This driver is toolchain, not a
+        # quesOS app: it produces a stock .mzx and runs it directly with no guest OS. Since
+        # quesOS became the default boot ROM, a plain `maize <image>` boots quesOS and would
+        # fail "no boot ROM found" here; --bare keeps the pre-360 direct-launch behavior.
+        "$MAIZE" --bare "$(native_path "$MZX")"
         rc=$?
         set -e
         exit "$rc"
@@ -615,7 +619,10 @@ fi
 # captured status, so the guest exit code propagates unchanged.
 if [ "$RUN" -eq 1 ]; then
     set +e
-    "$MAIZE" "$(native_path "$MZX")"
+    # maize-360: run the freshly linked image BARE (see the multi-source run step above):
+    # this driver runs a stock .mzx directly with no guest OS, so it must not boot the
+    # default quesOS ROM.
+    "$MAIZE" --bare "$(native_path "$MZX")"
     rc=$?
     set -e
     exit "$rc"

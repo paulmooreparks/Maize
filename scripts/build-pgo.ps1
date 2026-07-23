@@ -100,7 +100,10 @@ $wadDir   = Split-Path -Parent $Wad
 $wadName  = Split-Path -Leaf $Wad
 for ($i = 1; $i -le $Runs; $i++) {
     Write-Host "  run $i/$Runs"
-    & $maizeExe --mount "$($wadDir)=/ro:ro" $BenchImage -iwad "/ro/$wadName" -warp 1 1 -nomonsters | Select-Object -Last 1
+    # maize-360: --bare runs the benchmark image directly (no quesOS ROM). PGO training
+    # profiles the raw interpreter path; a plain `maize <image>` would boot the default
+    # quesOS ROM (or fail "no boot ROM found"), so --bare preserves the pre-360 run.
+    & $maizeExe --bare --mount "$($wadDir)=/ro:ro" $BenchImage -iwad "/ro/$wadName" -warp 1 1 -nomonsters | Select-Object -Last 1
     if ($LASTEXITCODE -ne 0) { Write-Error "training run $i failed (exit $LASTEXITCODE)." -ErrorAction Continue; exit 2 }
 }
 
