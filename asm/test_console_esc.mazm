@@ -1,0 +1,362 @@
+; **********************************************************************************
+; Regression fixture for card maize-209: text_console::keymap() delivers 0x1B for the
+; Esc scancode ($01), ignoring shift_/ctrl_ entirely, with no anti-ambiguity mechanism
+; against a following Esc-prefixed nav-key sequence.
+;
+; Run headlessly via --console-dump with the 9-byte scancode script fed on stdin:
+;
+;     $01 $2A $01 $AA $1D $01 $9D $01 $48
+;
+; (bare Esc, Shift-make, Esc while Shift held, Shift-break, Ctrl-make, Esc while Ctrl
+; held, Ctrl-break, bare Esc, Up-arrow-make). The 4 modifier make/break scancodes never
+; reach delivered_, so exactly 7 bytes are readable via SYS $00: 27,27,27,27,27,91,65
+; (five bare/modified Esc bytes, then '[' and 'A' from Up's synthesized "\x1b[A").
+;
+; The console defaults to cooked mode, where feed_scancode() only delivers on Enter
+; (devices.cpp:884-889); this script has no Enter byte, so before the first read the
+; fixture switches to raw mode with a read-modify-write through SYS $F1 (tcgetattr) /
+; SYS $F2 (tcsetattr): read the live termios image, clear ICANON (0x0002) and ECHO
+; (0x0008) in the c_lflag byte at TERMIOS_OFF_LFLAG (offset 12), write it back. In raw
+; mode feed_scancode() delivers each scancode individually (devices.cpp:895-901), so
+; the first SYS $00 read succeeds on iteration 1 of a bounded 8-attempt retry loop
+; (mirroring kilo's editorReadKey retry at kilo.c:313, capped so a regression fails
+; fast instead of hanging). Reads 2-7 are single unretried SYS $00 calls.
+;
+; The fixture prints one diagnostic line (iteration count + all 7 byte values) and one
+; verdict line, "esc: PASS\n" or "esc: FAIL\n".
+;
+; Register use: R0/R1/R2 = syscall args (fd/buf/count), R7 = per-read return value,
+; R8 = output cursor, R9 = first-read iteration count K, R6 = pass/fail flag,
+; R3/R4/R5 = scratch. Scratch RAM (absolute runtime addresses, like test_ttysize_console):
+; $3000 = termios buffer (36 bytes, console::TERMIOS_SIZE), $3030-$3036 = the 7 read
+; bytes b1..b7, $3037 = ok_flag (cleared if any of the 7 reads returns rv != 1),
+; $3038 = the saved pass/fail flag, $3100 = output line buffer.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- raw-mode setup: clear ICANON + ECHO before the read loop ----
+    CP $3000 R1                ; termios buffer, 36 bytes, scratch RAM
+    CLR R0                     ; fd = 0 (stdin)
+    SYS $F1                    ; tcgetattr(fd=0, R1=termios*) -> RV=0 or -errno
+
+    CP $300C R2                ; &buf[TERMIOS_OFF_LFLAG] (12); byte 0 = low byte of c_lflag
+    LD @R2 R3.B0
+    AND $F5 R3.B0               ; clear ICANON(0x02)|ECHO(0x08); leaves ISIG untouched
+    ST R3.B0 @R2
+
+    CLR R0                      ; fd = 0
+    CLR R1                      ; optional_actions = TCSANOW (0)
+    CP $3000 R2                 ; termios*
+    SYS $F2                     ; tcsetattr(fd=0, actions=0, R2=termios*) -> RV=0 or -errno
+
+    ; ---- ok_flag starts true (1); a short read (rv != 1) on any of the 7 reads
+    ; below clears it to 0 ----
+    CP $01 R4.B0
+    CP $3037 R5
+    ST R4.B0 @R5
+
+    ; ---- read #1: bounded retry loop, max 8 attempts (kilo.c:313 idiom, capped) ----
+    CLR R9                      ; K = iteration count
+read1_retry:
+    INC R9
+    CLR R0
+    CP $3030 R1
+    CP $01 R2
+    SYS $00
+    CP RV R7
+    CMP $01 R7
+    JZ read1_success
+    CMP $08 R9
+    JGE read1_giveup            ; hit the retry cap: stop regardless (fail below)
+    JMP read1_retry
+read1_giveup:
+    CP $3037 R5
+    CLR R4
+    ST R4.B0 @R5                ; ok_flag = 0
+read1_success:
+
+    ; ---- reads 2-7: single unretried SYS $00 calls ----
+    CLR R0
+    CP $3031 R1
+    CP $01 R2
+    SYS $00
+    CP RV R7
+    CMP $01 R7
+    JZ read3
+    CP $3037 R5
+    CLR R4
+    ST R4.B0 @R5
+read3:
+    CLR R0
+    CP $3032 R1
+    CP $01 R2
+    SYS $00
+    CP RV R7
+    CMP $01 R7
+    JZ read4
+    CP $3037 R5
+    CLR R4
+    ST R4.B0 @R5
+read4:
+    CLR R0
+    CP $3033 R1
+    CP $01 R2
+    SYS $00
+    CP RV R7
+    CMP $01 R7
+    JZ read5
+    CP $3037 R5
+    CLR R4
+    ST R4.B0 @R5
+read5:
+    CLR R0
+    CP $3034 R1
+    CP $01 R2
+    SYS $00
+    CP RV R7
+    CMP $01 R7
+    JZ read6
+    CP $3037 R5
+    CLR R4
+    ST R4.B0 @R5
+read6:
+    CLR R0
+    CP $3035 R1
+    CP $01 R2
+    SYS $00
+    CP RV R7
+    CMP $01 R7
+    JZ read7
+    CP $3037 R5
+    CLR R4
+    ST R4.B0 @R5
+read7:
+    CLR R0
+    CP $3036 R1
+    CP $01 R2
+    SYS $00
+    CP RV R7
+    CMP $01 R7
+    JZ checks
+    CP $3037 R5
+    CLR R4
+    ST R4.B0 @R5
+
+checks:
+    ; ---- determine PASS/FAIL: K == 1, ok_flag == 1 (all 7 reads returned rv=1), and
+    ; the byte values match the expected table. Result in R6.B0 (1 = pass). ----
+    CP $01 R6.B0
+    CMP $01 R9
+    JZ chk_okflag
+    CLR R6.B0
+chk_okflag:
+    CP $3037 R5
+    LD @R5 R4.B0
+    CMP $01 R4.B0
+    JZ chk_b1
+    CLR R6.B0
+chk_b1:
+    CP $3030 R1
+    LD @R1 R4.B0
+    CMP $1B R4.B0
+    JZ chk_b2
+    CLR R6.B0
+chk_b2:
+    CP $3031 R1
+    LD @R1 R4.B0
+    CMP $1B R4.B0
+    JZ chk_b3
+    CLR R6.B0
+chk_b3:
+    CP $3032 R1
+    LD @R1 R4.B0
+    CMP $1B R4.B0
+    JZ chk_b4
+    CLR R6.B0
+chk_b4:
+    CP $3033 R1
+    LD @R1 R4.B0
+    CMP $1B R4.B0
+    JZ chk_b5
+    CLR R6.B0
+chk_b5:
+    CP $3034 R1
+    LD @R1 R4.B0
+    CMP $1B R4.B0
+    JZ chk_b6
+    CLR R6.B0
+chk_b6:
+    CP $3035 R1
+    LD @R1 R4.B0
+    CMP $5B R4.B0               ; '['
+    JZ chk_b7
+    CLR R6.B0
+chk_b7:
+    CP $3036 R1
+    LD @R1 R4.B0
+    CMP $41 R4.B0               ; 'A'
+    JZ chk_done
+    CLR R6.B0
+chk_done:
+    CP $3038 R5
+    ST R6.B0 @R5                ; save the pass/fail flag before emit_udec clobbers R6
+
+    ; ---- build the diagnostic line ----
+    CP $3100 R8
+
+    CP str_prefix R1
+    CALL emit_lit
+    CP R9 R0
+    CALL emit_udec
+
+    CP str_b1 R1
+    CALL emit_lit
+    CLR R0
+    CP $3030 R1
+    LD @R1 R0.B0
+    CALL emit_udec
+
+    CP str_b2 R1
+    CALL emit_lit
+    CLR R0
+    CP $3031 R1
+    LD @R1 R0.B0
+    CALL emit_udec
+
+    CP str_b3 R1
+    CALL emit_lit
+    CLR R0
+    CP $3032 R1
+    LD @R1 R0.B0
+    CALL emit_udec
+
+    CP str_b4 R1
+    CALL emit_lit
+    CLR R0
+    CP $3033 R1
+    LD @R1 R0.B0
+    CALL emit_udec
+
+    CP str_b5 R1
+    CALL emit_lit
+    CLR R0
+    CP $3034 R1
+    LD @R1 R0.B0
+    CALL emit_udec
+
+    CP str_b6 R1
+    CALL emit_lit
+    CLR R0
+    CP $3035 R1
+    LD @R1 R0.B0
+    CALL emit_udec
+
+    CP str_b7 R1
+    CALL emit_lit
+    CLR R0
+    CP $3036 R1
+    LD @R1 R0.B0
+    CALL emit_udec
+
+    CP str_nl R1
+    CALL emit_lit
+
+    ; ---- write the diagnostic line (length = cursor - $3100) ----
+    CP R8 R2
+    SUB $3100 R2
+    CP $01 R0
+    CP $3100 R1
+    SYS $01
+
+    ; ---- write the verdict line ----
+    CP $3100 R8
+    CP $3038 R5
+    LD @R5 R6.B0
+    CMP $01 R6.B0
+    JZ emit_pass
+    CP str_fail R1
+    JMP emit_verdict
+emit_pass:
+    CP str_pass R1
+emit_verdict:
+    CALL emit_lit
+    CP R8 R2
+    SUB $3100 R2
+    CP $01 R0
+    CP $3100 R1
+    SYS $01
+    HALT
+
+; **********************************************************************************
+; emit_lit: copy the NUL-terminated string at R1 into the buffer at R8, advancing
+; both. Clobbers R1, R2.
+; **********************************************************************************
+emit_lit:
+    LD @R1 R2.B0
+    CMP $00 R2.B0
+    JZ emit_lit_done
+    ST R2.B0 @R8
+    INC R1
+    INC R8
+    JMP emit_lit
+emit_lit_done:
+    RET
+
+; **********************************************************************************
+; emit_udec: append the unsigned decimal of R0 to the buffer at R8, advancing R8.
+; Digits are extracted low-to-high onto the stack, then popped high-to-low so they
+; land in reading order. Clobbers R0, R5, R6, R9.
+; **********************************************************************************
+emit_udec:
+    CP $0A R5                  ; divisor 10
+    CMP $00 R0
+    JNZ udec_convert
+    CP $30 R6.B0                ; value 0 prints a single '0'
+    ST R6.B0 @R8
+    INC R8
+    RET
+udec_convert:
+    CLR R9                      ; digit count
+udec_push:
+    CP R0 R6
+    UMOD R5 R6                  ; R6 = R0 % 10
+    ADD $30 R6.B0                ; digit -> ASCII
+    PUSH R6
+    INC R9
+    UDIV R5 R0                  ; R0 = R0 / 10
+    CMP $00 R0
+    JNZ udec_push
+udec_pop:
+    CMP $00 R9
+    JZ udec_done
+    POP R6
+    ST R6.B0 @R8
+    INC R8
+    DEC R9
+    JMP udec_pop
+udec_done:
+    RET
+
+; **********************************************************************************
+str_prefix:
+    STRING "esc: iters=\0"
+str_b1:
+    STRING " b1=\0"
+str_b2:
+    STRING " b2=\0"
+str_b3:
+    STRING " b3=\0"
+str_b4:
+    STRING " b4=\0"
+str_b5:
+    STRING " b5=\0"
+str_b6:
+    STRING " b6=\0"
+str_b7:
+    STRING " b7=\0"
+str_nl:
+    STRING "\n\0"
+str_pass:
+    STRING "esc: PASS\n\0"
+str_fail:
+    STRING "esc: FAIL\n\0"

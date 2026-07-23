@@ -1580,6 +1580,45 @@ run_ttysize_console_test() {
 
 run_ttysize_console_test
 
+# --- maize-209: Esc scancode ($01) delivers a bare 0x1B to the guest ------------------
+# Combines two precedents: run_keyboard_test's piped-stdin mechanic (delivering a known
+# scancode script) and run_ttysize_console_test's --console-dump capture-and-grep
+# assertion. The 9-byte scancode script exercises a bare Esc, Esc under Shift, Esc under
+# Ctrl, then a bare Esc immediately followed by Up-arrow (proving no coalescing); the
+# fixture switches to raw mode via SYS $F1/$F2, reads back all 7 delivered bytes, and
+# prints "esc: PASS" onto the dumped console grid.
+run_console_esc_test() {
+    name="console_esc"
+    TOTAL=$((TOTAL + 1))
+    src="test_console_esc.mazm"
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+    # Inject scancodes $01 $2A $01 $AA $1D $01 $9D $01 $48.
+    out_file=$(mktemp)
+    if printf '\001\052\001\252\035\001\235\001\110' | "$MAIZE_EXE" --console-dump "$bin_path" >"$out_file" 2>/dev/null; then
+        me=0
+    else
+        me=$?
+    fi
+    if [ "$me" -eq 0 ] && grep -qF "esc: PASS" "$out_file"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: grid contains \"esc: PASS\""
+        echo "        actual:   exit ${me}; \"$(cat "$out_file")\""
+    fi
+    rm -f "$out_file"
+}
+
+run_console_esc_test
+
 PASS_COUNT=$((TOTAL - FAIL_COUNT))
 echo ""
 echo "${PASS_COUNT} passed, ${FAIL_COUNT} failed (${TOTAL} total)"

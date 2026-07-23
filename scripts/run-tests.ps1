@@ -1243,6 +1243,50 @@ function Invoke-TtysizeConsoleTest {
 
 $results += Invoke-TtysizeConsoleTest
 
+# --- maize-209: Esc scancode ($01) delivers a bare 0x1B to the guest ------------------
+# Combines two precedents: Invoke-KeyboardTest's piped-stdin mechanic (raw Process API +
+# byte-stream stdin idiom) and Invoke-TtysizeConsoleTest's --console-dump capture-and-
+# grep-style assertion. The 9-byte scancode script exercises a bare Esc, Esc under
+# Shift, Esc under Ctrl, then a bare Esc immediately followed by Up-arrow (proving no
+# coalescing); the fixture switches to raw mode via SYS $F1/$F2, reads back all 7
+# delivered bytes, and prints "esc: PASS" onto the dumped console grid.
+function Invoke-ConsoleEscTest {
+    $name = 'console_esc'
+    $srcPath = Join-Path $AsmDir 'test_console_esc.mazm'
+    $asmPath = Join-Path $TestRunDir 'test_console_esc.mazm'
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'assembles'; Actual = 'mazm failed to assemble' }
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $MaizeExe
+    $psi.Arguments = "--console-dump `"$binPath`""
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    # Inject scancodes 0x01 0x2A 0x01 0xAA 0x1D 0x01 0x9D 0x01 0x48.
+    $bytes = [byte[]](0x01, 0x2A, 0x01, 0xAA, 0x1D, 0x01, 0x9D, 0x01, 0x48)
+    $stdin = $proc.StandardInput.BaseStream
+    $stdin.Write($bytes, 0, $bytes.Length)
+    $stdin.Close()
+    $stdout = $proc.StandardOutput.ReadToEnd()
+    $null = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    $me = $proc.ExitCode
+
+    $pass = ($me -eq 0) -and ($stdout -like '*esc: PASS*')
+    $actual = if ($pass) { 'as expected' } else { "exit $me; $(Trim-TrailingNewlines $stdout)" }
+    return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = 'grid contains "esc: PASS"'; Actual = $actual }
+}
+
+$results += Invoke-ConsoleEscTest
+
 $failCount = 0
 foreach ($r in $results) {
     if ($r.Pass) {

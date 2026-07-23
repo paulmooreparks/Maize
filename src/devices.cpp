@@ -547,8 +547,8 @@ namespace maize {
 
 		/* Set-1 (XT) make-code -> ASCII (US layout), the exact tables term_core.h uses.
 		   Index by make code 0..0x3F; 0 = no glyph. The upper table is selected while shift
-		   is held. Enter (0x1C), Backspace (0x0E), Tab (0x0F) and the nav keys are handled
-		   specially in keymap(), so their slots here are unused for those codes. */
+		   is held. Esc (0x01), Enter (0x1C), Backspace (0x0E), Tab (0x0F) and the nav keys
+		   are handled specially in keymap(), so their slots here are unused for those codes. */
 		static const unsigned char con_sc_lower[0x40] = {
 			/* 0x00 */ 0,    0,   '1', '2', '3', '4', '5', '6',
 			/* 0x08 */ '7',  '8', '9', '0', '-', '=', 0x08, 0x09,
@@ -829,6 +829,7 @@ namespace maize {
 		   Printable keys index the shift-aware table; Ctrl-<key> folds to a control byte. */
 		void text_console::keymap(u_byte sc, std::string& out) const {
 			out.clear();
+			if (sc == 0x01) { out.push_back(0x1B); return; }          // Esc
 			if (sc == 0x1C) { out.push_back('\r'); return; }          // Enter
 			if (sc == 0x0E) { out.push_back(0x7F); return; }          // Backspace -> DEL
 			if (sc == 0x0F) { out.push_back('\t'); return; }          // Tab
