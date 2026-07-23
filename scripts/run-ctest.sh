@@ -2744,7 +2744,7 @@ run_quesos_ac_fixtures() {
                poll_fd0_default stdin_owner_probe poll_unconnected_sock poll_fd0_eof \
                fb_mmap_paint fb_noncontig_reject fb_mmap_isolation fb_mmap_enomem \
                bulk_forward bulk_noncontig bulk_bounds bulk_kernel_range \
-               bigalloc fb_present kbd_acl bigfootprint_fork loader_guard bigimage \
+               bigalloc bigalloc_coalesce fb_present kbd_acl bigfootprint_fork loader_guard bigimage \
                palette_blit_guard satp_stress; do
         if ! cc_maize_compile_bounded "quesos_ac: ${src}.c" "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" "$log"; then
@@ -2867,6 +2867,12 @@ run_quesos_ac_fixtures() {
     # NOT the parent's eager copy). fb_present: -EBADF unregistered, then present-after-register
     # returns 0 with no crash. Both run headless like the other fb cases.
     quesos_ac_case quesos_bigalloc       "bigalloc: PASS"             bigalloc
+    # maize-348 rt bigalloc-window coalescing (AC 9927/9928/9930). Proves freed window-backed
+    # grants merge and reuse (leg 1), that kilo's one-row-at-a-time realloc growth stays bounded
+    # post-fix where it burned the window quadratically pre-fix (leg 2, the negative control),
+    # and that a child's first post-fork grant is fresh and bounded despite the inherited cursor
+    # (leg 3). Runs headless like the other window cases.
+    quesos_ac_case quesos_bigalloc_coalesce "bigalloc-coalesce: PASS" bigalloc_coalesce
     quesos_ac_case quesos_fb_present     "fb-present: PASS"           fb_present
 
     # maize-251 sys_kbd_read ACL (AC 9315). Unlike the other quesos_ac cases this one needs a

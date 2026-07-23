@@ -120,6 +120,13 @@ sbrk(long incr)
 #define SIZEMASK   (~15UL)   /* clears the low 4 bits: in-use flag + alignment slack */
 #define INUSE       1UL
 
+/* maize-348: quesOS's guest kernel page size (os/quesos/quesos.c:146). Rounding each
+ * bigalloc grant up to this size before calling sys_bigalloc keeps the kernel's internal
+ * page rounding (do_bigalloc: n = ceil(size/PAGE_SIZE)) from ever diverging from the amount
+ * bigalloc_grow tracks, so grant-to-grant VA contiguity can be detected past the first chunk.
+ * This is a quesOS-specific constant baked into rt on purpose; see the SYSCALL-ABI.md note. */
+#define BIGALLOC_PAGE 0x1000UL
+
 /* A block header is one 8-byte word at the block's base:
  *   word[0] = header  (total size | inuse)
  *   word[1] = free-list "next" pointer  (only meaningful while the block is free)
@@ -129,6 +136,16 @@ typedef unsigned long word;
 
 static word *g_free_head = 0;   /* lowest-address free block, or NULL */
 static char *g_heap_end  = 0;   /* the break we manage; 0 until first init */
+
+/* maize-348: address of the next contiguous bigalloc header slot, or 0 before the first
+ * successful grant. Once set it is always == 8 (mod 16), so a block header placed at it keeps
+ * payloads 16-aligned. bigalloc_grow uses it to detect when a fresh sys_bigalloc grant landed
+ * exactly where the previous grant ended, so the two blocks tile and free_insert can coalesce
+ * them. It is an ordinary process global: fork's eager copy carries a stale value into the
+ * child, but the child's first grant returns the reset window base BIGALLOC_BASE, which never
+ * equals the inherited g_bigalloc_end + HDR, so the contiguity check correctly falls back to
+ * the independently padded construction. No fork hook is needed. */
+static char *g_bigalloc_end = 0;
 
 static unsigned long
 round_block(unsigned long payload)
@@ -237,17 +254,39 @@ grow(unsigned long total)
 static int
 bigalloc_grow(unsigned long total)
 {
-    unsigned long amount = (total + ALIGN) > CHUNK ? (total + ALIGN) : CHUNK;
+    unsigned long raw = (total + ALIGN) > CHUNK ? (total + ALIGN) : CHUNK;
+    /* maize-348: round up to the guest kernel page size so rt's tracked `amount` matches the
+     * kernel's own n*PAGE_SIZE mapping exactly; without this only the first, page-aligned
+     * CHUNK-sized grants would ever be detected as contiguous. */
+    unsigned long amount = (raw + (BIGALLOC_PAGE - 1)) & ~(BIGALLOC_PAGE - 1);
     long va = sys_bigalloc(amount);
     word *b;
 
     if (va <= 0)
         return -1;   /* -errno, or the bare-VM native no-op (0): malloc falls through to NULL */
 
-    /* Header at va+HDR lands at 8 (mod 16) since va is page-aligned, giving 16-aligned
-     * payloads. The block spans [va+HDR, va+HDR+(amount-ALIGN)) subset [va, va+amount). */
-    b = (word *)((unsigned long)va + HDR);
-    b[0] = (amount - ALIGN) & SIZEMASK;   /* 16-aligned free block (amount is 16-aligned) */
+    if (g_bigalloc_end && (unsigned long)va == (unsigned long)g_bigalloc_end + HDR) {
+        /* maize-348: this grant is virtually contiguous with the previous one, so the previous
+         * grant's trailing 8-byte pad IS this grant's header slot. Place the header there and
+         * give the block the grant's full `amount` as its size, wasting nothing. The header
+         * bytes [va-HDR, va) lie in the previous grant's already-mapped range (its dead tail),
+         * and the payload [va, va+amount-HDR) lies in this grant's range, so nothing is written
+         * outside a mapped page. Because the previous block ends exactly at this header,
+         * free_insert coalesces the two. Opportunistic only: the check falls back below whenever
+         * the kernel does not hand out a contiguous grant. See the SYSCALL-ABI.md note. */
+        b = (word *)g_bigalloc_end;
+        b[0] = amount & SIZEMASK;   /* amount is page-aligned, hence already 16-aligned */
+    } else {
+        /* First grant, or discontiguous (post-fork reset, or a future kernel that no longer
+         * hands out contiguous grants): pay the one-time 16-byte pad exactly as before. Header
+         * at va+HDR lands at 8 (mod 16) since va is page-aligned, giving 16-aligned payloads.
+         * The block spans [va+HDR, va+HDR+(amount-ALIGN)) subset [va, va+amount). */
+        b = (word *)((unsigned long)va + HDR);
+        b[0] = (amount - ALIGN) & SIZEMASK;   /* 16-aligned free block (amount is 16-aligned) */
+    }
+    /* Both branches leave g_bigalloc_end at va+amount-HDR (== 8 mod 16), so the invariant
+     * self-sustains: a cursor that starts 8-mod-16 stays 8-mod-16 across every grant. */
+    g_bigalloc_end = (char *)b + (b[0] & SIZEMASK);
     free_insert(b);
     return 0;
 }

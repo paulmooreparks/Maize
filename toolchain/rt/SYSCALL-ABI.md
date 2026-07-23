@@ -449,3 +449,16 @@ per-process window is `-ENOMEM` (12); frame-pool exhaustion is also `-ENOMEM` (g
 PANIC). The mapping is fresh, zeroed, and physically contiguous; it is NOT inherited across
 `fork` (the window is excluded from the eager copy, `bigalloc_next` reset in the child) and NOT
 reclaimed on exit/exec (the accepted maize-238 bump-no-free precedent).
+
+Successive `sys_bigalloc` grants are NOT guaranteed to land at contiguous virtual addresses.
+Today's quesOS `do_bigalloc` is a pure bump allocator, so when nothing else consumes the window
+between two calls the grants happen to be VA-adjacent, but that is an implementation detail of
+the current `do_bigalloc`, not a syscall-ABI contract a caller may depend on (per the mzvm and
+quesOS boundary policy, a second VM implementer must not be forced to replicate a bump
+allocator's incidental behavior). `toolchain/rt/stdlib.c`'s `bigalloc_grow()` coalescing is
+opportunistic precisely because of this: it reuses grant-to-grant contiguity when the kernel
+happens to provide it (folding a new grant onto the previous grant's trailing pad so freed
+blocks tile and merge) and falls back to a safe, independently constructed, non-coalescing
+block when it does not, so nothing in rt actually depends on the contiguity holding. A future
+change to `do_bigalloc` (including maize-349's window reclaim) is therefore free to stop handing
+out contiguous grants without breaking any documented contract.
