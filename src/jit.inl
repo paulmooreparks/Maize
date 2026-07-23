@@ -190,6 +190,10 @@ struct jit_emitter {
     void cmp64_anchor_imm8(std::int32_t disp, u_byte imm) {
         rex(true, 0, false, true); u8(0x83); modrm_r11(7, disp); u8(imm);
     }
+    /* cmp reg, qword [r11+disp32] (the fast-page key compare, maize-341). */
+    void cmp_anchor(u_byte reg, std::int32_t disp) {
+        rex(true, reg, false, true); u8(0x3B); modrm_r11(reg, disp);
+    }
     /* cmp reg, [r11 + idx*8 + disp32] (the indirect-probe key compare). */
     void cmp_anchor_idx8(u_byte reg, u_byte idx, std::int32_t disp) {
         rex(true, reg, idx >= 8, true); u8(0x3B); modrm_r11_sib(reg, idx, 3, disp);
@@ -1048,12 +1052,46 @@ inline void jit_emit_stage_field(jit_emitter& e, const void* field, u_byte reg_o
     }
 }
 
-/* The guest-memory fast path: resolve `addr_reg` (a host reg holding the guest PA;
-   Bare mode) to a host pointer in r8 with the in-page offset in rdx, or branch to
-   `slow_sites` on any miss. Mirrors set_cache_address's hit path plus the page-bound
+/* maize-341: inline Sv48 fast-page translate for a paged block. Transforms addr_reg from
+   a guest VA to a physical address in place using the maize-317 per-access-kind fast-page
+   cache, exactly mirroring translate()'s inline fast path (key = ((VPN & mask) << 1 |
+   privilege) + 1, compared to fast_pages[kind].key; hit -> pa_page | offset). A miss goes
+   to slow_sites (the fault-safe thunk, which runs translate_slow and may fault). A
+   fast-page HIT proves the page is mapped with permission for this kind, so the subsequent
+   L1-hit access cannot fault. The block's mode is fixed (paged), so no runtime MODE test
+   is needed. Uses rdx and r10 as scratch (addr_reg is rax or rcx at every call site).
+   Clobbers rdx, r10, and addr_reg. */
+inline void jit_emit_fastpage(jit_emitter& e, u_byte addr_reg, access_kind kind,
+                              std::vector<u_byte*>& slow_sites) {
+    std::size_t k = static_cast<std::size_t>(kind);
+    e.mov_rr(2, addr_reg);                                  /* rdx = va */
+    e.shift_ri(5, 2, 12);                                   /* rdx = vpn (full) */
+    e.mov_ri(10, vpn_tag_mask);
+    e.rr_op(0x23, 2, 10);                                   /* and rdx, r10 (vpn & mask) */
+    e.shift_ri(4, 2, 1);                                    /* rdx <<= 1 */
+    e.load_anchor(10, jit_disp(&regs::rf.w0), 8, false);    /* r10 = rf */
+    e.shift_ri(5, 10, 32);
+    e.and_ri32_32(10, 1);                                   /* r10 = privilege (RF bit 32) */
+    e.or_rr(2, 10);                                         /* rdx = (vpn<<1)|priv */
+    e.add_ri32(2, 1);                                       /* rdx = key */
+    e.cmp_anchor(2, jit_disp(&fast_pages[k].key));
+    slow_sites.push_back(e.jcc_placeholder(0x5));           /* jne slow */
+    e.load_anchor(10, jit_disp(&fast_pages[k].pa_page), 8, false);   /* r10 = pa_page */
+    e.and_ri32(addr_reg, 0xFFF);                            /* addr_reg = va offset */
+    e.or_rr(addr_reg, 10);                                  /* addr_reg = pa_page | offset = PA */
+}
+
+/* The guest-memory fast path: resolve `addr_reg` (a host reg holding the guest VA) to a
+   host pointer in r8 with the in-page offset in rdx, or branch to `slow_sites` on any
+   miss. Under paging it first runs the inline fast-page translate (VA -> PA); in Bare mode
+   addr_reg is already the PA. Mirrors set_cache_address's hit path plus the page-bound
    check for the access width. Clobbers rdx, r8, r9, r10. */
 inline void jit_emit_l1_probe(jit_emitter& e, u_byte addr_reg, u_byte width,
-                              std::vector<u_byte*>& slow_sites) {
+                              access_kind kind, std::vector<u_byte*>& slow_sites,
+                              bool already_pa = false) {
+    /* Under paging, translate VA -> PA inline first (unless the caller already did, which
+       the store templates do so their code-page bitmap probe keys on the physical page). */
+    if (jit_compiling_paged && !already_pa) { jit_emit_fastpage(e, addr_reg, kind, slow_sites); }
     /* rdx = (addr >> 12) & l1_mask */
     e.mov_rr(2, addr_reg);
     e.shift_ri(5, 2, 12);
@@ -1104,19 +1142,6 @@ bool jit_try_inline(jit_emitter& e, u_byte op, u_word pc, u_word& len_out) {
     u_byte base = op & 0x3F;
     u_byte mode = op & opcode_flag;
 
-    /* maize-341: the inline memory templates assume the guest address is physical (Bare
-       mode) and their slow fallback can page-fault, so under Sv48 they must defer to the
-       fault-safe thunk path in jit_compile. Compute templates (ALU, CP reg/imm, SETcc,
-       LEA, INC/DEC) touch no memory and stay inline in both modes. */
-    if (jit_compiling_paged) {
-        if (op == instr::ld_regAddr_reg || op == instr::ldz_regAddr_reg
-            || op == instr::ld_immAddr_reg || op == instr::ldz_immAddr_reg
-            || op == instr::st_regVal_regAddr || op == instr::st_immVal_regAddr
-            || op == instr::push_regVal || op == instr::push_immVal
-            || op == instr::pop_opcode) {
-            return false;
-        }
-    }
 
     /* ---- CP / CPZ, register source ---- */
     if (op == instr::cp_regVal_reg || op == instr::cpz_regVal_reg) {
@@ -1153,7 +1178,7 @@ bool jit_try_inline(jit_emitter& e, u_byte op, u_word pc, u_word& len_out) {
         gsub a = jit_gsub(d1), d = jit_gsub(d2);
         std::vector<u_byte*> slow;
         e.load_anchor(1, a.disp, a.size, false);       /* rcx = guest address */
-        jit_emit_l1_probe(e, 1, d.size, slow);
+        jit_emit_l1_probe(e, 1, d.size, access_kind::load, slow);
         e.load_mem(0, 8, 2, d.size, false);            /* rax = zext(loaded bytes) */
         if (op == instr::ld_regAddr_reg) {
             e.store_anchor(0, d.disp, d.size);         /* merge into the dst field */
@@ -1166,9 +1191,9 @@ bool jit_try_inline(jit_emitter& e, u_byte op, u_word pc, u_word& len_out) {
         for (u_byte* s : slow) { jit_patch_branch(s, slow_lbl); }
         {
             u_word args[2] = { d1, d2 };
-            jit_call_thunk(e,
+            jit_emit_mem_thunk(e,
                 (op == instr::ld_regAddr_reg) ? reinterpret_cast<void*>(&jit_ld_rr)
-                                              : reinterpret_cast<void*>(&jit_ldz_rr), 2, args);
+                                              : reinterpret_cast<void*>(&jit_ldz_rr), 2, args, pc, jit_compiling_paged);
         }
         jit_patch_branch(done, e.buf);
         len_out = 3;
@@ -1181,7 +1206,10 @@ bool jit_try_inline(jit_emitter& e, u_byte op, u_word pc, u_word& len_out) {
         gsub s = jit_gsub(d1), a = jit_gsub(d2);
         std::vector<u_byte*> slow;
         e.load_anchor(0, s.disp, s.size, false);       /* rax = value bytes */
-        e.load_anchor(1, a.disp, a.size, false);       /* rcx = guest address */
+        e.load_anchor(1, a.disp, a.size, false);       /* rcx = guest address (VA) */
+        /* Paged: translate VA -> PA first so the code-page bitmap probe below keys on the
+           physical page (the bitmap and the write seams are physical). */
+        if (jit_compiling_paged) { jit_emit_fastpage(e, 1, access_kind::store, slow); }
         /* Code-page bitmap probe: a store that might hit compiled code goes slow
            (the thunk lands in the write seams, which invalidate). */
         e.mov_rr(9, 1);
@@ -1194,14 +1222,14 @@ bool jit_try_inline(jit_emitter& e, u_byte op, u_word pc, u_word& len_out) {
             e.cmp64_anchor_imm8(jit_disp(&jit_journal), 0);
             slow.push_back(e.jcc_placeholder(0x5));
         }
-        jit_emit_l1_probe(e, 1, s.size, slow);
+        jit_emit_l1_probe(e, 1, s.size, access_kind::store, slow, /*already_pa=*/jit_compiling_paged);
         e.store_mem(0, 8, 2, s.size);
         u_byte* done = e.jump_placeholder();
         u_byte* slow_lbl = e.buf;
         for (u_byte* sst : slow) { jit_patch_branch(sst, slow_lbl); }
         {
             u_word args[2] = { d1, d2 };
-            jit_call_thunk(e, reinterpret_cast<void*>(&jit_st_rr), 2, args);
+            jit_emit_mem_thunk(e, reinterpret_cast<void*>(&jit_st_rr), 2, args, pc, jit_compiling_paged);
         }
         jit_patch_branch(done, e.buf);
         len_out = 3;
@@ -1371,8 +1399,12 @@ bool jit_try_inline(jit_emitter& e, u_byte op, u_word pc, u_word& len_out) {
         return true;
     }
     /* ---- PUSH register / POP: the L1-hit stack access inline (RS commit order
-       mirrors the fault-atomic thunks). ---- */
-    if (op == instr::push_regVal) {
+       mirrors the fault-atomic thunks). Under paging these stay on the fault-safe thunk
+       path (maize-341): they write the translated register back to RS, which the in-place
+       VA->PA fast-page translate would corrupt, and they are not hot enough to justify the
+       extra register bookkeeping. LD/ST (the hot spill pattern) do get the inline
+       fast-page above. ---- */
+    if (op == instr::push_regVal && !jit_compiling_paged) {
         u_byte d1 = jg8(pc + 1);
         if (!jit_inl_desc(d1)) { return false; }
         gsub s = jit_gsub(d1);
@@ -1389,7 +1421,7 @@ bool jit_try_inline(jit_emitter& e, u_byte op, u_word pc, u_word& len_out) {
             e.cmp64_anchor_imm8(jit_disp(&jit_journal), 0);
             slow.push_back(e.jcc_placeholder(0x5));
         }
-        jit_emit_l1_probe(e, 1, s.size, slow);
+        jit_emit_l1_probe(e, 1, s.size, access_kind::store, slow);   /* bare-only path */
         e.store_mem(0, 8, 2, s.size);
         e.store_anchor(1, jit_disp(&regs::rs.w0), 8);
         u_byte* done = e.jump_placeholder();
@@ -1403,13 +1435,13 @@ bool jit_try_inline(jit_emitter& e, u_byte op, u_word pc, u_word& len_out) {
         len_out = 2;
         return true;
     }
-    if (op == instr::pop_opcode) {
+    if (op == instr::pop_opcode && !jit_compiling_paged) {
         u_byte d1 = jg8(pc + 1);
         if (!jit_inl_desc(d1)) { return false; }
         gsub d = jit_gsub(d1);
         std::vector<u_byte*> slow;
         e.load_anchor(1, jit_disp(&regs::rs.w0), 8, false);
-        jit_emit_l1_probe(e, 1, d.size, slow);
+        jit_emit_l1_probe(e, 1, d.size, access_kind::load, slow);
         e.load_mem(0, 8, 2, d.size, false);
         e.store_anchor(0, d.disp, d.size);
         e.load_anchor(1, jit_disp(&regs::rs.w0), 8, false);
@@ -1877,7 +1909,7 @@ jit_block* jit_compile(u_word entry_pc) {
                     e.cmp64_anchor_imm8(jit_disp(&jit_journal), 0);
                     slow.push_back(e.jcc_placeholder(0x5));
                 }
-                jit_emit_l1_probe(e, 0, 8, slow);
+                jit_emit_l1_probe(e, 0, 8, access_kind::store, slow);   /* bare-only (paged uses the fault-safe thunk above) */
                 e.mov_ri(1, ret_addr);
                 e.store_mem(1, 8, 2, 8);
                 e.store_anchor(0, jit_disp(&regs::rs.w0), 8);
@@ -1904,7 +1936,7 @@ jit_block* jit_compile(u_word entry_pc) {
                 /* Inline the return-address pop (the L1-hit stack load). */
                 std::vector<u_byte*> slow;
                 e.load_anchor(0, jit_disp(&regs::rs.w0), 8, false);
-                jit_emit_l1_probe(e, 0, 8, slow);
+                jit_emit_l1_probe(e, 0, 8, access_kind::load, slow);   /* bare-only (paged uses the fault-safe thunk above) */
                 e.load_mem(1, 8, 2, 8, false);
                 e.store_anchor(1, jit_disp(&regs::rp.w0), 8);
                 e.load_anchor(0, jit_disp(&regs::rs.w0), 8, false);
@@ -2135,14 +2167,15 @@ jit_block* jit_compile(u_word entry_pc) {
     g_jit.table[b->key] = b;
     g_jit.code_pages[b->page].push_back(b->key);
     jit_page_bitmap[jit_bitmap_slot(b->page)] = 1;
-    /* Paged blocks are never probed for or chained (maize-341), so they neither enter the
-       probe cache nor run the chaining pass; their edges vector is empty. */
+    /* Paged blocks are never probed for (indirect exits recompute the physical key at the
+       dispatcher), but they DO chain their same-guest-page direct edges (maize-341). */
     if (!jit_check_mode && !b->paged) { jit_probe_insert(b->key, reinterpret_cast<const void*>(b->code)); }
     g_jit.blocks_compiled += 1;
 
     /* Chaining (skipped wholesale in check mode: every check run must be exactly one
-       block so the oracle window matches). */
-    if (!jit_check_mode && !b->paged) {
+       block so the oracle window matches). Paged blocks only ever pushed same-page edges,
+       so the pass runs for them too. */
+    if (!jit_check_mode) {
         for (auto& ed : b->edges) {
             auto it = g_jit.table.find(ed.target_key);
             if (it != g_jit.table.end() && it->second != b) {
@@ -2485,6 +2518,9 @@ void enable_jit(bool check_mode) {
         jchk(mm.jit_l1_base_data() + memory_module::jit_l1_mask());
         jchk(jit_page_bitmap);
         jchk(jit_page_bitmap + (std::size_t(1) << 20) - 1);
+        jchk(&fast_pages[0].key);            /* maize-341: inline fast-page translate */
+        jchk(&fast_pages[2].pa_page);
+        jchk(&regs::rf.w0);
         jchk(jit_probe_keys);
         jchk(jit_probe_keys + (std::size_t(1) << JIT_PROBE_BITS) - 1);
         jchk(jit_probe_code);
