@@ -2441,8 +2441,12 @@ run_quesos_selfcheck() {
     # MSYS2_ARG_CONV_EXCL keeps the /progs guest paths from being rewritten to Windows
     # paths on the MinGW leg (same reason doom-render excludes /ro); harmless elsewhere.
     set +e
+    # maize-359: quesOS boot now forwards argv[1..] to the launched program as its
+    # argv, so multiple top-level programs are separated by an explicit `--` token.
+    # Both children still get zero forwarded args; only the boundary syntax changes,
+    # and the "running 2 program(s)" transcript is unchanged.
     actual=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
-        "$quesos" /progs/child1.mzx /progs/child2.mzx 2>/dev/null | grep -v '^$')
+        "$quesos" /progs/child1.mzx -- /progs/child2.mzx 2>/dev/null | grep -v '^$')
     set -e
 
     expected=$(printf '%s\n' \
@@ -2465,6 +2469,105 @@ run_quesos_selfcheck() {
 }
 
 run_quesos_selfcheck
+
+# maize-359: quesOS boot-argv forwarding. quesOS now runs its FIRST boot token as the
+# program and forwards the rest (argv[1..], split on `--` between programs) as that
+# program's full argv, instead of treating every token as a separate no-arg program.
+# argcheck.c is the quesOS analog of ctest/args.c: it prints each argv entry (bounded
+# by argc) then each envp entry. Three legs:
+#   1. single program with args: `quesos.mzx /progs/argcheck.mzx a b -c` must arrive as
+#      argv == [/progs/argcheck.mzx, a, b, -c] (the operator repro: -flags now forward).
+#   2. launcher --env still delivers K=V into the launched program's envp (maize-287).
+#   3. a `--`-separated multi-program boot forwards each program's own args.
+run_quesos_argcheck() {
+    name="quesos_argcheck"
+
+    ac="${REPO_ROOT}/os/quesos/argcheck.c"
+    builder="${REPO_ROOT}/os/quesos/build-quesos.sh"
+    if [ ! -f "$ac" ] || [ ! -f "$builder" ]; then
+        echo "[FAIL] ${name}: missing os/quesos/argcheck.c or build-quesos.sh" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    progs="${WORK_DIR}/quesos-argcheck"
+    rm -rf "$progs"; mkdir -p "$progs"
+    log="${WORK_DIR}/quesos-argcheck.build.log"
+
+    if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/argcheck.mzx" "$ac" >"$log" 2>&1; then
+        echo "[FAIL] ${name}: argcheck compile failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    quesos="${WORK_DIR}/quesos-argcheck.mzx"
+    if ! sh "$builder" --preset "$PRESET" -o "$quesos" >>"$log" 2>&1 || [ ! -f "$quesos" ]; then
+        echo "[FAIL] ${name}: quesOS link failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    nat=$(host_to_native "$progs")
+
+    # Leg 1: single program with forwarded args. Exactly 4 argv lines, in order, with
+    # the leading-dash token -c preserved verbatim, framed by quesOS's init/reap lines.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    actual=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
+        "$quesos" /progs/argcheck.mzx a b -c 2>/dev/null | grep -v '^$')
+    set -e
+    expected=$(printf '%s\n' \
+        '[quesos] init: cause-7 handler resident; running 1 program(s)' \
+        '/progs/argcheck.mzx' \
+        'a' \
+        'b' \
+        '-c' \
+        '[quesos] reaped /progs/argcheck.mzx status=0')
+    if [ "$actual" = "$expected" ]; then
+        echo "[PASS] ${name}_forward (argv[1..] reach the program in order)"
+    else
+        echo "[FAIL] ${name}_forward"
+        echo "        expected transcript:"; printf '%s\n' "$expected" | sed 's/^/          | /'
+        echo "        actual transcript:";   printf '%s\n' "$actual"   | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # Leg 2: launcher --env still delivers K=V to the launched program's envp.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    envout=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --env QOSVAR=set --no-root \
+        --mount "${nat}=/progs:ro" "$quesos" /progs/argcheck.mzx a b -c 2>/dev/null)
+    set -e
+    if printf '%s\n' "$envout" | grep -qF 'QOSVAR=set'; then
+        echo "[PASS] ${name}_env (launcher --env reaches the forwarded program)"
+    else
+        echo "[FAIL] ${name}_env (QOSVAR=set not in envp)"
+        printf '%s\n' "$envout" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # Leg 3: `--`-separated multi-program boot; each program gets its own forwarded args.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    multi=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
+        "$quesos" /progs/argcheck.mzx one -- /progs/argcheck.mzx two 2>/dev/null | grep -v '^$')
+    set -e
+    expected_multi=$(printf '%s\n' \
+        '[quesos] init: cause-7 handler resident; running 2 program(s)' \
+        '/progs/argcheck.mzx' \
+        'one' \
+        '[quesos] reaped /progs/argcheck.mzx status=0' \
+        '/progs/argcheck.mzx' \
+        'two' \
+        '[quesos] reaped /progs/argcheck.mzx status=0')
+    if [ "$multi" = "$expected_multi" ]; then
+        echo "[PASS] ${name}_multi (\`--\` splits programs; each keeps its own args)"
+    else
+        echo "[FAIL] ${name}_multi"
+        echo "        expected transcript:"; printf '%s\n' "$expected_multi" | sed 's/^/          | /'
+        echo "        actual transcript:";   printf '%s\n' "$multi"          | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_quesos_argcheck
 
 # maize-93 process ladder: the multi-process quesOS acceptance fixtures. Each is a C
 # program compiled by the ordinary cc-maize.sh pipeline (stock .mzx) and run UNDER

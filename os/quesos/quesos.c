@@ -764,8 +764,9 @@ static long read_exact_at(long fd, u64 off, u8 *buf, u64 n) {
 }
 
 /* Marshalled argv/envp for the next process image. build_start_block reads these; they
- * are filled by marshal_single (argv0 = path only) for a worklist/fork exec and by
- * marshal_argv (the full argv/envp) for execve. */
+ * are filled by marshal_boot_entry (a boot worklist entry's full argv + the launcher
+ * env, maize-359) for a worklist exec and by the two marshal_vec calls (the full
+ * argv/envp) for execve. */
 #define QUESOS_MAX_ARG   32
 #define QUESOS_ARGBUF    4096u
 static char g_arg_strbuf[QUESOS_ARGBUF];  /* packed NUL-terminated arg + env strings   */
@@ -777,17 +778,32 @@ static u64  g_arg_pack;                   /* total bytes packed into g_arg_strbu
 /* maize-287: the launcher environment, copied out of the boot start block into
  * kernel-owned storage at quesos_main entry (the source lives in the launcher
  * stack region, which child stack builds may reuse; same tear-down discipline as
- * the worklist path copy into g_pathbuf). marshal_single seeds every top-level
- * worklist program from this copy, so `maize --env K=V build/quesos.mzx prog`
- * delivers K=V to prog. Caps: at most QUESOS_MAX_ENV entries and QUESOS_ENVBUF
+ * the worklist arg copy into g_boot_argstrbuf). marshal_boot_entry seeds every
+ * top-level worklist program from this copy, so `maize --env K=V build/quesos.mzx
+ * prog` delivers K=V to prog. Caps: at most QUESOS_MAX_ENV entries and QUESOS_ENVBUF
  * packed bytes; on overflow WHOLE entries are dropped (never a mid-string
  * truncation, which would silently corrupt a value) and one boot warning names
  * the dropped count. */
-#define QUESOS_MAX_ENV   (QUESOS_MAX_ARG - 1)   /* worklist marshal is 1 arg + envc; keep 1+envc <= MAX_ARG */
+#define QUESOS_MAX_ENV   (QUESOS_MAX_ARG - 1)   /* worklist marshal is argv + envc; keep argc+envc <= MAX_ARG */
 #define QUESOS_ENVBUF    QUESOS_ARGBUF
 static char g_boot_envbuf[QUESOS_ENVBUF];   /* packed NUL-terminated K=V strings */
 static u64  g_boot_env_off[QUESOS_MAX_ENV]; /* byte offset of each string        */
 static int  g_boot_envc;                    /* copied entry count                */
+
+/* maize-359: the forwarded boot argv, captured at quesos_main entry alongside the
+ * launcher environment and under the same tear-down discipline. argv[1..argc) is
+ * split on `--` into worklist entries (see boot_args_capture); entry i's tokens
+ * (its program path in slot 0, then its forwarded args) are packed here and later
+ * marshalled into g_arg_* by marshal_boot_entry at spawn time. Overflow (more
+ * entries than QUESOS_MAX_PROC, more tokens in one entry than QUESOS_MAX_ARG, or
+ * packed bytes past the buffer) drops the WHOLE offending entry, never a mid-string
+ * truncation, and a zero-token segment (a leading/trailing/adjacent `--`) drops the
+ * same way; one boot warning names the total dropped count. */
+#define QUESOS_BOOT_ARGBUF 4096u
+static char g_boot_argstrbuf[QUESOS_BOOT_ARGBUF];            /* packed path+arg strings, all entries */
+static u64  g_boot_arg_off[QUESOS_MAX_ARG * QUESOS_MAX_PROC];/* byte offset of each token string     */
+static int  g_boot_entry_argc[QUESOS_MAX_PROC];             /* token count (path+args) per entry    */
+static int  g_boot_entry_start[QUESOS_MAX_PROC];            /* g_boot_arg_off index of entry i start */
 
 static void boot_env_capture(char **envp) {
     u64 pack = 0;
@@ -814,28 +830,116 @@ static void boot_env_capture(char **envp) {
     }
 }
 
-/* Single-argument marshal: argv = { path }; envp = the captured launcher
- * environment (maize-287; previously hard-coded empty). */
-static void marshal_single(const char *path) {
-    u64 len = qos_strlen(path) + 1;
+/* maize-359: is this token the `--` worklist separator (exactly two dashes)? A `-`,
+ * a `---`, or any flagged token is a normal argv token, not a separator. */
+static int is_boot_sep(const char *s) {
+    return s[0] == '-' && s[1] == '-' && s[2] == 0;
+}
+
+/* maize-359: capture the forwarded boot argv into kernel-owned storage, splitting
+ * argv[1..argc) on `--` into worklist entries. Mirrors boot_env_capture's timing and
+ * overflow discipline: called at quesos_main entry, before any child stack is built,
+ * because the source strings live in the boot start block that user-stack builds
+ * reuse. Each entry's first token is its program path; the rest are its forwarded
+ * args. A whole entry is dropped (never truncated mid-string) when it would overflow
+ * a cap or when a `--` adjacency yields a zero-token segment; one boot warning names
+ * the dropped count. g_worklist_count is the surviving entry count. */
+static void boot_args_capture(long argc, char **argv) {
+    u64 pack = 0;
+    int noff = 0;             /* flat write cursor into g_boot_arg_off */
+    int dropped = 0;
+    long i = 1;
+    g_worklist_count = 0;
+
+    while (i < argc) {
+        int tok = 0;
+        int start = noff;
+        u64 pack_start = pack;
+        int lost = 0;         /* this segment hit a cap; drop it whole */
+
+        /* Gather one segment's tokens, up to the next `--` or argc. */
+        while (i < argc && !is_boot_sep(argv[i])) {
+            const char *src = argv[i];
+            u64 len = qos_strlen(src) + 1;
+            u64 k;
+            ++i;
+            if (lost) { continue; }   /* already dropping; just consume the token */
+            if (tok >= QUESOS_MAX_ARG
+                || noff >= QUESOS_MAX_ARG * QUESOS_MAX_PROC
+                || pack + len > QUESOS_BOOT_ARGBUF) {
+                lost = 1;             /* drop the WHOLE segment, never a partial argv */
+                continue;
+            }
+            for (k = 0; k < len; ++k) { g_boot_argstrbuf[pack + k] = src[k]; }
+            g_boot_arg_off[noff] = pack;
+            pack += len;
+            ++noff;
+            ++tok;
+        }
+        if (i < argc) { ++i; }        /* consume the `--` separator */
+
+        if (lost || tok == 0 || g_worklist_count >= QUESOS_MAX_PROC) {
+            /* A cap overflow, a zero-token (`--`-adjacent) segment, or no room for
+             * another worklist slot: drop the segment, reclaim its packing so later
+             * segments can still use the buffer, and count it toward the warning. */
+            pack = pack_start;
+            noff = start;
+            ++dropped;
+            continue;
+        }
+
+        /* Record the entry's program path (argv[0]) for load_segments, the "cannot
+         * start" message, and the reap transcript. */
+        {
+            const char *p0 = g_boot_argstrbuf + g_boot_arg_off[start];
+            int q;
+            for (q = 0; q < QUESOS_PATH_CAP - 1 && p0[q]; ++q) {
+                g_pathbuf[g_worklist_count][q] = p0[q];
+            }
+            g_pathbuf[g_worklist_count][q] = 0;
+        }
+        g_boot_entry_start[g_worklist_count] = start;
+        g_boot_entry_argc[g_worklist_count] = tok;
+        ++g_worklist_count;
+    }
+
+    if (dropped > 0) {
+        qos_puts("[quesos] warning: boot argv truncated; dropped ");
+        qos_put_u64((u64)dropped);
+        qos_puts(" program segment(s) over the boot-arg caps or empty (`--`) segments\n");
+    }
+}
+
+/* maize-359: marshal worklist entry `e`'s captured tokens (program path + forwarded
+ * args) into g_arg_*, then append the captured launcher environment exactly as the
+ * old marshal_single did. The token source is the kernel-owned boot capture, not a
+ * live user vector, so no address-space walk is needed. */
+static void marshal_boot_entry(int e) {
+    int start = g_boot_entry_start[e];
+    int n = g_boot_entry_argc[e];
+    int t, env;
     u64 k;
-    int e;
-    if (len > QUESOS_ARGBUF) { len = QUESOS_ARGBUF; }
-    for (k = 0; k < len; ++k) { g_arg_strbuf[k] = path[k]; }
-    g_arg_off[0] = 0;
-    g_arg_pack = len;
-    g_arg_argc = 1;
+    g_arg_pack = 0;
+    g_arg_argc = 0;
     g_arg_envc = 0;
-    /* Seed the launcher environment behind argv[0]. Entries that no longer fit
-     * beside the path (argbuf shared with the path string) are dropped whole;
-     * capture already warned once at boot, so this stays silent. */
-    for (e = 0; e < g_boot_envc; ++e) {
-        const char *src = g_boot_envbuf + g_boot_env_off[e];
+    for (t = 0; t < n && g_arg_argc < QUESOS_MAX_ARG; ++t) {
+        const char *src = g_boot_argstrbuf + g_boot_arg_off[start + t];
+        u64 len = qos_strlen(src) + 1;
+        if (g_arg_pack + len > QUESOS_ARGBUF) { break; }
+        for (k = 0; k < len; ++k) { g_arg_strbuf[g_arg_pack + k] = src[k]; }
+        g_arg_off[g_arg_argc] = g_arg_pack;
+        g_arg_pack += len;
+        ++g_arg_argc;
+    }
+    /* Seed the launcher environment behind argv. Entries that no longer fit are
+     * dropped whole; capture already warned once at boot, so this stays silent. */
+    for (env = 0; env < g_boot_envc; ++env) {
+        const char *src = g_boot_envbuf + g_boot_env_off[env];
         u64 elen = qos_strlen(src) + 1;
-        if (1 + g_arg_envc >= QUESOS_MAX_ARG) { break; }
+        if (g_arg_argc + g_arg_envc >= QUESOS_MAX_ARG) { break; }
         if (g_arg_pack + elen > QUESOS_ARGBUF) { break; }
         for (k = 0; k < elen; ++k) { g_arg_strbuf[g_arg_pack + k] = src[k]; }
-        g_arg_off[1 + g_arg_envc] = g_arg_pack;
+        g_arg_off[g_arg_argc + g_arg_envc] = g_arg_pack;
         g_arg_pack += elen;
         ++g_arg_envc;
     }
@@ -1219,8 +1323,10 @@ static struct pcb *alloc_pcb(void) {
     return 0;
 }
 
-/* Load `path` into a brand-new process; returns the pcb or 0 on failure. */
-static struct pcb *spawn(const char *path, long parent) {
+/* Load `path` into a brand-new process; returns the pcb or 0 on failure. `boot_entry`
+ * indexes the captured boot argv (g_boot_entry_*) whose tokens marshal_boot_entry
+ * lays out as this process's argv (maize-359). */
+static struct pcb *spawn(const char *path, long parent, int boot_entry) {
     struct pcb *p = alloc_pcb();
     unsigned long j;
     u64 entry;
@@ -1246,7 +1352,7 @@ static struct pcb *spawn(const char *path, long parent) {
         p->state = P_FREE;
         return 0;
     }
-    marshal_single(path);
+    marshal_boot_entry(boot_entry);
     build_start_block(p, entry);
     return p;
 }
@@ -3335,18 +3441,10 @@ void quesos_main(long argc, char **argv, char **envp) {
      * recipe crt0 uses. */
     boot_env_capture(envp);
 
-    g_worklist_count = 0;
-
-    for (i = 1; i < argc && g_worklist_count < QUESOS_MAX_PROC; ++i) {
-        const char *src = argv[i];
-        long j = 0;
-        while (src[j] && j < QUESOS_PATH_CAP - 1) {
-            g_pathbuf[g_worklist_count][j] = src[j];
-            ++j;
-        }
-        g_pathbuf[g_worklist_count][j] = 0;
-        ++g_worklist_count;
-    }
+    /* maize-359: capture the forwarded boot argv, split on `--` into worklist entries
+     * (program path + its args). Same timing rule as boot_env_capture: the source
+     * strings are gone once user stacks are mapped, so copy them out first. */
+    boot_args_capture(argc, argv);
 
     if (g_worklist_count == 0) {
         qos_puts("[quesos] no programs on the exec worklist; powering off\n");
@@ -3365,7 +3463,7 @@ void quesos_main(long argc, char **argv, char **envp) {
      * transcript); a process that forks introduces real concurrency the scheduler and
      * wait path handle. */
     for (i = 0; i < g_worklist_count; ++i) {
-        struct pcb *sp = spawn(g_pathbuf[i], 0);
+        struct pcb *sp = spawn(g_pathbuf[i], 0, (int)i);
         if (sp == 0) {
             qos_puts("[quesos] cannot start ");
             qos_puts(g_pathbuf[i]);
