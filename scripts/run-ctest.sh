@@ -2457,7 +2457,7 @@ run_quesos_ac_fixtures() {
                fb_mmap_paint fb_noncontig_reject fb_mmap_isolation fb_mmap_enomem \
                bulk_forward bulk_noncontig bulk_bounds bulk_kernel_range \
                bigalloc fb_present kbd_acl bigfootprint_fork loader_guard bigimage \
-               palette_blit_guard satp_stress; do
+               palette_blit_guard satp_stress bltc_multiaccess; do
         if ! cc_maize_compile_bounded "quesos_ac: ${src}.c" "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" "$log"; then
             TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
@@ -2774,6 +2774,41 @@ run_quesos_ac_fixtures() {
             echo "[FAIL] quesos_satp_jit_equiv"
             echo "        interp: \"$(tr '\n' '|' < "$satp_int")\""
             echo "        jit:    \"$(tr '\n' '|' < "$satp_jit")\""
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+    fi
+
+    # maize-353 (AC 9838 / AC 9845): the block-local translate cache (BLTC) engages where
+    # approach A wins, a paged block that does several same-page accesses off one base. The
+    # bltc_multiaccess fixture is that struct-field / buffer shape. Two proofs, both here:
+    #   (1) correctness: --jit stdout byte-identical to the interpreter (the cache never
+    #       changes an observable result), and
+    #   (2) engagement: the JIT report's "paged translates" line shows a nonzero BLTC-recompare
+    #       count, i.e. later same-page same-kind accesses in a block took the cheap recompare
+    #       instead of the full fast_pages walk. The count is a static compile-time metric, so
+    #       reading it costs nothing on the emitted fast path itself.
+    # The report goes to stderr, so this run must NOT set MAIZE_JIT_QUIET (the marker case
+    # above uses $MAIZE, which may pin quiet; resolve the raw binary as satp does).
+    quesos_ac_case quesos_bltc_multiaccess "bltc-multiaccess: PASS" bltc_multiaccess
+    if [ -n "$raw_maize" ]; then
+        bltc_int="${WORK_DIR}/bltc_multiaccess.interp.out"
+        bltc_jit="${WORK_DIR}/bltc_multiaccess.jit.out"
+        bltc_rep="${WORK_DIR}/bltc_multiaccess.jit.report"
+        TOTAL=$((TOTAL + 1))
+        set +e
+        MSYS2_ARG_CONV_EXCL='/progs' timeout 120 "$raw_maize" --no-root \
+            --mount "${nat}=/progs:ro" "$quesos" /progs/bltc_multiaccess.mzx >"$bltc_int" 2>/dev/null
+        MSYS2_ARG_CONV_EXCL='/progs' timeout 120 "$raw_maize" --jit --jit-threshold 50 --no-root \
+            --mount "${nat}=/progs:ro" "$quesos" /progs/bltc_multiaccess.mzx >"$bltc_jit" 2>"$bltc_rep"
+        set -e
+        recompare=$(sed -n 's/.*full walk \/ \([0-9][0-9]*\) bltc recompare.*/\1/p' "$bltc_rep")
+        if grep -qF "bltc-multiaccess: PASS" "$bltc_int" && cmp -s "$bltc_int" "$bltc_jit" \
+           && [ -n "$recompare" ] && [ "$recompare" -gt 0 ]; then
+            echo "[PASS] quesos_bltc_engages (--jit byte-identical; ${recompare} BLTC recompares emitted)"
+        else
+            echo "[FAIL] quesos_bltc_engages (recompares=\"${recompare}\")"
+            echo "        interp: \"$(tr '\n' '|' < "$bltc_int")\""
+            echo "        jit:    \"$(tr '\n' '|' < "$bltc_jit")\""
             FAIL_COUNT=$((FAIL_COUNT + 1))
         fi
     fi

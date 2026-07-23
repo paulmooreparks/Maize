@@ -56,6 +56,7 @@ namespace {
  * the transfer sites, and the memory write seams, all of which precede this include). */
 bool jit_check_mode = false;                            /* --jit-check */
 bool jit_no_probe = false;                              /* MAIZE_JIT_NOPROBE=1: bisect knob */
+bool jit_no_bltc = false;                               /* MAIZE_JIT_NOBLTC=1: maize-353 A/B measurement knob */
 /* Block-exit events go through the jit_boundary_events helper by default. The fully
  * inline emission (jit_emit_events_inline) is a further micro-opt that measured
  * negligible on doom_bench and currently has a Windows-only fault under investigation,
@@ -116,6 +117,14 @@ struct jit_emitter {
     u_byte* buf = nullptr;
     u_byte* end = nullptr;
     bool overflow = false;
+
+    /* maize-353 block-local translate cache (BLTC), compile-time only. A fresh emitter is
+       constructed per jit_compile() pass, so these reset at every block automatically. When
+       bltc_valid is set, an earlier paged load/store in THIS straight-line block already ran
+       the full fast-page walk, so a later access of the same kind can revalidate with a cheap
+       runtime VPN recompare (see jit_emit_fastpage_cached) instead of re-walking fast_pages. */
+    bool   bltc_valid = false;
+    u_byte bltc_kind  = 0;
 
     void u8(u_byte v)  { if (buf >= end) { overflow = true; return; } *buf++ = v; }
     void u32(std::uint32_t v) { for (int i = 0; i < 4; ++i) u8(static_cast<u_byte>(v >> (i * 8))); }
@@ -468,6 +477,8 @@ struct jit_state {
     std::uint64_t check_blocks = 0;
     std::uint64_t emitted_inline = 0;    /* static: instructions emitted as inline templates */
     std::uint64_t emitted_thunk = 0;     /* static: instructions emitted as thunk calls */
+    std::uint64_t fastpage_full = 0;     /* static (maize-353): paged translates emitted as the full fast_pages walk */
+    std::uint64_t fastpage_cached = 0;   /* static (maize-353): paged translates emitted as a BLTC recompare fast path */
     std::uint64_t uncovered_end[256] = {};   /* static: block-ending uncovered opcode histogram */
     std::uint64_t dispatch_hit = 0;      /* dispatcher entries that ran a compiled block */
     std::uint64_t dispatch_miss = 0;     /* dispatcher entries that fell back to the interpreter */
@@ -501,6 +512,18 @@ void* jit_fs_fn = nullptr;
 u_word jit_fs_a[3] = { 0, 0, 0 };
 u_word jit_fs_n = 0;    /* u_word (not int) so the emitter's 8-byte store_const is safe */
 bool jit_pending_fault = false;
+
+/* maize-353 block-local translate cache runtime state. The full fast-page walk records the
+   last resolved (virtual page number, physical page base) here; a later same-page same-kind
+   access in the same straight-line block reloads and recompares against jit_bltc_vpn on its
+   fast path. Both are read anchor-relative via jit_disp() (exactly like fast_pages), so both
+   are registered in enable_jit's anchor-reach jchk() list. Lifetime is one block execution:
+   the compile-time bltc_valid flag on jit_emitter gates every read, and a MOVTCR/TLBINV can
+   never sit inside a compiled block (both are uncovered, block-ending opcodes), so no SATP or
+   TLB change can occur between two accesses that share an entry. No cross-block invalidation
+   wiring is needed. */
+u_word jit_bltc_vpn = 0;
+u_word jit_bltc_pa_page = 0;
 void jit_faultsafe_call() {
     try {
         switch (jit_fs_n) {
@@ -1097,6 +1120,62 @@ inline void jit_emit_fastpage(jit_emitter& e, u_byte addr_reg, access_kind kind,
     e.or_rr(addr_reg, 10);                                  /* addr_reg = pa_page | offset = PA */
 }
 
+/* maize-353: emit the full fast-page walk and refresh the block-local translate cache as the
+   walk lands its result, so a later same-page same-kind access can take the cheap recompare.
+   addr_reg holds the VA on entry and the PA on exit (jit_emit_fastpage's postcondition). r9
+   carries the VPN across the walk: jit_emit_fastpage clobbers only rdx, r10, and addr_reg, so
+   r9 survives it, and r10 still holds the resolved pa_page when the walk returns on its hit
+   path. The two stores below sit on that hit path (the miss path jumps to slow_sites), so the
+   cache is refreshed only when a real translate succeeded. */
+inline void jit_emit_fastpage_fill(jit_emitter& e, u_byte addr_reg, access_kind kind,
+                                   std::vector<u_byte*>& slow_sites) {
+    e.mov_rr(9, addr_reg);                                  /* r9 = va */
+    e.shift_ri(5, 9, 12);                                   /* r9 = vpn (full) */
+    e.mov_ri(10, vpn_tag_mask);
+    e.rr_op(0x23, 9, 10);                                   /* and r9, r10 (vpn & mask) */
+    jit_emit_fastpage(e, addr_reg, kind, slow_sites);       /* addr_reg = PA; r10 = pa_page */
+    e.store_anchor(9, jit_disp(&jit_bltc_vpn), 8);
+    e.store_anchor(10, jit_disp(&jit_bltc_pa_page), 8);
+}
+
+/* maize-353: cached front end for jit_emit_fastpage, wired in at the two paged data-path call
+   sites (LD/LDZ via jit_emit_l1_probe, and the ST template's own translate). Same signature
+   and same postcondition as jit_emit_fastpage (addr_reg VA in, PA out; misses route through
+   slow_sites into the fault-safe thunk). When an earlier access of the SAME kind already
+   populated the cache in this block, emit a cheap VPN recompare against jit_bltc_vpn: on a
+   hit, reuse jit_bltc_pa_page directly (~5-6 instructions instead of the full ~12-instruction
+   walk); on a mismatch (page cross) fall to a full walk that also refreshes the cache. The
+   very first access of a kind takes the full walk and populates the cache. Bare mode never
+   reaches here (both call sites gate on jit_compiling_paged). */
+inline void jit_emit_fastpage_cached(jit_emitter& e, u_byte addr_reg, access_kind kind,
+                                     std::vector<u_byte*>& slow_sites) {
+    if (jit_no_bltc) { jit_emit_fastpage(e, addr_reg, kind, slow_sites); return; }
+    if (e.bltc_valid && e.bltc_kind == static_cast<u_byte>(kind)) {
+        g_jit.fastpage_cached += 1;
+        /* Recompute this access's VPN and compare against the cached page. */
+        e.mov_rr(2, addr_reg);                              /* rdx = va */
+        e.shift_ri(5, 2, 12);                               /* rdx = vpn (full) */
+        e.mov_ri(10, vpn_tag_mask);
+        e.rr_op(0x23, 2, 10);                               /* and rdx, r10 (vpn & mask) */
+        e.cmp_anchor(2, jit_disp(&jit_bltc_vpn));           /* cmp rdx, [bltc_vpn] */
+        u_byte* miss = e.jcc_placeholder(0x5);              /* jne -> refill (page cross) */
+        /* Hit: addr_reg = bltc_pa_page | (va & 0xFFF). */
+        e.load_anchor(10, jit_disp(&jit_bltc_pa_page), 8, false);
+        e.and_ri32(addr_reg, 0xFFF);
+        e.or_rr(addr_reg, 10);
+        u_byte* done = e.jump_placeholder();
+        /* Miss: addr_reg still holds the VA (the hit path was jumped over); full walk + refresh. */
+        jit_patch_branch(miss, e.buf);
+        jit_emit_fastpage_fill(e, addr_reg, kind, slow_sites);
+        jit_patch_branch(done, e.buf);
+        return;
+    }
+    g_jit.fastpage_full += 1;
+    jit_emit_fastpage_fill(e, addr_reg, kind, slow_sites);
+    e.bltc_valid = true;
+    e.bltc_kind = static_cast<u_byte>(kind);
+}
+
 /* The guest-memory fast path: resolve `addr_reg` (a host reg holding the guest VA) to a
    host pointer in r8 with the in-page offset in rdx, or branch to `slow_sites` on any
    miss. Under paging it first runs the inline fast-page translate (VA -> PA); in Bare mode
@@ -1107,7 +1186,7 @@ inline void jit_emit_l1_probe(jit_emitter& e, u_byte addr_reg, u_byte width,
                               bool already_pa = false) {
     /* Under paging, translate VA -> PA inline first (unless the caller already did, which
        the store templates do so their code-page bitmap probe keys on the physical page). */
-    if (jit_compiling_paged && !already_pa) { jit_emit_fastpage(e, addr_reg, kind, slow_sites); }
+    if (jit_compiling_paged && !already_pa) { jit_emit_fastpage_cached(e, addr_reg, kind, slow_sites); }
     /* rdx = (addr >> 12) & l1_mask */
     e.mov_rr(2, addr_reg);
     e.shift_ri(5, 2, 12);
@@ -1225,7 +1304,7 @@ bool jit_try_inline(jit_emitter& e, u_byte op, u_word pc, u_word& len_out) {
         e.load_anchor(1, a.disp, a.size, false);       /* rcx = guest address (VA) */
         /* Paged: translate VA -> PA first so the code-page bitmap probe below keys on the
            physical page (the bitmap and the write seams are physical). */
-        if (jit_compiling_paged) { jit_emit_fastpage(e, 1, access_kind::store, slow); }
+        if (jit_compiling_paged) { jit_emit_fastpage_cached(e, 1, access_kind::store, slow); }
         /* Code-page bitmap probe: a store that might hit compiled code goes slow
            (the thunk lands in the write seams, which invalidate). */
         e.mov_rr(9, 1);
@@ -2628,6 +2707,8 @@ void enable_jit(bool check_mode) {
         jchk(jit_probe_code);
         jchk(jit_probe_code + (std::size_t(1) << JIT_PROBE_BITS) - 1);
         jchk(&jit_probe_pa);                 /* maize-346: paged probe tail reads it anchor-relative */
+        jchk(&jit_bltc_vpn);                 /* maize-353: BLTC fast path reads it anchor-relative */
+        jchk(&jit_bltc_pa_page);             /* maize-353: BLTC fast path reads it anchor-relative */
         jchk(&jit_journal);
     }
     if (!jit_anchor_ok) {
@@ -2638,10 +2719,12 @@ void enable_jit(bool check_mode) {
 #if defined(_WIN32)
     if (GetEnvironmentVariableA("MAIZE_JIT_MISCOMPILE", nullptr, 0) > 0) { jit_inject_miscompile = true; }
     if (GetEnvironmentVariableA("MAIZE_JIT_NOPROBE", nullptr, 0) > 0) { jit_no_probe = true; }
+    if (GetEnvironmentVariableA("MAIZE_JIT_NOBLTC", nullptr, 0) > 0) { jit_no_bltc = true; }
     if (GetEnvironmentVariableA("MAIZE_JIT_INLINE_EVENTS", nullptr, 0) > 0) { jit_no_inline_events = false; }
 #else
     if (std::getenv("MAIZE_JIT_MISCOMPILE") != nullptr) { jit_inject_miscompile = true; }
     if (std::getenv("MAIZE_JIT_NOPROBE") != nullptr) { jit_no_probe = true; }
+    if (std::getenv("MAIZE_JIT_NOBLTC") != nullptr) { jit_no_bltc = true; }
     if (std::getenv("MAIZE_JIT_INLINE_EVENTS") != nullptr) { jit_no_inline_events = false; }
 #endif
     jit_seam_armed = true;
@@ -2673,6 +2756,10 @@ void jit_report(std::ostream& out) {
     out << "  cache flushes       : " << g_jit.flushes << "\n";
     out << "  emission mix        : " << g_jit.emitted_inline << " inline / "
         << g_jit.emitted_thunk << " thunk (static)\n";
+    if (g_jit.fastpage_full > 0 || g_jit.fastpage_cached > 0) {
+        out << "  paged translates    : " << g_jit.fastpage_full << " full walk / "
+            << g_jit.fastpage_cached << " bltc recompare (static)\n";
+    }
     out << "  dispatcher          : " << g_jit.dispatch_hit << " hits / "
         << g_jit.dispatch_miss << " misses\n";
     {
