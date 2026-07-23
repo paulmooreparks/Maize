@@ -1010,10 +1010,7 @@ fopen(const char *path, const char *mode)
 
     /* Arm the atexit flush hook once, now that a buffered stream exists (maize-120,
      * decision 8283): exit() then flushes on a return-from-main; _Exit/abort bypass. */
-    if (!g_flush_armed) {
-        g_flush_armed = 1;
-        atexit(__stdio_flush_all);
-    }
+    arm_flush_hook();
     return f;
 }
 
@@ -1245,6 +1242,8 @@ fflush(FILE *stream)
     if (stream == NULL) {                    /* flush every open buffered stream */
         if (_stdout.mode == 2 && flush_wbuf(&_stdout) != 0)
             rc = -1;                         /* buffered stdout (maize-276) */
+        if (_stderr.mode == 2 && flush_wbuf(&_stderr) != 0)
+            rc = -1;                         /* stderr iff a caller buffered it */
         p = g_streams;
         while (p != NULL) {
             if (p->mode == 2 && flush_wbuf(p) != 0)
@@ -1288,6 +1287,8 @@ __stdio_flush_all(void)
 
     if (_stdout.mode == 2)
         flush_wbuf(&_stdout);           /* buffered stdout (maize-276) */
+    if (_stderr.mode == 2)
+        flush_wbuf(&_stderr);           /* stderr iff a caller buffered it (maize-276) */
     while (p != NULL) {
         if (p->mode == 2)
             flush_wbuf(p);
@@ -1313,9 +1314,24 @@ setvbuf(FILE *stream, char *buf, int mode, size_t size)
         return 0;
     }
 
+    /* _IOLBF / _IOFBF. The stream MUST end up with a usable buffer before _F_UNBUF is
+     * cleared, or a later write would spin forever on a zero-capacity buffer (this bites
+     * stderr, whose static object has buf == NULL, bufcap == 0). A caller buffer wins;
+     * else keep the stream's own usable buffer (stdout's static 4KB); else, per C's
+     * buf == NULL "library provides the buffer" rule, allocate one and fail the call if
+     * that allocation fails, leaving the stream safely unbuffered. */
     if (buf != NULL && size > 0) {
         stream->buf = (unsigned char *)buf;
         stream->bufcap = (long)size;
+        stream->bufpos = 0;
+        stream->buflen = 0;
+    } else if (stream->buf == NULL || stream->bufcap <= 0) {
+        size_t want = (size > 0) ? size : (size_t)BUFSIZ;
+        unsigned char *nb = malloc(want);
+        if (nb == NULL)
+            return -1;
+        stream->buf = nb;
+        stream->bufcap = (long)want;
         stream->bufpos = 0;
         stream->buflen = 0;
     }
