@@ -902,8 +902,7 @@ bool jit_thunk_is_mem(void* fn) {
    and the (stride-crossing) input poll. */
 void jit_timer_n(u_word n) {
     if (active_timer_ptr == nullptr) { return; }
-    timer_device& t = *active_timer_ptr;
-    for (u_word i = 0; i < n; ++i) { tick_active_timer(t); }
+    advance_active_timer(*active_timer_ptr, n);   // maize-357: one O(1) bulk subtract, was a per-tick loop
 }
 void jit_input_tick() {
     if (active_input_ptr != nullptr) { active_input_ptr->on_input_tick(); }
@@ -914,8 +913,7 @@ u_word jit_boundary_events(u_word n) {
     if (jit_check_mode) { return 1; }   /* always return to the dispatcher (no chaining) */
     if (perf_count_enabled) { perf_insn_count += n; }
     if (active_timer_ptr != nullptr && (active_timer_ptr->control_reg.w0 & 0x1) != 0) {
-        timer_device& t = *active_timer_ptr;
-        for (u_word i = 0; i < n; ++i) { tick_active_timer(t); }
+        advance_active_timer(*active_timer_ptr, n);   // maize-357: one O(1) bulk subtract, was a per-tick loop
     }
     if (active_input_ptr != nullptr) {
         u_word before = input_tick_ctr_;

@@ -2208,20 +2208,40 @@ namespace maize {
             int_event.notify_all();
         }
 
-        /* Advance the instruction-tick timer one tick (card maize-21). Called once per
-           executed instruction from the run loop. While a tick is pending (awaiting the
-           handler's acknowledge), the countdown is paused so handler instructions do not
-           over-count. On reaching zero it sets the tick-pending status bit and raises its
-           IRQ; a periodic timer re-arms after the acknowledge clears the pending bit,
-           while a one-shot timer clears its own enable bit.
+        /* Advance the instruction-tick timer by n ticks (card maize-21, maize-357). Called
+           with n = the number of retired guest instructions since the timer was last
+           advanced: n = 1 from the interpreter's MAIZE_NEXT preamble, n = the block's
+           retired-instruction count from the JIT block-exit sites. While a tick is pending
+           (awaiting the handler's acknowledge), the countdown is paused so handler
+           instructions do not over-count. On reaching zero it sets the tick-pending status
+           bit and raises its IRQ; a periodic timer re-arms after the acknowledge clears the
+           pending bit, while a one-shot timer clears its own enable bit.
 
            maize-200: hoisted from an out-of-line timer_device member into this
            static-inline namespace helper so the common case (no active timer, or an armed
            timer that has not yet expired) folds directly into the MAIZE_NEXT preamble
-           instead of paying a per-instruction out-of-line call. The state machine is
-           preserved bit-for-bit; only the call overhead is removed. raise_irq (which
-           takes int_mutex) still fires only on the rare tick-complete path, as before. */
-        static inline void tick_active_timer(timer_device &t) {
+           instead of paying a per-instruction out-of-line call.
+
+           maize-357: collapse the old per-tick loop (n consecutive tick_active_timer(t)
+           calls) into one O(1) bulk subtract. This is exact, not an approximation: once the
+           pending bit is set every further single-tick call is a no-op until a guest ack
+           write clears it, and an ack is a guest OUT instruction that cannot execute
+           between iterations of the old host-side replay loop (nor before the interpreter's
+           single n = 1 call). So an n-tick run crosses zero at most once, and every
+           iteration after the crossing is a no-op. Detecting that one crossing directly
+           (n >= counter) produces the identical end state (counter, status_reg,
+           control_reg, and the single raise_irq call) for every n, including the period = 1
+           edge case (asm/test_timer_period1.mazm). raise_irq (which takes int_mutex) still
+           fires only on the rare tick-complete path, as before.
+
+           n = 1 kept static inline so the interpreter hot path pays no added call overhead
+           versus the old tick_active_timer (open_question 9856: static inline is sufficient;
+           the body compiles to the same folded preamble, and AC4/AC6 host-cost measurement
+           is Test's gate). */
+        static inline void advance_active_timer(timer_device &t, u_word n) {
+            if (n == 0) {
+                return;
+            }
             bool enable = (t.control_reg.w0 & 0x1) != 0;
             if (!enable) {
                 return;
@@ -2238,17 +2258,19 @@ namespace maize {
                     return;
                 }
             }
-            --t.counter;
-            if (t.counter == 0) {
-                t.status_reg.w0 |= 0x1;   // set tick-pending
-                raise_irq(t.irq_vector);
-                bool periodic = (t.control_reg.w0 & 0x2) != 0;
-                if (!periodic) {
-                    t.control_reg.w0 &= ~static_cast<u_word>(0x1);   // one-shot: disable
-                }
-                /* Periodic: counter stays 0 and reloads on the tick after the ack clears
-                   the pending bit. */
+            if (n < t.counter) {
+                t.counter -= n;   // no crossing this batch
+                return;
             }
+            t.counter = 0;
+            t.status_reg.w0 |= 0x1;   // set tick-pending
+            raise_irq(t.irq_vector);
+            bool periodic = (t.control_reg.w0 & 0x2) != 0;
+            if (!periodic) {
+                t.control_reg.w0 &= ~static_cast<u_word>(0x1);   // one-shot: disable
+            }
+            /* Periodic: counter stays 0 and reloads on the tick after the ack clears the
+               pending bit. */
         }
 
         /* Divide-by-zero and signed INT_MIN/-1 overflow are divide-error traps (card maize-5).
@@ -4249,7 +4271,7 @@ namespace maize {
                 if (interrupt_enabled_flag && irq_pending.load(std::memory_order_relaxed)) { \
                     try_deliver_interrupt(); \
                 } \
-                if (active_timer_ptr != nullptr) { tick_active_timer(*active_timer_ptr); } \
+                if (active_timer_ptr != nullptr) { advance_active_timer(*active_timer_ptr, 1); } \
                 if (active_input_ptr != nullptr && (++input_tick_ctr_ & INPUT_TICK_MASK) == 0) { active_input_ptr->on_input_tick(); } \
                 if (jit_active) { \
                     if (jit_step_on) { \

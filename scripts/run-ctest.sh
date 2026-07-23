@@ -2346,6 +2346,54 @@ run_launcher_per_binary() {
 run_launcher_per_binary
 # =============================================================================
 
+# maize-357 (AC 9853): large-period armed-timer cadence. asm/test_timer_period1.mazm
+# only exercises a single-tick crossing (period 1). This bare-VM asm fixture programs a
+# periodic timer with period 2000, far above the 512-instruction JIT block cap, so under
+# the JIT the countdown is driven by the O(1) bulk subtract (advance_active_timer(t, n))
+# across ~125 block boundaries per period, crossing zero exactly once and re-arming. The
+# handler asserts the per-IRQ cadence lands in [$20, $400] (a subtract-1-per-block
+# regression would fire ~2000 iterations apart and trip the high bound; a no-crossing
+# regression would time out), then prints a bare "timerpL: PASS" with no cadence numbers.
+# Two proofs, like quesos_satp_jit_equiv below: (1) the marker, and (2) byte-identical
+# stdout under the interpreter (n = 1 per instruction) versus --jit bare (n > 1 per
+# block), which is exactly the interpreter/JIT equivalence this card must preserve. The
+# raw maize binary is resolved directly (not $MAIZE, which the MAIZE_JIT wrapper may have
+# pinned to one mode) so the comparison always runs interpreter-vs-JIT regardless of the
+# harness env.
+run_timer_cadence_equiv() {
+    src="test_timer_period_large.mazm"
+    cp "${REPO_ROOT}/asm/${src}" "${WORK_DIR}/${src}"
+    mzb="${WORK_DIR}/test_timer_period_large.mzb"
+    TOTAL=$((TOTAL + 1))
+    if ! "$MAZM" "${WORK_DIR}/${src}" >"${WORK_DIR}/timer_cadence.asm.log" 2>&1 || [ ! -f "$mzb" ]; then
+        echo "[FAIL] timer_cadence_equiv: mazm failed to assemble ${src}"
+        cat "${WORK_DIR}/timer_cadence.asm.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    raw_maize=$(resolve_exe "${BUILD_DIR}/maize") || raw_maize=""
+    if [ -z "$raw_maize" ]; then
+        echo "[FAIL] timer_cadence_equiv: raw maize binary not found in ${BUILD_DIR}"
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    ti="${WORK_DIR}/timer_cadence.interp.out"
+    tj="${WORK_DIR}/timer_cadence.jit.out"
+    set +e
+    timeout 30 "$raw_maize" "$mzb" >"$ti" 2>/dev/null
+    timeout 30 "$raw_maize" --jit --jit-threshold 50 "$mzb" >"$tj" 2>/dev/null
+    set -e
+    if grep -qF "timerpL: PASS" "$ti" && cmp -s "$ti" "$tj"; then
+        echo "[PASS] timer_cadence_equiv (bulk subtract: interp n=1 byte-identical to --jit n>1, period 2000)"
+    else
+        echo "[FAIL] timer_cadence_equiv"
+        echo "        interp: \"$(tr '\n' '|' < "$ti")\""
+        echo "        jit:    \"$(tr '\n' '|' < "$tj")\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_timer_cadence_equiv
+# =============================================================================
+
 # maize-24 keystone (Piece 3): quesOS single-tasking exec/reap. Builds the two
 # borrowed static guest printers (os/quesos/demo_child*.c) through the ordinary
 # cc-maize.sh pipeline (stock .mzx at base 0x2000), links quesOS itself at its
