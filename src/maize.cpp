@@ -180,19 +180,42 @@ static void print_usage(std::ostream &out) {
 		"refresh-IRQ cadence, not the present rate.\n"
 		"\n"
 		"Usage:\n"
-		"  maize [options] <image> [guest-args...]\n"
+		"  maize [options] [app [app-args...]]     run app on top of quesOS (default)\n"
+		"  maize [options]                         boot quesOS to a login shell\n"
+		"  maize --bare [options] <image> [args]   run a raw image with no guest OS\n"
 		"\n"
-		"Options are consumed up to the first non-option token, which is the image.\n"
-		"Everything after <image> is passed to the program as its argv, verbatim.\n"
-		"argv[0] is <image> exactly as you typed it.\n"
+		"By default maize boots quesOS, the guest operating system, and runs your app\n"
+		"on top of it, so the app gets memory paging, an idle CPU while it waits, and\n"
+		"the guest OS services. The app name and everything after it become the app's\n"
+		"argv, passed through verbatim. With no app named, quesOS boots to an\n"
+		"interactive login shell instead.\n"
 		"\n"
-		"If <image> has no extension and does not exist as given, maize also tries\n"
-		"appending .mzx, then .mzb, before giving up (so `maize hello` finds\n"
-		"hello.mzx or hello.mzb without typing the extension). A name that already\n"
-		"has an extension is tried exactly as given, with no appending.\n"
+		"--bare runs a raw VM image directly, with no guest OS underneath. Options are\n"
+		"then consumed up to the first non-option token, which is the image, and\n"
+		"everything after the image becomes its argv verbatim (argv[0] is the image as\n"
+		"you typed it). Normally only quesOS itself or a raw toolchain artifact is run\n"
+		"this way; an ordinary app is better off on top of quesOS.\n"
+		"\n"
+		"--rom <path> boots a different guest-OS image in place of the default quesOS\n"
+		"ROM. It cannot be combined with --bare (one wraps a guest OS, the other runs\n"
+		"without one).\n"
+		"\n"
+		"The default quesOS ROM is located, in increasing precedence, as quesos.mzx\n"
+		"beside the maize binary, then a rom= entry in ~/.maize/config, then a rom=\n"
+		"entry in the per-binary config, then --rom. If none resolves and you did not\n"
+		"pass --bare, maize stops with a diagnostic; build the ROM with\n"
+		"scripts/build-quesos.sh (POSIX) or scripts/build-quesos.ps1 (Windows).\n"
+		"\n"
+		"If an app or image name has no extension and does not exist as given, maize\n"
+		"also tries appending .mzx, then .mzb, before giving up (so `maize hello`\n"
+		"finds hello.mzx or hello.mzb without typing the extension). A name that\n"
+		"already has an extension is tried exactly as given, with no appending.\n"
 		"\n"
 		"Options:\n"
 		"  -h, --help                 show this help\n"
+		"      --bare                 run a raw VM image directly, with no guest OS\n"
+		"      --rom <path>           boot this guest-OS image instead of the default\n"
+		"                             quesOS ROM (mutually exclusive with --bare)\n"
 		"  -e, --env KEY=VAL          add one environment variable (repeatable)\n"
 		"      --env=KEY=VAL          same, inline form\n"
 		"      --env-file <path>      add variables from a KEY=VAL file (repeatable;\n"
@@ -223,16 +246,21 @@ static void print_usage(std::ostream &out) {
 		"The program's environment is built only from -e/--env, --env-file, and the\n"
 		"optional standing default file ~/.maize/env (loaded first, then overridden by\n"
 		"any -e/--env/--env-file entry); the host's own environment is never inherited.\n"
+		"The reserved key QUESOS_INIT selects quesOS's default init program, the one a\n"
+		"session-mode boot runs when no app is named; unset it defaults to the login\n"
+		"shell (/bin/oksh.mzx -l). quesOS consumes QUESOS_INIT, so it never appears in\n"
+		"a guest program's own environment.\n"
 		"\n"
 		"Optional operator files under ~/.maize (HOME/USERPROFILE) tune startup:\n"
 		"  ~/.maize/config   default values for the launcher flags, one key=value per\n"
 		"                    line (blank and #-comment lines ignored). Keys are the long\n"
 		"                    flag names without dashes: display-scale, refresh-hz,\n"
-		"                    resolution, console-size, root, show-perf, pause-on-halt,\n"
+		"                    resolution, console-size, root, rom, show-perf, pause-on-halt,\n"
 		"                    vsync, display, input, no-root. (the console 'maize' ignores\n"
 		"                    the graphical-only keys.) console-size is <cols>x<rows> (e.g. 80x25).\n"
-		"                    Booleans accept true/false, 1/0, or yes/no. A bad key or\n"
-		"                    value is warned and ignored.\n"
+		"                    rom names the default guest-OS image (the same value --rom\n"
+		"                    would pass). Booleans accept true/false, 1/0, or yes/no. A\n"
+		"                    bad key or value is warned and ignored.\n"
 		"  ~/.maize/maize.config, ~/.maize/maizeg.config\n"
 		"                    an OPTIONAL per-binary override layer read on top of the\n"
 		"                    shared ~/.maize/config: the console 'maize' reads maize.config,\n"
@@ -314,6 +342,27 @@ static bool resolve_image_path(const std::string &given, std::string &resolved,
 		return false;   /* exists but not an openable regular file: report, stop */
 	}
 	return false;
+}
+
+/* maize-360: the built-in default boot ROM is quesos.mzx sitting beside the running
+   binary. This mirrors the "beside argv0" lookup the presenter transport already uses
+   to find maizeg next to maize (presenter_transport_posix.cpp:56 maizeg_beside_argv0,
+   presenter_transport_win32.cpp:46): take the directory of argv0 and append the fixed
+   filename. find_last_of("/\\") handles both the POSIX '/' and the Windows '\\'
+   separator so one helper serves both hosts. An argv0 with no directory part yields a
+   bare "quesos.mzx" (the current working directory), the same degenerate case the
+   maizeg helper falls back on. The returned candidate is a path to try; whether it
+   exists is decided later by resolve_image_path. */
+static std::string quesos_rom_beside_argv0(const char *argv0) {
+	if (argv0 == nullptr || argv0[0] == '\0') {
+		return std::string("quesos.mzx");
+	}
+	std::string a(argv0);
+	std::string::size_type slash = a.find_last_of("/\\");
+	if (slash == std::string::npos) {
+		return std::string("quesos.mzx");
+	}
+	return a.substr(0, slash + 1) + "quesos.mzx";
 }
 
 /* maize-60: a guest environment KEY must match [A-Za-z_][A-Za-z0-9_]*. */
@@ -583,7 +632,7 @@ static bool load_config_file(const std::string &path,
 	maize::u_hword &console_width, maize::u_hword &console_height,
 	std::string &root_override, bool &show_perf,
 	bool &display_requested, std::string &input_source, bool &no_root,
-	bool &pause_on_halt, bool &vsync,
+	bool &pause_on_halt, bool &vsync, std::string &rom_config,
 	std::vector<mount_grant> &grants) {
 	std::ifstream f(path);
 	if (!f.is_open()) {
@@ -664,6 +713,15 @@ static bool load_config_file(const std::string &path,
 				continue;
 			}
 			root_override = val;
+		} else if (key == "rom") {
+			/* maize-360: the default guest-OS (ROM) image. Layers with the same
+			   precedence as every other scalar key (built-in < shared < per-binary
+			   < CLI --rom); an empty value is a no-op warning, matching root. */
+			if (val.empty()) {
+				std::cerr << "maize: ignoring config rom (empty ROM path) in " << path << std::endl;
+				continue;
+			}
+			rom_config = val;
 		} else if (key == "input") {
 			if (val != "sys" && val != "keyboard" && val != "console") {
 				std::cerr << "maize: ignoring config input '" << val
@@ -912,6 +970,9 @@ int main(int argc, char *argv[]) {
 	std::string per_binary_config_path;
 	bool no_root = false;            // --no-root: disable the default sandbox root
 	std::string root_override;       // --root <hostpath>: redirect the sandbox root
+	bool bare_mode = false;          // maize-360: --bare runs a raw image with no guest OS
+	std::string rom_override;        // maize-360: --rom <path> names the guest-OS image (CLI tier)
+	std::string rom_config;          // maize-360: rom= from ~/.maize/config, overlaid by the per-binary file
 #ifdef MAIZE_DISPLAY
 	/* maize-217 (Option A): the graphical `maize` binary opens a window by DEFAULT, so the
 	   binary name determines the mode (maizeg = the screen; maize = the terminal). A config
@@ -977,7 +1038,7 @@ int main(int argc, char *argv[]) {
 				display_scale, refresh_hz, fb_width, fb_height,
 				console_width, console_height,
 				root_override, show_perf, display_requested, input_source, no_root,
-				pause_on_halt, vsync, grants)) {
+				pause_on_halt, vsync, rom_config, grants)) {
 				return 2;   // diagnostic already printed by load_config_file
 			}
 			config_grant_count = grants.size();
@@ -1001,7 +1062,7 @@ int main(int argc, char *argv[]) {
 				display_scale, refresh_hz, fb_width, fb_height,
 				console_width, console_height,
 				root_override, show_perf, display_requested, input_source, no_root,
-				pause_on_halt, vsync, grants)) {
+				pause_on_halt, vsync, rom_config, grants)) {
 				return 2;   // diagnostic already printed by load_config_file
 			}
 			per_binary_grant_count = grants.size();
@@ -1211,6 +1272,39 @@ int main(int argc, char *argv[]) {
 			   deny-by-default filesystem (only explicit --mount grants). */
 			no_root = true;
 			++idx;
+			continue;
+		}
+		if (arg == "--bare") {
+			/* maize-360: run the next image directly, with no guest OS wrapped around
+			   it. This preserves the pre-360 grammar exactly (the image is required and
+			   argv[0] is the image as typed); only the DEFAULT changed to boot quesOS. */
+			bare_mode = true;
+			++idx;
+			continue;
+		}
+		if (arg == "--rom" || arg.rfind("--rom=", 0) == 0) {
+			/* maize-360: name the guest-OS (ROM) image explicitly, overriding the
+			   built-in default and any rom= config key. Mutually exclusive with --bare
+			   (checked after the loop, alongside the --jit/--jit-survey exclusion). */
+			std::string val;
+			if (arg.rfind("--rom=", 0) == 0) {   /* "--rom=" is 6 chars */
+				val = arg.substr(6);
+				++idx;
+			}
+			else if (idx + 1 < argc) {
+				val = argv[idx + 1];
+				idx += 2;
+			}
+			else {
+				std::cerr << "maize: option '--rom' requires a <path> argument" << std::endl;
+				print_usage(std::cerr);
+				return 2;
+			}
+			if (val.empty()) {
+				std::cerr << "maize: --rom requires a non-empty ROM path" << std::endl;
+				return 2;
+			}
+			rom_override = val;
 			continue;
 		}
 		if (arg == "--display") {
@@ -1504,10 +1598,68 @@ int main(int argc, char *argv[]) {
 	}
 #endif
 
-	/* No image token (bare invocation, or `--`/options with nothing after them). */
-	if (idx >= argc) {
+	/* maize-360: --rom and --bare express contradictory intents (wrap a guest OS around
+	   the image vs. run the image with no guest OS), so passing both is a startup error,
+	   in the same style as the --jit/--jit-survey exclusion below. Checked before any
+	   image is opened. */
+	if (bare_mode && !rom_override.empty()) {
+		std::cerr << "maize: --rom and --bare are mutually exclusive" << std::endl;
+		return 2;
+	}
+
+	/* maize-360: in --bare mode the pre-360 grammar stands: an image token is required,
+	   and the missing-image case is the same usage-and-exit-2 path as before. In the
+	   default (ROM-wrapping) grammar no image token is required: with no app named the
+	   ROM boots to quesOS's default init (session mode), so idx >= argc is legal there. */
+	if (bare_mode && idx >= argc) {
 		print_usage(std::cerr);
 		return 2;
+	}
+
+	/* maize-360: resolve the boot ROM up front for the default grammar so a missing ROM
+	   fails closed BEFORE any image is opened. --bare skips this entirely (it runs the
+	   image directly, resolved further below). ROM source precedence: --rom (CLI) beats a
+	   rom= config value (shared config overlaid by the per-binary file, already merged in
+	   rom_config), which beats the built-in default quesos.mzx beside the binary. */
+	std::string rom_resolved;
+	if (!bare_mode) {
+		std::string rom_source;
+		bool rom_is_builtin = false;
+		if (!rom_override.empty()) {
+			rom_source = rom_override;
+		} else if (!rom_config.empty()) {
+			rom_source = rom_config;
+		} else {
+			rom_source = quesos_rom_beside_argv0(argv[0]);
+			rom_is_builtin = true;
+		}
+		std::vector<std::string> rom_tried;
+		if (!resolve_image_path(rom_source, rom_resolved, rom_tried)) {
+			/* Fail closed. Name what was checked, where it came from, the three escape
+			   hatches, and the build-quesos scripts. This is likely the first error a
+			   fresh clone hits before quesOS has ever been built, so the message says
+			   how to fix it, not only what failed. */
+			std::cerr << "maize: no boot ROM found; quesOS is the default guest OS and none could be located." << std::endl;
+			std::cerr << "  checked: ";
+			for (std::size_t i = 0; i < rom_tried.size(); ++i) {
+				if (i) { std::cerr << ", "; }
+				std::cerr << "'" << rom_tried[i] << "'";
+			}
+			if (rom_is_builtin) {
+				std::cerr << " (quesos.mzx beside the maize binary)";
+			} else if (!rom_override.empty()) {
+				std::cerr << " (from --rom)";
+			} else {
+				std::cerr << " (from a rom= config key)";
+			}
+			std::cerr << std::endl;
+			std::cerr << "  to fix, do one of:" << std::endl;
+			std::cerr << "    - build quesOS: run scripts/build-quesos.sh (POSIX) or scripts/build-quesos.ps1 (Windows), then place quesos.mzx beside the binary or point rom= at it" << std::endl;
+			std::cerr << "    - pass --rom <path> to name a guest-OS image explicitly" << std::endl;
+			std::cerr << "    - set a rom= entry in ~/.maize/config" << std::endl;
+			std::cerr << "    - run a raw image with no guest OS: --bare <image>" << std::endl;
+			return 2;
+		}
 	}
 
 	/* maize-330: arm the JIT after the whole option loop so --jit-cache-mb and
@@ -1603,6 +1755,28 @@ int main(int argc, char *argv[]) {
 			std::error_code ec;
 			std::filesystem::create_directories(root / "home" / "user", ec);
 			std::filesystem::create_directories(root / "tmp", ec);
+			/* maize-360: ship a minimal system-wide /etc/profile as part of the
+			   skeleton. oksh's login path sources KSH_SYSTEM_PROFILE (/etc/profile,
+			   userland/oksh/sh.h) before $HOME/.profile, so a login shell reads this
+			   with no oksh change. Written once if absent, left alone thereafter (the
+			   create-if-missing, persist-thereafter rule the skeleton dirs already
+			   follow); ~/.profile stays user-owned and optional. Kept deliberately
+			   minimal: enough to prove it is sourced, not a general-purpose profile. */
+			std::filesystem::create_directories(root / "etc", ec);
+			{
+				std::filesystem::path profile = root / "etc" / "profile";
+				if (!std::filesystem::exists(profile, ec)) {
+					std::ofstream pf(profile);
+					if (pf.is_open()) {
+						pf << "# quesOS system-wide profile.\n"
+						   << "# Sourced by the login shell (oksh -l) before ~/.profile.\n"
+						   << "# Keep this minimal; put personal settings in ~/.profile.\n"
+						   << "export PATH=/bin\n"
+						   << "export QUESOS_ETC_PROFILE=sourced\n"
+						   << "PS1='quesos$ '\n";
+					}
+				}
+			}
 			if (!std::filesystem::is_directory(root, ec)) {
 				std::cerr << "maize: cannot create the sandbox root '"
 					<< root.string() << "'" << std::endl;
@@ -1637,33 +1811,49 @@ int main(int argc, char *argv[]) {
 	hostfs_tab.ops = hostfs_backend_ops_get();
 	hostfs_tab.cwd = cwd.c_str();   /* maize-132: base for relative-path resolution */
 
-	/* Guest argv: argv[0] = <image> as invoked; argv[1..] = the post-image tokens
-	   verbatim. The launcher/crt0 must NOT basename or rewrite argv[0]. */
-	std::string file_path {argv[idx]};
+	/* maize-360: assemble the guest argv and choose the image to load, per mode.
+	   --bare (pre-360 grammar): the loaded image is <image> as typed, and guest_argv is
+	   the image plus every post-image token, verbatim (argv[0] is the image as typed;
+	   the launcher/crt0 must NOT basename or rewrite it). Default (ROM-wrapping): the
+	   loaded image is the resolved quesOS ROM, and guest_argv is [ROM, app, app-args...]
+	   so quesOS's own argv[1..] is the worklist (a single app plus its args); with no app
+	   named (idx >= argc) guest_argv is just [ROM] and quesOS spawns its default init. */
+	std::string file_path;
 	std::vector<std::string> guest_argv;
-	guest_argv.push_back(file_path);
-	for (int k = idx + 1; k < argc; ++k) {
-		guest_argv.push_back(std::string(argv[k]));
-	}
-
-	/* maize-246: resolve a bare <image> name (exact, then .mzx, then .mzb) before
-	   opening. guest_argv[0] was already captured from the ORIGINAL file_path
-	   above, so argv[0] stays the typed name regardless of what resolves here;
-	   only resolved_path (the winning candidate) is fed to the loader. */
-	std::vector<std::string> tried_candidates;
 	std::string resolved_path;
-	if (!resolve_image_path(file_path, resolved_path, tried_candidates)) {
-		std::cerr << "maize: cannot open image '" << file_path << "'";
-		if (tried_candidates.size() > 1) {
-			std::cerr << " (tried ";
-			for (std::size_t i = 0; i < tried_candidates.size(); ++i) {
-				if (i) { std::cerr << ", "; }
-				std::cerr << "'" << tried_candidates[i] << "'";
-			}
-			std::cerr << ")";
+	if (bare_mode) {
+		file_path = argv[idx];
+		guest_argv.push_back(file_path);
+		for (int k = idx + 1; k < argc; ++k) {
+			guest_argv.push_back(std::string(argv[k]));
 		}
-		std::cerr << std::endl;
-		return 2;
+		/* maize-246: resolve a bare <image> name (exact, then .mzx, then .mzb) before
+		   opening. guest_argv[0] was captured from the ORIGINAL file_path above, so
+		   argv[0] stays the typed name regardless of what resolves here; only
+		   resolved_path (the winning candidate) is fed to the loader. */
+		std::vector<std::string> tried_candidates;
+		if (!resolve_image_path(file_path, resolved_path, tried_candidates)) {
+			std::cerr << "maize: cannot open image '" << file_path << "'";
+			if (tried_candidates.size() > 1) {
+				std::cerr << " (tried ";
+				for (std::size_t i = 0; i < tried_candidates.size(); ++i) {
+					if (i) { std::cerr << ", "; }
+					std::cerr << "'" << tried_candidates[i] << "'";
+				}
+				std::cerr << ")";
+			}
+			std::cerr << std::endl;
+			return 2;
+		}
+	} else {
+		/* rom_resolved was resolved (and fail-closed checked) up front. quesOS ignores
+		   argv[0], so the resolved ROM path serves as guest_argv[0]. */
+		file_path = rom_resolved;
+		resolved_path = rom_resolved;
+		guest_argv.push_back(rom_resolved);
+		for (int k = idx; k < argc; ++k) {
+			guest_argv.push_back(std::string(argv[k]));
+		}
 	}
 	std::ifstream fin(resolved_path, std::fstream::binary);
 

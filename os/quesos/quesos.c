@@ -789,6 +789,15 @@ static u64  g_arg_pack;                   /* total bytes packed into g_arg_strbu
 static char g_boot_envbuf[QUESOS_ENVBUF];   /* packed NUL-terminated K=V strings */
 static u64  g_boot_env_off[QUESOS_MAX_ENV]; /* byte offset of each string        */
 static int  g_boot_envc;                    /* copied entry count                */
+static u64  g_boot_env_pack;                /* maize-360: bytes packed into g_boot_envbuf */
+
+/* maize-360: the default-init program path, extracted from a reserved QUESOS_INIT
+ * entry in the launcher-forwarded environment (boot_env_extract_init). g_init_path_set
+ * is 0 when QUESOS_INIT is absent or empty, in which case an empty worklist falls back
+ * to the built-in login shell /bin/oksh.mzx -l. The extracted entry is stripped from
+ * the captured environment so it never seeds a spawned process's envp. */
+static char g_init_path[QUESOS_PATH_CAP];
+static int  g_init_path_set;
 
 /* maize-359: the forwarded boot argv, captured at quesos_main entry alongside the
  * launcher environment and under the same tear-down discipline. argv[1..argc) is
@@ -823,11 +832,121 @@ static void boot_env_capture(char **envp) {
         pack += len;
         ++g_boot_envc;
     }
+    g_boot_env_pack = pack;   /* maize-360: remember the fill mark for later appends */
     if (dropped > 0) {
         qos_puts("[quesos] warning: launcher environment truncated; dropped ");
         qos_put_u64((u64)dropped);
         qos_puts(" entries over the env caps\n");
     }
+}
+
+/* maize-360: does the environment entry `s` begin with "<key>="? */
+static int env_key_is(const char *s, const char *key) {
+    int i = 0;
+    while (key[i]) { if (s[i] != key[i]) { return 0; } ++i; }
+    return s[i] == '=';
+}
+
+/* maize-360: pull the reserved QUESOS_INIT key out of the captured launcher
+ * environment. Its value (the default-init program path) is copied into g_init_path
+ * and the whole entry is removed from g_boot_env_off, so marshal_boot_entry never
+ * seeds QUESOS_INIT into a spawned process's envp. Only a present AND non-empty value
+ * arms g_init_path_set; a bare "QUESOS_INIT=" is treated as unset (fall back to the
+ * login shell) but is still stripped. Only the first QUESOS_INIT is honored. */
+static void boot_env_extract_init(void) {
+    int i, j;
+    g_init_path[0] = 0;
+    g_init_path_set = 0;
+    for (i = 0; i < g_boot_envc; ++i) {
+        const char *e = g_boot_envbuf + g_boot_env_off[i];
+        if (env_key_is(e, "QUESOS_INIT")) {
+            const char *val = e + 11 + 1;   /* strlen("QUESOS_INIT") + the '=' */
+            int k = 0;
+            while (val[k] && k < QUESOS_PATH_CAP - 1) { g_init_path[k] = val[k]; ++k; }
+            g_init_path[k] = 0;
+            if (g_init_path[0] != 0) { g_init_path_set = 1; }
+            /* strip: shift the trailing offsets down over this entry. The packed
+             * bytes stay in g_boot_envbuf but become unreferenced. */
+            for (j = i; j < g_boot_envc - 1; ++j) { g_boot_env_off[j] = g_boot_env_off[j + 1]; }
+            --g_boot_envc;
+            return;
+        }
+    }
+}
+
+/* maize-360: append "KEY=VALUE" to the captured launcher environment, but ONLY when
+ * KEY is not already present, so an explicit -e/--env/~/.maize/env entry always wins
+ * (quesOS fills gaps, it never overrides). A cap overflow is a silent no-op: the five
+ * login defaults are tiny and boot_env_capture already warns about real truncation. */
+static void boot_env_add_default(const char *key, const char *val) {
+    int i;
+    u64 klen, vlen, total, k;
+    for (i = 0; i < g_boot_envc; ++i) {
+        if (env_key_is(g_boot_envbuf + g_boot_env_off[i], key)) { return; }
+    }
+    if (g_boot_envc >= QUESOS_MAX_ENV) { return; }
+    klen = qos_strlen(key);
+    vlen = qos_strlen(val);
+    total = klen + 1 + vlen + 1;   /* KEY '=' VAL '\0' */
+    if (g_boot_env_pack + total > QUESOS_ENVBUF) { return; }
+    for (k = 0; k < klen; ++k) { g_boot_envbuf[g_boot_env_pack + k] = key[k]; }
+    g_boot_envbuf[g_boot_env_pack + klen] = '=';
+    for (k = 0; k < vlen; ++k) { g_boot_envbuf[g_boot_env_pack + klen + 1 + k] = val[k]; }
+    g_boot_envbuf[g_boot_env_pack + klen + 1 + vlen] = 0;
+    g_boot_env_off[g_boot_envc] = g_boot_env_pack;
+    g_boot_env_pack += total;
+    ++g_boot_envc;
+}
+
+/* maize-360: gap-fill the five default login-environment keys into the captured
+ * launcher environment. Applied to every top-level worklist process (marshal_boot_entry
+ * seeds the same captured env into each), matching this codebase's single-shared-env
+ * model. Each key is filled only when absent (see boot_env_add_default), so an operator
+ * -e/--env/~/.maize/env value passes through untouched. LOGNAME mirrors USER. */
+static void boot_env_add_login_defaults(void) {
+    boot_env_add_default("HOME", "/home/user");
+    boot_env_add_default("USER", "user");
+    boot_env_add_default("LOGNAME", "user");
+    boot_env_add_default("SHELL", "/bin/oksh.mzx");
+    boot_env_add_default("PATH", "/bin");
+}
+
+/* maize-360: on an empty boot worklist, synthesize one worklist entry for the default
+ * init instead of powering off. QUESOS_INIT (present and non-empty) names the program
+ * and receives no forced arguments; unset falls back to the login shell
+ * /bin/oksh.mzx -l. The tokens are packed into the same boot-arg capture buffers a
+ * normal boot fills, so the existing spawn + marshal_boot_entry path launches the init
+ * unchanged. Called only when boot_args_capture yielded zero entries, so the buffers
+ * are empty and packing starts at offset 0. */
+static void synthesize_default_init(void) {
+    const char *tok[2];
+    int ntok, t, noff = 0;
+    u64 pack = 0;
+    if (g_init_path_set) {
+        tok[0] = g_init_path;
+        ntok = 1;
+    } else {
+        tok[0] = "/bin/oksh.mzx";
+        tok[1] = "-l";
+        ntok = 2;
+    }
+    for (t = 0; t < ntok; ++t) {
+        const char *src = tok[t];
+        u64 len = qos_strlen(src) + 1, k;
+        for (k = 0; k < len; ++k) { g_boot_argstrbuf[pack + k] = src[k]; }
+        g_boot_arg_off[noff] = pack;
+        pack += len;
+        ++noff;
+    }
+    {
+        const char *p0 = g_boot_argstrbuf + g_boot_arg_off[0];
+        int q;
+        for (q = 0; q < QUESOS_PATH_CAP - 1 && p0[q]; ++q) { g_pathbuf[0][q] = p0[q]; }
+        g_pathbuf[0][q] = 0;
+    }
+    g_boot_entry_start[0] = 0;
+    g_boot_entry_argc[0] = ntok;
+    g_worklist_count = 1;
 }
 
 /* maize-359: is this token the `--` worklist separator (exactly two dashes)? A `-`,
@@ -3441,14 +3560,24 @@ void quesos_main(long argc, char **argv, char **envp) {
      * recipe crt0 uses. */
     boot_env_capture(envp);
 
+    /* maize-360: pull the reserved QUESOS_INIT key out of the captured environment
+     * (before it can seed any spawned process) and gap-fill the five default login-env
+     * keys. Both run here, alongside boot_env_capture and before marshal_boot_entry is
+     * first called from the spawn loop, so every top-level worklist process sees the
+     * completed environment. */
+    boot_env_extract_init();
+    boot_env_add_login_defaults();
+
     /* maize-359: capture the forwarded boot argv, split on `--` into worklist entries
      * (program path + its args). Same timing rule as boot_env_capture: the source
      * strings are gone once user stacks are mapped, so copy them out first. */
     boot_args_capture(argc, argv);
 
+    /* maize-360: an empty worklist is no longer a power-off. Spawn the default init
+     * (QUESOS_INIT if set, else the login shell /bin/oksh.mzx -l) as a single synthetic
+     * worklist entry, so `maize` with no app named boots to an interactive session. */
     if (g_worklist_count == 0) {
-        qos_puts("[quesos] no programs on the exec worklist; powering off\n");
-        quesos_poweroff();
+        synthesize_default_init();
     }
 
     ofd_init();   /* allocate the shared stdio open-file descriptions (fd 0/1/2) */
