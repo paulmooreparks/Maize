@@ -231,16 +231,22 @@ static void print_usage(std::ostream &out) {
 		"      --jit-survey           report basic-block shape and reuse statistics\n"
 		"                             at exit (block lengths, hot-block coverage)\n"
 		"      --jit                  compile hot code paths to native code for faster\n"
-		"                             execution (prints a summary report at exit)\n"
-		"      --jit-check            run --jit with every compiled block verified\n"
+		"                             execution; on by default, so this flag is an\n"
+		"                             accepted no-op kept for compatibility\n"
+		"      --no-jit               turn the JIT off and run fully interpreted\n"
+		"      --jit-report           print the JIT run report at exit (blocks compiled,\n"
+		"                             covered fraction, invalidations); off by default\n"
+		"      --jit-check            run the JIT with every compiled block verified\n"
 		"                             against the interpreter (slow; for testing)\n"
-		"      --jit-cache-mb <N>     size of the --jit code cache in MiB (default 64)\n"
+		"      --jit-cache-mb <N>     size of the JIT code cache in MiB (default 64)\n"
 		"      --jit-threshold <N>    executions before a code path is compiled\n"
 		"                             (default 50)\n"
 		"      --profile-map <path>   symbol map for --profile (write one at link time\n"
 		"                             with `mzld --map <path>`)\n"
 		"      --no-root              disable the sandbox root; the guest starts with\n"
 		"                             an empty filesystem (only explicit --mount grants)\n"
+		"      --verbose              print extra informational host diagnostics (currently\n"
+		"                             the graphical-registration/presenter-reattach notice)\n"
 		"  --                         end options; the next token is <image>\n"
 		"\n"
 		"The program's environment is built only from -e/--env, --env-file, and the\n"
@@ -256,7 +262,7 @@ static void print_usage(std::ostream &out) {
 		"                    line (blank and #-comment lines ignored). Keys are the long\n"
 		"                    flag names without dashes: display-scale, refresh-hz,\n"
 		"                    resolution, console-size, root, rom, show-perf, pause-on-halt,\n"
-		"                    vsync, display, input, no-root. (the console 'maize' ignores\n"
+		"                    vsync, display, input, no-root, jit. (the console 'maize' ignores\n"
 		"                    the graphical-only keys.) console-size is <cols>x<rows> (e.g. 80x25).\n"
 		"                    rom names the default guest-OS image (the same value --rom\n"
 		"                    would pass). Booleans accept true/false, 1/0, or yes/no. A\n"
@@ -632,7 +638,7 @@ static bool load_config_file(const std::string &path,
 	maize::u_hword &console_width, maize::u_hword &console_height,
 	std::string &root_override, bool &show_perf,
 	bool &display_requested, std::string &input_source, bool &no_root,
-	bool &pause_on_halt, bool &vsync, std::string &rom_config,
+	bool &pause_on_halt, bool &vsync, std::string &rom_config, bool &jit_enabled,
 	std::vector<mount_grant> &grants) {
 	std::ifstream f(path);
 	if (!f.is_open()) {
@@ -737,6 +743,14 @@ static bool load_config_file(const std::string &path,
 				continue;
 			}
 			show_perf = b;
+		} else if (key == "jit") {
+			bool b = false;
+			if (!parse_config_bool(val, b)) {
+				std::cerr << "maize: ignoring config jit '" << val
+					<< "' (expected true/false, 1/0, or yes/no) in " << path << std::endl;
+				continue;
+			}
+			jit_enabled = b;
 		} else if (key == "pause-on-halt") {
 			bool b = false;
 			if (!parse_config_bool(val, b)) {
@@ -984,10 +998,12 @@ int main(int argc, char *argv[]) {
 	bool console_dump = false;       // --console-dump: bind the text console headlessly and
 	                                 // dump its grid at exit (headless CI self-check channel)
 	bool show_perf = false;          // --show-perf: draw guest MIPS + FPS in the window corner
+	bool verbose = false;            // --verbose: print extra informational host diagnostics (maize-371)
 	bool profile_enabled = false;    // --profile[=N]: sample the guest PC every N instructions (maize-261)
 	bool jit_survey_enabled = false; // --jit-survey: block-shape survey report at exit (maize-324, JIT J0)
-	bool jit_enabled = false;        // --jit: tier-1 template JIT (maize-330, JIT J1)
+	bool jit_enabled = true;         // tier-1 template JIT on by default (maize-330 JIT J1; default-on maize-371); --no-jit turns it off
 	bool jit_check_enabled = false;  // --jit-check: differential-verify every compiled block
+	bool jit_report_requested = false; // --jit-report: print the JIT run report at exit (off by default; maize-371)
 	unsigned long long jit_cache_mb = 0;   // --jit-cache-mb (0 = default)
 	unsigned long long jit_threshold = 0;  // --jit-threshold (0 = default)
 	std::vector<std::pair<maize::u_word, std::string>> profile_map;   // --profile-map rows, sorted by address
@@ -1038,7 +1054,7 @@ int main(int argc, char *argv[]) {
 				display_scale, refresh_hz, fb_width, fb_height,
 				console_width, console_height,
 				root_override, show_perf, display_requested, input_source, no_root,
-				pause_on_halt, vsync, rom_config, grants)) {
+				pause_on_halt, vsync, rom_config, jit_enabled, grants)) {
 				return 2;   // diagnostic already printed by load_config_file
 			}
 			config_grant_count = grants.size();
@@ -1062,7 +1078,7 @@ int main(int argc, char *argv[]) {
 				display_scale, refresh_hz, fb_width, fb_height,
 				console_width, console_height,
 				root_override, show_perf, display_requested, input_source, no_root,
-				pause_on_halt, vsync, rom_config, grants)) {
+				pause_on_halt, vsync, rom_config, jit_enabled, grants)) {
 				return 2;   // diagnostic already printed by load_config_file
 			}
 			per_binary_grant_count = grants.size();
@@ -1371,13 +1387,34 @@ int main(int argc, char *argv[]) {
 			++idx;
 			continue;
 		}
-		if (arg == "--jit" || arg == "--jit-check") {
-			/* maize-330 (JIT J1): compile hot Bare-mode code paths. --jit-check runs the
-			   same tier with every compiled block differentially verified against the
-			   interpreter. Enabled after the argument loop so --jit-cache-mb and
-			   --jit-threshold apply regardless of flag order. */
-			jit_enabled = true;
-			if (arg == "--jit-check") { jit_check_enabled = true; }
+		if (arg == "--jit" || arg == "--jit-check" || arg == "--no-jit") {
+			/* maize-330 (JIT J1): compile hot Bare-mode code paths. maize-371 makes the
+			   JIT default-on, so --jit is now a harmless no-op alias kept for backward
+			   compatibility (wrapper scripts pass it explicitly); --no-jit turns the JIT
+			   off, and --jit-check runs the same tier with every compiled block
+			   differentially verified against the interpreter. Armed after the argument
+			   loop so --jit-cache-mb and --jit-threshold apply regardless of flag order. */
+			if (arg == "--no-jit") {
+				jit_enabled = false;
+			} else {
+				jit_enabled = true;
+				if (arg == "--jit-check") { jit_check_enabled = true; }
+			}
+			++idx;
+			continue;
+		}
+		if (arg == "--jit-report") {
+			/* maize-371: opt in to the JIT run report (blocks compiled, covered fraction,
+			   invalidations) at exit. Decoupled from jit_enabled so a default-on run stays
+			   quiet; the report prints only when the JIT is also active. */
+			jit_report_requested = true;
+			++idx;
+			continue;
+		}
+		if (arg == "--verbose") {
+			/* maize-371: print extra informational host diagnostics (currently the
+			   graphical-registration/presenter-reattach notice), off by default. */
+			verbose = true;
 			++idx;
 			continue;
 		}
@@ -1678,6 +1715,13 @@ int main(int argc, char *argv[]) {
 	   --jit-threshold apply regardless of flag order. --jit-survey measures the
 	   interpreter's block shape and --profile samples interpreter PCs, so both force
 	   the interpreted tier. */
+	/* maize-371: --jit-check needs the JIT active, so a later --no-jit (or a config
+	   jit=false key) that turned the JIT off contradicts it. Hard usage error, not a
+	   silent downgrade, mirroring the --jit/--jit-survey mutual-exclusivity pattern below. */
+	if (jit_check_enabled && !jit_enabled) {
+		std::cerr << "maize: --jit-check and --no-jit are mutually exclusive" << std::endl;
+		return 2;
+	}
 	if (jit_enabled) {
 		if (jit_survey_enabled) {
 			std::cerr << "maize: --jit and --jit-survey are mutually exclusive" << std::endl;
@@ -2093,9 +2137,12 @@ int main(int argc, char *argv[]) {
 			/* Crash/signal teardown extends host_tty's restore()/signal_restore() via this hook
 			   (Decision 9403); no second signal handler is registered. */
 			maize::host_tty::set_teardown_hook(presenter_transport::teardown_if_active);
-			std::cerr << "maize: a graphical registration will open a presenter window; if it closes, "
-			             "it reopens automatically, or run `maizeg --presenter " << session_id
-			          << "` to reattach immediately." << std::endl;
+			/* maize-371: purely informational happy-path notice; quiet unless --verbose. */
+			if (verbose) {
+				std::cerr << "maize: a graphical registration will open a presenter window; if it closes, "
+				             "it reopens automatically, or run `maizeg --presenter " << session_id
+				          << "` to reattach immediately." << std::endl;
+			}
 		} else {
 			/* Segment creation failed (e.g. no shared-memory support): fall back to the
 			   maize-221 display-less behavior so a graphical guest still degrades cleanly. */
@@ -2167,10 +2214,12 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* maize-330: the JIT run report (blocks compiled, covered fraction, invalidations).
-	   Suppressed under MAIZE_JIT_QUIET so the test harnesses can run every fixture under
-	   --jit without the report polluting a stderr assertion or tripping PowerShell's
-	   strict native-stderr handling. */
-	if (jit_enabled) {
+	   maize-371: opt-in and off by default now that the JIT is default-on, so a plain run
+	   stays quiet; it prints only when --jit-report is passed AND the JIT is active. Still
+	   suppressed under MAIZE_JIT_QUIET as a defense-in-depth layer so the test harnesses can
+	   run every fixture under --jit without the report polluting a stderr assertion or
+	   tripping PowerShell's strict native-stderr handling. */
+	if (jit_enabled && jit_report_requested) {
 		const char* quiet = std::getenv("MAIZE_JIT_QUIET");
 		if (quiet == nullptr || quiet[0] == '\0') {
 			cpu::jit_report(std::cerr);

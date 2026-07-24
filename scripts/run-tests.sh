@@ -211,6 +211,18 @@ if [ -n "${MAIZE_JIT:-}" ]; then
     chmod +x "$JIT_WRAP"
     MAIZE_EXE="$JIT_WRAP"
     echo "run-tests.sh: running maize under ${JIT_FLAG} (threshold ${MAIZE_JIT_THRESHOLD:-50})"
+else
+    # maize-371: the binary now defaults to JIT-on, so the baseline (no MAIZE_JIT) leg must
+    # pass --no-jit explicitly to keep exercising the pure interpreter and stay distinct from
+    # the MAIZE_JIT=1/check legs. Layers on top of the --bare wrapper above, exactly as the
+    # JIT_WRAP branch does. Keep in sync with run-tests.ps1 (the Windows twin).
+    NOJIT_WRAP="${TEST_RUN_DIR}/maize-nojit-wrap.sh"
+    {
+        echo '#!/bin/sh'
+        echo "exec \"${MAIZE_EXE}\" --no-jit \"\$@\""
+    } > "$NOJIT_WRAP"
+    chmod +x "$NOJIT_WRAP"
+    MAIZE_EXE="$NOJIT_WRAP"
 fi
 
 # --- Per-test execution -------------------------------------------------------------

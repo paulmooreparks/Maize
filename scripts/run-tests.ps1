@@ -267,6 +267,14 @@ if ($env:MAIZE_JIT) {
         Set-Content -Path $jitWrap -Encoding ascii
     $MaizeExe = $jitWrap
     Write-Host "run-tests.ps1: running maize under $jitFlag (threshold $jitThreshold)"
+} else {
+    # maize-371: the binary now defaults to JIT-on, so the baseline (no MAIZE_JIT) leg must
+    # pass --no-jit explicitly to keep exercising the pure interpreter and stay distinct from
+    # the MAIZE_JIT=1/check legs. Mirrors the single-wrapper style of the JIT branch above,
+    # baking --bare and --no-jit straight off $RealMaizeExe. Keep in sync with run-tests.sh.
+    $noJitWrap = Join-Path $TestRunDir 'maize-nojit-wrap.cmd'
+    "@echo off`r`n`"$RealMaizeExe`" --bare --no-jit %*" | Set-Content -Path $noJitWrap -Encoding ascii
+    $MaizeExe = $noJitWrap
 }
 
 # --- Per-test execution -------------------------------------------------------------
