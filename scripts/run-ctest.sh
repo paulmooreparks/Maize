@@ -1380,6 +1380,15 @@ run_exit_status_test "abort" 134
 # simpljmp before emit, so a regression in the hlt-guard hunk crashes this at
 # compile time rather than passing silently. Proves qbe -t maize parses/lowers hlt.
 run_exit_status_test "noreturn" 57
+# maize-350: kilo's shared geometric-growth arithmetic (kilo_next_cap, a pure
+# function) and its checked allocation wrappers. kilo_next_cap prints its growth
+# progression over a fixed input sequence covering the 64-row and 4096-byte floors.
+# kilo_xalloc_die forces a NULL allocation under KILO_XALLOC_TESTING (no real
+# memory exhaustion) and is driven two ways off the one compiled binary: the exact
+# die() message on stdout, and the process exit status 1.
+run_ctest "kilo_next_cap"
+run_ctest "kilo_xalloc_die"
+run_exit_status_test "kilo_xalloc_die" 1
 run_args_test
 # maize-246 host-launcher bare-image-name resolution (exact / .mzx / .mzb).
 run_image_resolution
@@ -3674,6 +3683,28 @@ run_userland94_fixtures() {
             echo "[PASS] userland94_kilo_kill (raw-child pty launch reaps without hanging)"
         else
             echo "[FAIL] userland94_kilo_kill"
+            printf '%s\n' "$out" | sed 's/^/          | /'
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+
+        # maize-350 (AC4/AC5): largefile mode synthesizes a ~380 KB highlighted file into the
+        # /rw mount, launches `kilo /rw/big.c`, asserts a clean paint, byte-compares an
+        # open/edit/save round-trip, and measures the wall-clock load-and-first-paint time. The
+        # LOAD_MS number is recorded (echoed into the PASS line here and captured for the AC5
+        # before/after comparison), NOT gated on a hardcoded threshold (decision 9960), since
+        # cross-machine timing variance makes a fixed CI percentage unreliable.
+        rm -f "${rwdir}/big.c"
+        TOTAL=$((TOTAL + 1))
+        set +e
+        out=$(python3 "${REPO_ROOT}/scripts/pty_oksh_kilo_check.py" \
+            "$MAIZE" "$quesos" "$bindir" "$rwdir" largefile 2>&1)
+        rc=$?
+        set -e
+        if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qF "pty-kilo: PASS"; then
+            lm=$(printf '%s\n' "$out" | grep -oE 'LOAD_MS [0-9]+' | awk '{print $2}')
+            echo "[PASS] userland94_kilo_largefile (380KB highlighted load + edit/save round-trip; LOAD_MS=${lm})"
+        else
+            echo "[FAIL] userland94_kilo_largefile"
             printf '%s\n' "$out" | sed 's/^/          | /'
             FAIL_COUNT=$((FAIL_COUNT + 1))
         fi

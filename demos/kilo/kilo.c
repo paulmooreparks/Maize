@@ -57,6 +57,17 @@
 #include <syscall.h>
 #include <dirent.h>
 
+/* maize-350: checked allocation wrappers (xmalloc/xrealloc/xstrdup, which
+ * die() on a NULL return) and the shared kilo_next_cap() growth helper. */
+#include "kilo_xalloc.h"
+
+/* Geometric-growth floors (maize-350). E.row starts at 64 rows, which covers
+ * most small files without a second growth step at a few KB of cost; abuf
+ * starts at 4096 bytes, roughly a single highlighted frame's escape-sequence
+ * overhead, so most frames need zero or one doubling. */
+#define KILO_ROW_CAP_FLOOR 64
+#define KILO_ABUF_CAP_FLOOR 4096
+
 /* Syntax highlight types */
 #define HL_NORMAL 0
 #define HL_NONPRINT 1
@@ -104,6 +115,7 @@ struct editorConfig {
     int screenrows; /* Number of rows that we can show */
     int screencols; /* Number of cols that we can show */
     int numrows;    /* Number of rows */
+    int rowcap;     /* Allocated capacity of E.row, in rows (maize-350). */
     int rawmode;    /* Is terminal raw mode enabled? */
     erow *row;      /* Rows */
     int dirty;      /* File modified but not saved. */
@@ -437,7 +449,7 @@ int editorRowHasOpenComment(erow *row) {
 /* Set every byte of row->hl (that corresponds to every character in the line)
  * to the right syntax highlight type (HL_* defines). */
 void editorUpdateSyntax(erow *row) {
-    row->hl = realloc(row->hl,row->rsize);
+    row->hl = xrealloc(row->hl,row->rsize);
     memset(row->hl,HL_NORMAL,row->rsize);
 
     if (E.syntax == NULL) return; /* No syntax, everything is HL_NORMAL. */
@@ -642,7 +654,7 @@ void editorUpdateRow(erow *row) {
         exit(1);
     }
 
-    row->render = malloc(row->size + tabs*8 + nonprint*9 + 1);
+    row->render = xmalloc(row->size + tabs*8 + nonprint*9 + 1);
     idx = 0;
     for (j = 0; j < row->size; j++) {
         if (row->chars[j] == TAB) {
@@ -663,13 +675,19 @@ void editorUpdateRow(erow *row) {
  * if required. */
 void editorInsertRow(int at, char *s, size_t len) {
     if (at > E.numrows) return;
-    E.row = realloc(E.row,sizeof(erow)*(E.numrows+1));
+    /* Grow E.row geometrically (maize-350): only reallocate when the row we
+     * are about to add would exceed the tracked capacity, doubling from the
+     * 64-row floor, instead of a realloc on every single row insert. */
+    if (E.numrows + 1 > E.rowcap) {
+        E.rowcap = kilo_next_cap(E.rowcap, E.numrows + 1, KILO_ROW_CAP_FLOOR);
+        E.row = xrealloc(E.row, sizeof(erow) * E.rowcap);
+    }
     if (at != E.numrows) {
         memmove(E.row+at+1,E.row+at,sizeof(E.row[0])*(E.numrows-at));
         for (int j = at+1; j <= E.numrows; j++) E.row[j].idx++;
     }
     E.row[at].size = len;
-    E.row[at].chars = malloc(len+1);
+    E.row[at].chars = xmalloc(len+1);
     memcpy(E.row[at].chars,s,len+1);
     E.row[at].hl = NULL;
     E.row[at].hl_oc = 0;
@@ -717,7 +735,7 @@ char *editorRowsToString(int *buflen) {
     *buflen = totlen;
     totlen++; /* Also make space for nulterm */
 
-    p = buf = malloc(totlen);
+    p = buf = xmalloc(totlen);
     for (j = 0; j < E.numrows; j++) {
         memcpy(p,E.row[j].chars,E.row[j].size);
         p += E.row[j].size;
@@ -736,14 +754,14 @@ void editorRowInsertChar(erow *row, int at, int c) {
          * current length by more than a single character. */
         int padlen = at-row->size;
         /* In the next line +2 means: new char and null term. */
-        row->chars = realloc(row->chars,row->size+padlen+2);
+        row->chars = xrealloc(row->chars,row->size+padlen+2);
         memset(row->chars+row->size,' ',padlen);
         row->chars[row->size+padlen+1] = '\0';
         row->size += padlen+1;
     } else {
         /* If we are in the middle of the string just make space for 1 new
          * char plus the (already existing) null term. */
-        row->chars = realloc(row->chars,row->size+2);
+        row->chars = xrealloc(row->chars,row->size+2);
         memmove(row->chars+at+1,row->chars+at,row->size-at+1);
         row->size++;
     }
@@ -754,7 +772,7 @@ void editorRowInsertChar(erow *row, int at, int c) {
 
 /* Append the string 's' at the end of a row */
 void editorRowAppendString(erow *row, char *s, size_t len) {
-    row->chars = realloc(row->chars,row->size+len+1);
+    row->chars = xrealloc(row->chars,row->size+len+1);
     memcpy(row->chars+row->size,s,len);
     row->size += len;
     row->chars[row->size] = '\0';
@@ -872,7 +890,7 @@ int editorOpen(char *filename) {
     E.dirty = 0;
     free(E.filename);
     size_t fnlen = strlen(filename)+1;
-    E.filename = malloc(fnlen);
+    E.filename = xmalloc(fnlen);
     memcpy(E.filename,filename,fnlen);
 
     fp = fopen(filename,"r");
@@ -909,11 +927,7 @@ int editorSave(int fd) {
             editorSetStatusMessage("Save aborted");
             return 1;
         }
-        E.filename = strdup(path);
-        if (E.filename == NULL) {
-            editorSetStatusMessage("Can't save! Out of memory");
-            return 1;
-        }
+        E.filename = xstrdup(path);
         E.syntax = NULL;
         editorSelectSyntaxHighlight(E.filename);
     }
@@ -953,16 +967,26 @@ writeerr:
 struct abuf {
     char *b;
     int len;
+    int cap;   /* Allocated capacity of ab->b, in bytes (maize-350). */
 };
 
-#define ABUF_INIT {NULL,0}
+#define ABUF_INIT {NULL,0,0}
 
 void abAppend(struct abuf *ab, const char *s, int len) {
-    char *new = realloc(ab->b,ab->len+len);
-
-    if (new == NULL) return;
-    memcpy(new+ab->len,s,len);
-    ab->b = new;
+    /* Grow geometrically (maize-350): reallocate only when the append would
+     * exceed the tracked capacity, doubling from the 4096-byte floor, rather
+     * than a realloc on every single append. A highlighted frame paints with
+     * up to hundreds of abAppend calls (one per color transition plus one per
+     * character); this amortizes them to O(log frame-size) reallocs. Because
+     * xrealloc dies on failure, the old silent-truncation guard (which just
+     * dropped the append on a NULL realloc, the exact unchecked-allocation
+     * bug this card closes) is gone. */
+    int need = ab->len + len;
+    if (need > ab->cap) {
+        ab->cap = kilo_next_cap(ab->cap, need, KILO_ABUF_CAP_FLOOR);
+        ab->b = xrealloc(ab->b, ab->cap);
+    }
+    memcpy(ab->b + ab->len, s, len);
     ab->len += len;
 }
 
@@ -1186,7 +1210,7 @@ void editorFind(int fd) {
                 last_match = current;
                 if (row->hl) {
                     saved_hl_line = current;
-                    saved_hl = malloc(row->rsize);
+                    saved_hl = xmalloc(row->rsize);
                     memcpy(saved_hl,row->hl,row->rsize);
                     memset(row->hl+match_offset,HL_MATCH,qlen);
                 }
@@ -1251,7 +1275,7 @@ int editorPrompt(int fd, const char *prompt, char *buf, size_t bufsize) {
  * ESC returns to the editor with the buffer untouched. */
 
 typedef struct {
-    char *name;    /* malloc'd via strdup(3), toolchain/rt/string.h:40 */
+    char *name;    /* heap-owned, via xstrdup; freed in editorFilePickerFree */
     int   is_dir;  /* from fstat's S_ISDIR -- NOT d_type, see decision below */
     long  size;    /* st_size; meaningful only when !is_dir */
 } PickerEntry;
@@ -1315,7 +1339,7 @@ static int editorFilePickerScan(const char *dir, PickerEntry **out_entries,
     DIR *d = opendir(dir);
     if (!d) return -1;
 
-    PickerEntry *entries = malloc(sizeof(PickerEntry) * KILO_PICKER_MAX_ENTRIES);
+    PickerEntry *entries = xmalloc(sizeof(PickerEntry) * KILO_PICKER_MAX_ENTRIES);
     int n = 0, truncated = 0;
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
@@ -1339,7 +1363,7 @@ static int editorFilePickerScan(const char *dir, PickerEntry **out_entries,
             close(pf);
         }
 
-        entries[n].name = strdup(de->d_name);
+        entries[n].name = xstrdup(de->d_name);
         entries[n].is_dir = is_dir;
         entries[n].size = size;
         n++;
@@ -1555,6 +1579,7 @@ void editorOpenPrompt(int fd) {
     free(E.row);
     E.row = NULL;
     E.numrows = 0;
+    E.rowcap = 0;   /* maize-350: the freed E.row's capacity is gone too. */
     E.cx = E.cy = 0;
     E.rowoff = E.coloff = 0;
 
@@ -1778,6 +1803,7 @@ void initEditor(void) {
     E.rowoff = 0;
     E.coloff = 0;
     E.numrows = 0;
+    E.rowcap = 0;   /* maize-350: no rows allocated yet. */
     E.row = NULL;
     E.dirty = 0;
     E.filename = NULL;
