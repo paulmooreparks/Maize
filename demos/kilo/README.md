@@ -62,6 +62,35 @@ quits:
     printf '\035\030\235\065\021\030\023\045\065\041\027\046\022\064\056\034\035\020' \
         | maize --console-dump --mount "<dir>=/work:rw" demos/kilo/kilo.mzx /work/file.c
 
+### Two input contracts: Set-1 scancodes vs raw bytes (maize-352)
+
+`--console-dump` has two distinct stdin input contracts, one per device, and which
+one applies depends on how the guest reads its console:
+
+- `--console-dump` ALONE feeds Set-1 SCANCODES, decoded through `text_console`'s
+  keymap. This is the path the smoke runs above use: a bare guest that reads via
+  `SYS $00` (kilo's own raw-mode read on the bare console engine).
+- `--console-dump --input=console` feeds RAW ALREADY-DECODED bytes: literal ASCII
+  and control codes (`\r` for Enter, `0x11` for Ctrl-Q), not scancodes. Add
+  `--input=console` when the guest is a quesOS world, which reads its console
+  through port I/O (`IN $00/$01`) rather than `SYS $00`. That wiring also makes the
+  console readiness IRQ (vector 33) fire, so a quesOS process that parks waiting for
+  a not-yet-arrived keystroke wakes when the byte lands. Without `--input=console`,
+  a quesOS reader that genuinely blocks never wakes under `--console-dump`.
+
+Injecting a lone Ctrl-Q into a quesOS-hosted kilo (clean buffer, so it quits at
+once) then exiting the shell, all as one pre-buffered payload:
+
+    printf 'kilo /rw/t.txt\r\021exit\r' \
+        | maize --console-dump --input=console --no-root \
+            --mount "<bin>=/bin:ro" --mount "<dir>=/rw:rw" quesos.mzx /bin/oksh.mzx
+
+The run-ctest `userland94_console_dump_inject_oksh` / `_kilo` fixtures automate
+exactly this. The dumped grid is the RENDERED screen (printable glyphs; control
+sequences already interpreted), so kilo's alt-screen-exit sequence `\x1b[?1049l` is
+not literal text in the dump; the returned oksh prompt and a clean reap are the
+observable proof that Ctrl-Q quit the editor.
+
 ## The terminal contract kilo established
 
 kilo is the first program to exercise the console's non-cooked path end to end.

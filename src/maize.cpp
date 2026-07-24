@@ -1320,7 +1320,19 @@ int main(int argc, char *argv[]) {
 			   no SDL dependency), sourcing keystrokes from host stdin as Set-1 scancodes,
 			   and dumps the rendered grid as text to stdout at exit. The headless
 			   run-ctest self-check uses this to verify VT output + the keymap + cooked/raw
-			   delivery; a normal run (no flag) is completely unaffected. */
+			   delivery; a normal run (no flag) is completely unaffected.
+
+			   maize-352 input-contract note: this Set-1-scancode input path is for a BARE
+			   guest that reads via SYS $00 (text_console decodes make-codes through the
+			   keymap). A quesOS world does NOT read that way: it reads its console through
+			   port I/O (IN $00/$01 -> devices::console_device), whose data port is a raw
+			   read() passthrough. To inject input into a quesOS world under --console-dump,
+			   ALSO pass --input=console: that wires console_device as the CPU active input so
+			   its readiness IRQ (vector 33) fires and a parked quesOS reader wakes, and the
+			   payload is then RAW already-decoded bytes on stdin (e.g. 0x11 for Ctrl-Q, the
+			   literal "ls\n" for a command), NOT Set-1 scancodes. The two input contracts are
+			   additive, one per device; see the input_source=="console" wiring below and the
+			   run-ctest userland94_console_dump_inject_* fixtures. */
 			console_dump = true;
 			++idx;
 			continue;
@@ -2016,6 +2028,15 @@ int main(int argc, char *argv[]) {
 			: devices::text_console::input_mode::STDIN);
 		sys::set_console(&console_dev);
 	}
+	/* maize-352: this block binds text_console (console_dev) for OUTPUT + the bare-guest
+	   Set-1-scancode SYS $00 input path only; it never touches active_input / stdin_inj. So
+	   --console-dump composes with --input=console: the input_source=="console" branch above
+	   already wired console_device (the port device) as the active input and its readiness IRQ
+	   33, unconditionally with respect to console_dump, and this block leaves that intact. That
+	   composition is exactly how a quesOS world gets injected input under --console-dump (raw
+	   bytes through the console ports), while a --console-dump-ALONE bare guest keeps the
+	   Set-1-scancode contract with the console IRQ untouched. See the --console-dump flag-parse
+	   comment above and the run-ctest userland94_console_dump_inject_* fixtures. */
 
 	/* maize-238 (Branch A, OQ 9198 ratified; decision 9285): the DEFAULT invocation (no
 	   --input flag, plain host stdio -- not a windowed console and not --console-dump) migrates

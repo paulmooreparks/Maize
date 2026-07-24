@@ -3801,6 +3801,95 @@ run_userland94_fixtures() {
         echo "[FAIL] userland94_pwd"; printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
+
+    # maize-352: headless --console-dump input injection INTO a quesOS world. The pty fixtures
+    # above (userland94_oksh_keystrokes / userland94_kilo_*) drive keystrokes through a real
+    # pseudo terminal on the DEFAULT input path; those are POSIX-python-only and SKIP on Windows
+    # and on any host whose python3 lacks a working pty/termios. This pair drives input through
+    # the headless, deterministic --console-dump channel with --input=console instead, so it runs
+    # on EVERY leg (a plain pipe, no pty, no python).
+    #
+    # WHY --input=console (and why no VM code change): quesOS reads its console through port I/O
+    # (IN $00/$01 -> devices::console_device), parking a process on BLK_CONSOLE and relying on
+    # IRQ 33 to complete a read that must genuinely block. IRQ 33 is raised only by
+    # console_device::on_input_tick, which runs only while console_device is the CPU's active
+    # input. --console-dump ALONE binds only text_console (the bare-guest Set-1-scancode SYS $00
+    # path quesOS never uses), so a quesOS process that parks waiting for a not-yet-arrived byte
+    # never wakes. --input=console wires console_device as the active input (src/maize.cpp
+    # input_source=="console" branch, already unconditional with respect to --console-dump), so
+    # on_input_tick raises IRQ 33 on the rising edge of readiness and the parked reader wakes.
+    # Verified on maize-352: with a byte fed LATE, --console-dump alone hangs (the reader parks
+    # and never wakes) while --console-dump --input=console exits cleanly, and the composition
+    # needs zero VM code change.
+    #
+    # DETERMINISM (AC 9983, decision 9975): the whole injected payload is resident in the host
+    # pipe from process start (a single printf), so every console_read() status check finds its
+    # byte already pending and the fixture NEVER sleeps. The pass signal is the VM's own clean
+    # exit (the injected `exit` ends the top-level oksh session so quesOS shuts the VM down and
+    # emits the grid dump, which sys::exit() produces only at exit) plus the dumped grid content;
+    # the `timeout` is a hang backstop, never the thing that produces the output.
+    #
+    # INPUT CONTRACT (maize-352, OQ 9979): --console-dump --input=console feeds RAW already-
+    # decoded bytes on stdin (literal ASCII / control codes: \r for Enter, octal \021 = 0x11 for
+    # Ctrl-Q), because console_device's data port is a raw read() passthrough. This is a SEPARATE,
+    # ADDITIVE contract from the --console-dump-ALONE bare-guest path (run_console_selfcheck),
+    # which feeds Set-1 scancodes decoded through text_console. Both are correct for their own
+    # device; do not confuse them.
+    cdump_inject_run() {
+        # Reads the raw-byte payload from stdin, prints the exit-time grid dump. $MAIZE is the
+        # --bare wrapper (maize-360), so this boots quesOS as the loaded image and runs
+        # /bin/oksh.mzx as its worklist init. MSYS2_ARG_CONV_EXCL keeps the /bin;/rw mount-arg
+        # paths from being rewritten on the Windows leg.
+        MSYS2_ARG_CONV_EXCL='/bin;/rw' timeout 60 "$MAIZE" --no-root \
+            --console-dump --input=console \
+            --mount "${bnat}=/bin:ro" --mount "${rnat}=/rw:rw" \
+            "$quesos" /bin/oksh.mzx 2>/dev/null
+    }
+
+    # AC 9980 (mandatory): inject `ls` then `exit` as RAW bytes at the oksh prompt. oksh's
+    # per-PCB cwd is "/", where the two mounts appear, so a bare `ls` lists `bin` and `rw`; a
+    # follow-on `ls /rw` lists a file seeded into the writable mount, giving a distinctive marker
+    # no other grid content can false-positive on. Assert the grid shows ls's output AND a clean
+    # shell exit (reaped status=0) AND no unhandled-syscall / halt diagnostic.
+    rm -f "${rwdir}"/*
+    echo "console-dump-inject marker" > "${rwdir}/injected.txt"
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(printf 'ls\rls /rw\rexit\r' | cdump_inject_run); set -e
+    if printf '%s\n' "$out" | grep -qx "bin" \
+    && printf '%s\n' "$out" | grep -qx "rw" \
+    && printf '%s\n' "$out" | grep -qx "injected.txt" \
+    && printf '%s\n' "$out" | grep -qF "reaped /bin/oksh.mzx status=0" \
+    && ! printf '%s\n' "$out" | grep -qiE "unhandled syscall|halt"; then
+        echo "[PASS] userland94_console_dump_inject_oksh (ls output + clean exit via injected raw bytes)"
+    else
+        echo "[FAIL] userland94_console_dump_inject_oksh"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # AC 9981: launch kilo on a fresh /rw file through the same channel, inject a lone Ctrl-Q
+    # (octal \021 = 0x11) after the launch line, then `exit`. The buffer is clean, so Ctrl-Q
+    # quits kilo immediately (no dirty-buffer confirm), control returns to oksh, and the session
+    # exits. ASSERTION NOTE (maize-352): --console-dump dumps the RENDERED terminal GRID
+    # (text_console::dump_text emits printable glyphs; control sequences are already interpreted),
+    # NOT the raw VT byte stream, so kilo's alt-screen-exit sequence \x1b[?1049l cannot appear as
+    # literal text here (that raw-sequence assertion lives in the pty fixture
+    # pty_oksh_kilo_check.py). The equivalent, observable proof on THIS channel is: kilo painted
+    # (its HELP status line and the /rw/t.txt status bar), THEN the oksh prompt returned and the
+    # shell exited cleanly (reaped status=0), i.e. Ctrl-Q quit kilo and left no stuck editor or
+    # hang. text_console does not model the 1049 alt-screen, so kilo's last paint stays resident
+    # in the lower grid while the returned oksh prompt overwrites the top rows.
+    rm -f "${rwdir}"/*
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(printf 'kilo /rw/t.txt\r\021exit\r' | cdump_inject_run); set -e
+    if printf '%s\n' "$out" | grep -qF "HELP: Ctrl-S = save" \
+    && printf '%s\n' "$out" | grep -qF "/rw/t.txt" \
+    && printf '%s\n' "$out" | grep -qF "reaped /bin/oksh.mzx status=0" \
+    && ! printf '%s\n' "$out" | grep -qiE "unhandled syscall|halt"; then
+        echo "[PASS] userland94_console_dump_inject_kilo (kilo paint + Ctrl-Q quit + prompt return)"
+    else
+        echo "[FAIL] userland94_console_dump_inject_kilo"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
 }
 
 run_userland94_fixtures
