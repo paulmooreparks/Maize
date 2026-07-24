@@ -204,6 +204,10 @@ foreach ($tool in 'maize', 'maizeg', 'mazm', 'mzld', 'mzdis', 'mzcc') {
         exit 2
     }
     Copy-Item $builtExe (Join-Path $InstallDir "$tool.exe") -Force
+    # Copy-Item preserves the source artifact's mtime, so an up-to-date
+    # incremental reinstall would leave an old timestamp on the installed copy
+    # and look stale. Stamp it to now so a completed install always shows fresh (maize-366).
+    (Get-Item (Join-Path $InstallDir "$tool.exe")).LastWriteTime = Get-Date
     Write-Host "Installed $builtExe -> $(Join-Path $InstallDir "$tool.exe")"
 }
 
@@ -212,6 +216,8 @@ foreach ($tool in 'maize', 'maizeg', 'mazm', 'mzld', 'mzdis', 'mzcc') {
 if ($displayOn) {
     if (Test-Path $Sdl2Dll) {
         Copy-Item $Sdl2Dll (Join-Path $InstallDir 'SDL2.dll') -Force
+        # Stamp the copied DLL to now for the same reason as the tool exes above (maize-366).
+        (Get-Item (Join-Path $InstallDir 'SDL2.dll')).LastWriteTime = Get-Date
         Write-Host "Installed $Sdl2Dll -> $(Join-Path $InstallDir 'SDL2.dll')"
     }
     else {
@@ -340,5 +346,26 @@ else {
     }
 }
 
-Write-Host 'maize, maizeg, mazm, mzld, mzdis, mzcc installed and smoke-checked.'
+# Resolve the git revision the tree was built from, for a visible provenance
+# stamp in the summary line. git describe --always --dirty yields the nearest
+# tag (or abbreviated hash) plus a -dirty suffix when the tree has uncommitted
+# changes, in one call. Probe git via Get-Command first (the same idiom the
+# cmake resolution above uses) so a machine without git degrades to "unknown";
+# relax ErrorActionPreference around the call (matching the smoke-check blocks
+# above) so a non-repo checkout does not abort under EAP=Stop (maize-366).
+$gitCmd = Get-Command git -ErrorAction SilentlyContinue
+if ($gitCmd) {
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $Revision = (& $gitCmd.Source -C $RepoRoot describe --always --dirty 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($Revision)) {
+        $Revision = 'unknown'
+    }
+    $ErrorActionPreference = $prevEap
+}
+else {
+    $Revision = 'unknown'
+}
+
+Write-Host "Installed maize, maizeg, mazm, mzld, mzdis, mzcc to $InstallDir (built from $Revision)."
 exit 0

@@ -45,6 +45,10 @@ mkdir -p "$INSTALL_DIR"
 # maize-278: mzcc is the compiled C guest-build driver (the native cc-maize.sh replacement).
 for tool in maize maizeg mazm mzld mzdis mzcc; do
     cp "$BUILD_DIR/$tool" "$INSTALL_DIR/$tool"
+    # cp preserves the source artifact's mtime, so an up-to-date incremental
+    # reinstall would leave an old timestamp on the installed copy and look
+    # stale. Stamp it to now so a completed install always shows fresh (maize-366).
+    touch "$INSTALL_DIR/$tool"
     echo "Installed $BUILD_DIR/$tool -> $INSTALL_DIR/$tool"
 done
 
@@ -88,4 +92,17 @@ if [ "$tc_rc" -ne 0 ]; then
     echo "warning: C cross-toolchain refresh failed (exit $tc_rc); native tools are installed. Retry with scripts/refresh-c-toolchain.sh." >&2
 fi
 
-echo "maize, maizeg, mazm, mzld, mzdis, mzcc installed and smoke-checked."
+# Resolve the git revision the tree was built from, for a visible provenance
+# stamp in the summary line. git describe --always --dirty yields the nearest
+# tag (or abbreviated hash) plus a -dirty suffix when the tree has uncommitted
+# changes, in one call. Bracket in set +e / set -e (matching the smoke-check
+# idiom above) so a missing git binary or a non-repo checkout degrades to
+# "unknown" rather than aborting under set -euo pipefail (maize-366).
+set +e
+revision="$(git -C "$REPO_ROOT" describe --always --dirty 2>/dev/null)"
+set -e
+if [ -z "$revision" ]; then
+    revision="unknown"
+fi
+
+echo "Installed maize, maizeg, mazm, mzld, mzdis, mzcc to $INSTALL_DIR (built from $revision)."
