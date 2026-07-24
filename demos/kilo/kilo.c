@@ -482,7 +482,7 @@ void editorUpdateSyntax(erow *row) {
          * ';': scs[1] == '\0' means "match scs[0] alone"). */
         if (prev_sep && *p == scs[0] && (scs[1] == '\0' || *(p+1) == scs[1])) {
             /* From here to end is a comment */
-            memset(row->hl+i,HL_COMMENT,row->size-i);
+            memset(row->hl+i,HL_COMMENT,row->rsize-i);
             return;
         }
 

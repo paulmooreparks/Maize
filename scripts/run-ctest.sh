@@ -1389,6 +1389,53 @@ run_exit_status_test "noreturn" 57
 run_ctest "kilo_next_cap"
 run_ctest "kilo_xalloc_die"
 run_exit_status_test "kilo_xalloc_die" 1
+# maize-365: kilo's C highlighter overran row->hl when a tab preceded a //
+# comment. The memset fill count at kilo.c:485 used row->size (the raw line
+# length) instead of row->rsize (the tab-expanded render length that i and hl
+# are both scaled to), so on a line like "A\t//" the count size-i went negative
+# and, as a size_t, ran the memset off the 9-byte hl allocation into unmapped
+# guest memory (fatal page fault under quesOS, an unbounded runaway write on the
+# bare VM's larger flat guest RAM). Each fixture #includes the real
+# demos/kilo/kilo.c (kilo's own main renamed out of the way and never called)
+# and drives the identical editorSelectSyntaxHighlight/editorInsertRow/
+# editorUpdateRow/editorUpdateSyntax on one input line. kilo_hl_tab_comment is
+# the pathological tab case: post-fix it prints the exact hl[] bytes then OK;
+# pre-fix editorUpdateSyntax never reaches the printf calls (fault under quesOS,
+# runaway memset under the bare VM), so stdout never matches the fixture (the
+# fail-before/pass-after negative control). kilo_hl_space_comment is the
+# space-indented control ("A //", no tab, so rsize == size and the fill count is
+# identical before and after the fix), proving the fix leaves already-working
+# input unchanged. Run under an explicit `timeout` (not the bare run_ctest
+# helper) because a size_t-underflow memset is exactly the runaway-write input a
+# bound protects against on a host that does not fault as fast as the production
+# incident did.
+kilo_hl_case() {
+    name="$1"
+    expfile="${CTEST_DIR}/${name}.expected"
+    TOTAL=$((TOTAL + 1))
+    if [ ! -f "$expfile" ]; then
+        echo "[FAIL] ${name}: missing expected fixture" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+    compile_c "$name" || return
+    bin="$BIN"
+    out="${WORK_DIR}/${name}.out"
+    exp="${WORK_DIR}/${name}.exp"
+    set +e
+    timeout -k 5 30 "$MAIZE" "$bin" > "$out" 2>/dev/null
+    set -e
+    tr -d '\r' < "$expfile" > "$exp"
+    if cmp -s "$out" "$exp" || { [ "$(cat "$out")" = "$(cat "$exp")" ]; }; then
+        echo "[PASS] ${name}"
+    else
+        echo "[FAIL] ${name}"
+        echo "        expected: \"$(cat "$exp")\""
+        echo "        actual:   \"$(cat "$out")\""
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+kilo_hl_case "kilo_hl_tab_comment"
+kilo_hl_case "kilo_hl_space_comment"
 run_args_test
 # maize-246 host-launcher bare-image-name resolution (exact / .mzx / .mzb).
 run_image_resolution
