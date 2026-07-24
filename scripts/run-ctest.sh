@@ -3851,7 +3851,10 @@ run_userland94_fixtures() {
     # follow-on `ls /rw` lists a file seeded into the writable mount, giving a distinctive marker
     # no other grid content can false-positive on. Assert the grid shows ls's output AND a clean
     # shell exit (reaped status=0) AND no unhandled-syscall / halt diagnostic.
-    rm -f "${rwdir}"/*
+    # rm -rf, not rm -f: an earlier fixture (ls_launch) leaves the /rw/lsd DIRECTORY
+    # behind, and a non-recursive rm -f cannot remove a directory ("Is a directory"),
+    # which under `set -e` would abort the whole run-ctest.sh tail before this fixture.
+    rm -rf "${rwdir}"/*
     echo "console-dump-inject marker" > "${rwdir}/injected.txt"
     TOTAL=$((TOTAL + 1))
     set +e; out=$(printf 'ls\rls /rw\rexit\r' | cdump_inject_run); set -e
@@ -3878,7 +3881,9 @@ run_userland94_fixtures() {
     # shell exited cleanly (reaped status=0), i.e. Ctrl-Q quit kilo and left no stuck editor or
     # hang. text_console does not model the 1049 alt-screen, so kilo's last paint stays resident
     # in the lower grid while the returned oksh prompt overwrites the top rows.
-    rm -f "${rwdir}"/*
+    # rm -rf (not rm -f): clears the /rw/lsd DIRECTORY left by the earlier ls_launch
+    # fixture too, so the cleanup cannot fail under `set -e` (see the oksh case above).
+    rm -rf "${rwdir}"/*
     TOTAL=$((TOTAL + 1))
     set +e; out=$(printf 'kilo /rw/t.txt\r\021exit\r' | cdump_inject_run); set -e
     if printf '%s\n' "$out" | grep -qF "HELP: Ctrl-S = save" \
