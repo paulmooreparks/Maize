@@ -622,6 +622,21 @@ static u64 ensure_l0(struct pcb *p, u64 va) {
     return e & ~0xFFFul;
 }
 
+/* maize-349: peek how many of the 2 MiB regions spanned by [va, va + n*PAGE_SIZE) are NOT
+ * yet linked in p->l1_pa. Same PTE_V test ensure_l0 uses, but never calls alloc_frame, so a
+ * caller can verify pool headroom for both data frames and the L0-table frames this span
+ * will need before committing to any allocation or page-table mutation (mirrors do_fork's
+ * own pre-check at the "maize-251 addendum" comment above). */
+static u64 l0_regions_needed(struct pcb *p, u64 va, u64 n) {
+    u64 first_region = va >> 21;
+    u64 last_region  = (va + (n - 1) * PAGE_SIZE) >> 21;
+    u64 r, needed = 0;
+    for (r = first_region; r <= last_region; ++r) {
+        if ((pte_get(p->l1_pa, r & 0x1FF) & PTE_V) == 0) { ++needed; }
+    }
+    return needed;
+}
+
 /* Non-allocating L0 lookup for an already-mapped VA (returns region 0's L0 fast, or the
  * region's linked L0; 0 if the region has no L0 yet). */
 static u64 va_l0(struct pcb *p, u64 va) {
@@ -3100,15 +3115,28 @@ static long do_fb_mmap(void) {
 static long do_bigalloc(u64 size) {
     struct pcb *self = g_current;
     u64 n = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-    u64 base_pa = 0, va, i;
+    u64 base_pa = 0, va, i, l0_needed;
     if (size == 0) { return -(long)QOS_EINVAL; }
     if (self->bigalloc_next + n * PAGE_SIZE > BIGALLOC_BASE + BIGALLOC_MAX) {
         return -(long)QOS_ENOMEM;                        /* per-process window exhausted */
     }
-    if (alloc_frames_contig(n, &base_pa) != 0) {          /* reused verbatim from maize-238 */
-        return -(long)QOS_ENOMEM;                          /* pool exhausted, graceful, no PANIC */
-    }
+    /* maize-349: combined-headroom pre-check, BEFORE allocating or linking anything. The old
+     * code allocated the n data frames first, then let ensure_l0 fault in the incidental L0
+     * table for this span; when the pool was exhausted at that exact moment, ensure_l0's
+     * alloc_frame hit its PANIC/poweroff branch and halted the whole VM instead of returning
+     * -ENOMEM as SYSCALL-ABI.md promises. Count the L0 frames this span still needs (none are
+     * linked yet in a fresh child) and reject up front if the pool cannot cover the data
+     * frames AND those L0 tables together. On this path we touch no page-table entry, do not
+     * advance g_pool_next, and do not advance self->bigalloc_next (read-only until the gate
+     * passes; no partial mutation). Mirrors do_fork's maize-251-addendum pre-check. */
     va = self->bigalloc_next;
+    l0_needed = l0_regions_needed(self, va, n);
+    if (g_pool_next + (n + l0_needed) * PAGE_SIZE > POOL_TOP) {
+        return -(long)QOS_ENOMEM;   /* pool cannot cover data frames AND the L0s this call needs */
+    }
+    if (alloc_frames_contig(n, &base_pa) != 0) {          /* reused verbatim from maize-238 */
+        return -(long)QOS_ENOMEM;                          /* defensive; cannot fail after the gate */
+    }
     (void)ensure_l0(self, va);
     for (i = 0; i < n; ++i) {
         u64 pg = va + i * PAGE_SIZE;
