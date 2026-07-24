@@ -443,6 +443,69 @@ function Invoke-TrapTest($name, $src, $errSubstr) {
     }
 }
 
+# --- maize-351: JIT/exception-boundary differential ------------------------------------
+# Mirrors run-tests.sh's run_jit_fault_diff_test. A guest condition the VM reports by
+# throwing a std::logic_error (unhandled cause-8 with no handler; a double fault during
+# trap-frame delivery), when it occurs inside a JIT-compiled paged block, must reach the
+# SAME top-level outcome the interpreter path reaches for the identical guest program. This
+# runner assembles the fixture, then runs the RAW maize binary twice: once plain
+# (interpreter) and once under --jit --jit-threshold 1 (which compiles the JMP-gated
+# faulting block on first dispatch, so the throw crosses the emitted frame the fix guards).
+# It passes iff both runs exit nonzero, both surface the diagnostic substring on stderr, the
+# two exit statuses match, and neither reaches the unreachable 'FAIL' marker on stdout.
+#
+# Leg note (recorded on maize-351): this is the leg where the fix's fail-before/pass-after
+# is OBSERVABLE. On the windows-native (MSYS2 / llvm-mingw) SEH unwinder, a pre-fix
+# std::logic_error thrown from the emitted frame unwinds across a frame with no unwind data
+# and hard-crashes (a different exit code, and no clean diagnostic), so the jit run diverges
+# from the interpreter run and this runner fails. Post-fix the throw never crosses the
+# emitted frame (caught in a C++ frame, re-thrown from jit_dispatch), so both runs reach the
+# identical terminate + exit status and it passes. (On the linux gcc leg both pre- and
+# post-fix already reach the same clean terminate; see the run-tests.sh note.)
+function Invoke-JitFaultDiffTest($name, $src, $diag) {
+    $srcPath = Join-Path $AsmDir $src
+    $asmPath = Join-Path $TestRunDir $src
+    Copy-Item -Path $srcPath -Destination $asmPath -Force
+    $binPath = [System.IO.Path]::ChangeExtension($asmPath, 'mzb')
+
+    & $MazmExe $asmPath *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $binPath)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to assemble' }
+    }
+
+    # Run the RAW maize (not the --bare / --jit exec wrappers) with explicit flags, so the
+    # two legs are exactly "interpreter" and "jit, threshold 1" regardless of the MAIZE_JIT
+    # env leg. ProcessStartInfo gives a reliable ExitCode and per-process env for the jit run.
+    function Invoke-OneMaize($argList, $extraEnv) {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $RealMaizeExe
+        $psi.Arguments = $argList
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        if ($extraEnv) { foreach ($k in $extraEnv.Keys) { $psi.EnvironmentVariables[$k] = $extraEnv[$k] } }
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $so = $proc.StandardOutput.ReadToEnd()
+        $se = $proc.StandardError.ReadToEnd()
+        $proc.WaitForExit()
+        return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $so; Err = $se }
+    }
+
+    $bp = "`"$binPath`""
+    $i = Invoke-OneMaize "--bare $bp" $null
+    $j = Invoke-OneMaize "--bare --jit --jit-threshold 1 $bp" @{ 'MAIZE_JIT_QUIET' = '1' }
+
+    $pass = ($i.Exit -ne 0) -and ($j.Exit -eq $i.Exit) `
+        -and ($i.Err -like "*$diag*") -and ($j.Err -like "*$diag*") `
+        -and ($i.Out -notlike '*FAIL*') -and ($j.Out -notlike '*FAIL*')
+    return [pscustomobject]@{
+        Name     = $name
+        Pass     = $pass
+        Expected = "interp and jit both nonzero exit + '$diag' on stderr + matching status, no FAIL on stdout"
+        Actual   = "interp exit $($i.Exit) stderr=`"$(Trim-TrailingNewlines $i.Err)`"; jit exit $($j.Exit) stderr=`"$(Trim-TrailingNewlines $j.Err)`""
+    }
+}
+
 # --- maize-75: sys_read byte-count fix (needs a known stdin) ----------------------
 # Invoke-Test gives no stdin, so this bespoke runner pipes "hello" and checks the
 # program echoes exactly the bytes read plus an EOF marker: "hello|EOF". The old
@@ -663,6 +726,11 @@ function Invoke-FbStopTest {
 $results += Invoke-UndefMultirefTest
 $results += Invoke-TrapTest 'brk_trap'        'test_brk.mazm'        'breakpoint'
 $results += Invoke-TrapTest 'priv_fault_trap' 'test_priv_fault.mazm' 'privileg'
+# maize-351: a std::logic_error thrown from a JIT-compiled paged block (unhandled cause-8
+# with no handler; a double fault during trap-frame delivery) must reach the same outcome as
+# the interpreter path, not a broken-unwind crash across the emitted frame.
+$results += Invoke-JitFaultDiffTest 'jit_fault_nohandler'   'test_jit_fault_nohandler.mazm'   'unhandled interrupt: vector 8, no handler installed'
+$results += Invoke-JitFaultDiffTest 'jit_fault_doublefault' 'test_jit_fault_doublefault.mazm' 'double fault: page fault'
 # maize-180: the four new privileged instructions + the previously-ungated ops each raise
 # cause-4 in user mode (MOVTCR/TLBINV, the forged-RF IRET escalation, HALT/SETINT/SETSYSG).
 $results += Invoke-TrapTest 'mmu_priv_movtcr'        'test_mmu_priv_movtcr.mazm'          'privileg'

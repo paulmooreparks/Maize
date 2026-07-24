@@ -1,0 +1,85 @@
+; **********************************************************************************
+; Card maize-351 (JIT/exception boundary), AC3: a DOUBLE fault (a second page fault while
+; delivering_trap is already set) raised from a JIT-compiled paged block must reach the
+; same top-level diagnostic and exit status as the interpreter path, not a broken-unwind
+; crash. This is the second currently-reachable gap: raise_page_fault's own double-fault
+; branch throws std::logic_error("double fault: ..."), which pre-fix cannot unwind through
+; the raw emitted frame. Post-fix jit_faultsafe_call catches it and jit_dispatch re-throws
+; from an ordinary C++ frame, printing "double fault: ..." exactly as the non-JIT run does.
+;
+; Setup: identity-map the low 1 GiB, INSTALL a cause-8 handler (so deliver_vectored gets
+; past the no-handler check and starts pushing the trap frame), but point RS at an UNMAPPED
+; VA. The faulting LD triggers cause-8 delivery; the first push_word inside deliver_vectored
+; then translates the unmapped stack pointer, faults again with delivering_trap set, and
+; raises the double fault. The faulting LD sits behind a JMP so it compiles as a paged block
+; under --jit-threshold 1, so the throw crosses the emitted frame the fix guards.
+;
+;   0x10000 root: Root[0] = 0x11001 -> L2
+;   0x11000 L2:   L2[0] = 0x1F (identity 1 GiB superpage, RWXU); higher L2 slots left unset
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- install a cause-8 handler at entry[8] = 0x1040 (never reached: double fault) ----
+    CLR R8
+    CP handler R8.H0
+    CLR R9
+    CP $1040 R9.H0
+    ST R8 @R9
+
+    ; ---- Root[0] @ 0x10000 = 0x11001 (-> L2) ----
+    CP $11001 R8
+    CLR R9
+    CP $10000 R9.H0
+    ST R8 @R9
+
+    ; ---- L2[0] @ 0x11000 = 0x1F (identity 1 GiB superpage) ----
+    CP $1F R8
+    CLR R9
+    CP $11000 R9.H0
+    ST R8 @R9
+
+    ; ---- stack pointer into an UNMAPPED VA, so the trap-frame push double-faults ----
+    CLR RS
+    CP $80000000 RS.H0
+
+    ; ---- enable Sv48 ----
+    CP $10001 R0
+    MOVTCR R0 $00
+
+    ; ---- control transfer arms the JIT block boundary; faultblock then compiles paged ----
+    JMP faultblock
+
+faultblock:
+    CLR R3
+    CP $80000000 R3.H0
+    CLR R4
+    LD @R3 R4.H0             ; load fault -> cause-8 delivery -> stack push faults -> double fault
+
+    ; ---- unreachable unless neither fault was raised ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $14 R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+; Cause-8 handler: never runs (the double fault aborts delivery). Present only so the
+; vector entry is nonzero and deliver_vectored proceeds to the frame push.
+handler:
+    CP $00 R0
+    MOVTCR R0 $00
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $14 R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+fail_string:
+    STRING "jit-fault-dbl: FAIL\n\0"

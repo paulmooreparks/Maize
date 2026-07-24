@@ -136,6 +136,11 @@ fi
 # WSLg window, and needs no display libs. All tests are headless (stdout / --console-dump /
 # the memory-backed framebuffer device), so the console build runs them all.
 MAIZE_EXE="${BUILD_DIR}/maize"
+# maize-351: the raw maize path, captured before the --bare / --jit exec wrappers below
+# reassign MAIZE_EXE. The JIT/exception-boundary differential runner needs to invoke the
+# same binary twice with EXPLICIT flags (plain interpreter vs --jit --jit-threshold 1),
+# independent of whether the optional MAIZE_JIT env leg is active.
+MAIZE_RAW="${BUILD_DIR}/maize"
 MAZM_EXE="${BUILD_DIR}/mazm"
 MZLD_EXE="${BUILD_DIR}/mzld"
 MZDIS_EXE="${BUILD_DIR}/mzdis"
@@ -505,6 +510,65 @@ run_priv_fault_trap_test() {
 }
 
 run_priv_fault_trap_test
+
+# --- maize-351: JIT/exception-boundary differential -------------------------------------
+# A guest condition the VM reports by throwing a std::logic_error (an unhandled cause-8 with
+# no handler installed; a double fault during trap-frame delivery), when it occurs inside a
+# JIT-compiled paged block, must reach the SAME top-level outcome the interpreter path
+# reaches for the identical guest program, not a divergent crash. This runner assembles the
+# fixture, then runs it TWICE against the raw maize binary: once plain (interpreter) and once
+# under --jit --jit-threshold 1 (which compiles the JMP-gated faulting block on first
+# dispatch, so the throw crosses the emitted frame the fix guards). It passes iff both runs
+# exit nonzero, both surface the same diagnostic substring on stderr, the two exit statuses
+# match, and neither reaches the unreachable "FAIL" fall-through marker on stdout.
+#
+# Leg note (recorded on maize-351): on the linux gcc/libstdc++ leg the pre-fix and post-fix
+# stderr + exit status are identical here, because libgcc's phase-1 search finds no matching
+# handler above the emitted frame for these throws and calls std::terminate directly (never
+# unwinding across the frame), so the crash resolves to the same clean terminate the
+# interpreter reaches. This runner is therefore a behavior-contract / regression guard on
+# this leg (jit outcome == interp outcome), and the true fail-before/pass-after control lands
+# on the windows-native (MSYS2 / llvm-mingw) SEH leg, where a phase-2 unwind across the
+# no-CFI emitted frame hard-crashes pre-fix. The Windows twin (run-tests.ps1) runs the same
+# fixtures. Keep the two in sync.
+run_jit_fault_diff_test() {
+    name="$1"
+    src="$2"
+    diag="$3"
+    TOTAL=$((TOTAL + 1))
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+
+    i_out=$(mktemp); i_err=$(mktemp)
+    if "$MAIZE_RAW" --bare "$bin_path" >"$i_out" 2>"$i_err"; then i_rc=0; else i_rc=$?; fi
+    io=$(cat "$i_out"); ie=$(cat "$i_err"); rm -f "$i_out" "$i_err"
+
+    j_out=$(mktemp); j_err=$(mktemp)
+    if MAIZE_JIT_QUIET=1 "$MAIZE_RAW" --bare --jit --jit-threshold 1 "$bin_path" >"$j_out" 2>"$j_err"; then j_rc=0; else j_rc=$?; fi
+    jo=$(cat "$j_out"); je=$(cat "$j_err"); rm -f "$j_out" "$j_err"
+
+    if [ "$i_rc" -ne 0 ] && [ "$j_rc" -eq "$i_rc" ] \
+        && printf '%s' "$ie" | grep -qF "$diag" \
+        && printf '%s' "$je" | grep -qF "$diag" \
+        && ! printf '%s' "$io" | grep -qF "FAIL" \
+        && ! printf '%s' "$jo" | grep -qF "FAIL"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: interp and jit both nonzero exit + '${diag}' on stderr + matching status, no FAIL on stdout"
+        echo "        actual:   interp exit ${i_rc} stderr=\"${ie}\"; jit exit ${j_rc} stderr=\"${je}\""
+    fi
+}
+
+run_jit_fault_diff_test "jit_fault_nohandler"  "test_jit_fault_nohandler.mazm"  "unhandled interrupt: vector 8, no handler installed"
+run_jit_fault_diff_test "jit_fault_doublefault" "test_jit_fault_doublefault.mazm" "double fault: page fault"
 
 # --- maize-180: the four new privileged instructions + the previously-ungated ops -------
 # Each fixture drops to user mode via the IRET trampoline and executes one privileged

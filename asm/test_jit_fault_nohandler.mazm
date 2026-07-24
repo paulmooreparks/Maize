@@ -1,0 +1,75 @@
+; **********************************************************************************
+; Card maize-351 (JIT/exception boundary), AC1: a cause-8 page fault raised from a
+; JIT-COMPILED paged block, with NO cause-8 handler installed, must reach the same
+; top-level diagnostic and exit status the interpreter path reaches, not a broken-unwind
+; crash. The std::logic_error halt_no_interrupt_handler throws would otherwise have to unwind
+; through the raw emitted frame (which carries no unwind info). Post-fix jit_faultsafe_call
+; catches it, jit_dispatch re-throws it from an ordinary C++ frame, and the process prints
+; "unhandled interrupt: vector 8, no handler installed" and exits exactly as the non-JIT run.
+;
+; Leg-dependence (verified on maize-351): the pre-fix broken unwind hard-crashes on the
+; windows-native SEH unwinder, but on the linux gcc/libstdc++ leg libgcc's phase-1 search
+; finds no matching handler above the emitted frame and calls std::terminate directly,
+; never unwinding across the frame, so pre-fix and post-fix reach the same clean terminate
+; there. The suite runner (Invoke-JitFaultDiffTest / run_jit_fault_diff_test) asserts the
+; jit run matches the interpreter run, which is the observable that the fix protects.
+;
+; Shape mirrors asm/test_mmu_pagefault_notpresent.mazm (identity-map the low 1 GiB via a
+; two-level Sv48 table, leave VA 0x80000000 unmapped, LD through it), with two changes:
+;   1. The cause-8 vector entry ($1040) is left UNSET, so deliver_vectored takes the
+;      no-handler path.
+;   2. The faulting LD sits behind a JMP so it starts a fresh block AFTER Sv48 is enabled;
+;      with --jit-threshold 1 that block compiles as a PAGED block on its first dispatch,
+;      so the LD runs from emitted code, not the interpreter (confirmed during the card:
+;      a recoverable-handler variant of this exact shape reports "blocks compiled: 2" with
+;      2 dispatcher hits under --jit --jit-threshold 1).
+;
+;   0x10000 root: Root[0] = 0x11001 -> L2
+;   0x11000 L2:   L2[0] = 0x1F (identity 1 GiB superpage, RWXU); L2[2] left 0 (not present)
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- Root[0] @ 0x10000 = 0x11001 (-> L2) ----
+    CP $11001 R8
+    CLR R9
+    CP $10000 R9.H0
+    ST R8 @R9
+
+    ; ---- L2[0] @ 0x11000 = 0x1F (identity 1 GiB superpage) ----
+    CP $1F R8
+    CLR R9
+    CP $11000 R9.H0
+    ST R8 @R9
+
+    ; ---- stack pointer into the identity region ----
+    CLR RS
+    CP $00080000 RS.H0
+
+    ; ---- enable Sv48 (no cause-8 handler installed at $1040) ----
+    CP $10001 R0
+    MOVTCR R0 $00
+
+    ; ---- control transfer arms the JIT block boundary; faultblock then compiles paged ----
+    JMP faultblock
+
+faultblock:
+    ; Straight-line covered instructions ending in the faulting LD. This whole block
+    ; compiles as a paged block on first dispatch under --jit-threshold 1.
+    CLR R3
+    CP $80000000 R3.H0
+    CLR R4
+    LD @R3 R4.H0             ; translate(load) walks, L2[2] V=0 -> page fault, no handler
+
+    ; ---- unreachable unless the fault was not raised ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $16 R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+fail_string:
+    STRING "jit-fault-nohdlr: FAIL\n\0"

@@ -501,6 +501,19 @@ void* jit_fs_fn = nullptr;
 u_word jit_fs_a[3] = { 0, 0, 0 };
 u_word jit_fs_n = 0;    /* u_word (not int) so the emitter's 8-byte store_const is safe */
 bool jit_pending_fault = false;
+
+/* maize-351: pending NON-fault VM exception captured at the fault-safe boundary. Distinct
+   from jit_pending_fault (a clean page_fault_redirect the dispatcher resumes from): a value
+   here means a synchronous VM-reported exception, one raise_page_fault itself can throw
+   instead of page_fault_redirect, was intercepted before it could unwind through the raw
+   emitted frame. jit_dispatch re-throws it from its own ordinary C++ frame, so it reaches
+   the exact top-level outcome the interpreter path reaches for the identical guest program.
+   Held as a std::exception_ptr so the original exception's dynamic type and what() message
+   survive the deferral bit for bit (chosen over a type-tag plus string copy: exception_ptr
+   is a plain C++ object stored in this global, so it does not ride the jit_fs_* global-args
+   slots and needs no reconstruction at the rethrow site). nullptr means "no pending error". */
+std::exception_ptr jit_pending_error = nullptr;
+
 void jit_faultsafe_call() {
     try {
         switch (jit_fs_n) {
@@ -511,6 +524,23 @@ void jit_faultsafe_call() {
         }
     } catch (page_fault_redirect&) {
         jit_pending_fault = true;
+    } catch (const std::logic_error&) {
+        /* maize-351: the two non-fault throws raise_page_fault can produce, both currently
+           reachable from a paged block, are std::logic_error: halt_no_interrupt_handler
+           (guest cause-8 vector unset) and the double-fault branch (a fault while
+           delivering_trap is already set). Catch the exact type they throw, no broader:
+           a narrow catch cannot mask an unrelated host exception (bad_alloc, a real host
+           logic bug elsewhere) as a VM diagnostic, and the deferred rethrow below preserves
+           full fidelity regardless. Reuse jit_pending_fault as the "abort this block and
+           return to the dispatcher" signal so the ALREADY-EMITTED jit_emit_fault_check ret
+           stops the block at the throwing thunk with no new emitted code; jit_dispatch
+           checks jit_pending_error FIRST and rethrows, so the fault-resume path never runs
+           for the error case. AC6 enforcement: if a future change routes a NEW throw type
+           through this boundary (for example by giving DIV/MOD or an unallocated Jcc/SETcc
+           JIT coverage, both excluded today at jit_alu_helper / the Jcc/SETcc emitters), it
+           MUST be added here or it will crash the emitted frame exactly as this card fixes. */
+        jit_pending_fault = true;
+        jit_pending_error = std::current_exception();
     }
 }
 
@@ -965,7 +995,11 @@ alu_helper_fn jit_alu_helper(u_byte base) {
         case instr::sar_opcode: return &alu_sar;
         /* DIV/MOD/UDIV/UMOD are excluded: they can raise a divide-error trap, which
            unwinds via a C++ exception that must never cross an emitted frame. They end
-           the block and run interpreted. */
+           the block and run interpreted. maize-351: if a future change gives one of these
+           opcodes JIT coverage, its throwing memory/trap path MUST route through
+           jit_faultsafe_call (whose widened catch now also intercepts the std::logic_error
+           class), or the throw will crash the emitted frame via a broken unwind. Do not
+           lift this exclusion without doing that first. */
         default: return nullptr;
     }
 }
@@ -2520,7 +2554,20 @@ void jit_dispatch() {
             jit_journal = &jit_journal_a;
             g_jit.block_runs += 1;
             jit_pending_fault = false;
+            jit_pending_error = nullptr;
             b->code();
+            if (jit_pending_error) {
+                /* maize-351: the compiled run hit a non-fault VM throw (no-handler or double
+                   fault). It cannot be differentially diffed (the oracle would throw the same
+                   thing), so rethrow it here from this ordinary C++ frame, out to the same
+                   top-level path the interpreter reaches. Disarm the journal first so the
+                   store seam is not left pointing at a stale buffer. */
+                std::exception_ptr e = jit_pending_error;
+                jit_pending_error = nullptr;
+                jit_pending_fault = false;
+                jit_journal = nullptr;
+                std::rethrow_exception(e);
+            }
             bool jit_faulted = jit_pending_fault;   /* a compiled memory op page-faulted (maize-341) */
             jit_pending_fault = false;
             jit_journal = nullptr;
@@ -2586,7 +2633,24 @@ void jit_dispatch() {
         (void) block_len;
         g_jit.block_runs += 1;
         jit_pending_fault = false;
+        jit_pending_error = nullptr;
         b->code();
+        if (jit_pending_error) {
+            /* maize-351: a compiled memory op raised a non-fault VM exception (unhandled
+               cause-8 with no handler installed, or a double fault) that jit_faultsafe_call
+               intercepted before it could unwind through the raw emitted frame. Rethrow it
+               here, from jit_dispatch's own ordinary C++ frame (called via tick() inside
+               run()'s try block), so it unwinds normally and reaches the exact same top-level
+               outcome the interpreter path reaches for the identical guest program. run()'s
+               catch(page_fault_redirect) does not match it (this is not a page fault), so it
+               escapes to the language's default unhandled-exception path just as it does on
+               the non-JIT run. Checked BEFORE the jit_pending_fault branch so the fault-resume
+               path never runs for an error. */
+            std::exception_ptr e = jit_pending_error;
+            jit_pending_error = nullptr;
+            jit_pending_fault = false;
+            std::rethrow_exception(e);
+        }
         if (jit_pending_fault) {
             /* A compiled memory op page-faulted; the fault is already fully delivered (RP
                at the handler, trap frame pushed, flags materialized into the saved RF), so
