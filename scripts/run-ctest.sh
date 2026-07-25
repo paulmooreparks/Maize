@@ -978,7 +978,9 @@ run_hostfs_root_merge() {
     lseekbad=$(printf '%s\n' "$out" | grep '^lseekbad:')
     # maize-360: the sandbox-root skeleton now also creates /etc (holding the shipped
     # /etc/profile), so the merged "/" listing gains an etc entry alongside bin/home/tmp.
-    expected=$(printf 'bin\netc\nhome\ntmp\n' | sort)
+    # maize-374: the skeleton also creates /root (HOME for the now-coherent root login),
+    # so the merged listing gains a root entry too.
+    expected=$(printf 'bin\netc\nhome\nroot\ntmp\n' | sort)
 
     ok=1
     [ "$n1" = "$expected" ] || ok=0
@@ -1051,7 +1053,7 @@ run_hostfs_root_merge() {
     neg_doom=$(printf '%s\n' "$negout" | grep '^DOOM:' | sed 's/^DOOM://' | sort)
     neg_bin=$(printf '%s\n' "$negout" | grep '^BIN:' | sed 's/^BIN://' | sort)
 
-    exp_root=$(printf 'bin\ndoom\netc\nhome\ntmp\n' | sort)   # maize-360: skeleton adds /etc
+    exp_root=$(printf 'bin\ndoom\netc\nhome\nroot\ntmp\n' | sort)  # maize-360 adds /etc, maize-374 adds /root
     exp_sub=$(printf 'doom\nsub_marker.txt\n' | sort)     # doom exactly ONCE, no bin
     exp_tmp=$(printf 'tmp_marker.txt\n' | sort)           # no bin/doom
     exp_doom=$(printf 'doom_marker.txt\n' | sort)         # overlay root, no synthetic
@@ -2603,15 +2605,17 @@ run_quesos_argcheck() {
     # maize-360: quesOS gap-fills the five login-env keys (HOME/USER/LOGNAME/SHELL/PATH)
     # into EVERY top-level worklist process, so argcheck's envp now carries them after its
     # argv block (this leg passes no -e, so those five are the whole envp).
+    # maize-374: the login identity is now coherently root, so HOME/USER/LOGNAME are
+    # /root, root, root (SHELL/PATH unchanged).
     expected=$(printf '%s\n' \
         '[quesos] init: cause-7 handler resident; running 1 program(s)' \
         '/progs/argcheck.mzx' \
         'a' \
         'b' \
         '-c' \
-        'HOME=/home/user' \
-        'USER=user' \
-        'LOGNAME=user' \
+        'HOME=/root' \
+        'USER=root' \
+        'LOGNAME=root' \
         'SHELL=/bin/oksh.mzx' \
         'PATH=/bin' \
         '[quesos] reaped /progs/argcheck.mzx status=0')
@@ -2646,21 +2650,23 @@ run_quesos_argcheck() {
     set -e
     # maize-360: each top-level worklist program gets the five gap-filled login-env keys
     # in its envp, so both argcheck runs print them after their own argv block.
+    # maize-374: the login identity is now coherently root, so HOME/USER/LOGNAME are
+    # /root, root, root (SHELL/PATH unchanged).
     expected_multi=$(printf '%s\n' \
         '[quesos] init: cause-7 handler resident; running 2 program(s)' \
         '/progs/argcheck.mzx' \
         'one' \
-        'HOME=/home/user' \
-        'USER=user' \
-        'LOGNAME=user' \
+        'HOME=/root' \
+        'USER=root' \
+        'LOGNAME=root' \
         'SHELL=/bin/oksh.mzx' \
         'PATH=/bin' \
         '[quesos] reaped /progs/argcheck.mzx status=0' \
         '/progs/argcheck.mzx' \
         'two' \
-        'HOME=/home/user' \
-        'USER=user' \
-        'LOGNAME=user' \
+        'HOME=/root' \
+        'USER=root' \
+        'LOGNAME=root' \
         'SHELL=/bin/oksh.mzx' \
         'PATH=/bin' \
         '[quesos] reaped /progs/argcheck.mzx status=0')
@@ -2724,13 +2730,15 @@ run_quesos_default_init() {
         --mount "${nat}=/progs:ro" -e QUESOS_INIT=/progs/argcheck.mzx -e QOSVAR=set \
         </dev/null 2>/dev/null | grep -v '^$')
     set -e
+    # maize-374: the login identity is now coherently root, so HOME/USER/LOGNAME are
+    # /root, root, root (SHELL/PATH unchanged).
     expected=$(printf '%s\n' \
         '[quesos] init: cause-7 handler resident; running 1 program(s)' \
         '/progs/argcheck.mzx' \
         'QOSVAR=set' \
-        'HOME=/home/user' \
-        'USER=user' \
-        'LOGNAME=user' \
+        'HOME=/root' \
+        'USER=root' \
+        'LOGNAME=root' \
         'SHELL=/bin/oksh.mzx' \
         'PATH=/bin' \
         '[quesos] reaped /progs/argcheck.mzx status=0')
