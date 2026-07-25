@@ -3674,20 +3674,20 @@ run_userland94_fixtures() {
     fi
 
     # AC 8930 REAL-KEYSTROKE acceptance (operator reopen #2): the one that PRESSES KEYS.
-    # pty_oksh_check.py forks `maize <quesos> /bin/oksh.mzx` (the DEFAULT input path, no
-    # --input flag: exactly the operator's invocation) into a pseudo terminal, waits for the
-    # prompt, types "pwd" + an echo + "exit" as keystrokes, and asserts the shell echoed and
-    # executed them. This is the acceptance bar the piped/-c fixtures missed twice: with the
-    # default-path console input fixed (demand-driven con_data read) an interactive shell now
-    # works from a real terminal. Real-pty variant only (CI-safe, stdlib pty); the Windows
-    # ConPTY equivalent is operator/local. Skips loudly where python3's pty module does not
-    # actually work (python3_has_pty, maize-257: a native Windows python3 exists but its pty
-    # module raises ModuleNotFoundError on import, since it has no termios).
+    # pty_oksh_check.py forks `maize --rom <quesos> /bin/oksh.mzx` (the DEFAULT input path,
+    # no --input flag) into a pseudo terminal, waits for the prompt, types "pwd" + an echo +
+    # "exit" as keystrokes, and asserts the shell echoed and executed them. This is the
+    # acceptance bar the piped/-c fixtures missed twice: with the default-path console input
+    # fixed (demand-driven con_data read) an interactive shell now works from a real
+    # terminal. Real-pty variant only (CI-safe, stdlib pty); the Windows ConPTY equivalent is
+    # operator/local. Skips loudly where python3's pty module does not actually work
+    # (python3_has_pty, maize-257: a native Windows python3 exists but its pty module raises
+    # ModuleNotFoundError on import, since it has no termios).
     if python3_has_pty; then
         TOTAL=$((TOTAL + 1))
         set +e
         out=$(python3 "${REPO_ROOT}/scripts/pty_oksh_check.py" \
-            "$MAIZE" "$quesos" "$bindir" "$rwdir" 2>&1)
+            "$DEFAULT_MAIZE" "$quesos" "$bindir" "$rwdir" 2>&1)
         set -e
         if printf '%s\n' "$out" | grep -qF "pty-oksh: PASS"; then
             echo "[PASS] userland94_oksh_keystrokes (real pty, default input path)"
@@ -3714,7 +3714,7 @@ run_userland94_fixtures() {
         TOTAL=$((TOTAL + 1))
         set +e
         out=$(python3 "${REPO_ROOT}/scripts/pty_oksh_kilo_check.py" \
-            "$MAIZE" "$quesos" "$bindir" "$rwdir" edit 2>&1)
+            "$DEFAULT_MAIZE" "$quesos" "$bindir" "$rwdir" edit 2>&1)
         rc=$?
         set -e
         saved=""
@@ -3731,7 +3731,7 @@ run_userland94_fixtures() {
         TOTAL=$((TOTAL + 1))
         set +e
         out=$(python3 "${REPO_ROOT}/scripts/pty_oksh_kilo_check.py" \
-            "$MAIZE" "$quesos" "$bindir" "$rwdir" kill 2>&1)
+            "$DEFAULT_MAIZE" "$quesos" "$bindir" "$rwdir" kill 2>&1)
         rc=$?
         set -e
         if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qF "pty-kilo: PASS"; then
@@ -3752,7 +3752,7 @@ run_userland94_fixtures() {
         TOTAL=$((TOTAL + 1))
         set +e
         out=$(python3 "${REPO_ROOT}/scripts/pty_oksh_kilo_check.py" \
-            "$MAIZE" "$quesos" "$bindir" "$rwdir" largefile 2>&1)
+            "$DEFAULT_MAIZE" "$quesos" "$bindir" "$rwdir" largefile 2>&1)
         rc=$?
         set -e
         if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qF "pty-kilo: PASS"; then

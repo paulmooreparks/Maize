@@ -2,9 +2,12 @@
 # pty_oksh_check.py (maize-94): the real-KEYSTROKE end-to-end acceptance proof for the
 # interactive oksh shell on the DEFAULT input path (AC 8930). Piped-stdin and `oksh -c`
 # fixtures have now missed the interactive input-routing class of bug twice, so this
-# fixture PRESSES KEYS: it forks `maize <quesos.mzx> /bin/oksh.mzx` into a real pseudo
-# terminal (no --input flag, exactly the operator's invocation), waits for the prompt,
-# then writes keystrokes ("pwd", a distinctive echo, "exit") and asserts the shell echoed
+# fixture PRESSES KEYS: it forks `maize --rom <quesos.mzx> /bin/oksh.mzx` into a real
+# pseudo terminal (no --input flag). --rom names the freshly-built test ROM explicitly
+# because it does not live beside the maize binary, so default resolution can't find it;
+# an operator relying on the default quesOS ROM types `maize /bin/oksh.mzx` with no
+# --rom at all. The harness waits for the prompt, then writes keystrokes ("pwd", a
+# distinctive echo, "exit") and asserts the shell echoed
 # them, executed the commands (pwd prints "/", echo prints the marker), and exited clean.
 #
 # CI-safe: uses only the stdlib pty module on a Linux runner. On Windows the equivalent is
@@ -21,10 +24,10 @@ if len(sys.argv) != 5:
 
 maize, quesos, bindir, rwdir = sys.argv[1:5]
 marker = "hi-from-keystrokes"
-argv = [maize, "--no-root",
+argv = [maize, "--rom", quesos, "--no-root",
         "--mount", bindir + "=/bin:ro",
         "--mount", rwdir + "=/rw:rw",
-        quesos, "/bin/oksh.mzx"]
+        "/bin/oksh.mzx"]
 
 pid, fd = pty.fork()
 if pid == 0:

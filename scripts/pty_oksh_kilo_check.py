@@ -48,10 +48,10 @@ if len(sys.argv) < 5:
 maize, quesos, bindir, rwdir = sys.argv[1:5]
 mode = sys.argv[5] if len(sys.argv) > 5 else "edit"
 ROWS, COLS = 24, 80
-argv = [maize, "--no-root",
+argv = [maize, "--rom", quesos, "--no-root",
         "--mount", bindir + "=/bin:ro",
         "--mount", rwdir + "=/rw:rw",
-        quesos, "/bin/oksh.mzx"]
+        "/bin/oksh.mzx"]
 
 pid, fd = pty.fork()
 if pid == 0:
