@@ -11,7 +11,7 @@
 # The demo IMAGES are all this script produces. It never supplies, downloads, generates,
 # or references a DOOM WAD: that is the operator's own responsibility (see demos/doom/
 # README.md). doom.mzx alone will not play until the operator provides a WAD at the
-# documented location (~/.maize/root/home/user/doom/doom1.wad) or via --mount at run time.
+# documented location (~/.maize/rootfs/home/user/doom/doom1.wad) or via --mount at run time.
 #
 # Usage: demos/build-demos.sh [--preset <name>] --out <dir> [demo ...]
 #   With no demo names, builds the full v1 set (kilo doom). A demo name is one of

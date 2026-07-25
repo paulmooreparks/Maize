@@ -99,9 +99,9 @@ maize's sandbox), so exempt it: prefix the command with
 `MSYS2_ARG_CONV_EXCL='/doom'`. The `--mount` host side is a real `C:\...` path and
 needs no exemption.
 
-Simpler, persistent alternative: maize's default sandbox root is `~/.maize/root`
+Simpler, persistent alternative: maize's default sandbox root is `~/.maize/rootfs`
 (mounted as `/`, startup cwd `/home/user`). Drop your WAD once at
-`~/.maize/root/home/user/doom/doom1.wad`, then no `--mount` is needed:
+`~/.maize/rootfs/home/user/doom/doom1.wad`, then no `--mount` is needed:
 
     build/<preset>/maizeg --display demos/doom/doom.mzx -iwad doom/doom1.wad
 

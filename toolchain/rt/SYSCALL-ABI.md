@@ -252,6 +252,7 @@ the Linux x86-64 table per the numbering policy.
 | `$39` | `sys_fork` | none | `RV`=child pid in the parent, `0` in the child, or `-errno` |
 | `$3B` | `sys_execve` | `R0`=path, `R1`=argv, `R2`=envp | does not return on success; `-errno` on failure |
 | `$3D` | `sys_wait4` | `R0`=pid (`-1`=any), `R1`=`int *status`, `R2`=options, `R3`=rusage | `RV`=reaped pid or `-errno` |
+| `$3F` | `sys_uname` | `R0`=`struct utsname *buf` | `RV`=`0` (no error path; quesOS writes the 390-byte fixed identity image: sysname `quesOS`, nodename `maize`, machine `maizev1`, a quesOS release/version, empty domainname) (maize-374) |
 | `$0D` | `sys_rt_sigaction` | `R0`=sig, `R1`=act, `R2`=oldact | `RV`=0 or `-errno` (maize-174) |
 | `$0E` | `sys_rt_sigprocmask` | `R0`=how, `R1`=set, `R2`=oldset | `RV`=0 or `-errno` (maize-174) |
 | `$0F` | `sys_rt_sigreturn` | none (pops the kernel-pushed signal frame) | does not return normally (maize-174) |

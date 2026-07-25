@@ -121,7 +121,7 @@ SBASE_WAVE1="true false echo printf pwd cat cp mv rm ls"
 #   related but distinct reason: kill() is declared only in <unistd.h> here, but
 #   kill.c (like every POSIX C library) expects <signal.h> to declare it; the patch
 #   adds the include rather than widening a shared RT header.
-SBASE_WAVE2="basename cal cksum dirname logname mkdir printenv sleep sponge tee unlink yes cmp cols comm cut fold head join md5sum paste rev sha1sum sha224sum sha256sum sha384sum sha512sum sha512-224sum sha512-256sum tsort uniq kill"
+SBASE_WAVE2="basename cal cksum dirname logname mkdir printenv uname sleep sponge tee unlink yes cmp cols comm cut fold head join md5sum paste rev sha1sum sha224sum sha256sum sha384sum sha512sum sha512-224sum sha512-256sum tsort uniq kill"
 
 if [ -z "$PROGS" ]; then PROGS="${SBASE_WAVE1} ${SBASE_WAVE2} oksh"; fi
 

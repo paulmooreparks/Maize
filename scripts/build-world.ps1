@@ -30,11 +30,11 @@
 
 .PARAMETER UserlandOut
     Directory to stage the wave-1 userland images into. Empty ('') uses
-    build-userland.ps1's own default (%USERPROFILE%\.maize\root\bin).
+    build-userland.ps1's own default (%USERPROFILE%\.maize\rootfs\bin).
 
 .PARAMETER DemosOut
     Directory to stage the demo images into. Empty ('') uses build-demos.ps1's own
-    default (%USERPROFILE%\.maize\root\bin).
+    default (%USERPROFILE%\.maize\rootfs\bin).
 
 .PARAMETER QuesosOut
     Where to write the linked quesOS image. Empty ('') uses build-quesos.ps1's own
@@ -87,9 +87,9 @@ $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 if ($QuesosOut -ne '') { $EffectiveQuesosOut = $QuesosOut }
 else { $EffectiveQuesosOut = Join-Path $RepoRoot 'os\quesos\quesos.mzx' }
 if ($UserlandOut -ne '') { $EffectiveUserlandOut = $UserlandOut }
-else { $EffectiveUserlandOut = Join-Path $HOME '.maize\root\bin' }
+else { $EffectiveUserlandOut = Join-Path $HOME '.maize\rootfs\bin' }
 if ($DemosOut -ne '') { $EffectiveDemosOut = $DemosOut }
-else { $EffectiveDemosOut = Join-Path $HOME '.maize\root\bin' }
+else { $EffectiveDemosOut = Join-Path $HOME '.maize\rootfs\bin' }
 
 # --- Stage 1/5: submodule init -------------------------------------------------------
 # A "clean pull" has no submodules checked out; build-demos.ps1 (doom) otherwise

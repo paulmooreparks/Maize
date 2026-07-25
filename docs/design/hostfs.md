@@ -55,7 +55,7 @@ The nine contract surfaces:
 - Posture is **read-only unless `:rw` is given**. The `:ro` suffix is the
   explicit default and may be written for clarity.
 - **Sandbox root by default (maize-132).** Unless `--no-root` is given, a dedicated
-  host directory (`~/.maize/root`, auto-created on first run with a `/home/user`,
+  host directory (`~/.maize/rootfs`, auto-created on first run with a `/home/user`,
   `/tmp` skeleton; redirected by `--root <hostpath>`) is mounted read-write as the
   guest root `/`, and the startup working directory is `/home/user`. A relative
   guest path is normalized against that cwd (`.`, `..`, duplicate slashes resolved;

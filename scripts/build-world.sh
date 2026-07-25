@@ -49,8 +49,8 @@ case "$UNAME" in
 esac
 
 INSTALL_DIR="${HOME}/bin"
-USERLAND_OUT="${HOME}/.maize/root/bin"
-DEMOS_OUT="${HOME}/.maize/root/bin"
+USERLAND_OUT="${HOME}/.maize/rootfs/bin"
+DEMOS_OUT="${HOME}/.maize/rootfs/bin"
 QUESOS_OUT="${REPO_ROOT}/os/quesos/quesos.mzx"
 
 while [ $# -gt 0 ]; do

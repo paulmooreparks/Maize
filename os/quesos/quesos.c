@@ -179,6 +179,13 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define SYS_execve 0x3B
 #define SYS_exit   0x3C
 #define SYS_wait4  0x3D
+/* maize-374: uname(2), a NEW quesOS-guest-only call mirroring the Linux x86-64 number
+ * (uname=63=$3F, unassigned before this card). The native sys::call provider has no
+ * quesOS identity to report and must not leak the mzvm build version, so uname lives
+ * only here, never in src/sys.cpp (the placement rule every guest-identity call
+ * follows). do_uname reports fixed compile-time identity strings; there is no error
+ * path (RV is always 0). */
+#define SYS_uname  0x3F
 
 /* maize-94 decision 8941: native hostfs file/dir syscalls forwarded to a quesOS process.
  * Each mirrors its frozen native number (SYSCALL-ABI.md); the handlers below bounce the
@@ -919,9 +926,13 @@ static void boot_env_add_default(const char *key, const char *val) {
  * model. Each key is filled only when absent (see boot_env_add_default), so an operator
  * -e/--env/~/.maize/env value passes through untouched. LOGNAME mirrors USER. */
 static void boot_env_add_login_defaults(void) {
-    boot_env_add_default("HOME", "/home/user");
-    boot_env_add_default("USER", "user");
-    boot_env_add_default("LOGNAME", "user");
+    /* maize-374: the login session runs as root (euid 0, which oksh renders as "root"
+     * regardless of $USER), so the environment now agrees: HOME=/root, USER=root,
+     * LOGNAME=root. /root is materialized by the first-run rootfs skeleton (src/maize.cpp)
+     * so HOME points at a real writable directory. SHELL and PATH are unchanged. */
+    boot_env_add_default("HOME", "/root");
+    boot_env_add_default("USER", "root");
+    boot_env_add_default("LOGNAME", "root");
     boot_env_add_default("SHELL", "/bin/oksh.mzx");
     boot_env_add_default("PATH", "/bin");
 }
@@ -1963,6 +1974,41 @@ static long do_getcwd(u64 buf_uva, long size) {
     if (size < len + 1) { return -34; }            /* -ERANGE */
     for (i = 0; i <= len; ++i) { as_write8(self, buf_uva + (u64)i, (u8)self->cwd[i]); }
     return len + 1;                                /* Linux getcwd: bytes incl. the NUL */
+}
+
+/* maize-374: uname(2). The guest-visible OS-and-machine identity, all fixed compile-time
+ * constants (no computation, no git rev, no timestamp: reproducibility). The wire image
+ * is the raw Linux new_utsname layout, six 65-byte NUL-terminated fields in order
+ * (sysname, nodename, release, version, machine, domainname), 390 bytes total, so an
+ * unmodified musl/glibc-shaped uname() caller gets the bytes it expects with no shim
+ * (the same pin-to-kernel-layout discipline struct stat / linux_dirent64 follow). Built
+ * into a local stack buffer and copied out per byte through as_write8, the fixed-size
+ * struct-to-guest-memory pattern do_tcgetattr uses. No error path; RV is always 0. */
+#define UTS_FIELD_LEN 65                            /* __NEW_UTS_LEN (64) + NUL */
+#define QUESOS_RELEASE  "0.1.0"                     /* quesOS release; pre-1.0, bump here */
+/* nodename MUST stay identical to the fixed string gethostname() returns
+ * (toolchain/rt/unistd.c). A configurable, kernel-owned hostname is maize-375's job; both
+ * stay the fixed "maize" here. gethostname lives in a different binary (the guest RT), so
+ * the two cannot share a symbol yet; keep them in sync until maize-375 makes one own it. */
+#define QUESOS_NODENAME "maize"
+static void uts_put_field(u8 *img, int field, const char *s) {
+    int off = field * UTS_FIELD_LEN, i;
+    for (i = 0; i < UTS_FIELD_LEN - 1 && s[i]; ++i) { img[off + i] = (u8)s[i]; }
+    /* trailing bytes of the field stay zero (buffer was pre-zeroed) */
+}
+static long do_uname(u64 buf_uva) {
+    struct pcb *self = g_current;
+    u8 img[6 * UTS_FIELD_LEN];
+    int i;
+    for (i = 0; i < (int)sizeof(img); ++i) { img[i] = 0; }
+    uts_put_field(img, 0, "quesOS");                    /* sysname    */
+    uts_put_field(img, 1, QUESOS_NODENAME);             /* nodename   */
+    uts_put_field(img, 2, QUESOS_RELEASE);              /* release    */
+    uts_put_field(img, 3, "quesOS " QUESOS_RELEASE);    /* version    (static banner) */
+    uts_put_field(img, 4, "maizev1");                   /* machine    (arch + ISA-spec version) */
+    /* field 5 (domainname) stays "" (zeroed): quesOS has no NIS/YP domain concept. */
+    for (i = 0; i < (int)sizeof(img); ++i) { as_write8(self, buf_uva + (u64)i, img[i]); }
+    return 0;
 }
 
 /* maize-94: heap break for a quesOS process. The native SYS_brk manages the VM's flat
@@ -3497,6 +3543,8 @@ void quesos_syscall(void) {
         /* maize-94 decision 8940: per-process working directory. */
         case SYS_chdir:      result = do_chdir(a0);                        break;
         case SYS_getcwd:     result = do_getcwd(a0, (long)a1);            break;
+        /* maize-374: guest-only uname(2). */
+        case SYS_uname:      result = do_uname(a0);                        break;
         /* maize-94 (OQ 8951 ruling): forwarded console termios. */
         case SYS_tcgetattr:  result = do_tcgetattr(a0, a1);               break;
         case SYS_tcsetattr:  result = do_tcsetattr(a0, (long)a1, a2);     break;

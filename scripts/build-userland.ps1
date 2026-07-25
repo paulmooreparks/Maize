@@ -12,7 +12,7 @@
     entirely from PowerShell.
 
     With no program names, the full default set is built. Name one or more programs to
-    build just those. By default the images are staged into %USERPROFILE%\.maize\root\bin,
+    build just those. By default the images are staged into %USERPROFILE%\.maize\rootfs\bin,
     which is the guest's /bin under Maize's default sandbox root, so the programs appear
     at /bin when you run maize without a custom root.
 
@@ -25,7 +25,7 @@
     default preset for the platform.
 
 .PARAMETER Out
-    Directory to stage the built images into. Defaults to %USERPROFILE%\.maize\root\bin
+    Directory to stage the built images into. Defaults to %USERPROFILE%\.maize\rootfs\bin
     (the guest /bin under the default sandbox root).
 
 .PARAMETER Prog
@@ -34,7 +34,7 @@
 
 .EXAMPLE
     .\scripts\build-userland.ps1
-    Builds the full default set into %USERPROFILE%\.maize\root\bin.
+    Builds the full default set into %USERPROFILE%\.maize\rootfs\bin.
 
 .EXAMPLE
     .\scripts\build-userland.ps1 -Out C:\tmp\bin true false ls
@@ -63,7 +63,7 @@ if ($OutOverridden) {
     $OutDir = $Out
 }
 else {
-    $OutDir = Join-Path $HOME '.maize\root\bin'
+    $OutDir = Join-Path $HOME '.maize\rootfs\bin'
 }
 if (-not [System.IO.Path]::IsPathRooted($OutDir)) {
     $OutDir = Join-Path (Get-Location).Path $OutDir
@@ -74,7 +74,7 @@ $OutDir = [System.IO.Path]::GetFullPath($OutDir)
 # <root>\bin (and thus <root>) via mkdir -p, so a post-build check would always find it;
 # capturing the first-run case up front is what lets the OQ-9246 warning fire. Only
 # meaningful when the default -Out is in effect.
-$RootDir = Join-Path $HOME '.maize\root'
+$RootDir = Join-Path $HOME '.maize\rootfs'
 $RootMissingBefore = (-not $OutOverridden) -and (-not (Test-Path $RootDir))
 
 # Git Bash is required: the cproc/QBE C toolchain is POSIX-only. maize-258 repoints

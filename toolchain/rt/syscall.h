@@ -129,6 +129,12 @@ long sys_dup(long oldfd);
 long sys_chdir(const char *path);
 long sys_getcwd(char *buf, unsigned long size);
 
+/* maize-374 uname raw stub (SYS $3F). NEW quesOS-guest-only call: a user process's SYS
+ * traps to quesOS, which writes the fixed struct utsname image to buf. Always returns 0
+ * (no error path). The POSIX-named uname() wrapper lives in unistd.c; struct utsname is
+ * in sys/utsname.h, so buf is type-erased to void* here (like sys_fstat's statbuf). */
+long sys_uname(void *buf);
+
 /* maize-238 Phase 3 raw stubs (SYS $29/$31/$2A/$32/$2B/$35/$07/$17/$FC). Bodies in
  * syscall.mazm; the sys/socket.h, poll.h, and sys/select.h POSIX wrappers (errno.c) call
  * these. Guest-only: dispatched by quesOS. Type-erased pointer args (void*) match the

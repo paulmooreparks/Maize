@@ -21,6 +21,7 @@
 #include "errno.h"
 #include "syscall.h"
 #include "sys/wait.h"   /* maize-94: wait/waitpid bodies live here (over sys_wait4) */
+#include "sys/utsname.h" /* maize-374: struct utsname + uname() prototype */
 #include "sys/stat.h"   /* maize-94: stat() for access(); umask's mode_t */
 #include "fcntl.h"      /* maize-94: F_* commands for fcntl() */
 #include "stdarg.h"     /* maize-94: va_arg for fcntl's F_DUPFD argument */
@@ -408,4 +409,13 @@ gethostname(char *name, unsigned long len)
     }
     name[i] = '\0';
     return 0;
+}
+
+/* uname (maize-374): the guest-only $3F stub fills *buf with quesOS's fixed struct utsname
+ * (sysname/nodename/release/version/machine, domainname empty). Passes the result through
+ * __syscall_ret exactly as chdir does; uname has no error path today, so this returns 0. */
+int
+uname(struct utsname *buf)
+{
+    return (int)__syscall_ret((unsigned long)sys_uname(buf));
 }

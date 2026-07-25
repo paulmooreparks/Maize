@@ -282,6 +282,10 @@ sys_getcwd:
     SYS $4F                 ; R0=buf, R1=size; RV = length incl. NUL, or -ERANGE
     RET
 
+sys_uname:
+    SYS $3F                 ; R0=buf (struct utsname*); RV = 0 (guest-only: quesOS identity)
+    RET
+
 sys_fb_geometry:
     SYS $F7                 ; R0=out_uva (u32 width,height,format); RV = 0
     RET

@@ -224,7 +224,7 @@ static void print_usage(std::ostream &out) {
 		"                             directory (repeatable; read-only unless :rw)\n"
 		"      --mount-home[=HOST]    map the host home to /home/user, read-write\n"
 		"      --root <hostpath>      use this host dir as the sandbox root instead\n"
-		"                             of the default ~/.maize/root\n"
+		"                             of the default ~/.maize/rootfs\n"
 		"      --profile[=N]          sample where the program spends its time (every\n"
 		"                             N instructions, default 4096) and print a report\n"
 		"                             at exit; add --profile-map for function names\n"
@@ -281,7 +281,7 @@ static void print_usage(std::ostream &out) {
 		"All of these files are optional; absent means the built-in defaults and an empty env.\n"
 		"\n"
 		"By default the guest gets a persistent sandbox root filesystem: a dedicated\n"
-		"host directory (~/.maize/root, created on first run with /home/user and /tmp)\n"
+		"host directory (~/.maize/rootfs, created on first run with /home/user and /tmp)\n"
 		"is mounted read-write as the guest root '/', and the startup working directory\n"
 		"is /home/user. A relative guest path resolves against that cwd, so a program\n"
 		"that writes ./file lands under the sandbox root and persists across runs.\n"
@@ -1774,9 +1774,11 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* card maize-132: unless --no-root, mount a dedicated host directory as the guest
-	   root "/", read-write, auto-created with a minimal skeleton (/home/user, /tmp) on
-	   first run. Default host location ~/.maize/root (HOME/USERPROFILE; a plain host
-	   dir the operator can open in a file manager); --root <hostpath> redirects it.
+	   root "/", read-write, auto-created with a minimal skeleton (/home/user, /tmp,
+	   /root) on first run. Default host location ~/.maize/rootfs (HOME/USERPROFILE; a
+	   plain host dir the operator can open in a file manager); --root <hostpath>
+	   redirects it. The tree is named "rootfs" (the filesystem root), distinct from the
+	   guest /root user home it contains (maize-374).
 	   Everything the guest writes (DOOM saves, .default.cfg) persists under that dir,
 	   and the startup cwd is /home/user, so a relative guest path resolves to a
 	   writable location with no per-program config. --mount / --mount-home overlay on
@@ -1795,7 +1797,7 @@ int main(int argc, char *argv[]) {
 		else {
 			std::string home;
 			if (resolve_home("", home)) {
-				root = std::filesystem::path(home) / ".maize" / "root";
+				root = std::filesystem::path(home) / ".maize" / "rootfs";
 			}
 			else {
 				/* No host home and no --root: fall back to deny-by-default rather
@@ -1811,6 +1813,10 @@ int main(int argc, char *argv[]) {
 			std::error_code ec;
 			std::filesystem::create_directories(root / "home" / "user", ec);
 			std::filesystem::create_directories(root / "tmp", ec);
+			/* maize-374: materialize the guest /root so HOME=/root (quesOS boot env)
+			   points at a real writable directory from first run. Directory only; no
+			   seeded file (unlike /etc/profile, /root has no shipped content). */
+			std::filesystem::create_directories(root / "root", ec);
 			/* maize-360: ship a minimal system-wide /etc/profile as part of the
 			   skeleton. oksh's login path sources KSH_SYSTEM_PROFILE (/etc/profile,
 			   userland/oksh/sh.h) before $HOME/.profile, so a login shell reads this

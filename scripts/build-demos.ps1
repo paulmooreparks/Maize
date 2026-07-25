@@ -12,14 +12,14 @@
 
     With no demo names, the full default set is built: kilo (a terminal text editor) and
     doom. Name one or more demos to build just those. By default the images are staged into
-    %USERPROFILE%\.maize\root\bin, which is the guest's /bin under Maize's default sandbox
+    %USERPROFILE%\.maize\rootfs\bin, which is the guest's /bin under Maize's default sandbox
     root, so the demos appear at /bin when you run maize without a custom root.
 
     Building doom needs its engine source fetched first
     (git submodule update --init demos/doom/doomgeneric); the script stops with that exact
     command if it is missing. This script never supplies or touches a DOOM WAD: doom.mzx is
     just the engine, and you provide your own WAD (see demos\doom\README.md) at
-    %USERPROFILE%\.maize\root\home\user\doom\doom1.wad or via a mount at run time.
+    %USERPROFILE%\.maize\rootfs\home\user\doom\doom1.wad or via a mount at run time.
 
     Requires Git for Windows (ships Git Bash) with the Maize C cross-toolchain
     provisioned (run scripts\install-mazm.ps1 once to set that up). If Git Bash is not
@@ -30,7 +30,7 @@
     default preset for the platform.
 
 .PARAMETER Out
-    Directory to stage the built images into. Defaults to %USERPROFILE%\.maize\root\bin
+    Directory to stage the built images into. Defaults to %USERPROFILE%\.maize\rootfs\bin
     (the guest /bin under the default sandbox root).
 
 .PARAMETER Demo
@@ -38,7 +38,7 @@
 
 .EXAMPLE
     .\scripts\build-demos.ps1
-    Builds kilo and doom into %USERPROFILE%\.maize\root\bin.
+    Builds kilo and doom into %USERPROFILE%\.maize\rootfs\bin.
 
 .EXAMPLE
     .\scripts\build-demos.ps1 -Out C:\tmp\bin kilo
@@ -67,7 +67,7 @@ if ($OutOverridden) {
     $OutDir = $Out
 }
 else {
-    $OutDir = Join-Path $HOME '.maize\root\bin'
+    $OutDir = Join-Path $HOME '.maize\rootfs\bin'
 }
 if (-not [System.IO.Path]::IsPathRooted($OutDir)) {
     $OutDir = Join-Path (Get-Location).Path $OutDir
@@ -78,7 +78,7 @@ $OutDir = [System.IO.Path]::GetFullPath($OutDir)
 # <root>\bin (and thus <root>) via mkdir -p, so a post-build check would always find it;
 # capturing the first-run case up front is what lets the OQ-9246 warning fire. Only
 # meaningful when the default -Out is in effect.
-$RootDir = Join-Path $HOME '.maize\root'
+$RootDir = Join-Path $HOME '.maize\rootfs'
 $RootMissingBefore = (-not $OutOverridden) -and (-not (Test-Path $RootDir))
 
 # Git Bash is required: the cproc/QBE C toolchain is POSIX-only. maize-258 repoints
@@ -131,7 +131,7 @@ $ErrorActionPreference = $prevEap
 
 if ($code -eq 0) {
     Write-Host "Staged demo images in $OutDir"
-    Write-Host 'doom.mzx needs a WAD you supply: drop one at %USERPROFILE%\.maize\root\home\user\doom\doom1.wad (default root), or mount one at run time. See demos\doom\README.md.'
+    Write-Host 'doom.mzx needs a WAD you supply: drop one at %USERPROFILE%\.maize\rootfs\home\user\doom\doom1.wad (default root), or mount one at run time. See demos\doom\README.md.'
     if (-not $OutOverridden) {
         Write-Host 'These appear at guest /bin when you run maize with the default sandbox root.'
         if ($RootMissingBefore) {

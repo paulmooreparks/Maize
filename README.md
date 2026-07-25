@@ -54,13 +54,13 @@ cmake --build --preset linux-release --target maizeg
 
 ### Run it
 
-Maize gives every guest a persistent sandbox root at `~/.maize/root` that IS the
+Maize gives every guest a persistent sandbox root at `~/.maize/rootfs` that IS the
 guest's `/`, so the simplest way to hand DOOM its WAD is to drop the file inside it.
 Make a `doom` folder under the root and put your WAD there (you supply the WAD; the
 shareware `doom1.wad` or a retail `DOOM.WAD` both work):
 
-- Windows: `%USERPROFILE%\.maize\root\doom\doom1.wad`
-- Linux: `~/.maize/root/doom/doom1.wad`
+- Windows: `%USERPROFILE%\.maize\rootfs\doom\doom1.wad`
+- Linux: `~/.maize/rootfs/doom/doom1.wad`
 
 The guest sees that file as `/doom/doom1.wad`. Now run, from the repo root; no
 `--mount` is needed, because the WAD already lives inside the sandbox root:
@@ -511,7 +511,7 @@ redirect just that one run).
 ### The sandbox root and mounting host directories
 
 By default the guest gets a persistent sandbox root filesystem: a dedicated host
-directory (`~/.maize/root`, created on first run with a `/home/user` and `/tmp`
+directory (`~/.maize/rootfs`, created on first run with a `/home/user` and `/tmp`
 skeleton) is mounted read-write as the guest root `/`, and the startup working
 directory is `/home/user`. A relative guest path resolves against that cwd, so a
 program that writes `./file` (or DOOM saving to `./.savegame/...`) lands under the
@@ -519,9 +519,9 @@ sandbox root and persists across runs with no per-program configuration. Your re
 filesystem is NOT reachable: only the sandbox root plus any explicit overlay grants.
 
 Because the root is just a host directory, you can stage files into it yourself:
-anything you create under `~/.maize/root` appears to the guest at the matching path.
-Create `~/.maize/root/doom/` and it is the guest's `/doom/`, which is exactly how the
-DOOM quickstart above hands the game its WAD (`~/.maize/root/doom/doom1.wad` becomes
+anything you create under `~/.maize/rootfs` appears to the guest at the matching path.
+Create `~/.maize/rootfs/doom/` and it is the guest's `/doom/`, which is exactly how the
+DOOM quickstart above hands the game its WAD (`~/.maize/rootfs/doom/doom1.wad` becomes
 `/doom/doom1.wad`) without any `--mount`.
 
 - `--root <hostpath>` uses a different host directory as the sandbox root.
