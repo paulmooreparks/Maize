@@ -821,6 +821,14 @@ static u64  g_boot_env_pack;                /* maize-360: bytes packed into g_bo
 static char g_init_path[QUESOS_PATH_CAP];
 static int  g_init_path_set;
 
+/* maize-372: verbose-boot gate, armed from a reserved QUESOS_VERBOSE entry in the
+ * launcher-forwarded environment (boot_env_extract_verbose). When 0 (the default),
+ * the informational [quesos] boot/reap/unhandled-syscall trace lines stay silent so
+ * quesOS boots and shuts down quietly like a real init; a non-empty QUESOS_VERBOSE
+ * sets it to 1 and every gated line prints exactly as it did before this gate landed.
+ * Genuine error/warning [quesos] lines are never gated on this flag. */
+static int  g_verbose;
+
 /* maize-359: the forwarded boot argv, captured at quesos_main entry alongside the
  * launcher environment and under the same tear-down discipline. argv[1..argc) is
  * split on `--` into worklist entries (see boot_args_capture); entry i's tokens
@@ -887,6 +895,30 @@ static void boot_env_extract_init(void) {
             while (val[k] && k < QUESOS_PATH_CAP - 1) { g_init_path[k] = val[k]; ++k; }
             g_init_path[k] = 0;
             if (g_init_path[0] != 0) { g_init_path_set = 1; }
+            /* strip: shift the trailing offsets down over this entry. The packed
+             * bytes stay in g_boot_envbuf but become unreferenced. */
+            for (j = i; j < g_boot_envc - 1; ++j) { g_boot_env_off[j] = g_boot_env_off[j + 1]; }
+            --g_boot_envc;
+            return;
+        }
+    }
+}
+
+/* maize-372: pull the reserved QUESOS_VERBOSE key out of the captured launcher
+ * environment (before it can seed any spawned process) and, when present with a
+ * non-empty value, arm g_verbose so the gated [quesos] boot/reap/trace lines print.
+ * Structured exactly like boot_env_extract_init: the entry is stripped from
+ * g_boot_env_off so it never leaks into a spawned process's envp. Only a present AND
+ * non-empty value arms the flag; a bare "QUESOS_VERBOSE=" is treated as unset (quiet)
+ * but is still stripped. The value's content is otherwise ignored (any non-empty
+ * value just means "set"). Only the first QUESOS_VERBOSE is honored. */
+static void boot_env_extract_verbose(void) {
+    int i, j;
+    for (i = 0; i < g_boot_envc; ++i) {
+        const char *e = g_boot_envbuf + g_boot_env_off[i];
+        if (env_key_is(e, "QUESOS_VERBOSE")) {
+            const char *val = e + 14 + 1;   /* strlen("QUESOS_VERBOSE") + the '=' */
+            if (val[0] != 0) { g_verbose = 1; }
             /* strip: shift the trailing offsets down over this entry. The packed
              * bytes stay in g_boot_envbuf but become unreferenced. */
             for (j = i; j < g_boot_envc - 1; ++j) { g_boot_env_off[j] = g_boot_env_off[j + 1]; }
@@ -3356,11 +3388,13 @@ static void reap_tail(struct pcb *self) {
         && (parent->wait_for <= 0 || parent->wait_for == self->pid)) {
         deliver_wait(parent, self);   /* frees self, wakes parent */
     } else if (self->parent == 0) {
-        qos_puts("[quesos] reaped ");
-        qos_puts(self->path);
-        qos_puts(" status=");
-        qos_put_u64((u64)(self->exit_status & 0xFF));
-        qos_puts("\n");
+        if (g_verbose) {   /* maize-372: reap trace, quiet by default */
+            qos_puts("[quesos] reaped ");
+            qos_puts(self->path);
+            qos_puts(" status=");
+            qos_put_u64((u64)(self->exit_status & 0xFF));
+            qos_puts("\n");
+        }
         self->state = P_FREE;
     }
     /* else: leave a zombie for a later wait. */
@@ -3612,9 +3646,11 @@ void quesos_syscall(void) {
              * forward next. This is what lets a shell survive a call quesOS has not wired
              * yet (e.g. before $F6 ttysize was forwarded, oksh got -ENOSYS here and would
              * fall back rather than crash). */
-            qos_puts("[quesos] unhandled syscall ");
-            qos_put_u64(num);
-            qos_puts("\n");
+            if (g_verbose) {   /* maize-372: unhandled-syscall trace, quiet by default */
+                qos_puts("[quesos] unhandled syscall ");
+                qos_put_u64(num);
+                qos_puts("\n");
+            }
             result = -38;   /* -ENOSYS */
             break;
     }
@@ -3642,6 +3678,7 @@ void quesos_main(long argc, char **argv, char **envp) {
      * first called from the spawn loop, so every top-level worklist process sees the
      * completed environment. */
     boot_env_extract_init();
+    boot_env_extract_verbose();   /* maize-372: settle the verbose gate before the first [quesos] line is a candidate */
     boot_env_add_login_defaults();
 
     /* maize-359: capture the forwarded boot argv, split on `--` into worklist entries
@@ -3658,9 +3695,11 @@ void quesos_main(long argc, char **argv, char **envp) {
 
     ofd_init();   /* allocate the shared stdio open-file descriptions (fd 0/1/2) */
 
-    qos_puts("[quesos] init: cause-7 handler resident; running ");
-    qos_put_u64((u64)g_worklist_count);
-    qos_puts(" program(s)\n");
+    if (g_verbose) {   /* maize-372: boot trace, quiet by default */
+        qos_puts("[quesos] init: cause-7 handler resident; running ");
+        qos_put_u64((u64)g_worklist_count);
+        qos_puts(" program(s)\n");
+    }
 
     /* Spawn every worklist entry as a top-level process (parent = init = 0), then let
      * the scheduler run them. With no forking and no timer this is round-robin over

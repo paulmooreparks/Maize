@@ -2534,8 +2534,10 @@ run_quesos_selfcheck() {
     # argv, so multiple top-level programs are separated by an explicit `--` token.
     # Both children still get zero forwarded args; only the boundary syntax changes,
     # and the "running 2 program(s)" transcript is unchanged.
+    # maize-372: the [quesos] init/reap lines are now quiet by default; this fixture
+    # asserts on them, so opt into verbose boot explicitly with -e QUESOS_VERBOSE=1.
     actual=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
-        "$quesos" /progs/child1.mzx -- /progs/child2.mzx 2>/dev/null | grep -v '^$')
+        -e QUESOS_VERBOSE=1 "$quesos" /progs/child1.mzx -- /progs/child2.mzx 2>/dev/null | grep -v '^$')
     set -e
 
     expected=$(printf '%s\n' \
@@ -2599,8 +2601,10 @@ run_quesos_argcheck() {
     # the leading-dash token -c preserved verbatim, framed by quesOS's init/reap lines.
     TOTAL=$((TOTAL + 1))
     set +e
+    # maize-372: this leg asserts on the now-gated [quesos] init/reap lines, so opt
+    # into verbose boot explicitly with -e QUESOS_VERBOSE=1.
     actual=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
-        "$quesos" /progs/argcheck.mzx a b -c 2>/dev/null | grep -v '^$')
+        -e QUESOS_VERBOSE=1 "$quesos" /progs/argcheck.mzx a b -c 2>/dev/null | grep -v '^$')
     set -e
     # maize-360: quesOS gap-fills the five login-env keys (HOME/USER/LOGNAME/SHELL/PATH)
     # into EVERY top-level worklist process, so argcheck's envp now carries them after its
@@ -2645,8 +2649,10 @@ run_quesos_argcheck() {
     # Leg 3: `--`-separated multi-program boot; each program gets its own forwarded args.
     TOTAL=$((TOTAL + 1))
     set +e
+    # maize-372: this leg asserts on the now-gated [quesos] init/reap lines, so opt
+    # into verbose boot explicitly with -e QUESOS_VERBOSE=1.
     multi=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
-        "$quesos" /progs/argcheck.mzx one -- /progs/argcheck.mzx two 2>/dev/null | grep -v '^$')
+        -e QUESOS_VERBOSE=1 "$quesos" /progs/argcheck.mzx one -- /progs/argcheck.mzx two 2>/dev/null | grep -v '^$')
     set -e
     # maize-360: each top-level worklist program gets the five gap-filled login-env keys
     # in its envp, so both argcheck runs print them after their own argv block.
@@ -2726,9 +2732,11 @@ run_quesos_default_init() {
     # NOT QUESOS_INIT, framed by quesOS's init/reap lines.
     TOTAL=$((TOTAL + 1))
     set +e
+    # maize-372: this leg asserts on the now-gated [quesos] init/reap lines, so opt
+    # into verbose boot explicitly with -e QUESOS_VERBOSE=1.
     out=$(MSYS2_ARG_CONV_EXCL='/progs' "$DEFAULT_MAIZE" --rom "$quesos" --no-root \
         --mount "${nat}=/progs:ro" -e QUESOS_INIT=/progs/argcheck.mzx -e QOSVAR=set \
-        </dev/null 2>/dev/null | grep -v '^$')
+        -e QUESOS_VERBOSE=1 </dev/null 2>/dev/null | grep -v '^$')
     set -e
     # maize-374: the login identity is now coherently root, so HOME/USER/LOGNAME are
     # /root, root, root (SHELL/PATH unchanged).
@@ -2769,6 +2777,120 @@ run_quesos_default_init() {
 }
 
 run_quesos_default_init
+
+# maize-372: quesOS quiet-boot gate. quesOS is now Unix-quiet by default: the
+# informational [quesos] init/reap/unhandled-syscall trace lines are gated behind a
+# reserved QUESOS_VERBOSE boot-env key and stay silent unless it is set to a non-empty
+# value. Genuine error/warning [quesos] lines are never gated. Three legs, all on the
+# same argcheck scaffold used by run_quesos_argcheck / run_quesos_default_init:
+#   A default_quiet:         no QUESOS_VERBOSE; neither [quesos] init: nor [quesos] reaped
+#                            appears, but argcheck's own argv+envp dump still runs and reaps.
+#   B verbose:               -e QUESOS_VERBOSE=1; the init + reaped lines reappear exactly as
+#                            before, and QUESOS_VERBOSE is stripped from the envp dump (armed).
+#   C genuine_error_visible: booting a /progs entry that was never written still prints the
+#                            ALWAYS "[quesos] cannot start ..." line under default quiet boot,
+#                            while the GATED "[quesos] init:" line stays absent on the same run.
+run_quesos_quiet_boot() {
+    name="quesos_quiet_boot"
+
+    ac="${REPO_ROOT}/os/quesos/argcheck.c"
+    builder="${REPO_ROOT}/os/quesos/build-quesos.sh"
+    if [ ! -f "$ac" ] || [ ! -f "$builder" ]; then
+        echo "[FAIL] ${name}: missing os/quesos/argcheck.c or build-quesos.sh" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    progs="${WORK_DIR}/quesos-quiet"
+    rm -rf "$progs"; mkdir -p "$progs"
+    log="${WORK_DIR}/quesos-quiet.build.log"
+
+    if ! "$CC_MAIZE" --preset "$PRESET" -o "${progs}/argcheck.mzx" "$ac" >"$log" 2>&1; then
+        echo "[FAIL] ${name}: argcheck compile failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    quesos="${WORK_DIR}/quesos-quiet.mzx"
+    if ! sh "$builder" --preset "$PRESET" -o "$quesos" >>"$log" 2>&1 || [ ! -f "$quesos" ]; then
+        echo "[FAIL] ${name}: quesOS link failed"; cat "$log" >&2
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); return
+    fi
+
+    nat=$(host_to_native "$progs")
+
+    # Leg A: default quiet boot. No QUESOS_VERBOSE, so neither the [quesos] init: line nor
+    # any [quesos] reaped line appears; the transcript is exactly argcheck's own argv[0]
+    # plus the five gap-filled login-env keys (the exact match proves both gated lines are
+    # absent), and the program still runs and reaps clean.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    quiet=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
+        "$quesos" /progs/argcheck.mzx 2>/dev/null | grep -v '^$')
+    set -e
+    expected_quiet=$(printf '%s\n' \
+        '/progs/argcheck.mzx' \
+        'HOME=/root' \
+        'USER=root' \
+        'LOGNAME=root' \
+        'SHELL=/bin/oksh.mzx' \
+        'PATH=/bin')
+    if [ "$quiet" = "$expected_quiet" ]; then
+        echo "[PASS] ${name}_default_quiet (no [quesos] init:/reaped; program still runs and reaps)"
+    else
+        echo "[FAIL] ${name}_default_quiet"
+        echo "        expected transcript:"; printf '%s\n' "$expected_quiet" | sed 's/^/          | /'
+        echo "        actual transcript:";   printf '%s\n' "$quiet"          | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # Leg B: verbose boot. -e QUESOS_VERBOSE=1 brings back the gated init + reaped lines
+    # exactly as before, and QUESOS_VERBOSE is stripped from the captured env so it never
+    # reaches argcheck's envp dump even while armed (the exact match, with no QUESOS_VERBOSE
+    # line in the expected envp block, proves the strip).
+    TOTAL=$((TOTAL + 1))
+    set +e
+    verbose=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
+        -e QUESOS_VERBOSE=1 "$quesos" /progs/argcheck.mzx 2>/dev/null | grep -v '^$')
+    set -e
+    expected_verbose=$(printf '%s\n' \
+        '[quesos] init: cause-7 handler resident; running 1 program(s)' \
+        '/progs/argcheck.mzx' \
+        'HOME=/root' \
+        'USER=root' \
+        'LOGNAME=root' \
+        'SHELL=/bin/oksh.mzx' \
+        'PATH=/bin' \
+        '[quesos] reaped /progs/argcheck.mzx status=0')
+    if [ "$verbose" = "$expected_verbose" ] \
+        && ! printf '%s\n' "$verbose" | grep -q 'QUESOS_VERBOSE'; then
+        echo "[PASS] ${name}_verbose (QUESOS_VERBOSE restores the init/reap trace; key stripped from envp)"
+    else
+        echo "[FAIL] ${name}_verbose"
+        echo "        expected transcript:"; printf '%s\n' "$expected_verbose" | sed 's/^/          | /'
+        echo "        actual transcript:";   printf '%s\n' "$verbose"          | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # Leg C: a genuine error is still visible under default quiet boot. Boot names a /progs
+    # entry that was never written into the mount, so sys_open fails, load_segments returns
+    # -1 on the silent fd<0 branch, and spawn() returns 0. The ALWAYS "[quesos] cannot start"
+    # line fires; the GATED "[quesos] init:" line stays absent on the same quiet run.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    err=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
+        "$quesos" /progs/does-not-exist.mzx 2>/dev/null | grep -v '^$')
+    set -e
+    expected_err='[quesos] cannot start /progs/does-not-exist.mzx'
+    if [ "$err" = "$expected_err" ]; then
+        echo "[PASS] ${name}_genuine_error_visible (ALWAYS 'cannot start' fires; GATED init: stays gated)"
+    else
+        echo "[FAIL] ${name}_genuine_error_visible"
+        echo "        expected transcript:"; printf '%s\n' "$expected_err" | sed 's/^/          | /'
+        echo "        actual transcript:";   printf '%s\n' "$err"          | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_quesos_quiet_boot
 
 # maize-93 process ladder: the multi-process quesOS acceptance fixtures. Each is a C
 # program compiled by the ordinary cc-maize.sh pipeline (stock .mzx) and run UNDER
