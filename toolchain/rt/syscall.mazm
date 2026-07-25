@@ -122,6 +122,9 @@ GLOBAL sys_dup
 GLOBAL sys_chdir
 GLOBAL sys_getcwd
 
+; maize-374: uname(2), a NEW quesOS-guest-only call ($3F, the Linux x86-64 number).
+GLOBAL sys_uname
+
 ; maize-236 framebuffer registration: quesOS-private guest-only calls that trap to the
 ; cause-7 dispatcher. The SYS instruction rides only an 8-bit number into the trap frame, so
 ; the design's 0x1000-0x1002 range is realized in the reserved Maize-private high block
