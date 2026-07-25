@@ -48,7 +48,13 @@ CSUM_B = "%08x" % fnv1a(pattern_frame(0xB2))
 CSUM_C = "%08x" % fnv1a(pattern_frame(0xC3))
 
 CSUM_RE = re.compile(r"presenter-stub: slot=(\d+) seq=(\d+) checksum=([0-9a-f]{8}) t=(\d+)")
-SESSION_RE = re.compile(r"maizeg --presenter (\w+)")
+# Detect the session via the stub's own ready line (src/presenter_main.cpp, printed right after
+# mark_presenter_ready), not maize's "run `maizeg --presenter <id>` to reattach" console notice:
+# that notice is behind --verbose as of maize-371, whereas the stub ready line is unconditional
+# and always precedes the checksum stream these scenarios wait on. The literal "maizeg --presenter
+# <id>" used by presenter_pids() / the manual reattach below is the real process argv and is
+# unaffected.
+SESSION_RE = re.compile(r"presenter-stub: ready session=(\w+)")
 
 
 class Session:

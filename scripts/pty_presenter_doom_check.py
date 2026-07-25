@@ -13,8 +13,8 @@
 # DG_Init) triggers the exact same launch-or-attach hook a bare-VM registration would -- the
 # ONE thing genuinely specific to a quesOS-mediated registration that maize-264's bare-VM-only
 # fixtures never exercised. It asserts:
-#   (a) the session announces `maizeg --presenter <session-id>` (the launch-or-attach hook
-#       fired for a quesOS child's registration);
+#   (a) the presenter stub reports `presenter-stub: ready session=<session-id>` (the launch-or-
+#       attach hook fired for a quesOS child's registration and the stub attached);
 #   (b) once DOOM's rendered frame has STABILIZED BY CONTENT (the presenter stub's printed
 #       FNV-1a checksum holds identical across several consecutive DISTINCT presents, i.e. the
 #       melt-wipe has finished and the frame is static), that stabilized checksum matches a
@@ -69,7 +69,14 @@ STABLE_FRAMES = int(os.environ.get("MZ_DOOM_STABLE_FRAMES", "5"))
 STABLE_DEADLINE = float(os.environ.get("MZ_DOOM_STABLE_DEADLINE", "150"))
 
 CSUM_RE = re.compile(r"presenter-stub: slot=(\d+) seq=(\d+) checksum=([0-9a-f]{8}) t=(\d+)")
-SESSION_RE = re.compile(r"maizeg --presenter (\w+)")
+# The presenter stub prints this the instant it attaches (src/presenter_main.cpp, right after
+# mark_presenter_ready), so it is direct proof the launch-or-attach hook fired for the child's
+# fb_register. We key off it rather than maize's own "run `maizeg --presenter <id>` to reattach"
+# console notice: that notice is now behind --verbose (maize-371) and, more to the point, it is
+# printed at segment setup before any guest registers a framebuffer, so it never actually
+# evidenced the child's registration. The stub ready line always precedes the checksum stream
+# below, so keying session detection off it is correct on every leg.
+SESSION_RE = re.compile(r"presenter-stub: ready session=(\w+)")
 
 
 class Session:
@@ -169,14 +176,15 @@ def main():
             QUESOS, "/progs/%s" % os.path.basename(DOOM_CHILD)]
     sess = Session(argv)
 
-    # (a) the launch-or-attach hook fired for the quesOS child's registration. fb_register fires
-    # early in DG_Init, well before the tick loop, but give it ample margin for the slow
-    # asan/ubsan leg's engine boot (returns as soon as it matches, so the cap only bites on a
-    # genuine no-announcement failure).
+    # (a) the launch-or-attach hook fired for the quesOS child's registration, proven by the stub
+    # reporting itself ready. fb_register fires early in DG_Init, well before the tick loop, but
+    # give it ample margin for the slow asan/ubsan leg's engine boot plus the stub spawn (returns
+    # as soon as it matches, so the cap only bites on a genuine no-attach failure).
     m = sess.wait_for(SESSION_RE, 60)
     if not m:
-        fail(sess, "session never announced 'maizeg --presenter <id>' "
-                   "(quesOS child's fb_register did not trigger the launch hook)")
+        fail(sess, "presenter stub never reported 'presenter-stub: ready session=<id>' "
+                   "(quesOS child's fb_register did not trigger the launch hook, or the stub did "
+                   "not attach)")
     sid = m.group(1)
 
     # (b) the stub's CONTENT-STABILIZED checksum for DOOM's 320x200 frame. The first graphical
