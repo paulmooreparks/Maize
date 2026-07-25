@@ -472,6 +472,13 @@ struct jit_state {
     std::uint64_t dispatch_hit = 0;      /* dispatcher entries that ran a compiled block */
     std::uint64_t dispatch_miss = 0;     /* dispatcher entries that fell back to the interpreter */
     std::unordered_map<u_word, std::uint64_t> miss_pcs;   /* diagnostic: where misses land */
+
+    /* Own the cached blocks for the container's whole lifetime (maize-363). Any jit_block
+       still live in table at process exit is freed here, the same one-line loop
+       jit_flush_all uses. Ties code-cache cleanup to jit_state's own teardown instead of a
+       shutdown call site, closing the LSan static-teardown gap. Runs exactly once, so it
+       adds no per-compile or per-dispatch cost. */
+    ~jit_state() { for (auto& kv : table) { delete kv.second; } }
 };
 jit_state g_jit;
 
