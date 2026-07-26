@@ -32,6 +32,17 @@
 #   2 - environment/setup failure (a required executable is missing)
 #
 # Usage: scripts/run-ctest.sh [--preset <name>] [--skip-build]
+#
+# maize-376: the same fixtures are also registered as CTest tests, so once the preset
+# is configured they can be selected, parallelised and individually timed:
+#
+#   ctest --test-dir build/linux-debug                 every fixture, serially
+#   ctest --test-dir build/linux-debug -j8             the same set in parallel
+#   ctest --test-dir build/linux-debug -L hostfs       one subsystem
+#   ctest --test-dir build/linux-debug -R kilo         one fixture (regex on the name)
+#
+# Running this script directly is unchanged and still the plain entry point; the ctest
+# path drives the identical fixture bodies through --ctest-setup / --ctest-env below.
 
 set -eu
 

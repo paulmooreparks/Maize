@@ -23,7 +23,7 @@ Prereqs: CMake 3.21+ and Ninja. On Windows the compiler is fetched by the bootst
     # Linux / WSL (needs ninja on PATH)
     scripts/run-tests.sh
 
-`run-tests.{ps1,sh}` builds the four tools (maize, mazm, mzld, mzdis) and runs the asm/ corpus, exit 0/1/2. `scripts/run-ctest.sh` compiles and runs the ctest/ C corpus through the full mzcc pipeline and diffs each program's output (and exit status, where asserted) against its committed fixture. Manual smoke test: `mazm asm/hello.mazm` then `maize asm/hello.mzb` prints "Hello, world!".
+`run-tests.{ps1,sh}` builds the four tools (maize, mazm, mzld, mzdis) and runs the asm/ corpus, exit 0/1/2. `scripts/run-ctest.sh` compiles and runs the ctest/ C corpus through the full mzcc pipeline and diffs each program's output (and exit status, where asserted) against its committed fixture; its 80 fixtures are also registered as CTest tests (maize-376, `cmake/MaizeCTest.cmake`), so `ctest --test-dir build/<preset> [-jN] [-L <subsystem>] [-R <name>]` selects, parallelises and individually times them. Manual smoke test: `mazm asm/hello.mazm` then `maize asm/hello.mzb` prints "Hello, world!".
 
 ## Environment notes and gotchas
 

@@ -307,6 +307,20 @@ ctest/ through the full mzcc pipeline and diffs each program's output against it
 committed fixture, so a codegen regression reports separately from an asm-suite
 regression.
 
+Every fixture in that harness is also registered as a CTest test, so once a preset is
+configured you can select and parallelise them:
+
+```
+ctest --test-dir build/linux-debug              # all of them, one at a time
+ctest --test-dir build/linux-debug -j8          # the same set in parallel
+ctest --test-dir build/linux-debug -L hostfs    # one subsystem by label
+ctest --test-dir build/linux-debug -R kilo      # one fixture by name
+```
+
+The labels are toolchain, hostfs, terminal, doom, launcher, quesos, userland, oksh,
+and jit. Each test carries its own timeout, so a wedged fixture fails on its own
+instead of stalling the whole run.
+
 ### Editor setup (VS Code)
 
 Open the repo in VS Code, install the recommended extensions when prompted (CMake Tools

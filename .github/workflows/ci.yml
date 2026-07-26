@@ -41,9 +41,23 @@ jobs:
         # target in the linux-debug preset) instead of the cc-maize.sh shell
         # driver, so the suite inherits the maize-302 runtime archive and the
         # maize-274 object cache.
+        #
+        # maize-376: driven through ctest rather than by invoking run-ctest.sh
+        # directly, so each fixture is its own test with its own timeout and a
+        # hang bounds one test instead of the whole job. run-tests.sh above
+        # already configured build/linux-debug, which is where the test
+        # registrations live. The harness still runs standalone; this is a
+        # different entry point to the same fixtures, not a replacement for it.
+        # Job width leaves two cores free rather than taking every one: the
+        # fixtures themselves fork heavily (mzcc schedules its own translation
+        # units in parallel), so an unbounded -j thrashes a small runner.
         env:
           MAIZE_CC: ${{ github.workspace }}/build/linux-debug/mzcc
-        run: scripts/run-ctest.sh --skip-build
+        run: |
+          JOBS=$(nproc)
+          if [ "$JOBS" -gt 4 ]; then JOBS=$((JOBS - 2)); else JOBS=2; fi
+          echo "ctest -j${JOBS} (nproc=$(nproc))"
+          ctest --test-dir build/linux-debug --output-on-failure -j "$JOBS"
 
   linux-sanitizers:
     runs-on: ubuntu-latest
@@ -68,9 +82,16 @@ jobs:
         # maize-314: same flip as the plain linux job, keyed off this job's
         # own instrumented preset/build dir so the ctest suite runs through
         # the sanitizer-built mzcc, not cc-maize.sh.
+        # maize-376: ctest-driven, same reasoning as the plain linux job. The
+        # instrumented binaries are several times slower, so bounding a hang to
+        # one test matters more here than anywhere else.
         env:
           MAIZE_CC: ${{ github.workspace }}/build/linux-asan-ubsan/mzcc
-        run: scripts/run-ctest.sh --preset linux-asan-ubsan --skip-build
+        run: |
+          JOBS=$(nproc)
+          if [ "$JOBS" -gt 4 ]; then JOBS=$((JOBS - 2)); else JOBS=2; fi
+          echo "ctest -j${JOBS} (nproc=$(nproc))"
+          ctest --test-dir build/linux-asan-ubsan --output-on-failure -j "$JOBS"
 
   windows:
     runs-on: windows-latest
@@ -122,7 +143,16 @@ jobs:
         # windows-latest, and there is no expression-language replace() to normalize
         # them, whereas bash's pwd gives the same forward-slash absolute form
         # run-ctest.sh's own REPO_ROOT/BUILD_DIR resolution already uses.
+        #
+        # maize-376: ctest-driven like the two Linux legs, but SERIAL. This leg
+        # stays without -j pending its own safety-bar pass, because the
+        # fork-exhaustion failure mode scripts/lib/harness-env.sh documents
+        # (maize-304: `dofork ... Resource temporarily unavailable` under two
+        # concurrent heavy builds) is specific to Windows/MSYS2 and this project
+        # has already hit it once. The guest-build fixtures additionally carry
+        # RESOURCE_LOCK quesos_build / userland_build on Windows only, so the
+        # locks are in place for whenever that pass happens.
         shell: bash
         run: |
           export MAIZE_CC="$(pwd)/build/windows-llvm-mingw-debug/mzcc.exe"
-          scripts/run-ctest.sh --preset windows-llvm-mingw-debug --skip-build
+          ctest --test-dir build/windows-llvm-mingw-debug --output-on-failure
