@@ -270,6 +270,20 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define SIGKILL  9
 #define SIGTERM  15
 #define SIGCHLD  17
+/* maize-361: the job-control set (Linux values, matching toolchain/rt/signal.h). SIGSTOP,
+ * SIGTSTP, SIGTTIN and SIGTTOU default to STOP; SIGCONT defaults to ignore-but-resume. */
+#define SIGCONT  18
+#define SIGSTOP  19
+#define SIGTSTP  20
+#define SIGTTIN  21
+#define SIGTTOU  22
+
+/* maize-361: the four signals whose DEFAULT action is "stop the process". Used by the
+ * default-action switch, by SIGCONT's mutual pending-bit cancellation, and by the
+ * BLK_CONSOLE completion branch (a stop must NOT abandon a parked console read). */
+#define QOS_STOP_SIG_MASK ((1ul << (SIGTSTP - 1)) | (1ul << (SIGTTIN - 1)) \
+                         | (1ul << (SIGTTOU - 1)) | (1ul << (SIGSTOP - 1)))
+#define QOS_IS_STOP_SIG(s) ((s) == SIGTSTP || (s) == SIGTTIN || (s) == SIGTTOU || (s) == SIGSTOP)
 
 /* maize-236: framebuffer registration syscalls (Decision D6). These are quesOS-private,
  * guest-only, and Maize-specific display arbitration with no real Linux syscall-number
@@ -331,6 +345,8 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define QOS_ENOSPC 28          /* registration table full                                 */
 #define QOS_EBADF   9          /* release with nothing registered                         */
 #define QOS_ESRCH   3          /* maize-174: kill target pid/pgid names no process        */
+#define QOS_EIO     5          /* maize-361: background console I/O with SIGTTIN/SIGTTOU
+                                  blocked or ignored (POSIX)                              */
 #define QOS_EINTR   4          /* maize-316: rt_sigsuspend's POSIX return (always -EINTR) */
 #define QOS_ENOENT  2          /* maize-94: execve target path does not exist             */
 #define QOS_ENOEXEC 8          /* maize-94: execve target is not a loadable .mzx image    */
@@ -366,7 +382,10 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define QUESOS_PATH_CAP 256
 #define QUESOS_MAX_FD   16       /* per-process file descriptors                        */
 
-enum proc_state { P_FREE = 0, P_RUNNABLE, P_BLOCKED, P_ZOMBIE };
+/* maize-361: P_STOPPED is job control's stop state. schedule()'s round-robin scan only
+ * ever picks P_RUNNABLE entries, so a stopped process is never scheduled (exactly like
+ * P_BLOCKED/P_ZOMBIE), while has_child/find_by_pid gate on P_FREE and so still see it. */
+enum proc_state { P_FREE = 0, P_RUNNABLE, P_BLOCKED, P_ZOMBIE, P_STOPPED };
 
 /* Why a process is BLOCKED (block_kind), so the right waker completes its syscall. */
 #define BLK_NONE    0
@@ -406,6 +425,9 @@ struct pcb {
     unsigned long suspend_mask_save; /* maize-316: pre-sigsuspend mask, restored at wake */
     u64  handler[32];            /* maize-174: per-signal action VA (0=DFL, 1=IGN)     */
     long term_signal;            /* maize-174: terminating signal (0 = normal _exit)   */
+    int  stop_signal;            /* maize-361: signal that stopped it (for WSTOPSIG)   */
+    int  stop_reported;          /* maize-361: this stop was already returned by a
+                                    waitpid(WUNTRACED) call                            */
     u64  sig_saved_rs;           /* maize-174: saved_rs to restore on rt_sigreturn     */
     int  in_handler;             /* maize-174: a signal handler is in progress          */
     char path[QUESOS_PATH_CAP];   /* argv[0] for the reap transcript                   */
@@ -1518,6 +1540,7 @@ static struct pcb *spawn(const char *path, long parent, int boot_entry) {
     p->bigalloc_next = BIGALLOC_BASE; /* maize-251: bump allocator starts at the window base */
     p->pgid = p->pid;  /* maize-174: a top-level spawn starts its own process group */
     p->pending = 0; p->blocked = 0; p->term_signal = 0; p->in_handler = 0;
+    p->stop_signal = 0; p->stop_reported = 0;   /* maize-361: never stopped yet */
     p->termios_valid = 0;   /* maize-250: no console termios set until this proc tcsetattr's */
     { int _s; for (_s = 0; _s < 32; ++_s) { p->handler[_s] = 0; } }
     for (j = 0; j < QUESOS_PATH_CAP - 1 && path[j]; ++j) { p->path[j] = path[j]; }
@@ -2624,7 +2647,11 @@ static long do_select(long nfds, u64 r_uva, u64 w_uva, u64 e_uva, u64 tv_uva) {
 /* maize-174: WIFSIGNALED (low 7 bits = terminating signal) when term_signal is set;
  * else WIFEXITED (exit code in bits 8..15). This discharges maize-94's stubbed-false
  * WIFSIGNALED deviation for real. */
+/* maize-361: WIFSTOPPED (low byte 0x7F, stopping signal in bits 8..15) for a child that is
+ * merely stopped, per toolchain/rt/sys/wait.h's WIFSTOPPED/WSTOPSIG encoding. This is what
+ * lets a shell's j_sigchld report a job "Stopped" instead of gone. */
 static u32 wait_status(struct pcb *c) {
+    if (c->state == P_STOPPED) { return (u32)((((u32)c->stop_signal & 0xFF) << 8) | 0x7Fu); }
     if (c->term_signal != 0) { return (u32)(c->term_signal & 0x7F); }
     return (u32)((c->exit_status & 0xFF) << 8);
 }
@@ -2705,6 +2732,7 @@ static long do_fork(void) {
     child->pgid = parent->pgid;
     child->pending = 0; child->blocked = parent->blocked;
     child->term_signal = 0; child->in_handler = 0;
+    child->stop_signal = 0; child->stop_reported = 0;   /* maize-361: a fresh child is not stopped */
     child->termios_valid = 0;   /* maize-250: the child has not itself set console termios yet */
     { unsigned long _s; for (_s = 0; _s < 32; ++_s) { child->handler[_s] = parent->handler[_s]; } }
     for (k = 0; k < QUESOS_PATH_CAP; ++k) { child->path[k] = parent->path[k]; }
@@ -2763,8 +2791,17 @@ static void deliver_wait(struct pcb *parent, struct pcb *child) {
 
 /* wait4/waitpid. Reap a matching zombie child immediately, or block until one exits
  * (the exiting child completes this call via deliver_wait). Returns the child pid, or
- * -ECHILD when there is no matching child. */
-static long do_wait(long wpid, u64 status_uva) {
+ * -ECHILD when there is no matching child.
+ *
+ * maize-361: `options` (R2, documented in SYSCALL-ABI.md all along) is now honored. Two
+ * bits matter, both from toolchain/rt/sys/wait.h: WNOHANG (1) returns 0 instead of parking
+ * when nothing currently matches, and WUNTRACED (2) also matches a stopped child. A shell's
+ * j_sigchld drain loop passes both, and without WNOHANG its last, nothing-left call would
+ * park the whole shell in BLK_WAIT whenever any other child was still alive. */
+#define QOS_WNOHANG   1
+#define QOS_WUNTRACED 2
+
+static long do_wait(long wpid, u64 status_uva, long options) {
     struct pcb *parent = g_current;
     int i;
 
@@ -2777,9 +2814,19 @@ static long do_wait(long wpid, u64 status_uva) {
             c->state = P_FREE;
             return rpid;
         }
+        /* A stopped child is reported ONCE per stop and is NOT reaped: it is still alive
+         * and must stay waitable for its real exit later. A plain wait() (no WUNTRACED)
+         * never matches it, so only an exit completes such a call. */
+        if ((options & QOS_WUNTRACED) && c->state == P_STOPPED && !c->stop_reported
+            && c->parent == parent->pid && (wpid <= 0 || c->pid == wpid)) {
+            c->stop_reported = 1;
+            if (status_uva != 0) { as_write32(parent, status_uva, wait_status(c)); }
+            return c->pid;
+        }
     }
 
     if (!has_child(parent->pid, wpid)) { return -10; }   /* -ECHILD */
+    if (options & QOS_WNOHANG) { return 0; }             /* nothing to report right now */
 
     parent->wait_for = wpid;
     parent->wait_status_uva = status_uva;
@@ -3428,6 +3475,22 @@ static void reap_tail(struct pcb *self) {
     /* else: leave a zombie for a later wait. */
 }
 
+/* maize-361 default action: STOP. Mirrors terminate_by_signal's shape (record why, tell
+ * the parent, then never come back), but the process stays alive and waitable: it just
+ * leaves the scheduler's runnable set until a SIGCONT resumes it. The SIGCHLD raise is
+ * what wakes a shell parked in j_waitj's sigsuspend so it can report the job Stopped
+ * through waitpid(WUNTRACED). schedule() is noreturn and must only run when p is the
+ * CURRENT process, exactly as terminate_by_signal requires; every default-action caller
+ * (deliver_pending_signal, and the do_read/do_write foreground gates) satisfies that. */
+static void stop_process(struct pcb *p, int sig) {
+    struct pcb *parent = find_by_pid(p->parent);
+    p->state = P_STOPPED;
+    p->stop_signal = sig;
+    p->stop_reported = 0;
+    if (parent != 0) { raise_on_pcb(parent, SIGCHLD); }
+    if (p == g_current) { schedule(); }   /* noreturn */
+}
+
 /* Default action: terminate. Records the terminating signal (WIFSIGNALED) and reaps. */
 static void terminate_by_signal(struct pcb *p, int sig) {
     p->term_signal = sig;
@@ -3483,8 +3546,20 @@ static void deliver_pending_signal(struct pcb *p) {
     sig = lowest_set_bit(ready);
     p->pending &= ~(1ul << (sig - 1));
     if (p->handler[sig] == 0) {           /* SIG_DFL */
-        if (sig == SIGCHLD) { return; }   /* default action: ignore */
-        terminate_by_signal(p, sig);      /* default action: terminate (noreturn) */
+        /* maize-361: a real per-signal default action. Before this card every signal
+         * except SIGCHLD terminated by default, so a stray `kill -TSTP` killed its target
+         * instead of stopping it. */
+        switch (sig) {
+            case SIGCHLD:
+            case SIGCONT:
+                return;                        /* default action: ignore */
+            case SIGTSTP: case SIGTTIN: case SIGTTOU: case SIGSTOP:
+                stop_process(p, sig);          /* default action: stop (noreturn here) */
+                return;
+            default:
+                terminate_by_signal(p, sig);   /* default action: terminate (noreturn) */
+                return;
+        }
     }
     if (p->handler[sig] == 1) { return; } /* SIG_IGN */
     push_signal_frame(p, sig);            /* handler dispatch */
@@ -3508,6 +3583,7 @@ static long do_rt_sigaction(long sig, u64 act_uva, u64 oldact_uva) {
     struct pcb *self = g_current;
     if (sig < 1 || sig > 31) { return -(long)QOS_EINVAL; }
     if (sig == SIGKILL) { return -(long)QOS_EINVAL; }   /* uncatchable (OQ 9014) */
+    if (sig == SIGSTOP) { return -(long)QOS_EINVAL; }   /* maize-361: uncatchable (POSIX) */
     if (oldact_uva != 0) {
         as_write64(self, oldact_uva + 0ul, self->handler[sig]);
         as_write64(self, oldact_uva + 8ul, 0);
@@ -3525,6 +3601,7 @@ static long do_rt_sigprocmask(long how, u64 set_uva, u64 oldset_uva) {
     if (set_uva != 0) {
         set = *(unsigned long *)(set_uva);
         set &= ~(1ul << (SIGKILL - 1));   /* SIGKILL cannot be blocked (OQ 9014) */
+        set &= ~(1ul << (SIGSTOP - 1));   /* maize-361: nor can SIGSTOP (POSIX) */
         if (how == 0) { self->blocked |= set; }
         else if (how == 1) { self->blocked &= ~set; }
         else if (how == 2) { self->blocked = set; }
@@ -3553,6 +3630,7 @@ static long do_rt_sigsuspend(u64 mask_uva) {
     struct pcb *self = g_current;
     unsigned long mask = (mask_uva != 0) ? *(unsigned long *)(mask_uva) : 0ul;
     mask &= ~(1ul << (SIGKILL - 1));
+    mask &= ~(1ul << (SIGSTOP - 1));   /* maize-361: SIGSTOP is unblockable too (POSIX) */
     self->suspend_mask_save = self->blocked;
     self->blocked = mask;
     if ((self->pending & ~self->blocked) != 0ul) {
@@ -3618,7 +3696,8 @@ void quesos_syscall(void) {
         case SYS_dup2:   result = do_dup2(a0, a1);                 break;
         case SYS_getpid: result = g_current->pid;                 break;
         case SYS_fork:   result = do_fork();                      break;
-        case SYS_wait4:  result = do_wait((long)a0, a1);          break;
+        /* maize-361: a2 is the options word (WNOHANG/WUNTRACED); it was dropped before. */
+        case SYS_wait4:  result = do_wait((long)a0, a1, (long)a2); break;
         case SYS_execve: result = do_execve(a0, a1, a2);
                          if (result == 0) { return; }             /* new image entered */
                          break;

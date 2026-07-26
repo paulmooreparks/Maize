@@ -10,8 +10,10 @@
  *
  * WIFSIGNALED / WTERMSIG are REAL as of maize-174 (quesOS records term_signal for a
  * default-terminated process); the maize-94 spec's "always false/0" note predates that
- * landing and is discharged here. quesOS never produces the 0x7F "stopped" status today
- * (no job-control stop), so WIFSTOPPED is always false, an honest deviation.
+ * landing and is discharged here. WIFSTOPPED / WSTOPSIG are REAL as of maize-361 (quesOS
+ * has a P_STOPPED job-control state and reports it through waitpid(WUNTRACED) with the
+ * 0x7F low byte); the earlier "always false, no job-control stop" note is discharged too.
+ * WIFCONTINUED stays 0: quesOS reports no continue transition (decision 10148).
  */
 #ifndef MAIZE_SYS_WAIT_H
 #define MAIZE_SYS_WAIT_H
@@ -32,15 +34,16 @@ pid_t waitpid(pid_t pid, int *status, int options);
 #define WTERMSIG(s)     ((s) & 0x7F)
 #define WIFEXITED(s)    (WTERMSIG(s) == 0)
 #define WIFSIGNALED(s)  (WTERMSIG(s) != 0 && WTERMSIG(s) != 0x7F)
-#define WIFSTOPPED(s)   (((s) & 0xFF) == 0x7F)   /* always false today (no job-control stop) */
+#define WIFSTOPPED(s)   (((s) & 0xFF) == 0x7F)   /* maize-361: real (waitpid WUNTRACED) */
 #define WSTOPSIG(s)     WEXITSTATUS(s)
 /* WCOREDUMP (maize-94): quesOS never sets a core-dump flag (no core files), so this is
  * always false. Borrowed oksh's jobs.c reports it in a signal-death message. */
 #define WCOREDUMP(s)    0
 #define WIFCONTINUED(s) 0
 
-/* waitpid options (Linux values). quesOS's wait4 is a blocking reap; WNOHANG is accepted
- * for source compatibility (a non-blocking poll rides options straight to sys_wait4). */
+/* waitpid options (Linux values), both honored by quesOS since maize-361: WNOHANG returns
+ * 0 rather than parking when nothing matches, and WUNTRACED also matches a stopped child
+ * (reported once per stop, without reaping it). */
 #define WNOHANG    1
 #define WUNTRACED  2
 
