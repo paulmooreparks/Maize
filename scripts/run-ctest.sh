@@ -390,9 +390,41 @@ if [ -n "$ONLY" ]; then
 fi
 : > "$TIMING_LOG"
 
-# maize-376: the --only dispatch guard. Every one of the 78 top-level `mz_timed
-# "<label>" ...` statements below is rewritten as `_mz_want "<label>" && mz_timed
-# "<label>" ...`, so `ctest` can run exactly one of them per test process.
+# maize-376 (cycle 2 blocker): the fixture-compile scratch directory. compile_c keys
+# its output image and its compile log on the SOURCE basename, and several fixtures
+# that are now separate ctest tests compile the same source. run_ctest "hello",
+# run_image_resolution, run_launcher_defaults and run_launcher_per_binary all compile
+# ctest/hello.c; run_args_test, run_image_resolution and run_launcher_defaults all
+# compile ctest/args.c; run_launcher_config_mount and run_launcher_per_binary both
+# compile cat_hostfs.c and cat_home_hostfs.c; and run_ctest "kilo_xalloc_die" shares
+# kilo_xalloc_die.c with the exit-status test that drives the same source. Serially
+# inside one process those repeats are harmless rewrites. Under `ctest -jN` they are
+# separate processes writing one fixed path by truncate-then-write while a sibling
+# reads it, which is a torn read waiting to happen even though every writer produces
+# byte-identical content.
+#
+# Redirecting compile_c's artifacts (and the .out/.exp compare scratch beside them)
+# into a per-label directory removes the contention instead of serializing it, and it
+# removes the whole class rather than the four instances that exist today: the label is
+# unique per test (the CMake drift guard enforces that), so no future fixture can
+# reintroduce the collision by picking a source basename another fixture already uses.
+# A RESOURCE_LOCK would have cost the parallelism this card exists to buy. With ONLY
+# unset (a plain human or CI run of the whole script) this is $WORK_DIR itself, so the
+# serial path writes exactly the paths it wrote before.
+CC_WORK_DIR="$WORK_DIR"
+if [ -n "$ONLY" ]; then
+    CC_WORK_DIR="${WORK_DIR}/ctest-scratch/${ONLY}"
+    mkdir -p "$CC_WORK_DIR"
+fi
+
+# maize-376: the --only dispatch guard. All 80 top-level fixture dispatches below take
+# the form `_mz_want "<label>" && mz_timed "<label>" ...`, so `ctest` can run exactly one
+# of them per test process. That count is 80 rather than the 78 `mz_timed` statements
+# this card's spec counted: kilo_hl_tab_comment and kilo_hl_space_comment were dispatched
+# outside mz_timed entirely, so they were untimed, and decision 10312 records the ruling
+# that both are routed through the same guard as the other 78 and registered as their own
+# tests. cmake/MaizeCTest.cmake's drift guard reads these 80 labels and fails the
+# configure if its own registration list disagrees with them.
 #
 # With ONLY unset (the plain human and CI entry point) this returns 0 on the first
 # test and the statement runs exactly as it did before, so a bare run-ctest.sh is
@@ -449,10 +481,12 @@ compile_c() {
         return 1
     fi
 
-    mzx="${WORK_DIR}/${name}.mzx"
+    # $CC_WORK_DIR is $WORK_DIR on the whole-script path and a per-label subdirectory
+    # under --only, so two ctest tests that compile the same source cannot contend.
+    mzx="${CC_WORK_DIR}/${name}.mzx"
     if ! "$CC_MAIZE" --preset "$PRESET" -o "$mzx" "$src" \
-        >"${WORK_DIR}/${name}.cc.log" 2>&1 || [ ! -f "$mzx" ]; then
-        echo "[FAIL] ${name}: C compile failed"; cat "${WORK_DIR}/${name}.cc.log" >&2
+        >"${CC_WORK_DIR}/${name}.cc.log" 2>&1 || [ ! -f "$mzx" ]; then
+        echo "[FAIL] ${name}: C compile failed"; cat "${CC_WORK_DIR}/${name}.cc.log" >&2
         FAIL_COUNT=$((FAIL_COUNT + 1)); return 1
     fi
     BIN="$mzx"
@@ -542,8 +576,8 @@ run_ctest() {
     # tolerance is maize appending ONE extra trailing newline on Linux (documented
     # in src/maize.cpp and handled the same way by run-tests). So: exact cmp, else
     # accept iff the two agree once trailing newlines are stripped.
-    out="${WORK_DIR}/${name}.out"
-    exp="${WORK_DIR}/${name}.exp"
+    out="${CC_WORK_DIR}/${name}.out"
+    exp="${CC_WORK_DIR}/${name}.exp"
     "$MAIZE" "$bin" > "$out" 2>/dev/null || true
     # Strip CR from the fixture too, so a CRLF checkout of *.expected can't
     # cause a spurious mismatch (defense in depth with .gitattributes). (maize-62)
@@ -610,11 +644,12 @@ run_args_test() {
     fi
 
     compile_c "$name" || return
-    # compile_c wrote ${WORK_DIR}/args.mzx; run from WORK_DIR so argv[0] == args.mzx.
+    # compile_c wrote ${CC_WORK_DIR}/args.mzx; run from that directory so argv[0] is the
+    # bare relative string `args.mzx` whichever scratch directory this invocation uses.
 
-    out="${WORK_DIR}/${name}.out"
-    exp="${WORK_DIR}/${name}.exp"
-    ( cd "$WORK_DIR" && "$MAIZE" --env GREETING=hi --env TARGET=maize args.mzx alpha beta ) \
+    out="${CC_WORK_DIR}/${name}.out"
+    exp="${CC_WORK_DIR}/${name}.exp"
+    ( cd "$CC_WORK_DIR" && "$MAIZE" --env GREETING=hi --env TARGET=maize args.mzx alpha beta ) \
         > "$out" 2>/dev/null || true
     tr -d '\r' < "$expfile" > "$exp"
     if cmp -s "$out" "$exp" \
@@ -1612,8 +1647,10 @@ _mz_want "noreturn" && mz_timed "noreturn" run_exit_status_test "noreturn" 57
 # function) and its checked allocation wrappers. kilo_next_cap prints its growth
 # progression over a fixed input sequence covering the 64-row and 4096-byte floors.
 # kilo_xalloc_die forces a NULL allocation under KILO_XALLOC_TESTING (no real
-# memory exhaustion) and is driven two ways off the one compiled binary: the exact
-# die() message on stdout, and the process exit status 1.
+# memory exhaustion) and is driven two ways off the one SOURCE: the exact die()
+# message on stdout, and the process exit status 1. The source is shared; the
+# compiled image is not. These are two separately scheduled ctest tests, so each
+# compiles into its own $CC_WORK_DIR (see the comment on that variable).
 _mz_want "kilo_next_cap" && mz_timed "kilo_next_cap" run_ctest "kilo_next_cap"
 _mz_want "kilo_xalloc_die" && mz_timed "kilo_xalloc_die" run_ctest "kilo_xalloc_die"
 _mz_want "kilo_xalloc_die_exit" && mz_timed "kilo_xalloc_die_exit" run_exit_status_test "kilo_xalloc_die" 1
@@ -1647,8 +1684,8 @@ kilo_hl_case() {
     fi
     compile_c "$name" || return
     bin="$BIN"
-    out="${WORK_DIR}/${name}.out"
-    exp="${WORK_DIR}/${name}.exp"
+    out="${CC_WORK_DIR}/${name}.out"
+    exp="${CC_WORK_DIR}/${name}.exp"
     set +e
     timeout -k 5 30 "$MAIZE" "$bin" > "$out" 2>/dev/null
     set -e
