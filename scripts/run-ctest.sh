@@ -47,11 +47,52 @@ CPROC_DIR="${REPO_ROOT}/toolchain/cproc"
 #     cc-maize.sh call inside the mirror inherits MAIZE_NATIVE_MIRROR_ACTIVE=1 and
 #     runs in-place (no double sync/run). ----------------------------------------
 . "${SCRIPT_DIR}/lib/harness-env.sh"
-maize_apply_throttle
-# Precompute submodule SHAs host-side before re-exec (D14): this script nests
-# build-toolchain.sh inside the git-less mirror, which reads MAIZE_KEY_* from env.
-maize_precompute_submodule_keys "$REPO_ROOT"
-maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
+
+# --- maize-376: the CTest dispatch modes ------------------------------------------
+# Two modes let `ctest` drive this harness one fixture per test, so selection (-R/-L),
+# parallelism (-jN), per-test timeouts and per-test timing all come from the tool
+# instead of from bespoke shell. A plain invocation (neither flag) is unchanged.
+#
+#   --ctest-setup <file>  run the whole preamble ONCE (mirror sync, toolchain
+#                         build-if-absent, binary resolution, wrapper-script
+#                         generation), write <file> as a sourceable env snapshot,
+#                         and exit. Wired as the ctest_guest_env FIXTURES_SETUP test.
+#   --ctest-env <file> --only <label>
+#                         source <file>, skip the preamble entirely, and run exactly
+#                         the one mz_timed dispatch site named <label>. Wired as every
+#                         per-fixture add_test, FIXTURES_REQUIRED ctest_guest_env.
+#
+# The peek loop below must run BEFORE maize_apply_throttle / maize_native_mirror_run,
+# because a --ctest-env invocation must skip both (no renice of a ctest child, and
+# above all no rsync --delete into the shared mirror directory from N concurrent
+# fixtures under -jN). It must ALSO not consume "$@": the non-ctest path still hands
+# the pristine argument vector to maize_native_mirror_run for its re-exec. `for x in
+# "$@"` iterates without shifting, so the vector survives intact for the branch below.
+CTEST_SETUP_FILE=''
+CTEST_ENV_FILE=''
+ONLY=''
+_peek_prev=''
+for _peek_arg in "$@"; do
+    case "$_peek_prev" in
+        --ctest-setup) CTEST_SETUP_FILE="$_peek_arg" ;;
+        --ctest-env)   CTEST_ENV_FILE="$_peek_arg" ;;
+        --only)        ONLY="$_peek_arg" ;;
+    esac
+    case "$_peek_arg" in
+        --ctest-setup=*) CTEST_SETUP_FILE="${_peek_arg#--ctest-setup=}" ;;
+        --ctest-env=*)   CTEST_ENV_FILE="${_peek_arg#--ctest-env=}" ;;
+        --only=*)        ONLY="${_peek_arg#--only=}" ;;
+    esac
+    _peek_prev="$_peek_arg"
+done
+
+if [ -z "$CTEST_ENV_FILE" ]; then
+    maize_apply_throttle
+    # Precompute submodule SHAs host-side before re-exec (D14): this script nests
+    # build-toolchain.sh inside the git-less mirror, which reads MAIZE_KEY_* from env.
+    maize_precompute_submodule_keys "$REPO_ROOT"
+    maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
+fi
 
 UNAME=$(uname -s)
 case "$UNAME" in
@@ -68,9 +109,26 @@ while [ $# -gt 0 ]; do
         --preset) PRESET="${2:-}"; shift 2 ;;
         --preset=*) PRESET="${1#--preset=}"; shift ;;
         --skip-build) SKIP_BUILD=1; shift ;;
+        # maize-376: already captured by the peek loop above; re-parsed here only so
+        # the vector drains normally and the unknown-argument arm does not fire.
+        --ctest-setup) shift 2 ;;
+        --ctest-setup=*) shift ;;
+        --ctest-env) shift 2 ;;
+        --ctest-env=*) shift ;;
+        --only) shift 2 ;;
+        --only=*) shift ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+
+# maize-376: --only requires a dispatch mode that resolved the environment, and
+# --ctest-setup/--ctest-env are mutually exclusive. Fail fast rather than half-run.
+if [ -n "$CTEST_SETUP_FILE" ] && [ -n "$CTEST_ENV_FILE" ]; then
+    echo "run-ctest.sh: --ctest-setup and --ctest-env are mutually exclusive." >&2; exit 2
+fi
+if [ -n "$CTEST_ENV_FILE" ] && [ -z "$ONLY" ]; then
+    echo "run-ctest.sh: --ctest-env requires --only <label>." >&2; exit 2
+fi
 
 BUILD_DIR="${REPO_ROOT}/build/${PRESET}"
 WORK_DIR="${BUILD_DIR}/ctest-run"
@@ -124,97 +182,168 @@ python3_has_pty() {
     command -v python3 >/dev/null 2>&1 && python3 -c 'import pty' >/dev/null 2>&1
 }
 
-# Build the C toolchain if the compilers are absent (fresh-clone one-command).
-if [ "$SKIP_BUILD" -eq 0 ]; then
-    if ! resolve_exe "${QBE_DIR}/obj/qbe" >/dev/null \
-    || ! resolve_exe "${CPROC_DIR}/cproc-qbe" >/dev/null; then
-        "${SCRIPT_DIR}/build-toolchain.sh"
+# maize-376: two routes to a resolved toolchain environment. The `else` arm below is
+# the original preamble, unchanged except for its indentation; the `if` arm is the
+# per-fixture ctest dispatch, which reads a snapshot of that arm's result instead of
+# recomputing it.
+if [ -n "$CTEST_ENV_FILE" ]; then
+    # The ctest_guest_env FIXTURES_SETUP test already ran the else-arm exactly once for
+    # this ctest invocation and wrote its result to $CTEST_ENV_FILE. Source it and
+    # regenerate NOTHING. That is load-bearing under -jN, not just a saving: the three
+    # exec wrappers (maize-bare-wrap.sh, maize-jit-wrap.sh, maizeg-bare-wrap.sh) live at
+    # FIXED shared paths under ${BUILD_DIR}/ctest-run and are written by truncate-then-
+    # write redirection, not by the atomic temp-plus-rename the mzcc object cache uses,
+    # so N concurrent fixtures each rewriting them can let a sibling exec a zero-byte or
+    # half-written script. CTest's FIXTURES_SETUP happens-before guarantee gives exactly
+    # one writer that completes before any reader starts; this arm is a reader only.
+    [ -f "$CTEST_ENV_FILE" ] || {
+        echo "run-ctest.sh: --ctest-env file ${CTEST_ENV_FILE} not found; the ctest_guest_env setup test must run first." >&2
+        exit 2; }
+    . "$CTEST_ENV_FILE"
+else
+    # Build the C toolchain if the compilers are absent (fresh-clone one-command).
+    if [ "$SKIP_BUILD" -eq 0 ]; then
+        if ! resolve_exe "${QBE_DIR}/obj/qbe" >/dev/null \
+        || ! resolve_exe "${CPROC_DIR}/cproc-qbe" >/dev/null; then
+            "${SCRIPT_DIR}/build-toolchain.sh"
+        fi
     fi
-fi
 
-# The whole C compile pipeline (tr -> cpp -> cproc-qbe -> normalize -> qbe -> mazm -c
-# -> mzld) lives in scripts/cc-maize.sh (maize-96); this harness drives it via the
-# no-run default (`-o <path>`) so CI exercises the EXACT pipeline the operator uses.
-# run-ctest therefore no longer resolves cproc-qbe / qbe / the system cpp itself: the
-# driver owns those. It still needs mazm (to re-assemble the W^X probe's crt0.mzo),
-# maize (to run each linked image), and mzld (the W^X negative case).
-# maize-278: MAIZE_CC selects the guest-build driver. Unset keeps cc-maize.sh
-# (the shell driver, the default until the parity gate is green on both
-# platforms, then this flips to mzcc, still a one-line change). Set it to
-# <REPO_ROOT>/build/<preset>/mzcc to point the whole harness at the compiled
-# native driver: compile_c, run_default_produce_test and run_driver_run_mode_test
-# all invoke the driver through this ONE binding, so they exercise mzcc unchanged.
-# Additive; no script is retired here (that is maize-281).
-CC_MAIZE="${MAIZE_CC:-${SCRIPT_DIR}/cc-maize.sh}"
-[ -f "$CC_MAIZE" ] || [ -x "$CC_MAIZE" ] || { echo "run-ctest.sh: driver ${CC_MAIZE} not found." >&2; exit 2; }
-MAZM=$(resolve_exe "${BUILD_DIR}/mazm") || {
-    echo "run-ctest.sh: mazm not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
-MAIZE=$(resolve_exe "${BUILD_DIR}/maize") || {   # maize-225/230: SDL-free console build (no WSLg window)
-    echo "run-ctest.sh: maize (console build) not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
-# maize-360: bake --bare into every maize/maizeg invocation. quesOS is now the default
-# boot ROM, so a plain `maize <image>` boots quesOS and runs <image> on top of it; every
-# pre-360 fixture here launches a raw VM image directly, which --bare preserves. A single
-# exec-wrapper per binary (same technique as the MAIZE_JIT leg) bakes --bare in, so the ~89
-# call sites need no edits. The wrapper execs the REAL binary, so argv[0] (and the
-# maizeg-beside-argv0 presenter lookup) is unchanged. BARE_MAIZE keeps the bare, non-JIT
-# wrapper for the JIT-equivalence tests below, which deliberately bypass the JIT wrap but
-# still need to run bare. New maize-360 default-ROM fixtures use DEFAULT_MAIZE (the raw
-# binary, no --bare) instead. Keep in sync with run-tests.{sh,ps1}.
-mkdir -p "${BUILD_DIR}/ctest-run"
-DEFAULT_MAIZE="$MAIZE"                                  # raw binary, no --bare (default-ROM fixtures)
-BARE_MAIZE="${BUILD_DIR}/ctest-run/maize-bare-wrap.sh"
-{
-    echo '#!/bin/sh'
-    echo "exec \"${MAIZE}\" --bare \"\$@\""
-} > "$BARE_MAIZE"
-chmod +x "$BARE_MAIZE"
-MAIZE="$BARE_MAIZE"
-# maize-330: optional JIT leg, same env contract as run-tests.{sh,ps1}. MAIZE_JIT=1
-# runs every C-fixture execution under --jit; MAIZE_JIT=check under --jit-check. It layers
-# on the --bare wrapper above (maize-360), so a JIT run is bare + jit.
-if [ -n "${MAIZE_JIT:-}" ]; then
-    _jit_flag="--jit"
-    if [ "${MAIZE_JIT}" = "check" ]; then _jit_flag="--jit-check"; fi
+    # The whole C compile pipeline (tr -> cpp -> cproc-qbe -> normalize -> qbe -> mazm -c
+    # -> mzld) lives in scripts/cc-maize.sh (maize-96); this harness drives it via the
+    # no-run default (`-o <path>`) so CI exercises the EXACT pipeline the operator uses.
+    # run-ctest therefore no longer resolves cproc-qbe / qbe / the system cpp itself: the
+    # driver owns those. It still needs mazm (to re-assemble the W^X probe's crt0.mzo),
+    # maize (to run each linked image), and mzld (the W^X negative case).
+    # maize-278: MAIZE_CC selects the guest-build driver. Unset keeps cc-maize.sh
+    # (the shell driver, the default until the parity gate is green on both
+    # platforms, then this flips to mzcc, still a one-line change). Set it to
+    # <REPO_ROOT>/build/<preset>/mzcc to point the whole harness at the compiled
+    # native driver: compile_c, run_default_produce_test and run_driver_run_mode_test
+    # all invoke the driver through this ONE binding, so they exercise mzcc unchanged.
+    # Additive; no script is retired here (that is maize-281).
+    CC_MAIZE="${MAIZE_CC:-${SCRIPT_DIR}/cc-maize.sh}"
+    [ -f "$CC_MAIZE" ] || [ -x "$CC_MAIZE" ] || { echo "run-ctest.sh: driver ${CC_MAIZE} not found." >&2; exit 2; }
+    MAZM=$(resolve_exe "${BUILD_DIR}/mazm") || {
+        echo "run-ctest.sh: mazm not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+    MAIZE=$(resolve_exe "${BUILD_DIR}/maize") || {   # maize-225/230: SDL-free console build (no WSLg window)
+        echo "run-ctest.sh: maize (console build) not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+    # maize-360: bake --bare into every maize/maizeg invocation. quesOS is now the default
+    # boot ROM, so a plain `maize <image>` boots quesOS and runs <image> on top of it; every
+    # pre-360 fixture here launches a raw VM image directly, which --bare preserves. A single
+    # exec-wrapper per binary (same technique as the MAIZE_JIT leg) bakes --bare in, so the ~89
+    # call sites need no edits. The wrapper execs the REAL binary, so argv[0] (and the
+    # maizeg-beside-argv0 presenter lookup) is unchanged. BARE_MAIZE keeps the bare, non-JIT
+    # wrapper for the JIT-equivalence tests below, which deliberately bypass the JIT wrap but
+    # still need to run bare. New maize-360 default-ROM fixtures use DEFAULT_MAIZE (the raw
+    # binary, no --bare) instead. Keep in sync with run-tests.{sh,ps1}.
     mkdir -p "${BUILD_DIR}/ctest-run"
-    _jit_wrap="${BUILD_DIR}/ctest-run/maize-jit-wrap.sh"
+    DEFAULT_MAIZE="$MAIZE"                                  # raw binary, no --bare (default-ROM fixtures)
+    BARE_MAIZE="${BUILD_DIR}/ctest-run/maize-bare-wrap.sh"
     {
         echo '#!/bin/sh'
-        echo "export MAIZE_JIT_QUIET=1"
-        echo "exec \"${MAIZE}\" ${_jit_flag} --jit-threshold ${MAIZE_JIT_THRESHOLD:-50} \"\$@\""
-    } > "$_jit_wrap"
-    chmod +x "$_jit_wrap"
-    MAIZE="$_jit_wrap"
-    echo "run-ctest.sh: running maize under ${_jit_flag} (threshold ${MAIZE_JIT_THRESHOLD:-50})"
+        echo "exec \"${MAIZE}\" --bare \"\$@\""
+    } > "$BARE_MAIZE"
+    chmod +x "$BARE_MAIZE"
+    MAIZE="$BARE_MAIZE"
+    # maize-330: optional JIT leg, same env contract as run-tests.{sh,ps1}. MAIZE_JIT=1
+    # runs every C-fixture execution under --jit; MAIZE_JIT=check under --jit-check. It layers
+    # on the --bare wrapper above (maize-360), so a JIT run is bare + jit.
+    if [ -n "${MAIZE_JIT:-}" ]; then
+        _jit_flag="--jit"
+        if [ "${MAIZE_JIT}" = "check" ]; then _jit_flag="--jit-check"; fi
+        mkdir -p "${BUILD_DIR}/ctest-run"
+        _jit_wrap="${BUILD_DIR}/ctest-run/maize-jit-wrap.sh"
+        {
+            echo '#!/bin/sh'
+            echo "export MAIZE_JIT_QUIET=1"
+            echo "exec \"${MAIZE}\" ${_jit_flag} --jit-threshold ${MAIZE_JIT_THRESHOLD:-50} \"\$@\""
+        } > "$_jit_wrap"
+        chmod +x "$_jit_wrap"
+        MAIZE="$_jit_wrap"
+        echo "run-ctest.sh: running maize under ${_jit_flag} (threshold ${MAIZE_JIT_THRESHOLD:-50})"
+    fi
+    # maize-249: the graphical build. add_executable(maizeg ...) is unconditional (CMakeLists.txt:26)
+    # and, with MAIZE_DISPLAY off (every CI preset), links no SDL and runs headless, so invoking it
+    # directly is CI-safe on BOTH legs (Linux and Windows/MSYS2). Used by run_launcher_per_binary to
+    # prove maizeg reads ~/.maize/maizeg.config while the console maize reads ~/.maize/maize.config.
+    MAIZEG=$(resolve_exe "${BUILD_DIR}/maizeg") || {
+        echo "run-ctest.sh: maizeg (graphical build) not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+    # maize-360: run_launcher_per_binary runs `$MAIZEG <image>` directly, so it needs --bare
+    # too (same wrapper technique as MAIZE above).
+    _maizeg_bare="${BUILD_DIR}/ctest-run/maizeg-bare-wrap.sh"
+    {
+        echo '#!/bin/sh'
+        echo "exec \"${MAIZEG}\" --bare \"\$@\""
+    } > "$_maizeg_bare"
+    chmod +x "$_maizeg_bare"
+    MAIZEG="$_maizeg_bare"
+    MZLD=$(resolve_exe "${BUILD_DIR}/mzld") || {
+        echo "run-ctest.sh: mzld not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+    # maize-382 (operator ruling, Option B): the guest builders. The nine quesOS call
+    # sites and the two userland call sites below drive `mzcc build-quesos` /
+    # `mzcc build-userland` instead of os/quesos/build-quesos.sh and
+    # userland/build-userland.sh, so every guest compile rides mzcc's per-translation-unit
+    # object cache (maize-274, src/mzcc_cache.c) rather than recompiling quesOS nine times
+    # and the 43-program userland set twice per suite run. This binding is deliberately
+    # INDEPENDENT of MAIZE_CC/CC_MAIZE above: MAIZE_CC still governs only the single-file
+    # driver compiles (demo_child*.c, argcheck.c, the wave2_launch_* drivers), and the
+    # quesOS/userland migration is unconditional, in every environment. Resolved with the
+    # same die-if-missing precedent MAZM/MAIZE/MZLD already set (OQ 10250).
+    MZCC=$(resolve_exe "${BUILD_DIR}/mzcc") || {
+        echo "run-ctest.sh: mzcc not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
+
+    # maize-376: --ctest-setup snapshots everything resolved above into a sourceable
+    # file and exits. Under the WSL native mirror this runs INSIDE the mirror (the
+    # re-exec above happened with the argument vector intact), so the paths written
+    # here point at the mirror and every per-fixture invocation works on native storage
+    # while ctest itself drives from the original build directory.
+    if [ -n "$CTEST_SETUP_FILE" ]; then
+        mkdir -p "$(dirname "$CTEST_SETUP_FILE")"
+        # Single-quote every value and escape any embedded single quote, so a path with
+        # spaces or punctuation (the Windows leg) round-trips through `.` intact.
+        _ctest_env_kv() {
+            printf "%s='%s'\n" "$1" "$(printf '%s' "$2" | sed "s/'/'\\\\''/g")"
+        }
+        {
+            echo "# Generated by run-ctest.sh --ctest-setup (maize-376); do not edit."
+            echo "# Rewritten once per ctest invocation by the ctest_guest_env fixture."
+            _ctest_env_kv SCRIPT_DIR     "$SCRIPT_DIR"
+            _ctest_env_kv REPO_ROOT      "$REPO_ROOT"
+            _ctest_env_kv CTEST_DIR      "$CTEST_DIR"
+            _ctest_env_kv RT_DIR         "$RT_DIR"
+            _ctest_env_kv QBE_DIR        "$QBE_DIR"
+            _ctest_env_kv CPROC_DIR      "$CPROC_DIR"
+            _ctest_env_kv PRESET         "$PRESET"
+            _ctest_env_kv BUILD_DIR      "$BUILD_DIR"
+            _ctest_env_kv WORK_DIR       "$WORK_DIR"
+            _ctest_env_kv CC_MAIZE       "$CC_MAIZE"
+            _ctest_env_kv MAZM           "$MAZM"
+            _ctest_env_kv MAIZE          "$MAIZE"
+            _ctest_env_kv BARE_MAIZE     "$BARE_MAIZE"
+            _ctest_env_kv DEFAULT_MAIZE  "$DEFAULT_MAIZE"
+            _ctest_env_kv MAIZEG         "$MAIZEG"
+            _ctest_env_kv MZLD           "$MZLD"
+            _ctest_env_kv MZCC           "$MZCC"
+            echo "SKIP_BUILD=1"
+            # Every nested harness call inside a --ctest-env fixture (cc-maize.sh, the
+            # guest builders) is already inside the resolved tree, so tell it not to
+            # mirror again. Without this a nested cc-maize.sh under /mnt would attempt
+            # its own rsync from inside a fixture, which is the concurrent-rsync hazard
+            # the setup/env split exists to remove.
+            echo "MAIZE_NATIVE_MIRROR_ACTIVE=1; export MAIZE_NATIVE_MIRROR_ACTIVE"
+            # D14: the mirror is a git-less file tree, so nested builds must read the
+            # pinned submodule SHAs from the environment rather than from git.
+            for _k in MAIZE_KEY_QBE MAIZE_KEY_CPROC MAIZE_KEY_SBASE MAIZE_KEY_OKSH; do
+                eval "_kv=\${${_k}:-}"
+                _ctest_env_kv "$_k" "$_kv"
+                echo "export ${_k}"
+            done
+        } > "$CTEST_SETUP_FILE"
+        echo "run-ctest.sh: ctest environment written to ${CTEST_SETUP_FILE}"
+        exit 0
+    fi
 fi
-# maize-249: the graphical build. add_executable(maizeg ...) is unconditional (CMakeLists.txt:26)
-# and, with MAIZE_DISPLAY off (every CI preset), links no SDL and runs headless, so invoking it
-# directly is CI-safe on BOTH legs (Linux and Windows/MSYS2). Used by run_launcher_per_binary to
-# prove maizeg reads ~/.maize/maizeg.config while the console maize reads ~/.maize/maize.config.
-MAIZEG=$(resolve_exe "${BUILD_DIR}/maizeg") || {
-    echo "run-ctest.sh: maizeg (graphical build) not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
-# maize-360: run_launcher_per_binary runs `$MAIZEG <image>` directly, so it needs --bare
-# too (same wrapper technique as MAIZE above).
-_maizeg_bare="${BUILD_DIR}/ctest-run/maizeg-bare-wrap.sh"
-{
-    echo '#!/bin/sh'
-    echo "exec \"${MAIZEG}\" --bare \"\$@\""
-} > "$_maizeg_bare"
-chmod +x "$_maizeg_bare"
-MAIZEG="$_maizeg_bare"
-MZLD=$(resolve_exe "${BUILD_DIR}/mzld") || {
-    echo "run-ctest.sh: mzld not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
-# maize-382 (operator ruling, Option B): the guest builders. The nine quesOS call
-# sites and the two userland call sites below drive `mzcc build-quesos` /
-# `mzcc build-userland` instead of os/quesos/build-quesos.sh and
-# userland/build-userland.sh, so every guest compile rides mzcc's per-translation-unit
-# object cache (maize-274, src/mzcc_cache.c) rather than recompiling quesOS nine times
-# and the 43-program userland set twice per suite run. This binding is deliberately
-# INDEPENDENT of MAIZE_CC/CC_MAIZE above: MAIZE_CC still governs only the single-file
-# driver compiles (demo_child*.c, argcheck.c, the wave2_launch_* drivers), and the
-# quesOS/userland migration is unconditional, in every environment. Resolved with the
-# same die-if-missing precedent MAZM/MAIZE/MZLD already set (OQ 10250).
-MZCC=$(resolve_exe "${BUILD_DIR}/mzcc") || {
-    echo "run-ctest.sh: mzcc not found in ${BUILD_DIR}; run scripts/run-tests.sh first." >&2; exit 2; }
 
 # maize-221: non-interactive stdin for every test child, so the console VM's
 # framebuffer-takeover trap (interactive-tty only) never fires on the headless
@@ -229,8 +358,42 @@ mkdir -p "${WORK_DIR}"
 # TIMING_LOG and the summary block at the end of this script prints them slowest
 # first. Whole-second granularity via `date +%s` keeps this portable across Linux,
 # macOS, and Git Bash/MSYS (GNU-only `date +%s.%N` is not).
+# maize-376: under --only the timing log is per-label, not the one shared
+# fixture-timings.log. The shared file is truncated at startup, so N concurrent
+# --ctest-env invocations under -jN would each clobber the others' entries; the label
+# is unique per test, so a per-label path is race-free by construction. ctest reports
+# its own per-test durations anyway, which is what the ctest path actually reads.
 TIMING_LOG="${WORK_DIR}/fixture-timings.log"
+if [ -n "$ONLY" ]; then
+    mkdir -p "${WORK_DIR}/ctest-timings"
+    TIMING_LOG="${WORK_DIR}/ctest-timings/${ONLY}.log"
+fi
 : > "$TIMING_LOG"
+
+# maize-376: the --only dispatch guard. Every one of the 78 top-level `mz_timed
+# "<label>" ...` statements below is rewritten as `_mz_want "<label>" && mz_timed
+# "<label>" ...`, so `ctest` can run exactly one of them per test process.
+#
+# With ONLY unset (the plain human and CI entry point) this returns 0 on the first
+# test and the statement runs exactly as it did before, so a bare run-ctest.sh is
+# behavior-identical to the pre-conversion script.
+#
+# `cond && action` is deliberate rather than an `if`: under `set -e` the failure of a
+# command that is not the LAST command of an AND-OR list is ignored (POSIX XCU 2.11),
+# so a non-matching _mz_want neither aborts the script nor leaves a nonzero status
+# behind, it just falls through to the next statement. Verified against both this
+# project's `sh` targets (Git Bash sh and dash).
+MZ_ONLY_MATCHED=0
+_mz_want() {
+    if [ -z "${ONLY:-}" ]; then
+        return 0
+    fi
+    if [ "${ONLY}" = "$1" ]; then
+        MZ_ONLY_MATCHED=1
+        return 0
+    fi
+    return 1
+}
 
 # Exit-status transparent under `set -eu`: "$@" runs as a plain command in mz_timed's
 # body, so a fixture whose nonzero return aborts the script today still aborts it at
@@ -638,15 +801,24 @@ run_default_produce_test() {
 # guest exit code (42). Captured under set +e with $? on the very next line (same
 # discipline as run_exit_status_test) so the status under test survives set -eu. Also
 # asserts no .mzx is left beside ctest/exitcode.c (-r runs from scratch, no persist).
+# maize-376: this fixture used to drive the driver against the COMMITTED source
+# ctest/exitcode.c and assert that no exitcode.mzx was left beside it. ${CTEST_DIR} is
+# not preset-scoped, so that made ctest/exitcode.mzx a fixed shared path two concurrent
+# harness invocations (two presets, two agent worktrees, two operators) could race on,
+# which is the same shape as the wrapper-script race this card closes. The driver writes
+# its output beside its INPUT, so compiling a per-preset sandbox COPY of the source moves
+# both the write and the stray-file assertion under ${WORK_DIR} without weakening either.
 run_driver_run_mode_test() {
     name="driver_run"
     TOTAL=$((TOTAL + 1))
 
-    stray="${CTEST_DIR}/exitcode.mzx"
+    src="${WORK_DIR}/driver_run_exitcode.c"
+    cp "${CTEST_DIR}/exitcode.c" "$src"
+    stray="${src%.c}.mzx"
     rm -f "$stray"
 
     set +e
-    "$CC_MAIZE" --preset "$PRESET" -r "${CTEST_DIR}/exitcode.c" >/dev/null 2>"${WORK_DIR}/dr.err"
+    "$CC_MAIZE" --preset "$PRESET" -r "$src" >/dev/null 2>"${WORK_DIR}/dr.err"
     status=$?
     set -e
 
@@ -1291,140 +1463,140 @@ run_qbe_flag() {
 }
 
 echo "=== C toolchain end-to-end (cproc -> qbe -t maize -> mazm -c -> mzld -> maize) ==="
-mz_timed "hello" run_ctest "hello"
-mz_timed "capstone" run_ctest "capstone"
-mz_timed "globals" run_ctest "globals"
-mz_timed "ptrdata" run_ctest "ptrdata"
-mz_timed "ldzfold" run_ctest "ldzfold"
+_mz_want "hello" && mz_timed "hello" run_ctest "hello"
+_mz_want "capstone" && mz_timed "capstone" run_ctest "capstone"
+_mz_want "globals" && mz_timed "globals" run_ctest "globals"
+_mz_want "ptrdata" && mz_timed "ptrdata" run_ctest "ptrdata"
+_mz_want "ldzfold" && mz_timed "ldzfold" run_ctest "ldzfold"
 # maize-101 codegen-gap regressions: bug #1 (void call with args -> spill.c dead
 # reg) and bug #3 (&&/ternary phi cycle -> Oswap die), both overlay-only.
-mz_timed "voidcall" run_ctest "voidcall"
-mz_timed "freelist" run_ctest "freelist"
+_mz_want "voidcall" && mz_timed "voidcall" run_ctest "voidcall"
+_mz_want "freelist" && mz_timed "freelist" run_ctest "freelist"
 # maize-103 codegen-gap regression: an &local carried DIRECTLY as a loop-carried
 # phi argument (freelist's inverse, no opaque() barrier). Pre-fix maize_isel never
 # ran fixarg over successor phi args, so the alloc temp reached rega and the phi
 # edge became a plain slot MOVE of the local's contents instead of a LEA of its
 # address: a silent wrong answer. Overlay-only fix in qbe-maize/isel.c.
-mz_timed "addrlocalphi" run_ctest "addrlocalphi"
+_mz_want "addrlocalphi" && mz_timed "addrlocalphi" run_ctest "addrlocalphi"
 # maize-136 spilled-operand regression: >11 simultaneously-live values force QBE to
 # spill to frame slots, and a loop rotating sixteen loop-carried values drives the
 # block-edge slot->slot Ocopy (the PUSH/POP register borrow). Pre-fix the emitter
 # die()d on any spilled operand; post-fix it emits the reload / spill-store / slot
 # copy paths. Overlay-only fix in qbe-maize/emit.c. Self-checks against 1541762618.
-mz_timed "spill" run_ctest "spill"
+_mz_want "spill" && mz_timed "spill" run_ctest "spill"
 # maize-143 CAddr nonzero-offset regression: forms and uses &global_array[K],
 # &s.field, "lit"+K, and a &global[K] carried across a fused-branch loop, each with
 # a checked result folded into "caddroff: PASS". Pre-fix the emitter die()d on any
 # nonzero-offset CAddr con; post-fix isel routes it through a register and emitcopy
 # lowers it as CP <label> ; LEA $<off> (flag-neutral). Overlay-only in qbe-maize.
-mz_timed "caddroff" run_ctest "caddroff"
+_mz_want "caddroff" && mz_timed "caddroff" run_ctest "caddroff"
 # maize-143 flag-safety gate (QBE-IR level; see run_qbe_flag above): the LEA offset
 # lowering must be flag-neutral so a $sym+K materialization landing between a fused
 # CMP and its Jcc cannot corrupt the branch. Fails if LEA is swapped for ADD/SUB.
-mz_timed "run_qbe_flag" run_qbe_flag
+_mz_want "run_qbe_flag" && mz_timed "run_qbe_flag" run_qbe_flag
 # maize-137 float/double codegen: a self-checking fixture exercising float and
 # double arithmetic (+ - * /), all six comparisons in both widths (ordered and
 # NaN/unordered), signed int<->float and float<->double conversions (unsigned
 # int<->float is out of scope), inline float/double constants, and
 # passing/returning float and double across a call boundary. Each sub-result is
 # checked (value or exact IEEE bits) so a wrong FP encoding fails the gate.
-mz_timed "fp" run_ctest "fp"
+_mz_want "fp" && mz_timed "fp" run_ctest "fp"
 # maize-74 syscall C binding: raw stub direct (AC 7290), wrapper success returns the
 # byte count (AC 7291), and error-range translation sets errno + returns -1 (AC 7292).
-mz_timed "syscall_raw" run_ctest "syscall_raw"
-mz_timed "syscall_write" run_ctest "syscall_write"
-mz_timed "syscall_errno" run_ctest "syscall_errno"
+_mz_want "syscall_raw" && mz_timed "syscall_raw" run_ctest "syscall_raw"
+_mz_want "syscall_write" && mz_timed "syscall_write" run_ctest "syscall_write"
+_mz_want "syscall_errno" && mz_timed "syscall_errno" run_ctest "syscall_errno"
 # maize-76 freestanding libc slice: string.h (str), ctype.h (ctype), the malloc
 # family over the sbrk free-list allocator (malloc), and the sbrk wrapper itself
 # (sbrk). Each is a self-checking fixture printing a single PASS line.
-mz_timed "str" run_ctest "str"
+_mz_want "str" && mz_timed "str" run_ctest "str"
 # maize-216 large-n bulk memory: memcpy/memmove/memset at/over BULK_SYSCALL_THRESHOLD
 # route to the host via SYS $F4 (sys_bulk_copy, memmove-safe) / $F5 (sys_bulk_set).
 # str.c only exercises the sub-threshold inline word loop; this drives the syscall
 # path (aligned/unaligned, both overlap directions, threshold boundary, n==0) and
 # self-checks byte-for-byte. One "bulkmem PASS".
-mz_timed "bulkmem" run_ctest "bulkmem"
-mz_timed "ctype" run_ctest "ctype"
-mz_timed "sbrk" run_ctest "sbrk"
-mz_timed "malloc" run_ctest "malloc"
+_mz_want "bulkmem" && mz_timed "bulkmem" run_ctest "bulkmem"
+_mz_want "ctype" && mz_timed "ctype" run_ctest "ctype"
+_mz_want "sbrk" && mz_timed "sbrk" run_ctest "sbrk"
+_mz_want "malloc" && mz_timed "malloc" run_ctest "malloc"
 # maize-146 freestanding headers: fixed-width types + limit/constant macros + bool,
 # and (precautionary) the inttypes PRI* format macros over the Maize printf.
-mz_timed "stdint" run_ctest "stdint"
+_mz_want "stdint" && mz_timed "stdint" run_ctest "stdint"
 # maize-297: cproc/qbe miscompiled the equal-width, lower-rank-unsigned usual-
 # arithmetic-conversions arm (typecommonreal's TYPELLONG case), so
 # MIN(LLONG_MAX, SIZE_MAX) evaluated to -1 instead of LLONG_MAX. Covers the
 # constant-folded AND runtime forms of the repro, the full mixed long-long-vs-
 # unsigned-long relational matrix, the == / != controls, and an over-fix guard
 # (long long vs unsigned int must stay a SIGNED compare).
-mz_timed "minmax_signedness" run_ctest "minmax_signedness"
+_mz_want "minmax_signedness" && mz_timed "minmax_signedness" run_ctest "minmax_signedness"
 # maize-147 RT headers round 2 for DOOM: includes every new header (strings/math/
 # assert/unistd/sys/types/sys/stat), asserts the SEEK_*/EISDIR/S_IF* macro values and
 # the off_t/ssize_t/mode_t widths, proves the struct stat byte-ABI (sizeof 144;
 # nlink@16/mode@24/size@48 via runtime pointer subtraction), and parses each new decl
 # via sizeof(&fn) with NO link dependency (bodies are maize-148). One "rthdrs2: PASS".
-mz_timed "rthdrs2" run_ctest "rthdrs2"
+_mz_want "rthdrs2" && mz_timed "rthdrs2" run_ctest "rthdrs2"
 # maize-149 GNU-attribute strip: a DOOM mapsidedef_t-shaped struct using the
 # TRAILING __attribute__((packed)) position (which the pinned cproc rejects)
 # compiles through the driver's cpp-step strip, and its sizeof/offsetof asserts
 # (sizeof==30, char[8] blocks at 4/12/20, trailing short at 28) prove the natural
 # layout is byte-identical to the packed on-disk WAD layout, so the strip is
 # run-safe. Prints a single "packed: PASS" line.
-mz_timed "packed" run_ctest "packed"
+_mz_want "packed" && mz_timed "packed" run_ctest "packed"
 # maize-100 atexit registry: two handlers registered A-then-B run at exit in LIFO
 # order (B, then A) after "main done", proving both that exit() runs the registry
 # and the ordering, plus the indirect-call-through-a-runtime-indexed-fnptr-array path.
-mz_timed "atexit" run_ctest "atexit"
+_mz_want "atexit" && mz_timed "atexit" run_ctest "atexit"
 # maize-142 stdlib numeric conversions: atoi/abs/labs/strtol in one self-checking
 # fixture (base 10/16/0-autodetect, overflow clamp + ERANGE, endptr/no-conversion,
 # invalid-base EINVAL, and the bare-"0x"/"0"-no-digit corners). One "strtol PASS".
-mz_timed "strtol" run_ctest "strtol"
+_mz_want "strtol" && mz_timed "strtol" run_ctest "strtol"
 # maize-141 monotonic ms clock (SYS $F0): a self-checking fixture asserting the
 # clock is non-decreasing at fine grain, advances under a bounded busy-spin, and
 # reports a plausible (nonzero, < 60 s) delta. Prints a single "clock: PASS" line.
-mz_timed "clock" run_ctest "clock"
+_mz_want "clock" && mz_timed "clock" run_ctest "clock"
 
 # maize-213 palette-blit syscall (SYS $F3): a self-checking fixture proving the
 # blit is bit-identical (dst[i] == lut[src[i]], RV == npixels) AND deny-by-default
 # secure (oversized npixels -> -EINVAL, a dst/src base+len wrap -> -EFAULT, each
 # with no guest write and no crash). Prints a single "palette-blit: PASS" line.
-mz_timed "palette_blit_selfcheck" run_ctest "palette_blit_selfcheck"
+_mz_want "palette_blit_selfcheck" && mz_timed "palette_blit_selfcheck" run_ctest "palette_blit_selfcheck"
 # maize-98 varargs / stdarg ABI: a self-checking fixture exercising the register
 # save area, va_arg over mixed scalar classes, the register->overflow boundary,
 # and va_copy. Prints a single PASS line.
-mz_timed "varargs" run_ctest "varargs"
+_mz_want "varargs" && mz_timed "varargs" run_ctest "varargs"
 # maize-99 variadic printf over the stdarg ABI: direct-emit correctness for every
 # conversion (%d %i %u %x %X %c %s %p %%, %ld/%lu/%lx, width + zero-pad, INT_MIN /
 # LONG_MIN) matched byte-for-byte, plus an snprintf return/truncation self-check
 # and a >256-byte line proving chunked flush. Ends in a single "selfcheck PASS".
-mz_timed "printf" run_ctest "printf"
+_mz_want "printf" && mz_timed "printf" run_ctest "printf"
 # maize-144 RT libc gaps for the DOOM boot: printf/sprintf PRECISION (%.Nd min-digits
 # incl. the DOOM STCFN%.3d lump shape, %.Ns string truncation, %8.3d width+precision,
 # %.0d-of-0 empty, and the untouched %05d path) plus strdup / getenv / qsort / atof,
 # all checked silently with inline-computed expected values. One "libcgaps PASS".
-mz_timed "libcgaps" run_ctest "libcgaps"
+_mz_want "libcgaps" && mz_timed "libcgaps" run_ctest "libcgaps"
 # maize-148 RT libc round 3 for the DOOM Phase A link: strcasecmp/strncasecmp (tolower),
 # fabs via a sign-bit mask (incl. -0.0 -> +0.0 by bit pattern), the sscanf scanf core
 # (%d/%x/%f/%s/%c/width/suppress with checked counts + values, a partial match), system
 # (-1/0), usleep (no-op), and the remove/mkdir link-only stubs (execute smoke, no value
 # assertion; real filesystem ACs are on maize-151). One "libcgaps3 PASS".
-mz_timed "libcgaps3" run_ctest "libcgaps3"
-mz_timed "exitcode" run_exit_status_test "exitcode" 42
+_mz_want "libcgaps3" && mz_timed "libcgaps3" run_ctest "libcgaps3"
+_mz_want "exitcode" && mz_timed "exitcode" run_exit_status_test "exitcode" 42
 # maize-76: abort() terminates with status 134 (128 + SIGABRT(6); no signals).
-mz_timed "abort" run_exit_status_test "abort" 134
+_mz_want "abort" && mz_timed "abort" run_exit_status_test "abort" 134
 # maize-102: an own-TU _Noreturn function (die) calls exit(57); its `hlt` end block
 # (and main's tail block, which calls the _Noreturn-declared die) traverse cfg.c
 # simpljmp before emit, so a regression in the hlt-guard hunk crashes this at
 # compile time rather than passing silently. Proves qbe -t maize parses/lowers hlt.
-mz_timed "noreturn" run_exit_status_test "noreturn" 57
+_mz_want "noreturn" && mz_timed "noreturn" run_exit_status_test "noreturn" 57
 # maize-350: kilo's shared geometric-growth arithmetic (kilo_next_cap, a pure
 # function) and its checked allocation wrappers. kilo_next_cap prints its growth
 # progression over a fixed input sequence covering the 64-row and 4096-byte floors.
 # kilo_xalloc_die forces a NULL allocation under KILO_XALLOC_TESTING (no real
 # memory exhaustion) and is driven two ways off the one compiled binary: the exact
 # die() message on stdout, and the process exit status 1.
-mz_timed "kilo_next_cap" run_ctest "kilo_next_cap"
-mz_timed "kilo_xalloc_die" run_ctest "kilo_xalloc_die"
-mz_timed "kilo_xalloc_die_exit" run_exit_status_test "kilo_xalloc_die" 1
+_mz_want "kilo_next_cap" && mz_timed "kilo_next_cap" run_ctest "kilo_next_cap"
+_mz_want "kilo_xalloc_die" && mz_timed "kilo_xalloc_die" run_ctest "kilo_xalloc_die"
+_mz_want "kilo_xalloc_die_exit" && mz_timed "kilo_xalloc_die_exit" run_exit_status_test "kilo_xalloc_die" 1
 # maize-365: kilo's C highlighter overran row->hl when a tab preceded a //
 # comment. The memset fill count at kilo.c:485 used row->size (the raw line
 # length) instead of row->rsize (the tab-expanded render length that i and hl
@@ -1472,31 +1644,31 @@ kilo_hl_case() {
 }
 kilo_hl_case "kilo_hl_tab_comment"
 kilo_hl_case "kilo_hl_space_comment"
-mz_timed "run_args_test" run_args_test
+_mz_want "run_args_test" && mz_timed "run_args_test" run_args_test
 # maize-246 host-launcher bare-image-name resolution (exact / .mzx / .mzb).
-mz_timed "run_image_resolution" run_image_resolution
-mz_timed "run_wx_reject_test" run_wx_reject_test
+_mz_want "run_image_resolution" && mz_timed "run_image_resolution" run_image_resolution
+_mz_want "run_wx_reject_test" && mz_timed "run_wx_reject_test" run_wx_reject_test
 # maize-111 CLI-rework self-checks: the new no-run default (produce beside source) and
 # the driver -r run-and-propagate path.
-mz_timed "run_default_produce_test" run_default_produce_test
-mz_timed "run_driver_run_mode_test" run_driver_run_mode_test
+_mz_want "run_default_produce_test" && mz_timed "run_default_produce_test" run_default_produce_test
+_mz_want "run_driver_run_mode_test" && mz_timed "run_driver_run_mode_test" run_driver_run_mode_test
 
 # maize-114 hostfs acceptance scenarios (cat + ls on both hosts, ..-escape and
 # symlink-escape EACCES/ENOENT, :ro write EROFS).
-mz_timed "run_hostfs_cat" run_hostfs_cat
-mz_timed "run_hostfs_ls" run_hostfs_ls
-mz_timed "run_hostfs_stat" run_hostfs_stat
-mz_timed "run_hostfs_escape" run_hostfs_escape
-mz_timed "run_hostfs_rofs" run_hostfs_rofs
+_mz_want "run_hostfs_cat" && mz_timed "run_hostfs_cat" run_hostfs_cat
+_mz_want "run_hostfs_ls" && mz_timed "run_hostfs_ls" run_hostfs_ls
+_mz_want "run_hostfs_stat" && mz_timed "run_hostfs_stat" run_hostfs_stat
+_mz_want "run_hostfs_escape" && mz_timed "run_hostfs_escape" run_hostfs_escape
+_mz_want "run_hostfs_rofs" && mz_timed "run_hostfs_rofs" run_hostfs_rofs
 # maize-120 FILE* stdio + dirent layer over the hostfs stubs.
-mz_timed "run_hostfs_stdio" run_hostfs_stdio
+_mz_want "run_hostfs_stdio" && mz_timed "run_hostfs_stdio" run_hostfs_stdio
 # maize-151 path-mutating syscalls (mkdir/unlink/rename) over the confined hostfs.
-mz_timed "run_hostfs_savefs" run_hostfs_savefs
-mz_timed "run_hostfs_savefs_neg" run_hostfs_savefs_neg
+_mz_want "run_hostfs_savefs" && mz_timed "run_hostfs_savefs" run_hostfs_savefs
+_mz_want "run_hostfs_savefs_neg" && mz_timed "run_hostfs_savefs_neg" run_hostfs_savefs_neg
 # maize-179 ftruncate over the confined hostfs (shrink/extend/EINVAL/EROFS).
-mz_timed "run_hostfs_truncate" run_hostfs_truncate
+_mz_want "run_hostfs_truncate" && mz_timed "run_hostfs_truncate" run_hostfs_truncate
 # maize-255 merged root listing when a real "/" mount coexists with other grants.
-mz_timed "run_hostfs_root_merge" run_hostfs_root_merge
+_mz_want "run_hostfs_root_merge" && mz_timed "run_hostfs_root_merge" run_hostfs_root_merge
 
 # maize-121 self-hosted framebuffer terminal headless self-check. The fixture is a
 # guest-C program under demos/terminal/ that additionally links the mzdev device-access
@@ -1540,7 +1712,7 @@ run_terminal_selfcheck() {
     fi
 }
 
-mz_timed "run_terminal_selfcheck" run_terminal_selfcheck
+_mz_want "run_terminal_selfcheck" && mz_timed "run_terminal_selfcheck" run_terminal_selfcheck
 
 # maize-140 first-class graphical console headless self-check. Unlike the maize-121
 # terminal (a self-hosted guest engine verified by reading guest-RAM pixels), the console
@@ -1599,7 +1771,7 @@ run_console_selfcheck() {
     fi
 }
 
-mz_timed "run_console_selfcheck" run_console_selfcheck
+_mz_want "run_console_selfcheck" && mz_timed "run_console_selfcheck" run_console_selfcheck
 
 # maize-145 DOOM Phase A "it links" gate. Builds the ~50k-line doomgeneric + DOOM tree
 # (the doom.sources core set plus the Maize stub platform doomgeneric_maize.c and the
@@ -1659,7 +1831,7 @@ run_doom_link() {
     fi
 }
 
-mz_timed "run_doom_link" run_doom_link
+_mz_want "run_doom_link" && mz_timed "run_doom_link" run_doom_link
 
 # maize-153 DOOM Phase B headless DG-platform self-check. Links ONLY the platform TU
 # doomgeneric_maize.c with the standalone doom_selfcheck.c (a minimal link: no doom.sources,
@@ -1723,7 +1895,7 @@ run_doom_selfcheck() {
     fi
 }
 
-mz_timed "run_doom_selfcheck" run_doom_selfcheck
+_mz_want "run_doom_selfcheck" && mz_timed "run_doom_selfcheck" run_doom_selfcheck
 
 # maize-154 DOOM Phase C headless RENDER gate. Distinct from run_doom_selfcheck
 # (Phase B: DG_* platform in isolation, no engine boot): this boots the WHOLE
@@ -1823,7 +1995,7 @@ run_doom_render() {
     fi
 }
 
-mz_timed "run_doom_render" run_doom_render
+_mz_want "run_doom_render" && mz_timed "run_doom_render" run_doom_render
 
 # maize-193 DOOM LEVEL-TRANSITION gate. Distinct from run_doom_render (Phase C:
 # boots ONE level and asserts a single rendered frame): this boots MAP01 of a
@@ -1911,7 +2083,7 @@ run_doom_transition() {
     fi
 }
 
-mz_timed "run_doom_transition" run_doom_transition
+_mz_want "run_doom_transition" && mz_timed "run_doom_transition" run_doom_transition
 
 # maize-156 DOOM ENGINE-LEVEL INPUT gate. Distinct from run_doom_render/run_doom_transition
 # (which boot the engine but inject ZERO keyboard input) and from run_doom_selfcheck (which
@@ -2003,15 +2175,15 @@ run_doom_input() {
     fi
 }
 
-mz_timed "run_doom_input" run_doom_input
+_mz_want "run_doom_input" && mz_timed "run_doom_input" run_doom_input
 
 # maize-138 multi-file compile/link: the primary-gate cross-object fixture, the
 # negative link-rejection case, and the two multi-source usage-error paths.
-mz_timed "multifile" run_multi_ctest "multifile" "multifile_main.c multifile_lib.c"
-mz_timed "run_multi_link_reject_test" run_multi_link_reject_test
-mz_timed "multifile_no_out" run_multi_usage_test "multifile_no_out" "needs an output path" \
+_mz_want "multifile" && mz_timed "multifile" run_multi_ctest "multifile" "multifile_main.c multifile_lib.c"
+_mz_want "run_multi_link_reject_test" && mz_timed "run_multi_link_reject_test" run_multi_link_reject_test
+_mz_want "multifile_no_out" && mz_timed "multifile_no_out" run_multi_usage_test "multifile_no_out" "needs an output path" \
     "${CTEST_DIR}/multifile_main.c" "${CTEST_DIR}/multifile_lib.c"
-mz_timed "multifile_emit_reject" run_multi_usage_test "multifile_emit_reject" "only when compiling a single" \
+_mz_want "multifile_emit_reject" && mz_timed "multifile_emit_reject" run_multi_usage_test "multifile_emit_reject" "only when compiling a single" \
     --emit -o "${WORK_DIR}/multifile_emit_reject.mzx" \
     "${CTEST_DIR}/multifile_main.c" "${CTEST_DIR}/multifile_lib.c"
 
@@ -2091,7 +2263,7 @@ run_launcher_defaults() {
     fi
 }
 
-mz_timed "run_launcher_defaults" run_launcher_defaults
+_mz_want "run_launcher_defaults" && mz_timed "run_launcher_defaults" run_launcher_defaults
 
 # =============================================================================
 # maize-252: config-file mount= / mount-home= grants. Kept in its OWN block,
@@ -2260,7 +2432,7 @@ run_launcher_config_mount() {
     fi
 }
 
-mz_timed "run_launcher_config_mount" run_launcher_config_mount
+_mz_want "run_launcher_config_mount" && mz_timed "run_launcher_config_mount" run_launcher_config_mount
 # =============================================================================
 
 # =============================================================================
@@ -2465,7 +2637,7 @@ run_launcher_per_binary() {
     fi
 }
 
-mz_timed "run_launcher_per_binary" run_launcher_per_binary
+_mz_want "run_launcher_per_binary" && mz_timed "run_launcher_per_binary" run_launcher_per_binary
 # =============================================================================
 
 # maize-357 (AC 9853): large-period armed-timer cadence. asm/test_timer_period1.mazm
@@ -2514,7 +2686,7 @@ run_timer_cadence_equiv() {
     fi
 }
 
-mz_timed "run_timer_cadence_equiv" run_timer_cadence_equiv
+_mz_want "run_timer_cadence_equiv" && mz_timed "run_timer_cadence_equiv" run_timer_cadence_equiv
 # =============================================================================
 
 # maize-24 keystone (Piece 3): quesOS single-tasking exec/reap. Builds the two
@@ -2593,7 +2765,7 @@ run_quesos_selfcheck() {
     fi
 }
 
-mz_timed "run_quesos_selfcheck" run_quesos_selfcheck
+_mz_want "run_quesos_selfcheck" && mz_timed "run_quesos_selfcheck" run_quesos_selfcheck
 
 # maize-359: quesOS boot-argv forwarding. quesOS now runs its FIRST boot token as the
 # program and forwards the rest (argv[1..], split on `--` between programs) as that
@@ -2720,7 +2892,7 @@ run_quesos_argcheck() {
     fi
 }
 
-mz_timed "run_quesos_argcheck" run_quesos_argcheck
+_mz_want "run_quesos_argcheck" && mz_timed "run_quesos_argcheck" run_quesos_argcheck
 
 # maize-360: quesOS-as-default-substrate. Two new behaviors ride on the SAME argcheck
 # envp/argv dumper. This fixture drives the NEW default (ROM-wrapping) path directly via
@@ -2810,7 +2982,7 @@ run_quesos_default_init() {
     fi
 }
 
-mz_timed "run_quesos_default_init" run_quesos_default_init
+_mz_want "run_quesos_default_init" && mz_timed "run_quesos_default_init" run_quesos_default_init
 
 # maize-372: quesOS quiet-boot gate. quesOS is now Unix-quiet by default: the
 # informational [quesos] init/reap/unhandled-syscall trace lines are gated behind a
@@ -2924,7 +3096,7 @@ run_quesos_quiet_boot() {
     fi
 }
 
-mz_timed "run_quesos_quiet_boot" run_quesos_quiet_boot
+_mz_want "run_quesos_quiet_boot" && mz_timed "run_quesos_quiet_boot" run_quesos_quiet_boot
 
 # maize-93 process ladder: the multi-process quesOS acceptance fixtures. Each is a C
 # program compiled by the ordinary cc-maize.sh pipeline (stock .mzx) and run UNDER
@@ -3293,7 +3465,7 @@ run_quesos_ac_fixtures() {
     fi
 }
 
-mz_timed "run_quesos_ac_fixtures" run_quesos_ac_fixtures
+_mz_want "run_quesos_ac_fixtures" && mz_timed "run_quesos_ac_fixtures" run_quesos_ac_fixtures
 
 # maize-251 DOOM as a quesOS child: the North Star payoff. Boots the WHOLE DOOM engine as a
 # quesOS worklist child against the synthetic min-IWAD, with video/input flowing through the
@@ -3438,7 +3610,7 @@ run_doom_quesos() {
     esac
 }
 
-mz_timed "run_doom_quesos" run_doom_quesos
+_mz_want "run_doom_quesos" && mz_timed "run_doom_quesos" run_doom_quesos
 
 # maize-94 wave-1 kernel plumbing: quesOS forwards the native hostfs file/dir subset
 # (decision 8941), owns a per-process cwd + relative-path resolution (decision 8940), and
@@ -3598,7 +3770,7 @@ run_quesos94_fixtures() {
     fi
 }
 
-mz_timed "run_quesos94_fixtures" run_quesos94_fixtures
+_mz_want "run_quesos94_fixtures" && mz_timed "run_quesos94_fixtures" run_quesos94_fixtures
 
 # maize-94 wave-1 userland: the VENDORED sbase binaries (userland/oksh + userland/sbase
 # submodules, built by mzcc build-userland through the same cross-toolchain pipeline),
@@ -4225,7 +4397,7 @@ run_userland94_fixtures() {
     fi
 }
 
-mz_timed "run_userland94_fixtures" run_userland94_fixtures
+_mz_want "run_userland94_fixtures" && mz_timed "run_userland94_fixtures" run_userland94_fixtures
 
 # maize-292: wave-2 userland (31 additional sbase tools, 12 Group-A + 19 Group-B,
 # plus patched kill, on top of wave-1). Mirrors run_userland94_fixtures' shape
@@ -4388,7 +4560,7 @@ run_userland_wave2_fixtures() {
     # this card lands there IS no pre-stdin-fix baseline left to diff against.
 }
 
-mz_timed "run_userland_wave2_fixtures" run_userland_wave2_fixtures
+_mz_want "run_userland_wave2_fixtures" && mz_timed "run_userland_wave2_fixtures" run_userland_wave2_fixtures
 
 # maize-382 (decision D20): every heavy quesOS/userland build above now goes through
 # mzcc, which leaves os/quesos/build-quesos.sh and userland/build-userland.sh with no
@@ -4451,11 +4623,20 @@ run_sh_builder_smoke() {
     fi
 }
 
-mz_timed "run_sh_builder_smoke" run_sh_builder_smoke
+_mz_want "run_sh_builder_smoke" && mz_timed "run_sh_builder_smoke" run_sh_builder_smoke
+
+# maize-376: a --only label that matched nothing is a wiring bug (a renamed dispatch
+# site, a typo in the CMake test list), and it would otherwise report a vacuous
+# "0 passed, 0 failed" success. Fail loudly instead.
+if [ -n "$ONLY" ] && [ "$MZ_ONLY_MATCHED" -ne 1 ]; then
+    echo "run-ctest.sh: --only '${ONLY}' matched no fixture dispatch label." >&2
+    exit 2
+fi
 
 # maize-382 (AC 10193): where the suite's wall-clock actually goes, slowest first,
-# printed just before the pass/fail line.
-if [ -s "$TIMING_LOG" ]; then
+# printed just before the pass/fail line. maize-376: suppressed under --only, where
+# it would be a one-line restatement of a number ctest already reports itself.
+if [ -z "$ONLY" ] && [ -s "$TIMING_LOG" ]; then
     echo "-----------------------------------------------------------------------"
     echo "Fixture timings (seconds, slowest first):"
     sort -t' ' -k2,2rn "$TIMING_LOG" | while IFS=' ' read -r _lbl _secs; do
