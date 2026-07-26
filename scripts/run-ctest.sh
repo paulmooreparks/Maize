@@ -200,6 +200,15 @@ if [ -n "$CTEST_ENV_FILE" ]; then
         echo "run-ctest.sh: --ctest-env file ${CTEST_ENV_FILE} not found; the ctest_guest_env setup test must run first." >&2
         exit 2; }
     . "$CTEST_ENV_FILE"
+    # A few fixtures reach files through paths that are relative to the repo root rather
+    # than absolute: demos/doom/doom.sources lists its ~50 doomgeneric translation units
+    # relatively, and cc-maize.sh resolves those against the CURRENT directory. The
+    # harness has always been invoked from the repo root, so that dependency was invisible
+    # until ctest started launching it from the build directory instead. Make it explicit
+    # rather than leaving it implicit in the caller's habits: a --ctest-env invocation runs
+    # from the same directory a plain run-ctest.sh invocation does, whichever tree
+    # --ctest-setup resolved (the WSL mirror when one is active, the repo otherwise).
+    cd "$REPO_ROOT" || { echo "run-ctest.sh: cannot cd to ${REPO_ROOT}" >&2; exit 2; }
 else
     # Build the C toolchain if the compilers are absent (fresh-clone one-command).
     if [ "$SKIP_BUILD" -eq 0 ]; then
@@ -1642,8 +1651,12 @@ kilo_hl_case() {
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 }
-kilo_hl_case "kilo_hl_tab_comment"
-kilo_hl_case "kilo_hl_space_comment"
+# maize-376: these two were the only top-level fixture dispatches maize-382 left
+# outside mz_timed, so they were both untimed and (once --only landed) would have run
+# on EVERY per-fixture invocation instead of on their own. Routed through the same
+# guard as the other 78, which also gives them their own add_test entries and timings.
+_mz_want "kilo_hl_tab_comment" && mz_timed "kilo_hl_tab_comment" kilo_hl_case "kilo_hl_tab_comment"
+_mz_want "kilo_hl_space_comment" && mz_timed "kilo_hl_space_comment" kilo_hl_case "kilo_hl_space_comment"
 _mz_want "run_args_test" && mz_timed "run_args_test" run_args_test
 # maize-246 host-launcher bare-image-name resolution (exact / .mzx / .mzb).
 _mz_want "run_image_resolution" && mz_timed "run_image_resolution" run_image_resolution

@@ -188,3 +188,12 @@ if (MAIZE_DISPLAY)
   target_compile_definitions(maizeg PRIVATE MAIZE_DISPLAY)
   target_link_libraries(maizeg PRIVATE SDL2::SDL2)
 endif()
+
+# maize-376: scripts/run-ctest.sh's fixtures registered as real CTest tests, so `ctest -R`
+# / `-L` select a subset, `ctest -jN` runs them in parallel, and each one carries its own
+# TIMEOUT. Only registered for a top-level configure; a super-build embedding this project
+# should not inherit the guest-toolchain suite.
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  enable_testing()
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MaizeCTest.cmake")
+endif()
