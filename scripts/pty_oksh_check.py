@@ -118,7 +118,11 @@ if "# " not in text:
     fail = "no-prompt"
 elif marker not in text:
     fail = "echo-keystroke-not-executed"
-elif text.count("/") < 2:   # the /bin/oksh.mzx warning has one '/'; pwd's own "/" adds more
+elif not any(line.strip() == "/" for line in text.splitlines()):
+    # maize-361: assert on pwd's OWN output line, a bare "/". The earlier form counted '/'
+    # characters and needed at least two, borrowing one from the "/bin/oksh.mzx: No
+    # controlling tty" startup warning; quesOS now provides /dev/tty, that warning is gone,
+    # and the count-based check turned a passing run into a false "pwd-not-executed".
     fail = "pwd-not-executed"
 elif "unhandled syscall" in text:
     fail = "unhandled-syscall"
