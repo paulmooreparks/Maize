@@ -244,6 +244,9 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define TIO_ISIG 0x0001u
 /* c_lflag ICANON bit (Linux value; toolchain/rt/termios.h). A raw-mode process clears it. */
 #define TIO_ICANON 0x0002u
+/* c_lflag TOSTOP bit (Linux value; toolchain/rt/termios.h). maize-361: when set, a
+ * background process writing to the console is stopped with SIGTTOU. */
+#define TIO_TOSTOP 0x0100u
 /* Byte offset of c_lflag (the 4th 32-bit LE word) within the 36-byte termios wire image. */
 #define TERMIOS_OFF_LFLAG 12
 /* struct stat wire size (toolchain/rt/sys/stat.h: 144 bytes, hostfs.md section 2). */
@@ -466,6 +469,7 @@ static int lowest_set_bit(unsigned long m);          /* maize-316: also used by 
 static void terminate_by_signal(struct pcb *p, int sig);   /* maize-174: default-terminate (noreturn) */
 static void push_signal_frame(struct pcb *p, int sig);     /* maize-174: dispatch a handler frame */
 static int console_service_parked(struct pcb *r);          /* maize-361: complete a BLK_CONSOLE park */
+static int raise_on_pgid(long pgid, int sig);              /* maize-174: raise on a process group */
 static void reap_tail(struct pcb *self);             /* maize-174: shared zombie/reap/SIGCHLD tail */
 
 /* Boot worklist: quesOS's own argv[1..] is the exec worklist (maize-24 decision D7). */
@@ -1670,6 +1674,25 @@ static long native_read(long nfd, u64 uva, long count) {
     return got;
 }
 
+/* The single controlling tty's foreground process group; set at boot to the first
+ * worklist job's pgid, changed only by SYS_tcsetpgrp. Declared here, ahead of do_write,
+ * because maize-361's SIGTTOU gate needs it (the rest of the signal subsystem that owns
+ * these three globals lives further down, under the maize-174 section header). */
+static long g_fg_pgid;
+
+/* maize-94 (OQ 8951): the console's line-discipline ISIG state, mirroring the one window
+ * console's termios c_lflag & ISIG. Default 1 (canonical: 0x03/0x1C intercepted as
+ * SIGINT/SIGQUIT, the maize-174 behavior). do_tcsetattr updates it from the forwarded
+ * termios, so a raw-mode shell (oksh, ISIG cleared) receives 0x03/0x1C as literal data
+ * bytes (decision 8947: Ctrl-C is a literal byte in wave 1). One console => one flag. */
+static int g_tty_isig = 1;
+
+/* maize-361 (operator-ratified): the console's TOSTOP state, mirrored from termios exactly
+ * as g_tty_isig mirrors ISIG. Default OFF, the common shell-observed default: nothing in
+ * oksh's own tty_init/termios setup sets TOSTOP, so a background WRITE to the console goes
+ * through untouched. Background READS are gated unconditionally (SIGTTIN), per POSIX. */
+static int g_tty_tostop = 0;
+
 /* Resolve a process fd to its open-file description, or 0 for a bad fd. */
 static struct ofd *fd_ofd(struct pcb *p, u64 fd_num) {
     int slot;
@@ -1683,6 +1706,17 @@ static long do_write(u64 fd_num, u64 uva, long count) {
     struct pcb *self = g_current;
     struct ofd *o = fd_ofd(self, fd_num);
     if (o == 0) { return -9; }   /* -EBADF */
+    /* maize-361: the write-side twin of do_read's SIGTTIN gate, but gated on TOSTOP, which
+     * is off by default (operator-ratified), so a background job's output normally goes
+     * straight through. There is no completion path to add for this: a console write never
+     * parks (it forwards to native_write and returns), so the gate is purely synchronous.
+     * native_fd <= 2 is the console: ofd_init is the only source of native fds 0/1/2. */
+    if (o->kind == OFD_NATIVE && o->native_fd <= 2 && g_tty_tostop
+        && self->pgid != g_fg_pgid) {
+        raise_on_pgid(self->pgid, SIGTTOU);
+        deliver_pending_signal(self);   /* noreturn when the default STOP applies */
+        return -(long)QOS_EIO;
+    }
     if (o->kind == OFD_NATIVE) { return native_write(o->native_fd, uva, count); }
     if (o->kind == OFD_PIPE_W || o->kind == OFD_SOCK) {
         /* maize-238: a socket writes into its SEND ring (peer_idx); the pipe-write path is
@@ -1720,17 +1754,6 @@ static long do_write(u64 fd_num, u64 uva, long count) {
  * pre-read model, whose stranded latch raced the oksh-to-child console handoff.
  * ================================================================================== */
 
-/* The single controlling tty's foreground process group; set at boot to the first
- * worklist job's pgid, changed only by SYS_tcsetpgrp. */
-static long g_fg_pgid;
-
-/* maize-94 (OQ 8951): the console's line-discipline ISIG state, mirroring the one window
- * console's termios c_lflag & ISIG. Default 1 (canonical: 0x03/0x1C intercepted as
- * SIGINT/SIGQUIT, the maize-174 behavior). do_tcsetattr updates it from the forwarded
- * termios, so a raw-mode shell (oksh, ISIG cleared) receives 0x03/0x1C as literal data
- * bytes (decision 8947: Ctrl-C is a literal byte in wave 1). One console => one flag. */
-static int g_tty_isig = 1;
-
 /* Record a pending signal. Signals are always recorded regardless of the block mask;
  * `blocked` only gates DELIVERY (deliver_pending_signal), per POSIX. A signal raised on
  * a process blocked in a syscall is delivered when it next becomes runnable; in-flight
@@ -1762,7 +1785,18 @@ static void raise_on_pcb(struct pcb *p, int sig) {
              * console's CURRENT state here; if nothing is pending the process stays parked
              * and the next IRQ services it exactly as before. */
             if (p->state == P_BLOCKED && p->block_kind == BLK_CONSOLE) {
-                console_service_parked(p);
+                if (p->pgid != g_fg_pgid) {
+                    /* Resumed into the BACKGROUND (the `bg` case). POSIX arbitrates the
+                     * terminal on every read, not once at read entry, so this parked read
+                     * must not be handed the byte the foreground shell is waiting for.
+                     * Re-raise SIGTTIN, which the BLK_CONSOLE completion below turns back
+                     * into a stop with the read still parked, exactly as if the process had
+                     * reached do_read's gate while backgrounded. One level of recursion
+                     * only: SIGTTIN is not SIGCONT, so this branch cannot re-enter. */
+                    raise_on_pcb(p, SIGTTIN);
+                } else {
+                    console_service_parked(p);
+                }
             }
             return;   /* the resume IS the delivery; nothing left to leave pending */
         }
@@ -1827,7 +1861,19 @@ static void raise_on_pcb(struct pcb *p, int sig) {
         && (p->pending & ~p->blocked) != 0ul) {
         unsigned long ready = p->pending & ~p->blocked;
         int wsig = lowest_set_bit(ready);
-        if (!QOS_IS_STOP_SIG(wsig)) {
+        /* A signal that will do NOTHING when delivered must not disturb the park at all.
+         * Unparking for one would resume the read's saved frame with no return value ever
+         * written into its RV slot (the -EINTR write below is skipped for a stop, and
+         * stop_process never runs for an ignored signal), handing the guest garbage.
+         * Consume the bit and leave the reader exactly where it was. */
+        if (p->handler[wsig] == 1ul
+            || (p->handler[wsig] == 0ul && (wsig == SIGCHLD || wsig == SIGCONT))) {
+            p->pending &= ~(1ul << (wsig - 1));
+            return;
+        }
+        /* Only a DEFAULT-action stop leaves the park intact. A CAUGHT stop signal runs a
+         * handler, so its read is interrupted the ordinary way (-EINTR) instead. */
+        if (!QOS_IS_STOP_SIG(wsig) || p->handler[wsig] != 0ul) {
             /* Abandon the read with -EINTR, the same completion BLK_SIGSUSPEND already
              * uses, extending its narrow exception to the no-EINTR model (SYSCALL-ABI.md)
              * to a read that likewise has no guaranteed waker. Harmless for a
@@ -1936,6 +1982,19 @@ static long do_read(u64 fd_num, u64 uva, long count) {
     struct ofd *o = fd_ofd(self, fd_num);
     if (o == 0) { return -9; }   /* -EBADF */
     if (o->kind == OFD_NATIVE) {
+        /* maize-361: POSIX foreground-group arbitration. A process outside the console's
+         * foreground process group may not read it: it is stopped with SIGTTIN (which is
+         * what makes `cat &` report Stopped the moment it tries to read, with no Ctrl-Z
+         * involved). deliver_pending_signal does not return in that case; it returns only
+         * when the reader blocked or ignored SIGTTIN, and POSIX then fails the read with
+         * EIO rather than letting a background process steal terminal input. native_fd 0
+         * identifies the console the same way the console-routing check below does:
+         * ofd_init is the only path that ever produces native_fd 0/1/2. */
+        if (o->native_fd == 0 && self->pgid != g_fg_pgid) {
+            raise_on_pgid(self->pgid, SIGTTIN);
+            deliver_pending_signal(self);   /* noreturn when the default STOP applies */
+            return -(long)QOS_EIO;
+        }
         if (o->native_fd == 0) { return console_read(self, uva, count); }
         return native_read(o->native_fd, uva, count);
     }
@@ -2266,6 +2325,7 @@ static long do_tcsetattr(u64 fd_num, long optional_actions, u64 t_uva) {
          * quesos_console_irq stop intercepting 0x03/0x1C once the shell clears it. */
         lflag = termios_lflag((const unsigned char *)g_iobuf);
         g_tty_isig = (lflag & TIO_ISIG) ? 1 : 0;
+        g_tty_tostop = (lflag & TIO_TOSTOP) ? 1 : 0;   /* maize-361: same mirror, TOSTOP */
         /* maize-250: remember this process's own last-set termios image so reap_tail can
          * re-apply the parent's console state if this process dies before its own
          * userspace cleanup (kilo's atexit -> disableRawMode) runs. */
@@ -3539,6 +3599,7 @@ static void restore_console_on_death(struct pcb *self) {
     if (parent != 0 && parent->termios_valid) {
         sys_tcsetattr(0, 0 /* TCSANOW */, parent->termios_img);
         g_tty_isig = (termios_lflag(parent->termios_img) & TIO_ISIG) ? 1 : 0;
+        g_tty_tostop = (termios_lflag(parent->termios_img) & TIO_TOSTOP) ? 1 : 0;   /* maize-361 */
     }
 }
 
