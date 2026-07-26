@@ -494,13 +494,49 @@ strerror(int errnum)
     }
 }
 
-/* strsignal (maize-94): a static message for a signal number, for borrowed oksh's
- * trap.c diagnostics. quesOS delivers only a small signal subset, so rather than a full
- * name table (oksh carries its own sys_siglist for that), this returns a fixed generic
- * string. The returned pointer is static; the caller must not free or modify it. */
+/* strsignal (maize-94, real table since maize-361): a static message for a signal number,
+ * for borrowed oksh's trap.c diagnostics. oksh builds its whole sigtraps[].mess table from
+ * this, and prints those strings as job states, so a shell reporting a suspended job says
+ * "Stopped" only if this says so; the previous fixed "Unknown signal" stub made every job
+ * state and signal death read as unknown. The strings are the Linux/glibc ones, matching
+ * the Linux signal numbering signal.h already mirrors. Shaped like strerror above (a plain
+ * switch, no table object). The returned pointer is static; the caller must not free or
+ * modify it. */
 char *
 strsignal(int sig)
 {
-	(void)sig;
-	return "Unknown signal";
+	switch (sig) {
+	case 1:  return "Hangup";
+	case 2:  return "Interrupt";
+	case 3:  return "Quit";
+	case 4:  return "Illegal instruction";
+	case 5:  return "Trace/breakpoint trap";
+	case 6:  return "Aborted";
+	case 7:  return "Bus error";
+	case 8:  return "Floating point exception";
+	case 9:  return "Killed";
+	case 10: return "User defined signal 1";
+	case 11: return "Segmentation fault";
+	case 12: return "User defined signal 2";
+	case 13: return "Broken pipe";
+	case 14: return "Alarm clock";
+	case 15: return "Terminated";
+	case 16: return "Stack fault";
+	case 17: return "Child exited";
+	case 18: return "Continued";
+	case 19: return "Stopped (signal)";
+	case 20: return "Stopped";
+	case 21: return "Stopped (tty input)";
+	case 22: return "Stopped (tty output)";
+	case 23: return "Urgent I/O condition";
+	case 24: return "CPU time limit exceeded";
+	case 25: return "File size limit exceeded";
+	case 26: return "Virtual timer expired";
+	case 27: return "Profiling timer expired";
+	case 28: return "Window changed";
+	case 29: return "I/O possible";
+	case 30: return "Power failure";
+	case 31: return "Bad system call";
+	default: return "Unknown signal";
+	}
 }

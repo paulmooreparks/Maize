@@ -464,6 +464,8 @@ static void fb_release_held(struct pcb *p);   /* maize-236: release a held fb sl
 static void deliver_pending_signal(struct pcb *p);   /* maize-174: apply a pending signal on resume */
 static int lowest_set_bit(unsigned long m);          /* maize-316: also used by the sigsuspend wake */
 static void terminate_by_signal(struct pcb *p, int sig);   /* maize-174: default-terminate (noreturn) */
+static void push_signal_frame(struct pcb *p, int sig);     /* maize-174: dispatch a handler frame */
+static int console_service_parked(struct pcb *r);          /* maize-361: complete a BLK_CONSOLE park */
 static void reap_tail(struct pcb *self);             /* maize-174: shared zombie/reap/SIGCHLD tail */
 
 /* Boot worklist: quesOS's own argv[1..] is the exec worklist (maize-24 decision D7). */
@@ -1734,7 +1736,49 @@ static int g_tty_isig = 1;
  * a process blocked in a syscall is delivered when it next becomes runnable; in-flight
  * blocking syscalls are not interrupted (the SA_RESTART-implicit, no-EINTR model). */
 static void raise_on_pcb(struct pcb *p, int sig) {
-    if (p->state == P_RUNNABLE || p->state == P_BLOCKED) { p->pending |= (1ul << (sig - 1)); }
+    /* maize-361 (stop/continue interaction, POSIX). SIGCONT resumes a stopped process
+     * IMMEDIATELY, here, rather than through a pending bit that only a scheduled process
+     * would ever consume: a stopped process is never scheduled, so a deferred SIGCONT
+     * would never arrive. It also cancels any pending stop, and a stop cancels any pending
+     * SIGCONT (the two are mutually exclusive intents). */
+    if (sig == SIGCONT) {
+        p->pending &= ~QOS_STOP_SIG_MASK;
+        if (p->state == P_STOPPED) {
+            /* Resume to P_BLOCKED, not P_RUNNABLE, when the stop caught this process mid
+             * a console read: the read still has to WAIT for a real byte, which only
+             * quesos_console_irq's BLK_CONSOLE scan (which looks at P_BLOCKED processes)
+             * can deliver. Resuming it runnable would switch back into a saved read frame
+             * with nothing left to complete it. block_kind is never stale here: every
+             * normal park completion clears it to BLK_NONE, so a surviving BLK_CONSOLE
+             * means "still mid the same, never-completed console read". A process stopped
+             * by any other route (the synchronous SIGTTIN gate) resumes runnable. */
+            p->state = (p->block_kind == BLK_CONSOLE) ? P_BLOCKED : P_RUNNABLE;
+            p->stop_signal = 0;
+            if (p->handler[SIGCONT] > 1ul) { push_signal_frame(p, SIGCONT); }
+            /* Re-parking on the console is not enough on its own: the console device
+             * raises its IRQ on the RISING edge of readability and stops raising it at all
+             * once end-of-input latches, so a byte (or an EOF) that arrived while this
+             * process was stopped has no second delivery. Service the park from the
+             * console's CURRENT state here; if nothing is pending the process stays parked
+             * and the next IRQ services it exactly as before. */
+            if (p->state == P_BLOCKED && p->block_kind == BLK_CONSOLE) {
+                console_service_parked(p);
+            }
+            return;   /* the resume IS the delivery; nothing left to leave pending */
+        }
+        if (p->handler[SIGCONT] == 0) { return; }   /* SIG_DFL on a running process: ignore */
+    } else if (QOS_IS_STOP_SIG(sig)) {
+        p->pending &= ~(1ul << (SIGCONT - 1));
+    }
+    /* SIGKILL must reach even a stopped process (POSIX: uncatchable). It wakes the target
+     * runnable with the bit retained and no handler dispatch, so deliver_pending_signal's
+     * existing SIGKILL fast path terminates it on its next scheduled turn; without this a
+     * kill -9 on a stopped job would do nothing until something else continued it. */
+    if (p->state == P_RUNNABLE || p->state == P_BLOCKED
+        || (p->state == P_STOPPED && sig == SIGKILL)) {
+        p->pending |= (1ul << (sig - 1));
+    }
+    if (p->state == P_STOPPED && sig == SIGKILL) { p->state = P_RUNNABLE; }
     /* maize-316: complete a parked rt_sigsuspend when this raise makes a signal
      * deliverable under the temporarily-installed suspend mask. Restore the saved
      * mask, deliver the POSIX -EINTR return into the saved frame's RV slot (the
@@ -1771,12 +1815,45 @@ static void raise_on_pcb(struct pcb *p, int sig) {
         p->block_kind = BLK_NONE;
         p->state = P_RUNNABLE;
     }
+    /* maize-361: complete a process parked reading the console (BLK_CONSOLE) when this
+     * raise makes a signal deliverable. schedule() only ever calls deliver_pending_signal
+     * on a P_RUNNABLE candidate, and a console-parked process stays P_BLOCKED until a real
+     * byte arrives, which may never happen: without this branch the pending bit sits on an
+     * idle reader forever. That is why Ctrl-C on an idly blocked foreground reader did
+     * nothing before this card, and it is what makes Ctrl-Z reach stop_process at all.
+     * BLK_CONSOLE and BLK_SIGSUSPEND are mutually exclusive on one pcb, so the two
+     * completion branches can sit side by side. */
+    if (p->state == P_BLOCKED && p->block_kind == BLK_CONSOLE
+        && (p->pending & ~p->blocked) != 0ul) {
+        unsigned long ready = p->pending & ~p->blocked;
+        int wsig = lowest_set_bit(ready);
+        if (!QOS_IS_STOP_SIG(wsig)) {
+            /* Abandon the read with -EINTR, the same completion BLK_SIGSUSPEND already
+             * uses, extending its narrow exception to the no-EINTR model (SYSCALL-ABI.md)
+             * to a read that likewise has no guaranteed waker. Harmless for a
+             * DFL-terminate or SIGKILL target (it is about to be reaped and never resumes
+             * the frame), and oksh's own blocking_read retries on EINTR for a caught one. */
+            as_write64(p, p->saved_rs + 11ul * 8ul, (u64)(-(long)QOS_EINTR));
+            p->block_kind = BLK_NONE;
+        }
+        /* A stop signal deliberately leaves block_kind/block_buf/block_count INTACT: POSIX
+         * runs no handler for a default-action stop, so the read must resume unmodified
+         * once continued. sbase cat treats any negative read() as fatal (libutil/concat.c),
+         * so an -EINTR here would make Ctrl-Z kill cat instead of stopping it. Only `state`
+         * moves, and only as the vehicle to reach the next schedule() pass's
+         * deliver_pending_signal, which runs stop_process before this frame ever resumes. */
+        p->state = P_RUNNABLE;
+    }
 }
+/* maize-361: no state filter here any more. raise_on_pcb above is now the single source of
+ * truth for which states can receive which signal (a stopped member must still receive
+ * SIGCONT and SIGKILL), and the old P_RUNNABLE||P_BLOCKED gate would have dropped both
+ * before raise_on_pcb ever saw them. */
 static int raise_on_pgid(long pgid, int sig) {
     int i, found = 0;
     for (i = 0; i < QUESOS_MAX_PROC; ++i) {
         struct pcb *p = &g_proc[i];
-        if ((p->state == P_RUNNABLE || p->state == P_BLOCKED) && p->pgid == pgid) {
+        if (p->state != P_FREE && p->state != P_ZOMBIE && p->pgid == pgid) {
             raise_on_pcb(p, sig); found = 1;
         }
     }
@@ -1794,6 +1871,7 @@ static void signal_fg_group(int sig) { raise_on_pgid(g_fg_pgid, sig); }
 
 static long console_read(struct pcb *self, u64 uva, long count) {
     u8 b;
+    int sig = 0;   /* maize-361: control byte recognized here, raised after the park below */
     if (count <= 0) { return 0; }
     if (quesos_con_status() & CON_STAT_INPUT) {
         /* maize-238 Branch A (decision 9285): CON_STAT_INPUT is the non-consuming probe
@@ -1802,11 +1880,12 @@ static long console_read(struct pcb *self, u64 uva, long count) {
          * e.g. a pipe that closes right after its last byte, and wrongly discard the byte
          * just read). Real end-of-input is handled below, when nothing is pending. */
         b = (u8)quesos_con_data();
-        if (g_tty_isig && b == 0x03) { signal_fg_group(SIGINT); }        /* INTR: no data */
-        else if (g_tty_isig && b == 0x1C) { signal_fg_group(SIGQUIT); }  /* QUIT: no data */
-        else { as_write8(self, uva, b); return 1; }   /* raw mode delivers 0x03/0x1C as data */
-        /* a control byte was consumed; fall through and park (the raised signal is
-         * delivered the next time a targeted process is runnable). */
+        if (g_tty_isig && b == 0x03) { sig = SIGINT; }         /* INTR: no data */
+        else if (g_tty_isig && b == 0x1C) { sig = SIGQUIT; }   /* QUIT: no data */
+        else if (g_tty_isig && b == 0x1A) { sig = SIGTSTP; }   /* maize-361 SUSP: no data */
+        else { as_write8(self, uva, b); return 1; }   /* raw mode delivers 0x03/0x1C/0x1A as data */
+        /* a control byte was consumed; fall through and park (this read still owes the
+         * caller a real byte, or a signal completion). */
     }
     else if (quesos_con_status() & CON_STAT_EOF) {
         return 0;   /* nothing pending and host stdin is at end-of-input */
@@ -1815,7 +1894,40 @@ static long console_read(struct pcb *self, u64 uva, long count) {
     self->block_buf = uva;
     self->block_count = count;
     self->state = P_BLOCKED;
+    /* maize-361: raise AFTER the park is recorded, not before. The reader here is its own
+     * signal's most likely target, and raise_on_pcb's BLK_CONSOLE completion only fires on
+     * an already-parked process. Raising first (the pre-361 order) left the bit pending on
+     * a process that then parked, so nothing delivered it until an unrelated byte arrived,
+     * which is the other half of why Ctrl-C on a foreground reader looked inert. */
+    if (sig != 0) { signal_fg_group(sig); }
     schedule();   /* noreturn: the console IRQ (vector 33) completes this read */
+    return 0;
+}
+
+/* maize-361: complete ONE process parked in BLK_CONSOLE from the console's current state,
+ * factored out of quesos_console_irq so the SIGCONT resume path can reuse it verbatim. A
+ * latched data byte completes the read (or, in canonical mode, folds into a signal on the
+ * foreground group and leaves the reader parked for a real byte); end-of-input completes it
+ * with 0. Returns 1 when the console had something to report, 0 when it did not. */
+static int console_service_parked(struct pcb *r) {
+    if (quesos_con_status() & CON_STAT_INPUT) {
+        /* CON_STAT_INPUT is the non-consuming data-pending probe, so quesos_con_data
+         * returns a real byte (no post-read EOF re-check, which would misread the NEXT
+         * read's end-of-input). A control byte (0x03/0x1C/0x1A) in canonical mode is
+         * intercepted as a signal on the foreground group and NOT delivered as data (the
+         * reader stays parked for a real byte, matching the no-EINTR model); raw mode
+         * delivers it as an ordinary byte. */
+        u8 b = (u8)quesos_con_data();
+        if (g_tty_isig && b == 0x03) { signal_fg_group(SIGINT); }
+        else if (g_tty_isig && b == 0x1C) { signal_fg_group(SIGQUIT); }
+        else if (g_tty_isig && b == 0x1A) { signal_fg_group(SIGTSTP); }   /* SUSP */
+        else { as_write8(r, r->block_buf, b); wake_with(r, 1); }
+        return 1;
+    }
+    if (quesos_con_status() & CON_STAT_EOF) {
+        wake_with(r, 0);   /* end-of-input: the parked read returns 0 (EOF) */
+        return 1;
+    }
     return 0;
 }
 
@@ -3370,21 +3482,9 @@ void quesos_console_irq(void) {
     }
     if (r != 0) {
         woke = 1;   /* a console reader was parked: this IRQ services it (deliver / EOF / signal) */
-        if (quesos_con_status() & CON_STAT_INPUT) {
-            /* A data byte is pending: consume it at read time and complete the parked read.
-             * CON_STAT_INPUT is the non-consuming data-pending probe, so quesos_con_data
-             * returns a real byte (no post-read EOF re-check, which would misread the NEXT
-             * read's end-of-input). A control byte (0x03/0x1C) in canonical mode is
-             * intercepted as a signal on the foreground group and NOT delivered as data (the
-             * reader stays parked for a real byte, matching the no-EINTR model); raw mode
-             * delivers it as an ordinary byte. */
-            u8 b = (u8)quesos_con_data();
-            if (g_tty_isig && b == 0x03) { signal_fg_group(SIGINT); }
-            else if (g_tty_isig && b == 0x1C) { signal_fg_group(SIGQUIT); }
-            else { as_write8(r, r->block_buf, b); wake_with(r, 1); }
-        } else if (quesos_con_status() & CON_STAT_EOF) {
-            wake_with(r, 0);   /* end-of-input: the parked read returns 0 (EOF) */
-        }
+        /* maize-361: the byte-delivery / EOF / control-byte-to-signal body now lives in
+         * console_service_parked, shared with the SIGCONT resume path. */
+        console_service_parked(r);
     }
     /* fd 0 became readable (or hit EOF): wake any poll()/select() caller watching it. */
     woke += poll_recheck_all();
