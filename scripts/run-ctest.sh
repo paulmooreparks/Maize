@@ -4127,6 +4127,45 @@ run_userland94_fixtures() {
         echo "[FAIL] userland361_bg_resume"; printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
+
+    # Cycle-2 review, major finding: a SIGCONT that arrives while a console reader is still
+    # in raise_on_pcb's TRANSIENT state (already flipped to P_RUNNABLE with its BLK_CONSOLE
+    # park intact, waiting for a pending stop that has not been delivered yet) must put that
+    # reader back where it was. Cancelling the pending stop and leaving it runnable resumes
+    # its saved read frame with the RV slot never written, and sys_read
+    # (toolchain/rt/syscall.mazm) is a bare SYS/RET that normalizes nothing, so cat acts on a
+    # stale register: here it takes the value for end-of-input and exits, and `jobs` reports
+    # "Done" for a job that was never continued into anything.
+    #
+    # WHY TWO SIGCONTs RATHER THAN `kill -TSTP %1; kill -CONT %1`, which is how the finding
+    # names the race: a shell cannot drive that literal pair into the window. By the time a
+    # prompt is available to type at, the target has already had a schedule pass and is
+    # P_STOPPED, and a stop signal raised on a P_STOPPED process is a no-op (raise_on_pcb's
+    # state gate drops it), so the following SIGCONT is the ordinary resume. The transient
+    # state a shell CAN reach is the one the background re-gate creates: continuing a stopped
+    # console reader into the background re-raises SIGTTIN, which the BLK_CONSOLE completion
+    # turns straight back into the same transient state. A second SIGCONT on the SAME command
+    # line then cancels that stop with no schedule pass in between, which is the identical
+    # window through the identical door. Both SIGCONTs must be on one line: the shell parks
+    # reading the console between prompts, and that park is the schedule pass that settles the
+    # target properly.
+    #
+    # Negative control (transcripts on the card): against the seven-commit branch WITHOUT the
+    # re-park guard this reports "[1] + Done  cat" on all five of five runs, and with the
+    # guard "[1] + Stopped (tty input)  cat" on all five, so the assertion below discriminates
+    # deterministically rather than by timing.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(printf 'cat\r\032kill -CONT %%1; kill -CONT %%1\rjobs\rexit\rexit\r' | jc_run); set -e
+    if printf '%s\n' "$out" | grep -qE "\[1\] \+ Stopped +cat" \
+    && printf '%s\n' "$out" | grep -qE "Stopped \(tty input\) +cat" \
+    && ! printf '%s\n' "$out" | grep -qE "Done +cat" \
+    && printf '%s\n' "$out" | grep -qF "reaped /bin/oksh.mzx status=0" \
+    && ! printf '%s\n' "$out" | grep -qiE "unhandled syscall|halt"; then
+        echo "[PASS] userland361_cont_cancels_pending_stop (SIGCONT re-parks a not-yet-stopped reader)"
+    else
+        echo "[FAIL] userland361_cont_cancels_pending_stop"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
 }
 
 run_userland94_fixtures

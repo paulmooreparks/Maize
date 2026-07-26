@@ -287,6 +287,14 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define QOS_STOP_SIG_MASK ((1ul << (SIGTSTP - 1)) | (1ul << (SIGTTIN - 1)) \
                          | (1ul << (SIGTTOU - 1)) | (1ul << (SIGSTOP - 1)))
 #define QOS_IS_STOP_SIG(s) ((s) == SIGTSTP || (s) == SIGTTIN || (s) == SIGTTOU || (s) == SIGSTOP)
+/* maize-361 (cycle-2 review): the signals whose SIG_DFL action does NOTHING at all under
+ * quesOS. Every other non-stop signal terminates here, so this really is the whole set.
+ * Two call sites need it (deliver_pending_signal's default-action switch and the
+ * BLK_CONSOLE completion's no-op guard) and they must agree, or the guard silently stops
+ * covering a case; one predicate beside QOS_IS_STOP_SIG keeps them from drifting.
+ * SIGURG and SIGWINCH are default-ignore on Linux but default-TERMINATE here, so they are
+ * deliberately not members. */
+#define QOS_DFL_IS_IGNORE(s) ((s) == SIGCHLD || (s) == SIGCONT)
 
 /* maize-236: framebuffer registration syscalls (Decision D6). These are quesOS-private,
  * guest-only, and Maize-specific display arbitration with no real Linux syscall-number
@@ -469,6 +477,7 @@ static int lowest_set_bit(unsigned long m);          /* maize-316: also used by 
 static void terminate_by_signal(struct pcb *p, int sig);   /* maize-174: default-terminate (noreturn) */
 static void push_signal_frame(struct pcb *p, int sig);     /* maize-174: dispatch a handler frame */
 static int console_service_parked(struct pcb *r);          /* maize-361: complete a BLK_CONSOLE park */
+static void console_settle_park(struct pcb *p);            /* maize-361: settle a restored BLK_CONSOLE park */
 static int raise_on_pgid(long pgid, int sig);              /* maize-174: raise on a process group */
 static void reap_tail(struct pcb *self);             /* maize-174: shared zombie/reap/SIGCHLD tail */
 
@@ -1766,6 +1775,37 @@ static void raise_on_pcb(struct pcb *p, int sig) {
      * SIGCONT (the two are mutually exclusive intents). */
     if (sig == SIGCONT) {
         p->pending &= ~QOS_STOP_SIG_MASK;
+        /* maize-361 (cycle-2 review, major finding). The mask clear above can cancel the
+         * very stop the BLK_CONSOLE completion branch at the bottom of this function was
+         * counting on. That branch deliberately leaves a console reader in a TRANSIENT
+         * state (P_RUNNABLE with block_kind still BLK_CONSOLE, the park intact, and
+         * nothing written into the read frame's RV slot at saved_rs + 11*8) whose only
+         * safety comes from the pending stop being the next thing deliver_pending_signal
+         * acts on. `kill -TSTP %1; kill -CONT %1` on ONE command line reaches the SIGCONT
+         * before the target ever gets a schedule pass, so the target is still P_RUNNABLE
+         * rather than P_STOPPED, the resume branch below is skipped, and the reader would
+         * be switched back into its saved read frame with a stale RV register: sys_read
+         * (toolchain/rt/syscall.mazm) is a bare SYS/RET that normalizes nothing, so sbase
+         * cat would write N bytes out of a buffer it never filled. Put the reader back
+         * where it was instead. The order matters: the mask clear has to happen FIRST, or
+         * the "nothing deliverable is left" test below cannot tell a cancelled stop from a
+         * live one. P_RUNNABLE plus BLK_CONSOLE occurs nowhere else (wake_with clears
+         * block_kind on every normal completion), and the pending test excludes the
+         * SIGKILL wake further down, which leaves its own bit set. */
+        if (p->state == P_RUNNABLE && p->block_kind == BLK_CONSOLE
+            && (p->pending & ~p->blocked) == 0ul) {
+            p->state = P_BLOCKED;
+            if (p->handler[SIGCONT] == 0ul) {
+                /* SIG_DFL on a process that never actually reached P_STOPPED: there is
+                 * nothing to deliver, so the restored park is the whole of the work. */
+                console_settle_park(p);
+                return;
+            }
+            /* Caught or ignored SIGCONT: fall through with the park restored so the
+             * ordinary pending-bit plus BLK_CONSOLE completion path below decides what
+             * happens to the read (an -EINTR abandon for a handler, an untouched park for
+             * SIG_IGN), exactly as it would for any other console-parked target. */
+        }
         if (p->state == P_STOPPED) {
             /* Resume to P_BLOCKED, not P_RUNNABLE, when the stop caught this process mid
              * a console read: the read still has to WAIT for a real byte, which only
@@ -1777,27 +1817,15 @@ static void raise_on_pcb(struct pcb *p, int sig) {
              * by any other route (the synchronous SIGTTIN gate) resumes runnable. */
             p->state = (p->block_kind == BLK_CONSOLE) ? P_BLOCKED : P_RUNNABLE;
             p->stop_signal = 0;
+            /* Settle the park BEFORE dispatching any SIGCONT handler (cycle-2 review,
+             * minor finding). push_signal_frame repoints p->saved_rs at the handler frame,
+             * and console_settle_park's wake_with writes its result into
+             * saved_rs + 11*8, which after a push would be the HANDLER frame's RV slot
+             * rather than the read syscall's; rt_sigreturn would then restore a read frame
+             * whose RV slot was never written. Nothing in tree installs a SIGCONT handler,
+             * so this only makes an already-accepted edge behave correctly, at no cost. */
+            console_settle_park(p);
             if (p->handler[SIGCONT] > 1ul) { push_signal_frame(p, SIGCONT); }
-            /* Re-parking on the console is not enough on its own: the console device
-             * raises its IRQ on the RISING edge of readability and stops raising it at all
-             * once end-of-input latches, so a byte (or an EOF) that arrived while this
-             * process was stopped has no second delivery. Service the park from the
-             * console's CURRENT state here; if nothing is pending the process stays parked
-             * and the next IRQ services it exactly as before. */
-            if (p->state == P_BLOCKED && p->block_kind == BLK_CONSOLE) {
-                if (p->pgid != g_fg_pgid) {
-                    /* Resumed into the BACKGROUND (the `bg` case). POSIX arbitrates the
-                     * terminal on every read, not once at read entry, so this parked read
-                     * must not be handed the byte the foreground shell is waiting for.
-                     * Re-raise SIGTTIN, which the BLK_CONSOLE completion below turns back
-                     * into a stop with the read still parked, exactly as if the process had
-                     * reached do_read's gate while backgrounded. One level of recursion
-                     * only: SIGTTIN is not SIGCONT, so this branch cannot re-enter. */
-                    raise_on_pcb(p, SIGTTIN);
-                } else {
-                    console_service_parked(p);
-                }
-            }
             return;   /* the resume IS the delivery; nothing left to leave pending */
         }
         if (p->handler[SIGCONT] == 0) { return; }   /* SIG_DFL on a running process: ignore */
@@ -1867,7 +1895,7 @@ static void raise_on_pcb(struct pcb *p, int sig) {
          * stop_process never runs for an ignored signal), handing the guest garbage.
          * Consume the bit and leave the reader exactly where it was. */
         if (p->handler[wsig] == 1ul
-            || (p->handler[wsig] == 0ul && (wsig == SIGCHLD || wsig == SIGCONT))) {
+            || (p->handler[wsig] == 0ul && QOS_DFL_IS_IGNORE(wsig))) {
             p->pending &= ~(1ul << (wsig - 1));
             return;
         }
@@ -1891,6 +1919,39 @@ static void raise_on_pcb(struct pcb *p, int sig) {
         p->state = P_RUNNABLE;
     }
 }
+
+/* maize-361: settle a BLK_CONSOLE park that a SIGCONT has just restored, whether the target
+ * was genuinely P_STOPPED or was caught in the transient P_RUNNABLE state the completion
+ * branch above creates. Both callers are in raise_on_pcb's SIGCONT arm and both need the
+ * identical treatment, so the body lives here rather than being written twice.
+ *
+ * Re-parking is not enough on its own: the console device raises its IRQ on the RISING edge
+ * of readability and stops raising it at all once end-of-input latches, so a byte (or an
+ * EOF) that arrived while this process was not parked has no second delivery. Service the
+ * park from the console's CURRENT state; if nothing is pending the process stays parked and
+ * the next IRQ services it exactly as before.
+ *
+ * A process settled into the BACKGROUND must not be handed the byte the foreground shell is
+ * waiting for: POSIX arbitrates the terminal on every read, not once at read entry. Re-raise
+ * SIGTTIN, which the BLK_CONSOLE completion turns back into a stop with the read still
+ * parked, exactly as if the process had reached do_read's gate while backgrounded. One level
+ * of recursion only, since SIGTTIN is not SIGCONT and cannot re-enter the SIGCONT arm.
+ *
+ * When that SIGTTIN does nothing (the target has it SIG_IGN, or blocked so the raise never
+ * becomes deliverable), the park would otherwise survive in the background and the console
+ * IRQ's first-parked-reader scan would hand it input meant for the foreground shell. POSIX
+ * fails such a read with EIO, which is exactly what do_read's synchronous gate already does
+ * for the same condition, so do that here too rather than leave a background thief parked
+ * (cycle-2 review, minor finding). */
+static void console_settle_park(struct pcb *p) {
+    if (p->state != P_BLOCKED || p->block_kind != BLK_CONSOLE) { return; }
+    if (p->pgid == g_fg_pgid) { console_service_parked(p); return; }
+    raise_on_pcb(p, SIGTTIN);
+    if (p->state == P_BLOCKED && p->block_kind == BLK_CONSOLE) {
+        wake_with(p, -(long)QOS_EIO);
+    }
+}
+
 /* maize-361: no state filter here any more. raise_on_pcb above is now the single source of
  * truth for which states can receive which signal (a stopped member must still receive
  * SIGCONT and SIGKILL), and the old P_RUNNABLE||P_BLOCKED gate would have dropped both
@@ -3702,28 +3763,36 @@ static void deliver_pending_signal(struct pcb *p) {
         terminate_by_signal(p, SIGKILL);   /* noreturn */
     }
     if (p->in_handler) { return; }   /* v1: one handler at a time; defer others while in one */
-    ready = p->pending & ~p->blocked;
-    if (ready == 0ul) { return; }
-    sig = lowest_set_bit(ready);
-    p->pending &= ~(1ul << (sig - 1));
-    if (p->handler[sig] == 0) {           /* SIG_DFL */
-        /* maize-361: a real per-signal default action. Before this card every signal
-         * except SIGCHLD terminated by default, so a stray `kill -TSTP` killed its target
-         * instead of stopping it. */
-        switch (sig) {
-            case SIGCHLD:
-            case SIGCONT:
-                return;                        /* default action: ignore */
-            case SIGTSTP: case SIGTTIN: case SIGTTOU: case SIGSTOP:
+    /* maize-361 (cycle-2 review, minor finding): keep going past a signal whose delivery is
+     * a NO-OP instead of spending the whole pass on it. The old code selected the lowest
+     * ready signal, discovered it was SIG_IGN or a default-ignore SIGCHLD/SIGCONT, and
+     * returned, which strands a console reader that raise_on_pcb left in the transient
+     * P_RUNNABLE plus BLK_CONSOLE state waiting for a HIGHER-numbered pending stop: the
+     * no-op is selected, nothing happens, and schedule() switches into the read frame with
+     * its RV slot never written. A no-op delivery is unobservable to the guest either way,
+     * so consuming it and moving on to the next ready signal changes nothing else. The loop
+     * always terminates: every iteration clears one pending bit. */
+    for (;;) {
+        ready = p->pending & ~p->blocked;
+        if (ready == 0ul) { return; }
+        sig = lowest_set_bit(ready);
+        p->pending &= ~(1ul << (sig - 1));
+        if (p->handler[sig] == 0) {           /* SIG_DFL */
+            /* maize-361: a real per-signal default action. Before this card every signal
+             * except SIGCHLD terminated by default, so a stray `kill -TSTP` killed its
+             * target instead of stopping it. */
+            if (QOS_DFL_IS_IGNORE(sig)) { continue; }   /* default action: ignore */
+            if (QOS_IS_STOP_SIG(sig)) {
                 stop_process(p, sig);          /* default action: stop (noreturn here) */
                 return;
-            default:
-                terminate_by_signal(p, sig);   /* default action: terminate (noreturn) */
-                return;
+            }
+            terminate_by_signal(p, sig);       /* default action: terminate (noreturn) */
+            return;
         }
+        if (p->handler[sig] == 1) { continue; }   /* SIG_IGN */
+        push_signal_frame(p, sig);                /* handler dispatch */
+        return;
     }
-    if (p->handler[sig] == 1) { return; } /* SIG_IGN */
-    push_signal_frame(p, sig);            /* handler dispatch */
 }
 
 /* SYS_kill: pid>0 one process; pid==0 caller's group; pid<0 the group -pid. */
