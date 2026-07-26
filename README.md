@@ -318,8 +318,10 @@ ctest --test-dir build/linux-debug -R kilo      # one fixture by name
 ```
 
 The labels are toolchain, hostfs, terminal, doom, launcher, quesos, userland, oksh,
-and jit. Each test carries its own timeout, so a wedged fixture fails on its own
-instead of stalling the whole run.
+and jit. A tenth label, setup, selects the one-time environment test that resolves the
+toolchain for the rest; every other test requires it, so ctest runs it for you whether
+or not your selection names it. Each test carries its own timeout, so a wedged fixture
+fails on its own instead of stalling the whole run.
 
 ### Editor setup (VS Code)
 
