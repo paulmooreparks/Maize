@@ -3001,7 +3001,15 @@ run_quesos_default_init() {
     set +e
     # maize-372: this leg asserts on the now-gated [quesos] init/reap lines, so opt
     # into verbose boot explicitly with -e QUESOS_VERBOSE=1.
-    out=$(MSYS2_ARG_CONV_EXCL='/progs' "$DEFAULT_MAIZE" --rom "$quesos" --no-root \
+    # maize-384: the exclusion list needs the `QUESOS_INIT=` prefix, not just `/progs`.
+    # MSYS2_ARG_CONV_EXCL entries are matched against the START of the whole argument,
+    # so a bare `/progs` covers the standalone guest-path arguments the other quesOS
+    # fixtures pass but never matches `QUESOS_INIT=/progs/argcheck.mzx`, whose leading
+    # text is the variable name. Git Bash therefore rewrote the value to
+    # `C:/Program Files/Git/progs/argcheck.mzx` and quesOS answered
+    # "[quesos] cannot start ...", which is what failed this leg on the Windows job
+    # only (reproduced natively on a Windows host, then fixed by this list).
+    out=$(MSYS2_ARG_CONV_EXCL='/progs;QUESOS_INIT=' "$DEFAULT_MAIZE" --rom "$quesos" --no-root \
         --mount "${nat}=/progs:ro" -e QUESOS_INIT=/progs/argcheck.mzx -e QOSVAR=set \
         -e QUESOS_VERBOSE=1 </dev/null 2>/dev/null | grep -v '^$')
     set -e
@@ -3029,7 +3037,9 @@ run_quesos_default_init() {
     # Leg 3: an explicit -e HOME wins over the gap-filled default.
     TOTAL=$((TOTAL + 1))
     set +e
-    homeout=$(MSYS2_ARG_CONV_EXCL='/progs' "$DEFAULT_MAIZE" --rom "$quesos" --no-root \
+    # maize-384: same assignment-form exclusion as leg 1 above, plus `HOME=`, since
+    # -e HOME=/custom carries a guest path the same way.
+    homeout=$(MSYS2_ARG_CONV_EXCL='/progs;QUESOS_INIT=;HOME=' "$DEFAULT_MAIZE" --rom "$quesos" --no-root \
         --mount "${nat}=/progs:ro" -e QUESOS_INIT=/progs/argcheck.mzx -e HOME=/custom \
         </dev/null 2>/dev/null)
     set -e
