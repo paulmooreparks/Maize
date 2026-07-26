@@ -1898,6 +1898,18 @@ static void normalize_path(const char *raw, char *out) {
     if (n == 0) { out[0] = '/'; out[1] = 0; }          /* root, or all-".." above root */
 }
 
+/* maize-361: does this resolved path name the controlling terminal? quesOS has no devfs
+ * and forwards every other open to the host, so the one device node an interactive shell
+ * needs (oksh tty_init's open("/dev/tty", O_RDWR)) is recognized by exact string match on
+ * the RESOLVED path. There is no qos_strcmp in this file, so the compare is inline, in the
+ * style of the other small path helpers above (join_path, normalize_path). */
+static int path_is_dev_tty(const char *p) {
+    static const char dev_tty[] = "/dev/tty";
+    int i;
+    for (i = 0; dev_tty[i]; ++i) { if (p[i] != dev_tty[i]) { return 0; } }
+    return p[i] == 0;
+}
+
 /* open/close/dup/dup2/pipe: manage the fd table + open-file descriptions. */
 static long do_open(u64 path_uva, long flags, long mode) {
     char in[QUESOS_PATH_CAP], kpath[QUESOS_PATH_CAP];
@@ -1905,6 +1917,22 @@ static long do_open(u64 path_uva, long flags, long mode) {
     long nfd;
     copy_user_path(path_uva, in);
     join_path(g_current->cwd, in, kpath);              /* resolve against the process cwd */
+    /* maize-361 (decision 10047): /dev/tty is the calling process's controlling terminal,
+     * which under quesOS is the one console fd 0 already points at. Alias the SAME shared,
+     * refcounted ofd (g_stdio_ofd[0]) instead of forwarding a host sys_open that has no
+     * reason to know what /dev/tty means (and fails outright on a Windows host). Because
+     * the new fd shares that ofd object it already has native_fd == 0, so every existing
+     * `o->native_fd == 0` / `o->kind == OFD_NATIVE` check (read, tcgetattr, tcsetattr,
+     * ttysize) treats it exactly like fd 0 with no further special-casing, and close()
+     * just drops a reference through the ordinary ofd_unref path. `flags` is not
+     * validated: quesOS models no device-node permission bits. */
+    if (path_is_dev_tty(kpath)) {
+        slot = fd_alloc_slot(g_current);
+        if (slot < 0) { return -24; }                  /* -EMFILE */
+        ofd_ref(g_stdio_ofd[0]);
+        g_current->fd[slot] = g_stdio_ofd[0];
+        return slot;
+    }
     nfd = sys_open(kpath, flags, mode);
     if (nfd < 0) { return nfd; }
     slot = fd_alloc_slot(g_current);
