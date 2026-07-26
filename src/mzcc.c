@@ -2255,6 +2255,19 @@ int main(int argc, char **argv) {
     sl_init(&opt.srcfiles);
     av_init(&EXTRA_CPPDEFS);
 
+    /* maize-386: one teardown, at the `done:` label at the bottom, releases
+       opt.out, opt.preset, opt.pos_srcs, opt.srcfiles and src_list. Every exit
+       from here down reaches it as `rc = N; goto done;`, error paths included,
+       because a later-added bare `return` is exactly how this class of leak
+       comes back. main's frame is dead by the time LeakSanitizer scans, so
+       these process-lifetime allocations read as unreachable; six of them per
+       mzcc run (91 on a build-userland invocation) are what kept detect_leaks=0
+       on the asan CI leg. src_list is declared here rather than at its first
+       use so the teardown covers the returns above that point too. */
+    StrList src_list;
+    sl_init(&src_list);
+    int rc = 0;
+
     /* Hand-rolled argv scan (decision DI1). Flags accepted in any position,
        byte-compatible with cc-maize.sh:173-196 so every existing caller ports
        with zero change. */
@@ -2358,15 +2371,14 @@ int main(int argc, char **argv) {
             die("could not spawn %s (a POSIX shell is required for --build)", script);
         }
         free(script);
-        return code;
+        rc = code;
+        goto done;
     }
 
     /* Collect sources: positionals first (command-line order), then each
        --sources listfile (one path per line; blank lines and # comments
        skipped; CR stripped). No Windows-path translation (design D6: native
        paths pass straight through). */
-    StrList src_list;
-    sl_init(&src_list);
     for (int i = 0; i < opt.pos_srcs.n; ++i) {
         if (!is_regular_file(opt.pos_srcs.v[i])) {
             die("no such file: %s", opt.pos_srcs.v[i]);
@@ -2398,7 +2410,8 @@ int main(int argc, char **argv) {
 
     if (src_list.n == 0) {
         fprintf(stderr, "mzcc: %s\n", USAGE);
-        return 2;
+        rc = 2;
+        goto done;
     }
 
     int multi = (src_list.n >= 2) || opt.used_sources;
@@ -2419,7 +2432,7 @@ int main(int argc, char **argv) {
        On any tool-not-found this prints the same actionable message and returns
        2; propagate that as the process exit code. */
     int trc = resolve_toolchain(opt.preset);
-    if (trc != 0) { return trc; }
+    if (trc != 0) { rc = trc; goto done; }
 
     /* Scratch dirs (extracted to ensure_scratch, maize-280): OBJ_DIR holds the
        .mzo objects and the linked image; CPP_CWD is cpp's empty quote-include
@@ -2440,7 +2453,8 @@ int main(int argc, char **argv) {
                                &all_objs) != 0) {
         byte_buf_free(&emit_body);
         sl_free(&all_objs);
-        return 1;
+        rc = 1;
+        goto done;
     }
 
     /* ---- link (default C profile: RT + libc + body, entry _start, default
@@ -2456,7 +2470,8 @@ int main(int argc, char **argv) {
         sl_free(&all_objs);
         byte_buf_free(&emit_body);
         free(mzx);
-        return 1;
+        rc = 1;
+        goto done;
     }
     Argv lav;
     av_init(&lav);
@@ -2467,7 +2482,8 @@ int main(int argc, char **argv) {
     if (mzld_link(NULL, mzx, lav.v, lav.n) != 0) {
         av_free(&lav);
         byte_buf_free(&emit_body);
-        return 1;
+        rc = 1;
+        goto done;
     }
     av_free(&lav);
 
@@ -2494,7 +2510,8 @@ int main(int argc, char **argv) {
         free(odir);
         if (copy_file(mzx, opt.out) != 0) {
             fprintf(stderr, "mzcc: could not write %s\n", opt.out);
-            return 1;
+            rc = 1;
+            goto done;
         }
     } else if (!opt.run) {
         /* beside-source produce (single-source default). */
@@ -2504,7 +2521,8 @@ int main(int argc, char **argv) {
         if (copy_file(mzx, dst) != 0) {
             fprintf(stderr, "mzcc: could not write %s\n", dst);
             free(dst_dir); free(base); free(dst);
-            return 1;
+            rc = 1;
+            goto done;
         }
         fprintf(stderr, "mzcc: produced %s\n", dst);
         free(dst_dir); free(base); free(dst);
@@ -2522,11 +2540,20 @@ int main(int argc, char **argv) {
         free(mzx);
         if (!rr) {
             fprintf(stderr, "mzcc: could not spawn maize\n");
-            return 1;
+            rc = 1;
+            goto done;
         }
-        return code;
+        rc = code;
+        goto done;
     }
 
     free(mzx);
-    return 0;
+
+done:
+    sl_free(&src_list);
+    sl_free(&opt.srcfiles);
+    sl_free(&opt.pos_srcs);
+    free(opt.preset);
+    free(opt.out);
+    return rc;
 }
