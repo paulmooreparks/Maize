@@ -49,9 +49,17 @@ static const char *WAVE1[] = {
    links clean but crashes the whole VM (an uncaught page fault) even as the sole
    check in its own single-tool smoke fixture. See build-userland.sh's SBASE_WAVE2
    comment for the per-tool reason. Single point of truth for both waves, moved
-   into the driver (mirrors the wave-1 comment this replaces). */
+   into the driver (mirrors the wave-1 comment this replaces).
+
+   maize-382 AC 10252: this array and build-userland.sh's SBASE_WAVE2 must stay
+   tool-for-tool identical, because the two drivers' no-argument defaults are the
+   same contract. They had drifted: maize-374 (commit cafe560) added "uname" to
+   the shell script alone, and the omission here was invisible until run-ctest.sh
+   moved onto mzcc build-userland, at which point the harness would have silently
+   stopped covering that tool. Anything added to one list belongs in the other in
+   the same commit. */
 static const char *WAVE2[] = {
-    "basename", "cal", "cksum", "dirname", "logname", "mkdir", "printenv", "sleep",
+    "basename", "cal", "cksum", "dirname", "logname", "mkdir", "printenv", "uname", "sleep",
     "sponge", "tee", "unlink", "yes",
     "cmp", "cols", "comm", "cut", "fold", "head", "join", "md5sum",
     "paste", "rev", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum",

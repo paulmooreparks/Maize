@@ -270,15 +270,25 @@ maize_native_mirror_run() {
     # keys) and passed via MAIZE_KEY_* env, and apply-maize-qbe-target.sh's `git apply`
     # runs repo-less against the plain files. The unanchored `.git` match also drops
     # each submodule's gitlink file. `.gitignore`/`.gitmodules` (different names) stay.
+    # maize-382: bracket the rsync with a wall-clock report. This phase runs BEFORE
+    # the calling harness's own per-fixture timing starts, so without this line its
+    # cost silently folds into whatever the first fixture happens to be. The
+    # nested-call no-op path above (MAIZE_NATIVE_MIRROR_ACTIVE already set) returns
+    # long before here and correctly prints nothing, because there is no sync to time.
+    _mirror_t0=$(date +%s)
     if ! rsync -a --delete \
         --exclude='/build' --exclude='/build-wsl' \
         --exclude='/.toolchains' \
         --exclude='.claude' \
         --exclude='.git' \
         "${_repo_root}/" "${_mirror_dir}/"; then
+        _mirror_t1=$(date +%s)
+        echo "native mirror sync: $((_mirror_t1 - _mirror_t0))s (FAILED)" >&2
         echo "WARNING: native-mirror rsync failed; continuing in-place on ${_repo_root} (slow under WSL's 9P bridge)." >&2
         return 0
     fi
+    _mirror_t1=$(date +%s)
+    echo "native mirror sync: $((_mirror_t1 - _mirror_t0))s" >&2
 
     # Written AFTER rsync: --delete would otherwise remove this dest-only file. Read
     # by scripts/prune-native-mirrors.sh to detect orphaned mirrors.
