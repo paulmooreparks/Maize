@@ -317,25 +317,24 @@ next free numbers in the Maize-private `$F0`-`$FF` block after maize-236's `$F7`
 | `$FB` | `sys_tcsetpgrp` | `R0`=pgid | `RV`=0 (sets the foreground pgid; no session check, v1) |
 
 `rt_sigaction` reads/writes `sa_handler` + `sa_mask` only (`sa_flags`/`sa_restorer`/siginfo
-not modeled; SA_RESTART is implicitly on, with two narrow exceptions: `sys_rt_sigsuspend`
-always returns `-EINTR`, and since maize-361 a `read()` on the console (fd 0) returns
-`-EINTR` when a caught, terminating or killing signal reaches a process parked in that
-read. Both are calls with no other guaranteed waker, since the user may simply never type
-another byte. Job-control stop signals are excluded: a default-action stop runs no handler,
-so the parked read resumes unmodified once the process is continued).
+not modeled). SA_RESTART is implicitly on, with two narrow exceptions. `sys_rt_sigsuspend`
+always returns `-EINTR`. Since maize-361, a `read()` on the console (fd 0) returns `-EINTR`
+when a caught, terminating or killing signal reaches a process parked in that read. Both are
+calls with no other guaranteed waker, since the user may simply never type another byte.
+Job-control stop signals are excluded: a default-action stop runs no handler, so the parked
+read resumes unmodified once the process is continued.
 `SIGKILL` and `SIGSTOP` cannot be caught (`rt_sigaction` on either returns `-EINVAL`) or
 blocked. Default actions: SIGINT/SIGQUIT/SIGTERM/SIGKILL terminate (`wait4` then reports
 WIFSIGNALED with the low 7 status bits = the signal); SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU stop
 (`wait4` with `WUNTRACED` then reports WIFSTOPPED, low byte `0x7F`, stopping signal in bits
 8-15); SIGCHLD and SIGCONT are ignored, and SIGCONT additionally resumes a stopped process.
-Handler dispatch pushes a signal
-frame on the user stack and enters the handler with the signal number in `R0`; the handler
-returns through a small user trampoline whose `SYS $0F` (`rt_sigreturn`) restores the
-interrupted context. The console recognizes 0x03 (INTR)/0x1C (QUIT)/0x1A (SUSP) by raw byte
-value in quesOS's own input path and raises SIGINT/SIGQUIT/SIGTSTP on the foreground process
-group; a process outside that group is stopped with SIGTTIN if it reads the console (and
-with SIGTTOU if it writes, when TOSTOP is set). The
-host machine layer is unchanged (no host-side signal awareness, doc 18).
+Handler dispatch pushes a signal frame on the user stack and enters the handler with the
+signal number in `R0`; the handler returns through a small user trampoline whose `SYS $0F`
+(`rt_sigreturn`) restores the interrupted context. The console recognizes 0x03 (INTR)/0x1C
+(QUIT)/0x1A (SUSP) by raw byte value in quesOS's own input path and raises
+SIGINT/SIGQUIT/SIGTSTP on the foreground process group; a process outside that group is
+stopped with SIGTTIN if it reads the console (and with SIGTTOU if it writes, when TOSTOP is
+set). The host machine layer is unchanged (no host-side signal awareness, doc 18).
 
 ### Framebuffer registration calls (maize-236)
 
