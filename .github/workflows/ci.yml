@@ -72,6 +72,32 @@ jobs:
   linux-sanitizers:
     runs-on: ubuntu-latest
     env:
+      # detect_leaks=0 is still required here, and maize-385 established why.
+      #
+      # That card freed the five path_join/joinstr temporaries resolve_toolchain
+      # leaked, so that site is now clean. Freeing them was not enough on its
+      # own. mzcc's main() never releases its argument-parsing state before
+      # returning, so every fixture that runs mzcc still reports 6 leaks (about
+      # 400 bytes), and the larger build-quesos / build-userland fixtures report
+      # 91. Measured on the maize-385 branch, turning leak detection back on
+      # failed 74 of the 81 ctest tests.
+      #
+      # The remaining sites all live in src/mzcc.c main():
+      #   - opt.out, xstrdup at the -o handler
+      #   - opt.preset, xstrdup at the --preset handler
+      #   - opt.srcfiles, sl_push at the --sources handler
+      #   - opt.pos_srcs, sl_push at the positional-source handler
+      #   - src_list, sl_push at the positional collect loop
+      #   - src_list, sl_push at the --sources listfile expansion loop
+      # All six are process-lifetime allocations on paths that return from main
+      # without an sl_free / free, so LeakSanitizer sees them as unreachable.
+      # A single teardown before each return from main clears all of them; that
+      # is deliberately NOT part of maize-385 (its scope boundary), and a
+      # follow-up card is to be filed from maize-385's enumeration.
+      #
+      # Lift this to detect_leaks=1 once that follow-up lands. Nothing else on
+      # this leg leaks. Every leak stack in the instrumented run pointed into
+      # src/mzcc.c, and none pointed at maize, mazm, mzld, or mzdis.
       ASAN_OPTIONS: abort_on_error=1:detect_leaks=0
       UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
     steps:

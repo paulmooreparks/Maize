@@ -1974,21 +1974,34 @@ int resolve_toolchain(const char *preset) {
     free(BUILD_DIR);
     BUILD_DIR = joinstr(REPO_ROOT, "/build/", preset, NULL);
 
-    /* Tool discovery (host-aware .exe resolution, maize-257). */
+    /* Tool discovery (host-aware .exe resolution, maize-257). resolve_exe takes a
+       borrowed base and returns its own allocation, so each joinstr/path_join
+       result here is a temporary the caller owns. Name it and free it on every
+       path, including the tool-not-found early returns (maize-385). */
     free(CPROC_QBE);
-    CPROC_QBE = resolve_exe(joinstr(REPO_ROOT, "/toolchain/cproc/cproc-qbe", NULL, NULL));
+    char *cproc_base = joinstr(REPO_ROOT, "/toolchain/cproc/cproc-qbe", NULL, NULL);
+    CPROC_QBE = resolve_exe(cproc_base);
+    free(cproc_base);
     if (!CPROC_QBE) { fprintf(stderr, "mzcc: cproc-qbe not found; run 'mzcc --build' (cproc/qbe).\n"); return 2; }
     free(QBE);
-    QBE = resolve_exe(joinstr(REPO_ROOT, "/toolchain/qbe/obj/qbe", NULL, NULL));
+    char *qbe_base = joinstr(REPO_ROOT, "/toolchain/qbe/obj/qbe", NULL, NULL);
+    QBE = resolve_exe(qbe_base);
+    free(qbe_base);
     if (!QBE) { fprintf(stderr, "mzcc: qbe not found; run 'mzcc --build' (cproc/qbe).\n"); return 2; }
     free(MAZM);
-    MAZM = resolve_exe(path_join(BUILD_DIR, "mazm"));
+    char *mazm_base = path_join(BUILD_DIR, "mazm");
+    MAZM = resolve_exe(mazm_base);
+    free(mazm_base);
     if (!MAZM) { fprintf(stderr, "mzcc: mazm not found in %s; run scripts/install-mazm.sh (or run-tests.sh) first.\n", BUILD_DIR); return 2; }
     free(MAIZE);
-    MAIZE = resolve_exe(path_join(BUILD_DIR, "maize"));
+    char *maize_base = path_join(BUILD_DIR, "maize");
+    MAIZE = resolve_exe(maize_base);
+    free(maize_base);
     if (!MAIZE) { fprintf(stderr, "mzcc: maize not found in %s; run scripts/install-mazm.sh (or run-tests.sh) first.\n", BUILD_DIR); return 2; }
     free(MZLD);
-    MZLD = resolve_exe(path_join(BUILD_DIR, "mzld"));
+    char *mzld_base = path_join(BUILD_DIR, "mzld");
+    MZLD = resolve_exe(mzld_base);
+    free(mzld_base);
     if (!MZLD) { fprintf(stderr, "mzcc: mzld not found in %s; run scripts/install-mazm.sh (or run-tests.sh) first.\n", BUILD_DIR); return 2; }
 
     /* Preprocessor discovery (cc-maize.sh:314-331, decision D4): $CC, else cc,
