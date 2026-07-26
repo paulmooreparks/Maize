@@ -2533,6 +2533,15 @@ int main(int argc, char **argv) {
         Argv rv;
         av_init(&rv);
         av_add(&rv, MAIZE);
+        /* maize-360 parity with scripts/cc-maize.sh (both of its run call sites):
+           run the freshly linked image BARE. What this driver just produced is a
+           toolchain artifact (crt0 + runtime + user body through mzld, entry
+           _start) with no guest OS underneath, not a quesOS app. Since quesOS
+           became the default boot ROM, a plain `maize <image>` either fails "no
+           boot ROM found" or boots quesOS and forwards <image> as a worklist
+           token, so the exit status seen here is the quesOS session's, not the
+           guest program's. --bare keeps the pre-360 direct-launch behavior. */
+        av_add(&rv, "--bare");
         av_add(&rv, mzx);
         int code = 1;
         int rr = run_inherit(MAIZE, rv.v, rv.n, &code);
