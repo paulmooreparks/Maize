@@ -3354,11 +3354,14 @@ run_doom_quesos() {
     # Leg 2: --fb-no-display exit-code-4 diagnostic (both CI legs). sys_fb_register -ENODEV ->
     # DG_MaizeInitError==3 -> doom_main.c-style diagnostic + child exit 4; quesOS reaps status=4
     # and keeps running. Capture stdout+stderr together.
+    # maize-379: the reap-status assertion below reads the "[quesos] reaped" line that
+    # maize-372 gated behind QUESOS_VERBOSE, so opt into verbose boot with
+    # -e QUESOS_VERBOSE=1. Leg 1 above asserts only doom's own output and stays quiet.
     TOTAL=$((TOTAL + 1))
     set +e
     ejout=$(MSYS2_ARG_CONV_EXCL='/progs;/ro' timeout 120 "$MAIZE" --fb-no-display --no-root \
         --mount "${nat_progs}=/progs:ro" --mount "${nat_wad}=/ro:ro" \
-        "$quesos" /progs/doom_render_selfcheck_quesos.mzx 2>&1)
+        -e QUESOS_VERBOSE=1 "$quesos" /progs/doom_render_selfcheck_quesos.mzx 2>&1)
     set -e
     if printf '%s\n' "$ejout" | grep -qF "doom: framebuffer init failed (code 3)" \
     && printf '%s\n' "$ejout" | grep -qF "reaped /progs/doom_render_selfcheck_quesos.mzx status=4"; then
@@ -3694,11 +3697,18 @@ run_userland94_fixtures() {
     # MSYS2_ARG_CONV_EXCL is SEMICOLON-separated (a colon value is one literal prefix that
     # matches nothing, so the /progs/<x>.mzx worklist arg got rewritten to a Windows path
     # and quesOS could not load it on the Windows leg).
+    # maize-379: maize-372 gated the "[quesos] reaped <path> status=N" line behind the
+    # QUESOS_VERBOSE boot-env key, and three fixtures driven through this helper
+    # (userland94_true, userland94_false, userland94_pwd) assert on that line, so opt
+    # into verbose boot here. quesOS strips QUESOS_VERBOSE from the captured launcher
+    # environment before spawning anything, so it never reaches a program's envp. Every
+    # other fixture on this helper asserts a positive self-check marker only, so the
+    # restored trace lines cannot perturb them.
     ul94_run() {
         MSYS2_ARG_CONV_EXCL='/progs;/bin;/rw' timeout 90 "$MAIZE" --no-root \
             --mount "${pnat}=/progs:ro" --mount "${bnat}=/bin:ro" \
             --mount "${rnat}=/rw:rw" \
-            "$quesos" "$1" 2>/dev/null
+            -e QUESOS_VERBOSE=1 "$quesos" "$1" 2>/dev/null
     }
 
     # AC 8931 substrate: the vendored echo|cat pipeline.
@@ -3894,11 +3904,15 @@ run_userland94_fixtures() {
     # just "pwd\n" (no exit) and assert oksh ran pwd (prints "/") and reaped clean; `timeout`
     # fails a regression of the on-demand EOF path loudly instead of hanging the suite. Plain
     # pipe (no pty), so it runs on every leg.
+    # maize-379: the reap assertion below reads the "[quesos] reaped" line that maize-372
+    # gated behind QUESOS_VERBOSE, so opt into verbose boot explicitly with
+    # -e QUESOS_VERBOSE=1. The assertion itself is what proves the shell actually reaped,
+    # so it stays.
     TOTAL=$((TOTAL + 1))
     set +e
     out=$(printf 'pwd\n' | MSYS2_ARG_CONV_EXCL='/bin;/rw' timeout 60 "$MAIZE" --no-root \
         --mount "${bnat}=/bin:ro" --mount "${rnat}=/rw:rw" \
-        "$quesos" /bin/oksh.mzx 2>/dev/null | grep -v '^$')
+        -e QUESOS_VERBOSE=1 "$quesos" /bin/oksh.mzx 2>/dev/null | grep -v '^$')
     set -e
     if printf '%s\n' "$out" | grep -qxF "/" \
     && printf '%s\n' "$out" | grep -qF "reaped /bin/oksh.mzx status=0"; then
@@ -3970,10 +3984,14 @@ run_userland94_fixtures() {
         # --bare wrapper (maize-360), so this boots quesOS as the loaded image and runs
         # /bin/oksh.mzx as its worklist init. MSYS2_ARG_CONV_EXCL keeps the /bin;/rw mount-arg
         # paths from being rewritten on the Windows leg.
+        # maize-379: both fixtures on this helper assert the "[quesos] reaped" line that
+        # maize-372 gated behind QUESOS_VERBOSE, so opt into verbose boot with
+        # -e QUESOS_VERBOSE=1. That also re-arms their negative "unhandled syscall" guard,
+        # which the same gate had silenced into a check that could never fire.
         MSYS2_ARG_CONV_EXCL='/bin;/rw' timeout 60 "$MAIZE" --no-root \
             --console-dump --input=console \
             --mount "${bnat}=/bin:ro" --mount "${rnat}=/rw:rw" \
-            "$quesos" /bin/oksh.mzx 2>/dev/null
+            -e QUESOS_VERBOSE=1 "$quesos" /bin/oksh.mzx 2>/dev/null
     }
 
     # AC 9980 (mandatory): inject `ls` then `exit` as RAW bytes at the oksh prompt. oksh's
