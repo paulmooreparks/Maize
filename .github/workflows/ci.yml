@@ -51,13 +51,23 @@ jobs:
         # Job width leaves two cores free rather than taking every one: the
         # fixtures themselves fork heavily (mzcc schedules its own translation
         # units in parallel), so an unbounded -j thrashes a small runner.
+        #
+        # --no-tests=error (CTest 3.19+, and this project already requires 3.21)
+        # is on all three legs and is not optional. ctest's default is to print
+        # "No tests were found!!!" and exit 0, so a configure that registered
+        # nothing would turn this leg green having verified nothing at all. The
+        # pre-conversion `run-ctest.sh --skip-build` invocation could not fail
+        # that way, because it either ran the fixtures or exited 2, and giving
+        # that property up silently would be a regression in what CI means.
+        # cmake/MaizeCTest.cmake can legitimately register nothing when no POSIX
+        # sh is found, so this is the guard that turns that case red here.
         env:
           MAIZE_CC: ${{ github.workspace }}/build/linux-debug/mzcc
         run: |
           JOBS=$(nproc)
           if [ "$JOBS" -gt 4 ]; then JOBS=$((JOBS - 2)); else JOBS=2; fi
           echo "ctest -j${JOBS} (nproc=$(nproc))"
-          ctest --test-dir build/linux-debug --output-on-failure -j "$JOBS"
+          ctest --test-dir build/linux-debug --output-on-failure --no-tests=error -j "$JOBS"
 
   linux-sanitizers:
     runs-on: ubuntu-latest
@@ -91,7 +101,7 @@ jobs:
           JOBS=$(nproc)
           if [ "$JOBS" -gt 4 ]; then JOBS=$((JOBS - 2)); else JOBS=2; fi
           echo "ctest -j${JOBS} (nproc=$(nproc))"
-          ctest --test-dir build/linux-asan-ubsan --output-on-failure -j "$JOBS"
+          ctest --test-dir build/linux-asan-ubsan --output-on-failure --no-tests=error -j "$JOBS"
 
   windows:
     runs-on: windows-latest
@@ -155,4 +165,4 @@ jobs:
         shell: bash
         run: |
           export MAIZE_CC="$(pwd)/build/windows-llvm-mingw-debug/mzcc.exe"
-          ctest --test-dir build/windows-llvm-mingw-debug --output-on-failure
+          ctest --test-dir build/windows-llvm-mingw-debug --output-on-failure --no-tests=error

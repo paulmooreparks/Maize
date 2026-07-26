@@ -19,7 +19,11 @@
 #
 # Concurrency classification. Every fixture below carries an explicit category:
 #   - no lock: the fixture writes only fixture-name-prefixed paths under the per-preset
-#     WORK_DIR, or mkdtemp-based scratch, and never builds a guest image.
+#     WORK_DIR, or mkdtemp-based scratch, and never builds a guest image. Note that a
+#     fixture-name prefix is NOT what keeps the C-fixture compiles apart, because several
+#     fixtures compile the same source (hello.c is compiled by four separate tests). The
+#     harness routes every compile_c artifact into a per-label $CC_WORK_DIR under --only
+#     instead; see the comment on that variable in scripts/run-ctest.sh.
 #   - MAIZE_QUESOS_LOCK / MAIZE_USERLAND_LOCK: the fixture drives a full quesOS or
 #     userland guest build.
 #   - PROCESSORS: a load reservation for the one fixture that drives real ptys.
@@ -56,11 +60,27 @@ find_program(MAIZE_SH_EXECUTABLE
         "C:/Program Files/Git/usr/bin"
         "C:/Program Files/Git/bin")
 
+# This stays a WARNING rather than a FATAL_ERROR, and the reasoning is a ruling, not an
+# oversight. Configuring Maize does not otherwise require a POSIX shell: a Windows
+# operator with MSVC or llvm-mingw and CMake can build maize.exe, mazm and the rest from
+# a fresh clone today, and promoting this to FATAL_ERROR would make Git Bash a hard
+# CONFIGURE dependency of the VM itself. That runs directly against the build-dependency
+# minimalism ruling (a fresh clone must build on a typical machine with minimum
+# dependencies, and bash-on-Windows is the interim arrangement maize-266 exists to remove),
+# so the cost lands on exactly the people that ruling protects.
+#
+# The false-green risk that motivates the question is real, and it is closed on the side
+# where it actually bites. CI runs `ctest --no-tests=error` on all three legs (ci.yml), so
+# a leg whose configure registered nothing fails instead of passing vacuously. A developer
+# who sees this warning on their own machine still gets a working build, and the harness
+# remains runnable standalone through scripts/run-ctest.sh. Neither path is silently
+# permissive: the local one warns, and the CI one is red.
 if (NOT MAIZE_SH_EXECUTABLE)
     message(WARNING
         "maize-376: no POSIX sh found, so the C-toolchain ctest suite is not registered. "
-        "Install Git Bash (Windows) or a POSIX shell and re-configure; "
-        "scripts/run-ctest.sh still runs standalone.")
+        "The rest of the build is unaffected. Install Git Bash (Windows) or a POSIX shell "
+        "and re-configure to get the suite; scripts/run-ctest.sh still runs standalone. "
+        "CI runs ctest with --no-tests=error, so this state cannot pass there silently.")
     return()
 endif()
 
@@ -128,8 +148,10 @@ function(maize_ctest_fixture label)
 endfunction()
 
 # --- toolchain: the C end-to-end corpus ------------------------------------------------
-# Concurrency: no lock. Each compiles ctest/<name>.c to ${WORK_DIR}/<name>.mzx through the
-# driver and runs it; the output path is the fixture's own name, so no two can collide.
+# Concurrency: no lock. Each compiles ctest/<name>.c through the driver and runs it, into
+# the per-label ${WORK_DIR}/ctest-scratch/<label>/ that --only selects, so two tests that
+# compile the same source (kilo_xalloc_die and kilo_xalloc_die_exit, for instance) write
+# separate images rather than racing on one.
 # Measured 0-1s each. TIMEOUT 300 bounds a wedged compile (the harness's own per-compile
 # ceiling is 180s, so it still diagnoses first).
 foreach(_t
@@ -252,11 +274,35 @@ list(REMOVE_ITEM _missing_here ${_declared_labels})
 set(_missing_there "${_declared_labels}")
 list(REMOVE_ITEM _missing_there ${_script_labels})
 
-if (_missing_here OR _missing_there)
+# Set difference alone would pass a label that appears TWICE on one side and once on the
+# other, because list(REMOVE_ITEM) removes every matching element rather than one, which
+# empties both difference sets. The invariant the guard claims is one dispatch site to
+# exactly one add_test entry, so it has to test the "exactly one" half too. A plain
+# list(LENGTH) comparison against a deduplicated copy would catch that, but naming the
+# offending label costs one small loop and saves the next reader a hunt.
+function(_maize_repeated_labels out_var)
+    set(_seen "")
+    set(_repeats "")
+    foreach(_l IN LISTS ARGN)
+        if (_l IN_LIST _seen)
+            list(APPEND _repeats "${_l}")
+        else()
+            list(APPEND _seen "${_l}")
+        endif()
+    endforeach()
+    set(${out_var} "${_repeats}" PARENT_SCOPE)
+endfunction()
+
+_maize_repeated_labels(_dupes_script ${_script_labels})
+_maize_repeated_labels(_dupes_declared ${_declared_labels})
+
+if (_missing_here OR _missing_there OR _dupes_script OR _dupes_declared)
     message(FATAL_ERROR
         "maize-376: cmake/MaizeCTest.cmake and scripts/run-ctest.sh have drifted apart.\n"
         "  in run-ctest.sh but not registered here: ${_missing_here}\n"
         "  registered here but not in run-ctest.sh: ${_missing_there}\n"
+        "  dispatched more than once in run-ctest.sh: ${_dupes_script}\n"
+        "  registered more than once here: ${_dupes_declared}\n"
         "Every fixture dispatch site must have exactly one add_test entry.")
 endif()
 
