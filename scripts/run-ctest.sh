@@ -4025,6 +4025,108 @@ run_userland94_fixtures() {
         echo "[FAIL] userland94_console_dump_inject_kilo"; printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
+
+    # --- maize-361: controlling terminal (/dev/tty) + job control --------------------
+    # Five fixtures over the same headless --console-dump --input=console channel the two
+    # above use, so they run on every leg (no pty, no python). Each one was proven to FAIL
+    # against the parent commit before the fix landed; the transcripts are on the card.
+    #
+    # Two differences from cdump_inject_run: a taller grid (the job-control transcripts run
+    # past 25 rows, and the grid dump shows only what is still ON the grid at exit), and
+    # -e QUESOS_VERBOSE=1 so the maize-372-gated "reaped ... status=0" line is available as
+    # the clean-shutdown assertion. Ctrl-Z is the raw byte 0x1A (octal \032) and Ctrl-C is
+    # 0x03 (octal \003) on this channel: --input=console feeds already-decoded bytes, NOT
+    # Set-1 scancodes (that is the --console-dump-ALONE contract, a different device).
+    #
+    # cat is the foreground job in every case because the console byte that raises a signal
+    # is recognized where it is CONSUMED (console_read / the console IRQ), so the job has to
+    # be one that actually reads stdin. A job that never reads (sleep 100) would not observe
+    # Ctrl-Z here any more than it observes Ctrl-C today.
+    jc_run() {
+        MSYS2_ARG_CONV_EXCL='/bin;/rw' timeout 60 "$MAIZE" --no-root \
+            --console-dump --console-size 100x45 --input=console -e QUESOS_VERBOSE=1 \
+            --mount "${bnat}=/bin:ro" --mount "${rnat}=/rw:rw" \
+            "$quesos" /bin/oksh.mzx 2>/dev/null
+    }
+
+    # AC 10050/10051 (Tier 1): with /dev/tty resolving to the console, an interactive oksh
+    # prints NEITHER startup warning. Parent commit: both present.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(printf 'exit\r' | jc_run); set -e
+    if ! printf '%s\n' "$out" | grep -qF "No controlling tty" \
+    && ! printf '%s\n' "$out" | grep -qF "won't have full job control" \
+    && printf '%s\n' "$out" | grep -qF "reaped /bin/oksh.mzx status=0"; then
+        echo "[PASS] userland361_devtty_warnings (no ctty / no job-control warning)"
+    else
+        echo "[FAIL] userland361_devtty_warnings"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # AC 10143/10155: Ctrl-Z stops a foreground cat (job reported Stopped, prompt returns),
+    # jobs lists it, fg resumes it, and the resumed read completes with a REAL byte (cat
+    # echoes "resumed"), not an EINTR error. This is the fixture that isolates the
+    # BLK_CONSOLE completion in raise_on_pcb: with points 1-5 only, the SIGTSTP bit sits on
+    # the parked cat forever, no Stopped line is ever printed and the prompt never returns.
+    # Parent commit: 0x1A is delivered to cat as an ordinary byte and nothing is stopped.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(printf 'cat\r\032jobs\rfg\rresumed\n' | jc_run); set -e
+    if printf '%s\n' "$out" | grep -qE "\[1\] \+ Stopped +cat" \
+    && printf '%s\n' "$out" | grep -qx "resumed" \
+    && printf '%s\n' "$out" | grep -qF "reaped /bin/oksh.mzx status=0" \
+    && ! printf '%s\n' "$out" | grep -qiE "unhandled syscall|halt"; then
+        echo "[PASS] userland361_ctrlz_fg (Ctrl-Z stops cat, jobs lists it, fg resumes it)"
+    else
+        echo "[FAIL] userland361_ctrlz_fg"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # AC 10156: Ctrl-C on a foreground cat that is idly blocked reading the console actually
+    # terminates it (prompt returns, the next command runs), instead of leaving the SIGINT
+    # pending forever. Parent commit: no job control means the shell shares cat's process
+    # group, so the SIGINT reaches the SHELL, which dies with status 130 and never runs the
+    # follow-on echo.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(printf 'cat\r\003echo alive\rexit\r' | jc_run); set -e
+    if printf '%s\n' "$out" | grep -qx "alive" \
+    && printf '%s\n' "$out" | grep -qF "reaped /bin/oksh.mzx status=0" \
+    && ! printf '%s\n' "$out" | grep -qiE "unhandled syscall|halt"; then
+        echo "[PASS] userland361_ctrlc_blocked_reader (SIGINT reaches an idle console reader)"
+    else
+        echo "[FAIL] userland361_ctrlc_blocked_reader"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # AC 10144 (first half): a job backgrounded from the outset is stopped automatically the
+    # first time it tries to read the console, with no Ctrl-Z involved: do_read's SIGTTIN
+    # gate end to end. The second `exit` is what ends a session that still has a stopped job.
+    # Parent commit: the background cat just reads, and jobs reports it Running.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(printf 'cat &\rjobs\rjobs\rexit\rexit\r' | jc_run); set -e
+    if printf '%s\n' "$out" | grep -qE "Stopped \(tty input\) +cat" \
+    && printf '%s\n' "$out" | grep -qF "reaped /bin/oksh.mzx status=0" \
+    && ! printf '%s\n' "$out" | grep -qiE "unhandled syscall|halt"; then
+        echo "[PASS] userland361_bg_read_sigttin (background cat stops on its first read)"
+    else
+        echo "[FAIL] userland361_bg_read_sigttin"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # AC 10144 (second half): bg resumes a stopped job into the BACKGROUND. The shell prints
+    # its "[1] cat" continue report and the prompt comes straight back (the job is not
+    # foregrounded), and the following jobs sees it running rather than stopped. Parent
+    # commit: there is no stopped job to resume in the first place.
+    TOTAL=$((TOTAL + 1))
+    set +e; out=$(printf 'cat\r\032bg\rjobs\rexit\rexit\r' | jc_run); set -e
+    if printf '%s\n' "$out" | grep -qE "\[1\] \+ Stopped +cat" \
+    && printf '%s\n' "$out" | grep -qE "^\[1\] cat" \
+    && printf '%s\n' "$out" | grep -qE "Running +cat" \
+    && printf '%s\n' "$out" | grep -qF "reaped /bin/oksh.mzx status=0" \
+    && ! printf '%s\n' "$out" | grep -qiE "unhandled syscall|halt"; then
+        echo "[PASS] userland361_bg_resume (bg resumes the stopped job in the background)"
+    else
+        echo "[FAIL] userland361_bg_resume"; printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
 }
 
 run_userland94_fixtures
