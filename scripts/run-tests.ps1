@@ -833,7 +833,16 @@ $results += Invoke-FbStopTest
 # pty_oksh_* fixtures. The Windows CreateFileMapping shared-memory backend is exercised by
 # the Merge-stage CI gate. Listed here per the maize-215 test-runner-sync rule so this twin
 # stays visibly aware of the fixtures rather than silently omitting them.
+# maize-268 added four more modes on the same harness, and they are POSIX-only for the same
+# reason: cleanexit (a presented session exits with the guest's status and no console
+# diagnostic), nodisplay_stop (no presenter and the claim stopped the VM: the diagnostic
+# prints and the status is 3), nodisplay_reject (no presenter and the claim was rejected
+# per-exec: the diagnostic prints and the status is the guest's), and plainexit (no graphical
+# claim at all). The src/maize.cpp exit-path change they cover is platform-neutral, and the
+# Windows half of its mechanism (presenter_transport::teardown nulling seg.ctl at
+# src/presenter_transport_win32.cpp:211) is verified by inspection under the maize-215 rule.
 Write-Host "[SKIP] presenter_* (pty transport harness is POSIX-only; runs on the Linux legs; Windows shm rides Merge CI)"
+Write-Host "[SKIP] presenter_cleanexit / presenter_nodisplay_stop / presenter_nodisplay_reject / presenter_plainexit (maize-268 exit-path modes; same POSIX-only pty harness)"
 
 # --- maize-12: multi-TU assemble -> link -> run -----------------------------------
 # Assemble two objects with `mazm -c`, link them with mzld into one .mzx, and run

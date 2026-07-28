@@ -1,0 +1,19 @@
+; **********************************************************************************
+; maize-268 exit-status fixture guest (no graphical claim at all).
+;
+; The guest exits immediately through SYS $3C with status 42 and never touches a
+; framebuffer port, so no claim is ever attempted. Run under a pty by
+; scripts/pty_presenter_check.py (the plainexit mode, which runs it twice: once with a
+; presenter bound and once under --fb-no-display with none), it pins maize-58 exit-status
+; pass-through on an interactive terminal, which no other fixture covered: the existing
+; exit-status coverage all runs with stdin redirected, where the post-run framebuffer
+; diagnostic block is disarmed entirely. The second run is the one that pins the guard's
+; graphics_claim_attempted() term, since with no presenter bound that term is the only
+; thing keeping the diagnostic quiet.
+;
+; 42 matches asm/test_presenter_cleanexit.mazm so both fixtures assert the same status.
+; **********************************************************************************
+
+$0000`0000:
+    CP $2A R0              ; exit status 42
+    SYS $3C

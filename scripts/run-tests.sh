@@ -1051,8 +1051,11 @@ run_presenter_test() {
         echo "[SKIP] ${name} (maizeg not built)"
         return
     fi
-    # Assemble the two fixture guests into the scratch dir (self-contained, like fb_reject).
-    for src in test_presenter_fixture.mazm test_presenter_doorbell.mazm; do
+    # Assemble the fixture guests into the scratch dir (self-contained, like fb_reject). The
+    # last two are maize-268's exit-path fixtures; the harness finds them as siblings of the
+    # first, so they need no new positional argument.
+    for src in test_presenter_fixture.mazm test_presenter_doorbell.mazm \
+               test_presenter_cleanexit.mazm test_exit_status.mazm; do
         cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
         if ! "$MAZM_EXE" "${TEST_RUN_DIR}/${src}" >/dev/null 2>&1; then
             FAIL_COUNT=$((FAIL_COUNT + 1))
@@ -1085,6 +1088,22 @@ run_presenter_test teardown
 run_presenter_test respawn
 run_presenter_test stalesteal
 run_presenter_test storm
+
+# --- maize-268: the post-run exit path, on the same pty harness -----------------------
+# The maize-221 console diagnostic and its exit code 3 are armed only when stdin is a
+# terminal, so no redirected CI run ever reached them and the defect this card fixes lived
+# in the gap. These four modes assert the host exit status and the presence or absence of
+# the diagnostic through main's real exit path:
+#   cleanexit        presenter bound, graphical guest, clean exit -> guest status, no message
+#   nodisplay_stop   no presenter, claim stopped the VM           -> exit 3, message present
+#   nodisplay_reject no presenter, claim rejected per-exec        -> guest status, message present
+#   plainexit        no graphical claim at all (run twice)        -> guest status, no message
+# nodisplay_stop and nodisplay_reject are the do-not-silence guard: the message is true in
+# both, so both require it literally, and no flag in either argv could suppress it.
+run_presenter_test cleanexit
+run_presenter_test nodisplay_stop
+run_presenter_test nodisplay_reject
+run_presenter_test plainexit
 
 # --- maize-12: multi-TU assemble -> link -> run --------------------------------------
 # Two separately-assembled objects (link_a defines _start and imports from link_b)

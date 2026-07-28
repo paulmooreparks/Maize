@@ -1,0 +1,46 @@
+; **********************************************************************************
+; maize-268 presenter-transport fixture guest (clean exit with a known status).
+;
+; This is asm/test_presenter_fixture.mazm with the steady-state loop removed. It writes
+; a known single-pixel pattern into a guest-RAM framebuffer, claims slot 0 (which, on an
+; interactive session, launches or attaches a maizeg presenter over shared memory),
+; presents it, and then exits normally through SYS $3C with status 42.
+;
+; The point is the exit path, not the pixels. A session that presented through a real
+; presenter and then ended cleanly must report the guest's own status (42 here) and must
+; print no "console build cannot display" diagnostic. Under --fb-no-display the same
+; program instead has its claim rejected, and what the host reports then depends on
+; whether --fb-stop-on-claim also stopped the VM at the claim. The three cases are the
+; cleanexit / nodisplay_reject / nodisplay_stop modes of scripts/pty_presenter_check.py.
+;
+; 42 is arbitrary: nonzero, distinct from the 3 the diagnostic path reports, and inside
+; the 8 bits a host process status carries.
+;
+; The buffer sits at $00100000, well past the image and vector table.
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- pattern A: write pixel[0], claim slot 0, present ----
+    CP $00100000 R1        ; framebuffer base (also address of pixel 0)
+    CP $A1A1A1A1 R6.H0
+    ST R6.H0 @R1           ; pixel[0] = A
+    OUT R1 $53             ; claim slot 0 -> launch/attach the presenter (bounded handshake)
+    CLR R0
+    OUT R0 $54             ; present A
+    ; The claim above blocks until the presenter is ready or the attempt fails, so no
+    ; pacing is needed for correctness. One delay is held anyway so the stub gets a poll
+    ; interval to print its ready line and sample the frame before the session tears it
+    ; down; the harness asserts that line to tell a failed spawn from the defect under test.
+    CALL delay
+
+    ; ---- clean exit with a known status ----
+    CP $2A R0              ; exit status 42
+    SYS $3C
+
+; A busy-wait delay (~one stub poll interval on a typical host). Pacing need not be exact.
+delay:
+    CP $00200000 R8.H0
+delay_l:
+    DEC R8.H0
+    JNZ delay_l
+    RET

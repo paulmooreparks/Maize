@@ -226,6 +226,13 @@ namespace maize {
 			   per-exec rejection path (set_display_available) instead. */
 			void set_stop_on_claim(bool on) { stop_on_claim_.store(on, std::memory_order_relaxed); }
 
+			/* maize-268: read back that posture. main's post-run diagnostic needs to know
+			   whether a rejected claim stopped the VM (no guest status exists, so exit 3 is
+			   the only signal) or was merely rejected per-exec (the guest ran on and recorded
+			   its own status, which must not be overwritten). Reading the device keeps one
+			   source of truth instead of mirroring the flag into a main local. */
+			bool stop_on_claim() const { return stop_on_claim_.load(std::memory_order_relaxed); }
+
 			/* maize-236: whether a claim can be honored on this view. Default true (a window
 			   is present, or a headless run where claims are pure bookkeeping). Set false for
 			   a console-only view with no window: a claim is then rejected (slot stays

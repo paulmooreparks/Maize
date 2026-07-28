@@ -15,8 +15,16 @@
 # the userland94_oksh_keystrokes / pty_oksh_* fixtures. The Windows shared-memory leg
 # rides the Merge-stage CI gate (documented on the card).
 #
+# maize-268 adds four exit-path modes on the same harness. They assert the HOST EXIT STATUS
+# and the presence or absence of the post-run "console build cannot display" diagnostic
+# through main's real exit path, which needs the pty for the same reason the modes above do:
+# the whole diagnostic block is armed only when stdin is a terminal, so a redirected CI run
+# never reaches it. Their two extra fixtures are resolved as siblings of <fixture.mzb>, so
+# the positional argument list below is unchanged.
+#
 # Usage: pty_presenter_check.py <maize> <maizeg> <fixture.mzb> <doorbell.mzb> <scratch-dir> <mode>
-#   modes: checksum | doorbell | respawn | storm | stalesteal | teardown | input | all
+#   modes: checksum | doorbell | respawn | storm | stalesteal | teardown | input
+#          | cleanexit | nodisplay_stop | nodisplay_reject | plainexit | all
 # Exit 0 on PASS (prints "pty-presenter: PASS <mode>"), 1 on failure (with a diagnostic
 # and the captured transcript).
 import os, pty, select, sys, time, re, signal, subprocess, threading
@@ -28,6 +36,20 @@ if len(sys.argv) < 7:
 
 MAIZE, MAIZEG, FIXTURE, DOORBELL, SCRATCH, MODE = sys.argv[1:7]
 os.makedirs(SCRATCH, exist_ok=True)
+
+# maize-268: the two exit-path fixtures live beside the ones named on the command line, so
+# the caller's argument list stays as it is. CLEANEXIT claims the framebuffer, presents, and
+# exits 42; EXITSTATUS exits 42 without ever touching a framebuffer port.
+CLEANEXIT = os.path.join(os.path.dirname(FIXTURE), "test_presenter_cleanexit.mzb")
+EXITSTATUS = os.path.join(os.path.dirname(FIXTURE), "test_exit_status.mzb")
+
+# The two lines of the maize-221 console diagnostic, matched literally. Their wording is
+# part of the contract these modes assert, in both directions: nodisplay_stop and
+# nodisplay_reject require them, cleanexit and plainexit forbid them.
+DIAG_LINE_1 = "console build cannot display"
+DIAG_LINE_2 = "run it with the graphical Maize binary"
+GUEST_STATUS = 42        # what both exit-path fixtures pass to SYS $3C
+NO_RESULT_STATUS = 3     # what main reports when the claim stopped the VM before it could
 
 # ---- FNV-1a expected checksums for the single-pixel patterns over an 8x8 frame ----------
 FB_W, FB_H = 8, 8
@@ -59,13 +81,15 @@ SESSION_RE = re.compile(r"presenter-stub: ready session=(\w+)")
 
 class Session:
     """A `maize` session running under a pty, with a background reader draining the master."""
-    def __init__(self, program, env_extra=None):
+    def __init__(self, program, env_extra=None, extra_args=None):
         self.captured = bytearray()
         self.lock = threading.Lock()
         env = dict(os.environ)
         if env_extra:
             env.update(env_extra)
-        argv = [MAIZE, "--resolution", "%dx%d" % (FB_W, FB_H), program]
+        # maize-268: extra_args lands between --resolution and the program path, which keeps
+        # the argv shape the seven original modes are proven against when it is empty.
+        argv = [MAIZE, "--resolution", "%dx%d" % (FB_W, FB_H)] + list(extra_args or []) + [program]
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             os.environ.clear()
@@ -112,6 +136,37 @@ class Session:
 
     def checksums(self):
         return CSUM_RE.findall(self.text())
+
+    def wait_exit(self, seconds):
+        """maize-268: reap the session and return its host exit status, or None.
+
+        Returns None when the session is still alive after `seconds` or when it died on a
+        signal rather than exiting. This MUST run before close(): closing the pty master can
+        SIGHUP the child, which would destroy the very status under test. It reaps the child
+        itself, so the os.kill inside a later close() raises ESRCH and close() treats that as
+        already-gone, which is the intended path and not an error.
+        """
+        end = time.time() + seconds
+        while time.time() < end:
+            try:
+                w, status = os.waitpid(self.pid, os.WNOHANG)
+            except OSError:
+                return None
+            if w == self.pid:
+                return os.WEXITSTATUS(status) if os.WIFEXITED(status) else None
+            time.sleep(0.05)
+        return None
+
+    def drain(self, seconds=5):
+        """maize-268: wait for the reader thread to finish before the transcript is read.
+
+        With the child reaped, the master read raises EIO and the loop ends on its own, so
+        this joins rather than interrupts. close() sets running = False, which STOPS the
+        reader mid-flight and can truncate the tail of the transcript. The exit-path
+        diagnostic is the last thing a session ever prints, so a truncated transcript would
+        satisfy an absence assertion for entirely the wrong reason.
+        """
+        self.reader.join(seconds)
 
     def close(self):
         self.running = False
@@ -364,6 +419,77 @@ def run_input():
     ok()
 
 
+# ---- maize-268 exit-path scenarios ------------------------------------------------------
+# Each one runs a fixture that exits through SYS $3C with status 42 and then checks two
+# things about main's exit path: the host status the session reported, and whether the
+# maize-221 console diagnostic printed. The four cases differ only in which flags the
+# session ran with, which is what selects the presenter posture under test.
+
+def exit_case(what, program, extra_args, want_status, want_diag, need_presenter):
+    """Run one session to completion and assert its exit status and diagnostic."""
+    sess = Session(program, extra_args=extra_args)
+    if need_presenter and not sess.session_id():
+        fail(sess, "%s: the stub presenter never printed its ready line, so a failed spawn "
+                   "would masquerade as the exit-status behavior under test" % what)
+    status = sess.wait_exit(30)
+    sess.drain()          # complete transcript first; the diagnostic is the last output
+    text = sess.text()
+    if status is None:
+        fail(sess, "%s: the session did not exit normally within 30s (still running, or "
+                   "killed by a signal)" % what)
+    if status != want_status:
+        fail(sess, "%s: host exit status %d, want %d" % (what, status, want_status))
+    if want_diag:
+        for needle in (DIAG_LINE_1, DIAG_LINE_2):
+            if needle not in text:
+                fail(sess, "%s: the console diagnostic is missing its %r line, and this run "
+                           "must still print it" % (what, needle))
+    elif DIAG_LINE_1 in text:
+        fail(sess, "%s: the %r diagnostic printed on a run that must not produce it"
+                   % (what, DIAG_LINE_1))
+    sess.close()
+
+
+def run_cleanexit():
+    # The headline case (maize-268): an interactive session that bound a presenter, ran a
+    # graphical guest through it, and exited cleanly reports the GUEST's status and says
+    # nothing about console builds. Before the fix this exits 3 with the diagnostic, because
+    # the teardown nulled the handle the guard was reading.
+    exit_case("cleanexit", CLEANEXIT, [], GUEST_STATUS, False, True)
+    ok()
+
+
+def run_nodisplay_stop():
+    # The diagnostic is legitimate here and must survive: no presenter was ever bound, the
+    # guest claimed the framebuffer anyway, and --fb-stop-on-claim stopped the VM at that
+    # claim. The guest never reached SYS $3C, so there is no guest status to report and 3 is
+    # the signal. A fix that deleted, weakened, or flag-gated the message fails this mode.
+    exit_case("nodisplay_stop", CLEANEXIT, ["--fb-no-display", "--fb-stop-on-claim"],
+              NO_RESULT_STATUS, True, False)
+    ok()
+
+
+def run_nodisplay_reject():
+    # No presenter, claim attempted, but the claim was only rejected per-exec (maize-236):
+    # the guest handled -ENODEV and ran on to its own SYS $3C. The message is still true, so
+    # it still prints; the status is the guest's, because the guest produced one. This is
+    # also what makes the tty and non-tty runs of the same command agree.
+    exit_case("nodisplay_reject", CLEANEXIT, ["--fb-no-display"], GUEST_STATUS, True, False)
+    ok()
+
+
+def run_plainexit():
+    # A guest that never touches a framebuffer port. The first run has a presenter segment
+    # bound (no --fb-no-display on an interactive session), so it pins maize-58 exit-status
+    # pass-through on a tty. The second run has none, which leaves graphics_claim_attempted()
+    # as the only term keeping the diagnostic quiet, so it is the run that actually pins that
+    # term (maize-268 open question 10814).
+    exit_case("plainexit", EXITSTATUS, [], GUEST_STATUS, False, False)
+    exit_case("plainexit (no presenter bound)", EXITSTATUS, ["--fb-no-display"],
+              GUEST_STATUS, False, False)
+    ok()
+
+
 SCENARIOS = {
     "checksum": run_checksum,
     "doorbell": run_doorbell,
@@ -372,6 +498,10 @@ SCENARIOS = {
     "stalesteal": run_stalesteal,
     "teardown": run_teardown,
     "input": run_input,
+    "cleanexit": run_cleanexit,
+    "nodisplay_stop": run_nodisplay_stop,
+    "nodisplay_reject": run_nodisplay_reject,
+    "plainexit": run_plainexit,
 }
 
 if MODE == "all":

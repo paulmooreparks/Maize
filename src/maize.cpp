@@ -2129,6 +2129,13 @@ int main(int argc, char *argv[]) {
 	   deliberate CI/headless opt-out (Decision D10): no hook is installed there, so
 	   display_available_ keeps whatever those flags set, exactly as today. */
 	presenter_transport::mapped_segment presenter_seg{};
+	/* maize-268: presenter_transport::teardown() nulls presenter_seg.ctl
+	   (src/presenter_transport_posix.cpp:246, src/presenter_transport_win32.cpp:211), and main
+	   tears the segment down before the post-run diagnostic below runs, so by then the segment
+	   can no longer be asked whether a presenter was ever bound. Latch that fact here, where it
+	   is known, instead of re-deriving it from a handle whose teardown is deliberately
+	   destructive. */
+	bool presenter_bound = false;
 	std::string session_id;
 	if (fb_trap_interactive && !fb_no_display) {
 		session_id = presenter_transport::new_session_id();
@@ -2136,6 +2143,7 @@ int main(int argc, char *argv[]) {
 			cpu::fb_format_xrgb8888, static_cast<std::uint32_t>(cpu::fb_max_slots));
 		if (presenter_seg.ctl) {
 			framebuffer.bind_presenter_transport(presenter_seg.frames_base, presenter_seg.ctl);
+			presenter_bound = true;   // maize-268: latched here; teardown cannot reach it.
 			framebuffer.set_presenter_launch_hook([&]() {
 				return presenter_link::ensure_presenter(presenter_seg, session_id, display_scale, refresh_hz);
 			});
@@ -2195,6 +2203,13 @@ int main(int argc, char *argv[]) {
 	   fires is an idempotent no-op afterward. teardown is safe (no-op) when no segment exists. */
 	presenter_link::stop();
 	presenter_transport::teardown(presenter_seg);
+	/* maize-268: teardown unmapped the segment, so the framebuffer's shm_ctl_ / shm_frames_
+	   now point into unmapped memory for the rest of main. No current path reads them after
+	   this point (every reader is reachable only from a guest port write or the link thread
+	   that stop() just joined), so this clears a latent hazard rather than a live one. The
+	   fallback is safe: the constructor sizes every slot's private capture vector
+	   unconditionally, which is the mode maizeg already runs in. */
+	framebuffer.bind_presenter_transport(nullptr, nullptr);
 	/* maize-228: the guest has halted; put the host terminal back to cooked before any
 	   post-run host output (the perf report, the fb diagnostic). The atexit + signal/console
 	   handlers also restore, so an abnormal exit is covered; this is the clean-exit path. */
@@ -2304,13 +2319,27 @@ int main(int argc, char *argv[]) {
 	   exiting silently as if the program had simply run. Distinct exit code (3).
 	   maize-264: this fires ONLY when no presenter was active (the display-less fallback or
 	   the --fb-no-display path). With a presenter bound, a graphical registration is honored
-	   through the presenter window, so the "use the graphical binary" diagnostic is wrong. */
-	if (fb_trap_interactive && presenter_seg.ctl == nullptr && framebuffer.graphics_claim_attempted()) {
+	   through the presenter window, so the "use the graphical binary" diagnostic is wrong.
+	   maize-268: ask the latched presenter_bound, not presenter_seg.ctl, which the teardown
+	   above nulls on every run; the pointer reads the same for "never had a presenter" and
+	   "had one and tore it down cleanly". The condition keys on whether the TRANSPORT was
+	   bound rather than on whether a presenter window was ever confirmed alive: when the
+	   segment bound but every spawn attempt failed, presenter_link::ensure_presenter prints
+	   its own reason, and the advice below would be false, because this build can display. */
+	if (fb_trap_interactive && !presenter_bound && framebuffer.graphics_claim_attempted()) {
 		std::cerr << "maize: '" << file_path << "' drives the graphical framebuffer, which this "
 			"console build cannot display." << std::endl
 			<< "maize: run it with the graphical Maize binary (the build that opens a window)."
 			<< std::endl;
-		return 3;
+		/* maize-268: 3 is the no-guest-result signal, so it is reported only when the claim
+		   stopped the VM (src/devices.cpp:452-454) and the guest never reached SYS $3C,
+		   leaving sys::exit_code() a meaningless default 0. Under a per-exec rejection
+		   (--fb-no-display alone, the maize-236 posture) the guest handled -ENODEV and ran to
+		   completion, so its recorded status is the truth and 3 would destroy it. The
+		   diagnostic above fires either way, because it is true either way. */
+		if (framebuffer.stop_on_claim()) {
+			return 3;
+		}
 	}
 #endif
 
