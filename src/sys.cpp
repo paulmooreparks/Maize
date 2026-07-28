@@ -588,10 +588,10 @@ namespace maize {
                        the fd is inspected, matching the $F3/$F4/$F5 posture. A guest
                        C caller's negative ssize_t arrives here as a huge unsigned
                        value and is caught by the cap, so no separate signedness
-                       check is needed. */
-                    if (count == 0) {
-                        return 0;                                 /* benign no-op */
-                    }
+                       check is needed. A zero count is deliberately NOT
+                       special-cased here: it falls through to the normal path so
+                       the fd is still validated and the downstream answer is the
+                       one this syscall gave before the check existed. */
                     if (count > MAX_BULK_BYTES) {
                         return static_cast<u_word>(-abi_einval);  /* oversized request */
                     }
@@ -692,10 +692,9 @@ namespace maize {
                        way. The bound belongs here at the syscall boundary, where
                        the value is known to be guest-supplied, rather than inside
                        memory_module::read, which also serves trusted VM-internal
-                       callers. Reject before mm.read runs. */
-                    if (count == 0) {
-                        return 0;                                 /* benign no-op */
-                    }
+                       callers. Reject before mm.read runs. A zero count falls
+                       through to the normal path, unchanged from before this
+                       check existed. */
                     if (count > MAX_BULK_BYTES) {
                         return static_cast<u_word>(-abi_einval);  /* oversized request */
                     }
@@ -804,10 +803,13 @@ namespace maize {
 
                     /* maize-326: same shape as sys_read. The check runs before the
                        fd is validated, so an oversized or wrapping request is
-                       rejected whether or not the fd was ever opened. */
-                    if (count == 0) {
-                        return 0;                                 /* benign no-op */
-                    }
+                       rejected whether or not the fd was ever opened. A zero count
+                       must NOT short-circuit to 0 here: 0 is getdents64's
+                       end-of-stream signal, so a zero-byte buffer on a directory
+                       that still has entries would report itself fully enumerated.
+                       It falls through instead, and the backend answers -EINVAL
+                       from its "buffer too small for one record" path, as it did
+                       before this check existed. */
                     if (count > MAX_BULK_BYTES) {
                         return static_cast<u_word>(-abi_einval);  /* oversized request */
                     }

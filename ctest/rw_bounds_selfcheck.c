@@ -1,8 +1,8 @@
 /* maize-326: guest-supplied-length bounds self-check over the three older,
  * Linux-numbered syscalls that let a raw guest count size a host buffer:
  * sys_read (SYS $00), sys_write (SYS $01) and sys_getdents64 (SYS $D9).
- * Prints exactly "rw-bounds: PASS" iff every invariant holds, else a single
- * FAIL line naming the leg.
+ * Prints exactly "rw-bounds: PASS" iff every invariant holds, else one FAIL
+ * line per failing leg and no PASS line.
  *
  * SECURITY (deny-by-default): each of those three sites used to feed `count`
  * straight into a host std::vector resize (sys_read, sys_getdents64) or into
@@ -17,7 +17,14 @@
  * This fixture drives both bad shapes at all three sites and asserts the
  * -errno band, the exact errno, an untouched destination sentinel, and that the
  * VM is still running afterwards. It also drives one well-formed call per
- * syscall so the new check is shown to reject only the bad ones.
+ * syscall so the new check is shown to reject only the bad ones, and a
+ * zero-count call so the check is shown not to have swallowed the fd lookup.
+ *
+ * Every leg reports independently and execution continues past a failure, so a
+ * single run names every leg that is wrong rather than stopping at the first.
+ * That matters for the fail-before/pass-after negative control: a fixture that
+ * returns on its first failing leg proves only its first failing leg is
+ * load-bearing.
  *
  * The rejection legs need no hostfs mount: the check runs before the fd is
  * inspected, so an arbitrary never-opened fd is enough and the fixture stays
@@ -42,6 +49,14 @@
 #define IN_ERRBAND(r) ((unsigned long)(r) > 0xFFFFFFFFFFFFF000UL)
 
 static unsigned char buf[N];
+static int failures;
+
+static void
+fail(const char *leg)
+{
+    puts(leg);
+    failures = failures + 1;
+}
 
 static int
 sentinel_intact(void)
@@ -59,67 +74,81 @@ main(void)
     int i;
     long rv;
 
+    failures = 0;
     for (i = 0; i < N; ++i) { buf[i] = 0xA5; }
 
     /* (1) sys_read, well formed. A zero count is the one legitimate read this
-       fixture can make without blocking on host stdin; it must stay a benign
-       no-op returning 0, not a rejection. */
+       fixture can make without blocking on host stdin. The bounds check does not
+       short-circuit it: it reaches the fd 0 read path, which returns 0. */
     rv = sys_read(0, buf, 0UL);
-    if (rv != 0)        { puts("rw-bounds: FAIL read-zero-ret");   return 1; }
-    if (!sentinel_intact()) { puts("rw-bounds: FAIL read-zero-write"); return 1; }
+    if (rv != 0)            { fail("rw-bounds: FAIL read-zero-ret"); }
+    if (!sentinel_intact()) { fail("rw-bounds: FAIL read-zero-write"); }
 
     /* (2) sys_read, oversized count. Must be rejected with -EINVAL before the
        host buffer is sized, leaving the destination untouched. */
     rv = sys_read(0, buf, MAX_BULK_BYTES + 1UL);
-    if (!IN_ERRBAND(rv)) { puts("rw-bounds: FAIL read-oversize-band");  return 1; }
-    if (rv != -22)       { puts("rw-bounds: FAIL read-oversize-errno"); return 1; }
-    if (!sentinel_intact()) { puts("rw-bounds: FAIL read-oversize-write"); return 1; }
+    if (!IN_ERRBAND(rv))    { fail("rw-bounds: FAIL read-oversize-band"); }
+    if (rv != -22)          { fail("rw-bounds: FAIL read-oversize-errno"); }
+    if (!sentinel_intact()) { fail("rw-bounds: FAIL read-oversize-write"); }
 
     /* (3) sys_read, wrapping destination. address + count wraps u64, so no
        write may be attempted anywhere in that bogus range. */
     rv = sys_read(0, WRAP_PTR, WRAP_LEN);
-    if (!IN_ERRBAND(rv)) { puts("rw-bounds: FAIL read-wrap-band");  return 1; }
-    if (rv != -14)       { puts("rw-bounds: FAIL read-wrap-errno"); return 1; }
+    if (!IN_ERRBAND(rv))    { fail("rw-bounds: FAIL read-wrap-band"); }
+    if (rv != -14)          { fail("rw-bounds: FAIL read-wrap-errno"); }
 
     /* (4) sys_write, well formed. fd 2 keeps this off the stdout stream the
-       harness byte-compares. A small legitimate write must still succeed. */
+       harness byte-compares. A small legitimate write must still succeed, and a
+       zero-count write must reach the normal write path and return 0. */
     rv = sys_write(2, "x", 1UL);
-    if (rv != 1)         { puts("rw-bounds: FAIL write-small-ret");  return 1; }
+    if (rv != 1)            { fail("rw-bounds: FAIL write-small-ret"); }
     rv = sys_write(1, buf, 0UL);
-    if (rv != 0)         { puts("rw-bounds: FAIL write-zero-ret");   return 1; }
+    if (rv != 0)            { fail("rw-bounds: FAIL write-zero-ret"); }
 
     /* (5) sys_write, oversized count. Rejected before mm.read materializes the
        source range into a host buffer, so nothing reaches stdout either. */
     rv = sys_write(1, buf, MAX_BULK_BYTES + 1UL);
-    if (!IN_ERRBAND(rv)) { puts("rw-bounds: FAIL write-oversize-band");  return 1; }
-    if (rv != -22)       { puts("rw-bounds: FAIL write-oversize-errno"); return 1; }
+    if (!IN_ERRBAND(rv))    { fail("rw-bounds: FAIL write-oversize-band"); }
+    if (rv != -22)          { fail("rw-bounds: FAIL write-oversize-errno"); }
 
     /* (6) sys_write, wrapping source. No read of the bogus range may happen. */
     rv = sys_write(1, WRAP_PTR, WRAP_LEN);
-    if (!IN_ERRBAND(rv)) { puts("rw-bounds: FAIL write-wrap-band");  return 1; }
-    if (rv != -14)       { puts("rw-bounds: FAIL write-wrap-errno"); return 1; }
+    if (!IN_ERRBAND(rv))    { fail("rw-bounds: FAIL write-wrap-band"); }
+    if (rv != -14)          { fail("rw-bounds: FAIL write-wrap-errno"); }
 
     /* (7) sys_getdents64, well formed. A small count on a never-opened fd must
        reach the fd lookup and fail there (-EBADF), NOT be turned away by the
        new cap or wrap check. */
     rv = sys_getdents64(BAD_FD, buf, (unsigned long)N);
-    if (!IN_ERRBAND(rv)) { puts("rw-bounds: FAIL getdents-small-band");  return 1; }
-    if (rv == -22 || rv == -14) { puts("rw-bounds: FAIL getdents-small-errno"); return 1; }
-    if (!sentinel_intact()) { puts("rw-bounds: FAIL getdents-small-write"); return 1; }
+    if (!IN_ERRBAND(rv))    { fail("rw-bounds: FAIL getdents-small-band"); }
+    if (rv == -22 || rv == -14) { fail("rw-bounds: FAIL getdents-small-errno"); }
+    if (!sentinel_intact()) { fail("rw-bounds: FAIL getdents-small-write"); }
 
-    /* (8) sys_getdents64, oversized count, rejected before the resize. */
+    /* (8) sys_getdents64, zero count. This is the regression guard for the
+       zero-count early return cycle 1 carried and cycle 2 deleted: a count of 0
+       must still reach the fd lookup and report an error, never 0. A returned 0
+       is getdents64's end-of-stream signal, so answering 0 here would tell a
+       caller that a directory it has not read was fully enumerated. */
+    rv = sys_getdents64(BAD_FD, buf, 0UL);
+    if (rv == 0)            { fail("rw-bounds: FAIL getdents-zero-eof"); }
+    if (!IN_ERRBAND(rv))    { fail("rw-bounds: FAIL getdents-zero-band"); }
+    if (!sentinel_intact()) { fail("rw-bounds: FAIL getdents-zero-write"); }
+
+    /* (9) sys_getdents64, oversized count, rejected before the resize. */
     rv = sys_getdents64(BAD_FD, buf, MAX_BULK_BYTES + 1UL);
-    if (!IN_ERRBAND(rv)) { puts("rw-bounds: FAIL getdents-oversize-band");  return 1; }
-    if (rv != -22)       { puts("rw-bounds: FAIL getdents-oversize-errno"); return 1; }
-    if (!sentinel_intact()) { puts("rw-bounds: FAIL getdents-oversize-write"); return 1; }
+    if (!IN_ERRBAND(rv))    { fail("rw-bounds: FAIL getdents-oversize-band"); }
+    if (rv != -22)          { fail("rw-bounds: FAIL getdents-oversize-errno"); }
+    if (!sentinel_intact()) { fail("rw-bounds: FAIL getdents-oversize-write"); }
 
-    /* (9) sys_getdents64, wrapping destination. */
+    /* (10) sys_getdents64, wrapping destination. */
     rv = sys_getdents64(BAD_FD, WRAP_PTR, WRAP_LEN);
-    if (!IN_ERRBAND(rv)) { puts("rw-bounds: FAIL getdents-wrap-band");  return 1; }
-    if (rv != -14)       { puts("rw-bounds: FAIL getdents-wrap-errno"); return 1; }
+    if (!IN_ERRBAND(rv))    { fail("rw-bounds: FAIL getdents-wrap-band"); }
+    if (rv != -14)          { fail("rw-bounds: FAIL getdents-wrap-errno"); }
 
-    /* Reaching here proves the VM survived every bad call (no uncaught host
-       allocation failure) and that no rejection touched guest memory. */
+    /* Reaching here with no recorded failure proves the VM survived every bad
+       call (no uncaught host allocation failure) and that no rejection touched
+       guest memory. */
+    if (failures != 0) { return 1; }
     puts("rw-bounds: PASS");
     return 0;
 }
