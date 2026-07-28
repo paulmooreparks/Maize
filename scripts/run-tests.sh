@@ -445,6 +445,12 @@ run_undef_multiref_test
 # after BRK; the generic run_test cannot express "expected to trap", so this bespoke
 # runner asserts the VM exits nonzero, surfaces a "breakpoint" diagnostic on stderr, and
 # never reaches the fall-through marker (which the old no-op behavior would have printed).
+#
+# maize-298 strengthens the exit-status half of that assertion. "Nonzero" was satisfied by
+# an abort() too (a SIGABRT death reports 128+6 = 134 to the shell), so this runner passed
+# for years while the underlying mechanism was an uncaught C++ exception crashing the host.
+# It now asserts the status is EXACTLY the clean-halt sentinel 64 + cause, which no signal
+# death can produce, so a regression back to a crash fails here instead of passing.
 run_brk_trap_test() {
     name="brk_trap"
     TOTAL=$((TOTAL + 1))
@@ -467,14 +473,14 @@ run_brk_trap_test() {
     out=$(cat "$out_file")
     err=$(cat "$err_file")
     rm -f "$out_file" "$err_file"
-    if [ "$me" -ne 0 ] \
+    if [ "$me" -eq 67 ] \
         && printf '%s' "$err" | grep -qiF "breakpoint" \
         && ! printf '%s' "$out" | grep -qF "FAIL"; then
         echo "[PASS] ${name}"
     else
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
-        echo "        expected: nonzero exit, 'breakpoint' on stderr, no fall-through marker on stdout"
+        echo "        expected: exit 67 (clean halt, cause 3), 'breakpoint' on stderr, no fall-through marker on stdout"
         echo "        actual:   exit ${me}; stdout=\"${out}\"; stderr=\"${err}\""
     fi
 }
@@ -509,19 +515,71 @@ run_priv_fault_trap_test() {
     out=$(cat "$out_file")
     err=$(cat "$err_file")
     rm -f "$out_file" "$err_file"
-    if [ "$me" -ne 0 ] \
+    if [ "$me" -eq 68 ] \
         && printf '%s' "$err" | grep -qiF "privileg" \
         && ! printf '%s' "$out" | grep -qF "FAIL"; then
         echo "[PASS] ${name}"
     else
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
-        echo "        expected: nonzero exit, 'privileg' on stderr, no fall-through marker on stdout"
+        echo "        expected: exit 68 (clean halt, cause 4), 'privileg' on stderr, no fall-through marker on stdout"
         echo "        actual:   exit ${me}; stdout=\"${out}\"; stderr=\"${err}\""
     fi
 }
 
 run_priv_fault_trap_test
+
+# --- maize-298: an unhandled guest trap halts the host cleanly, it does not crash it ----
+# Before this card, every no-handler and double-fault site threw a std::logic_error that
+# cpu::run() did not catch, so it unwound out of main() and the host died by abort(). The
+# fix routes those sites through a dedicated guest_trap_halt, caught in run(), which prints
+# the diagnostic and powers the VM off; main() then returns the 64 + cause sentinel. This
+# runner asserts that contract directly: the exact sentinel status (so a SIGABRT's 134, or
+# any other signal death, fails), the site's own diagnostic text on stderr, and no
+# fall-through marker on stdout. The two fixtures cover the paths with no other clean-halt
+# coverage: a cause-8 page fault with entry[8] unset, and a double fault during trap-frame
+# delivery. Wrapped in `timeout` so a regression that parks instead of halting is reported
+# as a failure rather than hanging the suite.
+run_trap_halt_test() {
+    name="$1"
+    src="$2"
+    diag="$3"
+    want="$4"
+    TOTAL=$((TOTAL + 1))
+    cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
+    asm_path="${TEST_RUN_DIR}/${src}"
+    bin_path="${asm_path%.mazm}.mzb"
+    if ! "$MAZM_EXE" "$asm_path" >/dev/null 2>&1 || [ ! -f "$bin_path" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name} (mazm failed to assemble)"
+        return
+    fi
+    out_file=$(mktemp)
+    err_file=$(mktemp)
+    if timeout 10 "$MAIZE_EXE" "$bin_path" >"$out_file" 2>"$err_file"; then
+        me=0
+    else
+        me=$?
+    fi
+    out=$(cat "$out_file")
+    err=$(cat "$err_file")
+    rm -f "$out_file" "$err_file"
+    if [ "$me" -eq "$want" ] \
+        && printf '%s' "$err" | grep -qF "$diag" \
+        && ! printf '%s' "$out" | grep -qF "FAIL"; then
+        echo "[PASS] ${name}"
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] ${name}"
+        echo "        expected: exit ${want} (clean halt), '${diag}' on stderr, no FAIL marker on stdout"
+        echo "        actual:   exit ${me}; stdout=\"${out}\"; stderr=\"${err}\""
+    fi
+}
+
+run_trap_halt_test "trap_halt_nohandler"   "test_trap_halt_nohandler.mazm" \
+    "unhandled interrupt: vector 8, no handler installed" 72
+run_trap_halt_test "trap_halt_doublefault" "test_trap_halt_doublefault.mazm" \
+    "double fault: page fault at VA" 72
 
 # --- maize-351: JIT/exception-boundary differential -------------------------------------
 # A guest condition the VM reports by throwing a std::logic_error (an unhandled cause-8 with
@@ -613,14 +671,14 @@ run_priv_user_fault_test() {
     out=$(cat "$out_file")
     err=$(cat "$err_file")
     rm -f "$out_file" "$err_file"
-    if [ "$me" -ne 0 ] \
+    if [ "$me" -eq 68 ] \
         && printf '%s' "$err" | grep -qiF "privileg" \
         && ! printf '%s' "$out" | grep -qF "FAIL"; then
         echo "[PASS] ${name}"
     else
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
-        echo "        expected: nonzero exit, 'privileg' on stderr, no FAIL marker on stdout"
+        echo "        expected: exit 68 (clean halt, cause 4), 'privileg' on stderr, no FAIL marker on stdout"
         echo "        actual:   exit ${me}; stdout=\"${out}\"; stderr=\"${err}\""
     fi
 }

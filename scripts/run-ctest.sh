@@ -4553,11 +4553,19 @@ run_userland_wave2_fixtures() {
     # threshold triggered it. Every tool is independently confirmed via a
     # standalone single-check harness during this card's own implementation.
     # uuencode is excluded entirely (not just moved to another part): even as the
-    # SOLE check in its own single-tool fixture it reproducibly crashed the VM the
-    # same way, so this is a real defect in that tool's own execution path (or its
+    # SOLE check in its own single-tool fixture it reproducibly faulted the same
+    # way, so this is a real defect in that tool's own execution path (or its
     # interaction with the RT/quesOS), not a fixture-shape artifact; out of scope
-    # to root-cause further here (decision 9695's stdin-only RT change), flagged
-    # as a candidate for its own dedicated card.
+    # to root-cause further here (decision 9695's stdin-only RT change). That root
+    # cause is maize-325.
+    #   maize-298 changed what the fault does to the HOST. It no longer crashes the
+    # VM: the unhandled cause-8 page fault is caught in cpu::run(), which prints
+    # "maize: unhandled guest trap: unhandled interrupt: vector 8, no handler
+    # installed" and exits 72 (64 + cause), a normal controlled exit rather than
+    # the std::terminate/abort (SIGABRT, shell status 134) it used to take. The
+    # tool still does not RUN, because quesOS installs no cause-8 handler and has
+    # no per-process fault recovery, so uuencode stays excluded from the shipped
+    # wave-2 set until maize-325 explains why its process faults at all.
     TOTAL=$((TOTAL + 1))
     set +e; out=$(ul292_run /progs/wave2_launch_a.mzx); set -e
     if printf '%s\n' "$out" | grep -qF "wave2-launch-a: PASS"; then

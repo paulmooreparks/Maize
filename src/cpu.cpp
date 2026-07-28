@@ -1863,13 +1863,31 @@ namespace maize {
             copy_regval_reg(control_regs[crn], subreg_enum::w0, dst, dst_subreg);
         }
 
+        /* Clean-halt signal for an unhandled synchronous guest trap (card maize-298). Every
+           no-handler and double-fault site throws this; run() catches it, prints the
+           diagnostic, records the halt status, and powers the VM off, so an unhandled guest
+           trap ends the host process through a normal controlled exit instead of an uncaught
+           exception reaching std::terminate() and abort(). A guest that faults must never
+           crash the host, which is the VM's isolation contract.
+
+           Deliberately a dedicated type rather than a broadened catch on std::logic_error:
+           a generic catch would also swallow an unrelated internal VM bug that happens to
+           throw logic_error and report a genuine maize defect as a clean guest fault. detail
+           carries each throwing site's existing message text verbatim (the substring the
+           suites assert on); cause carries the trap-taxonomy cause, which fixes the host
+           exit status via sys::record_trap_halt. */
+        struct guest_trap_halt {
+            u_byte cause;
+            std::string detail;
+        };
+
         /* Deterministic no-handler halt for a vectored interrupt (card maize-21). An
            enabled IRQ whose table entry is zero (uninstalled) halts the VM with the
            cause surfaced, mirroring the no-handler synchronous-trap rule, never a silent
            ignore or an out-of-bounds read. */
         [[noreturn]] void halt_no_interrupt_handler(u_byte vector) {
-            throw std::logic_error(std::string("unhandled interrupt: vector ")
-                + std::to_string(static_cast<int>(vector)) + ", no handler installed");
+            throw guest_trap_halt {vector, std::string("unhandled interrupt: vector ")
+                + std::to_string(static_cast<int>(vector)) + ", no handler installed"};
         }
 
         /* Read entry[vector] from the shared vector table. The index is a u_byte, so it
@@ -1946,8 +1964,8 @@ namespace maize {
         /* Thrown by raise_page_fault once deliver_vectored has installed the cause-8 trap
            frame and redirected RP to the guest handler: it unwinds the aborted faulting
            instruction back to run(), which re-enters tick() at the handler. Distinct from
-           the std::logic_error faults, which propagate to main() and exit the VM; a page
-           fault instead runs the guest handler. */
+           guest_trap_halt, which run() catches as a clean VM halt (card maize-298); a page
+           fault with a handler installed instead runs that handler. */
         struct page_fault_redirect {};
 
         /* Raw physical PTE read. Mirrors read_vector_entry: always physical, NEVER through
@@ -1975,7 +1993,7 @@ namespace maize {
                 err << "double fault: page fault at VA 0x" << std::hex << va
                     << " during trap-frame delivery (cause "
                     << std::dec << static_cast<int>(trap::cause_page_fault) << ")";
-                throw std::logic_error(err.str());
+                throw guest_trap_halt {trap::cause_page_fault, err.str()};
             }
             control_regs[1].w0 = va;                                        // CR1 FAULT_VA
             control_regs[2].w0 = (present ? u_word {1} : u_word {0})        // bit0 PRESENT
@@ -2333,7 +2351,7 @@ namespace maize {
            Until the interrupt mechanism exists, halt cleanly by throwing rather than invoking
            C++ undefined behavior; this matches the unknown-opcode handler's shape. */
         [[noreturn]] void raise_divide_error(const char* detail) {
-            throw std::logic_error(std::string("divide error: ") + detail);
+            throw guest_trap_halt {trap::cause_divide_error, std::string("divide error: ") + detail};
         }
 
         /* Breakpoint trap (card maize-78, Open Question O7, superseding maize-10
@@ -2347,8 +2365,9 @@ namespace maize {
            successor to today's throw-and-exit; the clean in-guest halt lands with the
            maize-21 delivery mechanism. */
         [[noreturn]] void raise_breakpoint() {
-            throw std::logic_error(std::string("breakpoint trap: BRK ($FF), cause ")
-                + std::to_string(static_cast<int>(trap::cause_breakpoint)));
+            throw guest_trap_halt {trap::cause_breakpoint,
+                std::string("breakpoint trap: BRK ($FF), cause ")
+                + std::to_string(static_cast<int>(trap::cause_breakpoint))};
         }
 
         /* Illegal FP encoding trap (card maize-122 / maize-78 taxonomy): a B* or Q*
@@ -2357,7 +2376,8 @@ namespace maize {
            undefined behavior or a silent no-op). Same shape as the divide-error
            and unknown-opcode handlers until the interrupt mechanism exists. */
         [[noreturn]] void raise_illegal_fp(const char* detail) {
-            throw std::logic_error(std::string("illegal floating-point instruction: ") + detail);
+            throw guest_trap_halt {trap::cause_illegal_instruction,
+                std::string("illegal floating-point instruction: ") + detail};
         }
 
         /* Privileged-operation fault (card maize-21, cause trap::cause_privileged_op (4)).
@@ -2367,8 +2387,9 @@ namespace maize {
            no-handler case (as BRK does today); it does not vector through the table here.
            The diagnostic carries "privileged" so the no-handler test can assert it. */
         [[noreturn]] void raise_privileged_op() {
-            throw std::logic_error(std::string("privileged operation in user mode: cause ")
-                + std::to_string(static_cast<int>(trap::cause_privileged_op)));
+            throw guest_trap_halt {trap::cause_privileged_op,
+                std::string("privileged operation in user mode: cause ")
+                + std::to_string(static_cast<int>(trap::cause_privileged_op))};
         }
 
         namespace {
@@ -4083,7 +4104,7 @@ namespace maize {
         [[noreturn]] void raise_unknown_opcode(u_byte op) {
             std::stringstream err {};
             err << "unknown opcode: " << std::hex << static_cast<unsigned>(op);
-            throw std::logic_error(err.str());
+            throw guest_trap_halt {trap::cause_illegal_instruction, err.str()};
         }
 
         /* This is the state machine that implements the machine-code instructions. */
@@ -6063,6 +6084,25 @@ namespace maize {
                        deliver_vectored has already installed the cause-8 frame and pointed
                        RP at the guest handler. Re-enter tick() to run it (card maize-194). */
                     continue;
+                }
+                catch (const guest_trap_halt& halt) {
+                    /* A synchronous trap with no handler installed, or a double fault during
+                       trap-frame delivery (card maize-298). The guest-visible rule is
+                       unchanged (docs/spec/trap-model.md: an unhandled synchronous trap halts
+                       the VM deterministically with the cause surfaced); what changes is that
+                       the halt now runs through the host's ordinary shutdown instead of an
+                       uncaught exception reaching std::terminate() and abort(). Print one
+                       deterministic diagnostic carrying the throwing site's own text, record
+                       the halt so main()'s exit status reports it, then power off through the
+                       same path a HALT-to-end program takes. Terminal restore stays with the
+                       existing atexit and signal hooks in host_tty.cpp; there is deliberately
+                       no second teardown path here. */
+                    std::cerr << "maize: unhandled guest trap: " << halt.detail
+                        << " (PC 0x" << std::hex << current_instr_pc << std::dec << ")"
+                        << std::endl;
+                    sys::record_trap_halt(halt.cause);
+                    power_off();
+                    break;
                 }
 
                 {

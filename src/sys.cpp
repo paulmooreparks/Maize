@@ -457,6 +457,12 @@ namespace maize {
                own exit status. */
             int exit_status = 0;
 
+            /* maize-298: the host exit-status band for a clean unhandled-trap halt.
+               record_trap_halt() below documents the choice of 64 and the tradeoff. */
+            const unsigned trap_halt_exit_base = 64;
+            const unsigned trap_halt_cause_limit = 32;
+            const int trap_halt_exit_other = 96;
+
             /* maize-75: brk heap bookkeeping. Maize memory is sparse and lazily
                zero-filled, so brk allocates nothing; it moves a break value
                between heap_base (the floor, = align_up(end-of-image,16)) and
@@ -551,6 +557,28 @@ namespace maize {
 
         int exit_code() {
             return exit_status;
+        }
+
+        /* maize-298: record a clean VM halt taken because a synchronous guest trap had no
+           handler installed (or double-faulted during trap-frame delivery). cpu::run()
+           calls this from its guest_trap_halt catch before powering off, so main()'s
+           `return sys::exit_code()` reports the halt instead of falling through to the
+           default 0 a guest that never called sys_exit would otherwise leave.
+
+           The status is 64 + cause, so cause 3 (breakpoint) reports 67, cause 4
+           (privileged op) 68, cause 8 (page fault) 72. Nothing in the 0-255 space is
+           unclaimed: a guest sys_exit can name any byte and POSIX signal death
+           conventionally occupies 128+N, so the 64-95 band takes the same tradeoff BSD's
+           sysexits.h takes, and a guest that legitimately exits in that range can collide.
+           The stderr diagnostic run() prints is the primary signal; the status exists so a
+           harness can tell a clean halt from a signal death without parsing text. A vector
+           outside the synchronous taxonomy (an unhandled external interrupt, 32-255) reports
+           the single out-of-band value rather than 64+vector, which would overflow the byte
+           the host truncates to and could alias 0, reporting a halt as success. */
+        void record_trap_halt(unsigned cause) {
+            exit_status = (cause < trap_halt_cause_limit)
+                ? static_cast<int>(trap_halt_exit_base + cause)
+                : trap_halt_exit_other;
         }
 
         void init_heap(u_word image_end) {

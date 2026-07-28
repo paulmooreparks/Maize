@@ -34,6 +34,12 @@ namespace maize {
 		   sys_exit ran (e.g. a program that ended via HALT). Read by maize.cpp's
 		   main after cpu::run() returns. */
 		int exit_code();
+		/* maize-298: record a clean VM halt for a synchronous guest trap that had no
+		   handler installed (or double-faulted during delivery), so exit_code() reports
+		   64 + cause rather than the default 0. cpu::run() calls this from its
+		   guest_trap_halt catch; the cause is an unsigned rather than u_byte so this
+		   header keeps needing no type header of its own. */
+		void record_trap_halt(unsigned cause);
 		/* maize-75: seed the brk heap from the loaded image's end address.
 		   Called by maize.cpp's main after the image is loaded and before the
 		   process-start block is built; sets heap_base = current_brk =

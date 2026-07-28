@@ -2317,6 +2317,10 @@ int main(int argc, char *argv[]) {
 	/* card maize-58: surface main's return value as the host process's own exit
 	   status. SYS $3C (sys_exit) recorded the low 8 bits of R0 here; a program
 	   that ended via HALT recorded nothing, so this defaults to 0. The host's
-	   normal 8-bit process-status truncation applies on top. */
+	   normal 8-bit process-status truncation applies on top.
+	   card maize-298: a VM run that ended because a synchronous guest trap had no
+	   handler installed (or double-faulted) also records here, as 64 + cause, so an
+	   unhandled guest trap leaves through this same controlled return rather than an
+	   uncaught exception aborting the process. */
 	return sys::exit_code();
 }

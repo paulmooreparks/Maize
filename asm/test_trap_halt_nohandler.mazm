@@ -1,0 +1,57 @@
+; **********************************************************************************
+; Card maize-298: a cause-8 page fault with NO handler installed at entry[8] must halt
+; the VM through a clean, controlled host-process exit, never through an uncaught C++
+; exception reaching std::terminate() and abort(). The suite's run_trap_halt_test asserts
+; the exact host exit status (64 + cause = 72), which a SIGABRT death (128 + 6) fails,
+; along with the "unhandled interrupt: vector 8, no handler installed" diagnostic on
+; stderr and the absence of the unreachable fall-through marker on stdout.
+;
+; This is the interpreter-path twin of asm/test_jit_fault_nohandler.mazm, which exercises
+; the same guest condition from a JIT-compiled paged block: the shape below is that
+; fixture's with the JMP block-boundary framing dropped, since nothing here depends on
+; where the faulting LD is compiled. Keep the two in step if the Sv48 setup changes.
+;
+;   0x10000 root: Root[0] = 0x11001 -> L2
+;   0x11000 L2:   L2[0] = 0x1F (identity 1 GiB superpage, RWXU); L2[2] left 0 (not present)
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- Root[0] @ 0x10000 = 0x11001 (-> L2) ----
+    CP $11001 R8
+    CLR R9
+    CP $10000 R9.H0
+    ST R8 @R9
+
+    ; ---- L2[0] @ 0x11000 = 0x1F (identity 1 GiB superpage) ----
+    CP $1F R8
+    CLR R9
+    CP $11000 R9.H0
+    ST R8 @R9
+
+    ; ---- stack pointer into the identity region ----
+    CLR RS
+    CP $00080000 RS.H0
+
+    ; ---- enable Sv48 (no cause-8 handler installed at $1040) ----
+    CP $10001 R0
+    MOVTCR R0 $00
+
+    ; ---- the faulting access: VA 0x80000000 walks to L2[2], V=0, and no handler exists ----
+    CLR R3
+    CP $80000000 R3.H0
+    CLR R4
+    LD @R3 R4.H0
+
+    ; ---- unreachable unless the fault was not raised ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $17 R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+fail_string:
+    STRING "trap-halt-nohdlr: FAIL\n\0"

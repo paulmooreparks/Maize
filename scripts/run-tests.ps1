@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Build both Maize binaries and run the in-scope asm/ test suite (Windows).
@@ -418,7 +418,13 @@ function Invoke-UndefMultirefTest {
 #     run_brk_trap_test / run_priv_fault_trap_test so the two runners assert the same thing.
 #       - brk_trap        (test_brk.mazm):        'breakpoint' on stderr (cause 3).
 #       - priv_fault_trap (test_priv_fault.mazm): 'privileg' on stderr (cause 4, maize-21).
-function Invoke-TrapTest($name, $src, $errSubstr) {
+#
+# maize-298 adds the optional $expectExit parameter and the same strengthening the shell
+# twin took. "Nonzero" was satisfied by the abort() an uncaught C++ exception produced, so
+# these cases passed while the halt mechanism was a host crash. Callers that pass the
+# clean-halt sentinel (64 + cause) assert a controlled exit no crash can imitate; callers
+# that omit it keep the old nonzero-only assertion.
+function Invoke-TrapTest($name, $src, $errSubstr, $expectExit = $null) {
     $srcPath = Join-Path $AsmDir $src
     $asmPath = Join-Path $TestRunDir $src
     Copy-Item -Path $srcPath -Destination $asmPath -Force
@@ -442,11 +448,13 @@ function Invoke-TrapTest($name, $src, $errSubstr) {
     if ($null -eq $out) { $out = '' }
     if ($null -eq $err) { $err = '' }
 
-    $pass = ($maizeExit -ne 0) -and ($err -like "*$errSubstr*") -and ($out -notlike '*FAIL*')
+    $exitOk = if ($null -eq $expectExit) { $maizeExit -ne 0 } else { $maizeExit -eq $expectExit }
+    $exitWant = if ($null -eq $expectExit) { 'nonzero exit' } else { "exit $expectExit (clean halt)" }
+    $pass = $exitOk -and ($err -like "*$errSubstr*") -and ($out -notlike '*FAIL*')
     return [pscustomobject]@{
         Name     = $name
         Pass     = $pass
-        Expected = "nonzero exit, '$errSubstr' on stderr, no fall-through marker on stdout"
+        Expected = "$exitWant, '$errSubstr' on stderr, no fall-through marker on stdout"
         Actual   = "exit ${maizeExit}; stdout=`"$(Trim-TrailingNewlines $out)`"; stderr=`"$(Trim-TrailingNewlines $err)`""
     }
 }
@@ -732,8 +740,17 @@ function Invoke-FbStopTest {
 }
 
 $results += Invoke-UndefMultirefTest
-$results += Invoke-TrapTest 'brk_trap'        'test_brk.mazm'        'breakpoint'
-$results += Invoke-TrapTest 'priv_fault_trap' 'test_priv_fault.mazm' 'privileg'
+$results += Invoke-TrapTest 'brk_trap'        'test_brk.mazm'        'breakpoint' 67
+$results += Invoke-TrapTest 'priv_fault_trap' 'test_priv_fault.mazm' 'privileg'   68
+# maize-298: an unhandled synchronous trap halts the host cleanly instead of crashing it.
+# These two fixtures cover the paths with no other clean-halt coverage (a cause-8 page fault
+# with entry[8] unset, and a double fault during trap-frame delivery) and assert the exact
+# 64 + cause sentinel, which a signal death cannot produce. Mirrors run-tests.sh's
+# run_trap_halt_test; keep the two in sync.
+$results += Invoke-TrapTest 'trap_halt_nohandler'   'test_trap_halt_nohandler.mazm' `
+    'unhandled interrupt: vector 8, no handler installed' 72
+$results += Invoke-TrapTest 'trap_halt_doublefault' 'test_trap_halt_doublefault.mazm' `
+    'double fault: page fault at VA' 72
 # maize-351: a std::logic_error thrown from a JIT-compiled paged block (unhandled cause-8
 # with no handler; a double fault during trap-frame delivery) must reach the same outcome as
 # the interpreter path, not a broken-unwind crash across the emitted frame.
@@ -741,13 +758,13 @@ $results += Invoke-JitFaultDiffTest 'jit_fault_nohandler'   'test_jit_fault_noha
 $results += Invoke-JitFaultDiffTest 'jit_fault_doublefault' 'test_jit_fault_doublefault.mazm' 'double fault: page fault'
 # maize-180: the four new privileged instructions + the previously-ungated ops each raise
 # cause-4 in user mode (MOVTCR/TLBINV, the forged-RF IRET escalation, HALT/SETINT/SETSYSG).
-$results += Invoke-TrapTest 'mmu_priv_movtcr'        'test_mmu_priv_movtcr.mazm'          'privileg'
-$results += Invoke-TrapTest 'mmu_priv_tlbinv'        'test_mmu_priv_tlbinv.mazm'          'privileg'
-$results += Invoke-TrapTest 'mmu_priv_iret_escalate' 'test_mmu_priv_iret_escalation.mazm' 'privileg'
-$results += Invoke-TrapTest 'mmu_priv_halt'          'test_mmu_priv_halt.mazm'            'privileg'
-$results += Invoke-TrapTest 'mmu_priv_setint'        'test_mmu_priv_setint.mazm'          'privileg'
-$results += Invoke-TrapTest 'mmu_priv_setsysg'       'test_mmu_priv_setsysg.mazm'         'privileg'
-$results += Invoke-TrapTest 'mmu_priv_rf_write'      'test_mmu_priv_rf_write.mazm'        'privileg'
+$results += Invoke-TrapTest 'mmu_priv_movtcr'        'test_mmu_priv_movtcr.mazm'          'privileg'  68
+$results += Invoke-TrapTest 'mmu_priv_tlbinv'        'test_mmu_priv_tlbinv.mazm'          'privileg'  68
+$results += Invoke-TrapTest 'mmu_priv_iret_escalate' 'test_mmu_priv_iret_escalation.mazm' 'privileg'  68
+$results += Invoke-TrapTest 'mmu_priv_halt'          'test_mmu_priv_halt.mazm'            'privileg'  68
+$results += Invoke-TrapTest 'mmu_priv_setint'        'test_mmu_priv_setint.mazm'          'privileg'  68
+$results += Invoke-TrapTest 'mmu_priv_setsysg'       'test_mmu_priv_setsysg.mazm'         'privileg'  68
+$results += Invoke-TrapTest 'mmu_priv_rf_write'      'test_mmu_priv_rf_write.mazm'        'privileg'  68
 $results += Invoke-TimerPeriod1Test
 $results += Invoke-SysreadTest
 $results += Invoke-KeyboardTest

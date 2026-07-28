@@ -531,10 +531,11 @@ void jit_faultsafe_call() {
         }
     } catch (page_fault_redirect&) {
         jit_pending_fault = true;
-    } catch (const std::logic_error&) {
+    } catch (const guest_trap_halt&) {
         /* maize-351: the two non-fault throws raise_page_fault can produce, both currently
-           reachable from a paged block, are std::logic_error: halt_no_interrupt_handler
-           (guest cause-8 vector unset) and the double-fault branch (a fault while
+           reachable from a paged block, are guest_trap_halt (maize-298 replaced the former
+           std::logic_error with that dedicated type): halt_no_interrupt_handler (guest
+           cause-8 vector unset) and the double-fault branch (a fault while
            delivering_trap is already set). Catch the exact type they throw, no broader:
            a narrow catch cannot mask an unrelated host exception (bad_alloc, a real host
            logic bug elsewhere) as a VM diagnostic, and the deferred rethrow below preserves
@@ -1004,8 +1005,9 @@ alu_helper_fn jit_alu_helper(u_byte base) {
            unwinds via a C++ exception that must never cross an emitted frame. They end
            the block and run interpreted. maize-351: if a future change gives one of these
            opcodes JIT coverage, its throwing memory/trap path MUST route through
-           jit_faultsafe_call (whose widened catch now also intercepts the std::logic_error
-           class), or the throw will crash the emitted frame via a broken unwind. Do not
+           jit_faultsafe_call (whose widened catch now also intercepts guest_trap_halt,
+           which is what raise_divide_error throws since maize-298), or the throw will
+           crash the emitted frame via a broken unwind. Do not
            lift this exclusion without doing that first. */
         default: return nullptr;
     }
