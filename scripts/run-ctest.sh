@@ -4542,30 +4542,18 @@ run_userland_wave2_fixtures() {
             "$quesos" "$1" 2>/dev/null
     }
 
-    # AC 9683/9684: every wave-2 tool this card ships (31 of 46 the spec's own
-    # triage listed; see build-userland.sh's SBASE_WAVE2 comment for the 15 that
-    # this card's own build/run discovered cannot ship, and why) responds to a
+    # AC 9683/9684: every wave-2 tool the shipped set carries (32 of the 46 that
+    # maize-292's own triage listed; see build-userland.sh's SBASE_WAVE2 comment
+    # for the 14 that its build/run discovered cannot ship, and why) responds to a
     # trivial smoke invocation with the expected exit code. Split four ways
-    # (part A: 12 tools; part B: 10; part C: 5; part D: 4), each its own quesOS
+    # (part A: 12 tools; part B: 10; part C: 5; part D: 5), each its own quesOS
     # boot: an earlier, larger single-fixture draft crashed the whole VM partway
     # through (an uncaught page fault; quesOS has no user-mode fault recovery
     # yet), and smaller boots stay well under whatever fork/pipe/stack-shape
     # threshold triggered it. Every tool is independently confirmed via a
-    # standalone single-check harness during this card's own implementation.
-    # uuencode is excluded entirely (not just moved to another part): even as the
-    # SOLE check in its own single-tool fixture it reproducibly faulted the same
-    # way, so this is a real defect in that tool's own execution path (or its
-    # interaction with the RT/quesOS), not a fixture-shape artifact; out of scope
-    # to root-cause further here (decision 9695's stdin-only RT change). That root
-    # cause is maize-325.
-    #   maize-298 changed what the fault does to the HOST. It no longer crashes the
-    # VM: the unhandled cause-8 page fault is caught in cpu::run(), which prints
-    # "maize: unhandled guest trap: unhandled interrupt: vector 8, no handler
-    # installed" and exits 72 (64 + cause), a normal controlled exit rather than
-    # the std::terminate/abort (SIGABRT, shell status 134) it used to take. The
-    # tool still does not RUN, because quesOS installs no cause-8 handler and has
-    # no per-process fault recovery, so uuencode stays excluded from the shipped
-    # wave-2 set until maize-325 explains why its process faults at all.
+    # standalone single-check harness during maize-292's own implementation.
+    # uuencode joined part D with maize-393, which gave the guest RT the %o
+    # conversion its "begin %o %s\n" header line had been faulting on.
     TOTAL=$((TOTAL + 1))
     set +e; out=$(ul292_run /progs/wave2_launch_a.mzx); set -e
     if printf '%s\n' "$out" | grep -qF "wave2-launch-a: PASS"; then
@@ -4596,7 +4584,7 @@ run_userland_wave2_fixtures() {
     TOTAL=$((TOTAL + 1))
     set +e; out=$(ul292_run /progs/wave2_launch_d.mzx); set -e
     if printf '%s\n' "$out" | grep -qF "wave2-launch-d: PASS"; then
-        echo "[PASS] userland292_wave2_launch_d (4 sbase tools, trivial smoke)"
+        echo "[PASS] userland292_wave2_launch_d (5 sbase tools, trivial smoke)"
     else
         echo "[FAIL] userland292_wave2_launch_d"; printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))

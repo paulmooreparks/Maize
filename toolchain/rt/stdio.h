@@ -20,11 +20,21 @@
  * unbuffered sys_write core. printf/fprintf format into a bounded stack buffer
  * and chunked-flush via sys_write (no persistent stream buffer); snprintf
  * count-and-stores into the caller buffer. One core formatter, six public faces.
- * Conversion subset: %d %i %u %x %X %c %s %p %%, the `l` length modifier, minimal
+ * Conversion subset: %d %i %u %o %x %X %c %s %p %%, the `l` length modifier, minimal
  * field width + zero-pad, and precision (maize-144): ".N" and ".*" set the integer
  * MINIMUM digit count (zero-filled after the sign, "0" flag suppressed) and the
- * string MAXIMUM character count (truncation). Float printf (%f/%e/%g) is still
- * unsupported: the formatter has no float conversion.
+ * string MAXIMUM character count (truncation). %o arrived with maize-393. Float
+ * printf (%f/%e/%g) is still unsupported: the formatter has no float conversion,
+ * and so are the `-`, `+`, `#` and space flags, which the directive parser does
+ * not accept (maize-395).
+ *
+ * A conversion outside that subset ENDS the format walk (maize-393). The formatter
+ * emits '%' plus the offending byte, then copies the rest of the format string out
+ * as literal bytes and returns. Every RT caller can rely on this: nothing after an
+ * unrecognised directive consumes a variadic argument, so an unsupported conversion
+ * produces visibly wrong text and can never desynchronise the argument cursor into
+ * a bad dereference. No diagnostic is emitted (a write to fd 2 from inside the
+ * formatter would give snprintf a side effect on a file descriptor).
  *
  * stdin (maize-292): a real FILE* object over fd 0, backed by a real BUFSIZ static
  * buffer (unlike stdout/stderr's NULL, unbuffered buf), because fread/fill_rbuf have

@@ -55,6 +55,23 @@ main(void)
      * sbase-printf work, so they no longer exercise the unknown-conversion path. */
     printf("unk=%q end\n");
 
+    /* Octal conversion (maize-393). The omax line is the load-bearing one: it is
+     * the buffer-width proof, because ULONG_MAX in octal is 22 digits and the two
+     * digit buffers held 20 before this card widened them. The expected bytes for
+     * these three lines were generated from a host gcc 13.3 run of the same three
+     * printf calls, not computed by hand. */
+    printf("o=%o lo=%lo\n", 8u, 5000000000UL);
+    printf("[%5o][%05o][%.5o][%.0o]\n", 8u, 8u, 8u, 0u);
+    printf("omax=%lo\n", (unsigned long)-1);
+
+    /* Desync containment (maize-393). %q is unrecognised, so the walk stops there
+     * and the rest of the format emits as literal bytes: the %s must NOT consume
+     * the argument and must NOT print it. Before the fix this line printed
+     * "desync=%q SHOULD_NOT_APPEAR|". This is the one expected line that is
+     * hand-written rather than host-generated, because a host printf disagrees
+     * with the Maize RT here by design. */
+    printf("desync=%q %s|\n", "SHOULD_NOT_APPEAR");
+
     /* Chunked-flush proof: a single printf line longer than PRINTF_BUFSZ (256)
      * must appear COMPLETE in stdout. 300 'A' + newline == 301 bytes > 256. */
     memset(big, 'A', 300);

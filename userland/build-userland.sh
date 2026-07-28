@@ -94,9 +94,9 @@ SBASE_WAVE1="true false echo printf pwd cat cp mv rm ls"
 # a real quesOS smoke run (not static inspection alone) to compile, link, and behave
 # correctly against the current guest RT, plus the patched `kill`. The spec's own
 # Group-A/Group-B triage (18 + 28 tools) turned out to be a spec-time estimate, not a
-# build/run-time fact: empirical verification of every listed tool found 15 real gaps
-# the spec did not anticipate, each one out of THIS card's scope per decision 9695
-# (the stdin fix is the only RT change this card makes):
+# build/run-time fact: empirical verification of every listed tool found 14 real gaps
+# the spec did not anticipate, each one out of THAT card's scope per decision 9695
+# (the stdin fix was the only RT change it made):
 #   dd (strtoumax), env/nohup (_exit not visible via <unistd.h>, only <syscall.h>),
 #   pathchk (_POSIX_PATH_MAX), tail (llabs), test (faccessat/AT_FDCWD, the same *at()
 #   family already excluded elsewhere in this card's spec section 7) -- 6 of Group A;
@@ -110,18 +110,18 @@ SBASE_WAVE1="true false echo printf pwd cat cp mv rm ls"
 #   LLONG_MAX, a 64-bit signed/unsigned ternary mis-promotion, reproduced minimally
 #   and confirmed to affect other in-tree call sites of the same macro pairing too),
 #   so their default (no -t) invocation exits 1 instead of passing text through.
-#   uuencode ALSO builds and links clean but crashes the whole VM ("unhandled
-#   interrupt: vector 8", a page fault quesOS has no user-mode recovery for yet) on
-#   even the most trivial invocation, reproduced as the SOLE check in its own
-#   single-tool smoke fixture (ruling out a fixture-shape artifact); the exact root
-#   cause (uuencode.c's own fstat/fread interaction, or another pinned-backend
-#   codegen defect) is not chased down here. None of these 15 ship; each is a
-#   candidate for its own future card (see maize-292's card comments), not a defect
-#   in this list. kill needed its own patch (0007-kill-sig0-existence.patch) for a
+#   None of these 14 ship; each is a candidate for its own future card (see
+#   maize-292's card comments), not a defect in this list. uuencode was a fifteenth
+#   until maize-393: it built and linked clean but faulted its process on every
+#   invocation, and maize-325 traced that to the guest RT having no %o conversion
+#   (uuencode.c:67 prints "begin %o %s\n", so the unconsumed mode integer reached
+#   %s as a pointer and strlen dereferenced near null). maize-393 added the
+#   conversion, so uuencode ships in the list below.
+#   kill needed its own patch (0007-kill-sig0-existence.patch) for a
 #   related but distinct reason: kill() is declared only in <unistd.h> here, but
 #   kill.c (like every POSIX C library) expects <signal.h> to declare it; the patch
 #   adds the include rather than widening a shared RT header.
-SBASE_WAVE2="basename cal cksum dirname logname mkdir printenv uname sleep sponge tee unlink yes cmp cols comm cut fold head join md5sum paste rev sha1sum sha224sum sha256sum sha384sum sha512sum sha512-224sum sha512-256sum tsort uniq kill"
+SBASE_WAVE2="basename cal cksum dirname logname mkdir printenv uname sleep sponge tee unlink yes cmp cols comm cut fold head join md5sum paste rev sha1sum sha224sum sha256sum sha384sum sha512sum sha512-224sum sha512-256sum tsort uniq uuencode kill"
 
 if [ -z "$PROGS" ]; then PROGS="${SBASE_WAVE1} ${SBASE_WAVE2} oksh"; fi
 

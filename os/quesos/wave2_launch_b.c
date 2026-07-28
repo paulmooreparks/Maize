@@ -94,12 +94,46 @@ static void check(const char *name, const char *path, char *const argv[], int ex
     }
 }
 
+/* Byte-exact stdout variant of check(), lifted from wave2_launch_d.c so part B can
+ * assert output rather than just an exit code (maize-393). run_case already took
+ * the outbuf/cap parameters; only this wrapper was missing here. */
+static void check_output(const char *name, const char *path, char *const argv[],
+                          int expect_exit, const char *expect_out) {
+    char out[256];
+    int status = 0;
+    if (run_case(path, argv, out, (long)sizeof out, &status) < 0) {
+        printf("wave2-launch-b: FAIL %s (fork/pipe setup)\n", name);
+        g_fail = 1;
+        return;
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != expect_exit) {
+        printf("wave2-launch-b: FAIL %s (status=0x%x, expected exit %d)\n",
+               name, status, expect_exit);
+        g_fail = 1;
+        return;
+    }
+    if (strcmp(out, expect_out) != 0) {
+        printf("wave2-launch-b: FAIL %s (output mismatch, got %s)\n", name, out);
+        g_fail = 1;
+    }
+}
+
 int main(void) {
     seed("/rw/w2a", "line1\nline2\n");
     seed("/rw/w2b", "line1\nline3\n");
 
     { char *av[4]; av[0] = "cmp"; av[1] = "/rw/w2a"; av[2] = "/rw/w2a"; av[3] = 0;
       check("cmp", "/bin/cmp.mzx", av, 0); }
+
+    /* cmp -l is the %o regression check (maize-393). The two seeded files differ at
+     * exactly one byte, 1-based position 11: '2' (octal 62) against '3' (octal 63).
+     * cmp.c prints "%zu %o %o\n" per differing byte and exits !same, so the complete
+     * stdout is "11 62 63\n" at exit 1. Before the RT gained case 'o' this produced
+     * "11 %o %o\n": the expected string containing no '%' is the property under
+     * test. cmp survived the missing conversion only because its two %o directives
+     * sit last in the format, with nothing after them to misread the stack. */
+    { char *av[5]; av[0] = "cmp"; av[1] = "-l"; av[2] = "/rw/w2a"; av[3] = "/rw/w2b"; av[4] = 0;
+      check_output("cmp -l", "/bin/cmp.mzx", av, 1, "11 62 63\n"); }
 
     { char *av[3]; av[0] = "cols"; av[1] = "/rw/w2a"; av[2] = 0;
       check("cols", "/bin/cols.mzx", av, 0); }

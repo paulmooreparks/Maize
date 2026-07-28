@@ -12,6 +12,17 @@
  * flush mode (decision 7761: a line longer than the buffer emits in FULL across
  * multiple sys_writes, never truncated). out_ch + fmt_finish are the whole output
  * contract, so the conversion switch is written exactly once against out_ch.
+ *
+ * An unrecognised conversion ENDS the format walk (maize-393). vformat emits '%'
+ * plus the offending byte, then copies the rest of the format string out as
+ * literal bytes and returns, so no conversion after a bad one consumes a vararg.
+ * The old behaviour (emit the two characters and keep interpreting) left the
+ * caller's argument cursor one slot behind for the whole remainder of the format,
+ * which turned a missing conversion into a bad dereference in the caller rather
+ * than into visibly wrong output. uuencode's "begin %o %s\n" is the case that
+ * proved it: %o consumed nothing, %s fetched the mode integer as a pointer, and
+ * strlen faulted. Callers get no diagnostic; the wrong text in their own stream is
+ * the signal, and see the default arm for why writing one from here is not safe.
  */
 #include "stdio.h"
 #include "string.h"   /* strlen, memcpy, memchr, strerror (perror, maize-172) */
@@ -257,16 +268,24 @@ emit_field(struct fmtout *o, char sign, const char *body, size_t blen,
     }
 }
 
-/* Render mag in the given base into out (which must hold >= 20 bytes; 20 decimal
- * digits is the widest 64-bit value) most-significant-digit first, returning the
- * digit count. Zero renders as a single '0'. */
+/* Render mag in the given base into out, most-significant-digit first, returning
+ * the digit count. Zero renders as a single '0'.
+ *
+ * The bound on out is BASE-RELATIVE, not one flat number: a 64-bit value is at
+ * most 22 digits in base 8 (ULONG_MAX is 1777777777777777777777, ceil(64/3)), 20
+ * in base 10, and 16 in base 16. Each caller sizes its own buffer for the base it
+ * asks for, which is why conv_p passes a 16-byte tail of pbuf and is correct.
+ * u_to_digits' own scratch gets no such choice, because base arrives as a runtime
+ * argument, so tmp must hold the base-8 worst case whatever the caller asked for.
+ * The 24 here is that 22 plus headroom (maize-393; the pre-%o code assumed 20 and
+ * would have overrun by two bytes on a wide octal render). */
 static size_t
 u_to_digits(unsigned long mag, unsigned base, int upper, char *out)
 {
     static const char lower[] = "0123456789abcdef";
     static const char upperd[] = "0123456789ABCDEF";
     const char *dig = upper ? upperd : lower;
-    char tmp[20];
+    char tmp[24];
     int i = 0;
     size_t n, j;
 
@@ -282,14 +301,16 @@ u_to_digits(unsigned long mag, unsigned base, int upper, char *out)
     return n;
 }
 
-/* Unsigned numeric conversion (%u/%x/%X and the magnitude of %d/%i). prec is the
+/* Unsigned numeric conversion (%u/%o/%x/%X and the magnitude of %d/%i). prec is the
  * minimum digit count, threaded to emit_field. The C corner "%.0d of 0 emits no
- * digits" is handled here: precision 0 of a zero magnitude yields an empty body. */
+ * digits" is handled here: precision 0 of a zero magnitude yields an empty body.
+ * body is sized for the widest base this emitter is called with, which is base 8 at
+ * 22 digits (see u_to_digits), not base 10 at 20. */
 static void
 emit_uint(struct fmtout *o, unsigned long mag, unsigned base, int upper,
           char sign, int width, int zero, int prec)
 {
-    char body[20];
+    char body[24];
     size_t n = u_to_digits(mag, base, upper, body);
     if (prec == 0 && mag == 0)          /* %.0d of 0 -> no digits */
         n = 0;
@@ -363,7 +384,9 @@ conv_pct(struct fmtout *o, int width)
  * it parses [ '0' ] [ 1*DIGIT width ] [ '.' precision ] [ 'l' ] conv and emits via
  * out_ch. precision follows C's %[flags][width][.precision][length]conv order: a
  * bare "%.d" is precision 0, ".N" is literal, ".*" pulls the precision from an int
- * arg (maize-144), and a negative .* precision counts as absent (prec == -1). */
+ * arg (maize-144), and a negative .* precision counts as absent (prec == -1).
+ *
+ * An unrecognised conversion ends the walk (maize-393): see the default arm. */
 static void
 vformat(struct fmtout *o, const char *fmt, va_list ap)
 {
@@ -422,6 +445,11 @@ vformat(struct fmtout *o, const char *fmt, va_list ap)
                              : (unsigned long)va_arg(ap, unsigned int),
                       10, 0, 0, width, zero, prec);
             break;
+        case 'o':
+            emit_uint(o, lng ? va_arg(ap, unsigned long)
+                             : (unsigned long)va_arg(ap, unsigned int),
+                      8, 0, 0, width, zero, prec);
+            break;
         case 'x':
             emit_uint(o, lng ? va_arg(ap, unsigned long)
                              : (unsigned long)va_arg(ap, unsigned int),
@@ -446,11 +474,37 @@ vformat(struct fmtout *o, const char *fmt, va_list ap)
             break;
         default:
             /* Unrecognised conversion (incl. conv == '\0'): emit '%' plus the
-             * offending byte verbatim so a format bug stays visible. */
+             * offending byte verbatim so the format bug stays visible, then stop
+             * interpreting and drain the rest of fmt as literal bytes (maize-393).
+             *
+             * The draining is the safety property, not a nicety. This directive
+             * consumed no vararg, so ap's cursor no longer lines up with the
+             * caller's argument list; a later %s or %p would fetch an integer and
+             * dereference it. uuencode's "begin %o %s\n" faulted in exactly that
+             * way before %o existed. Once the tail is literal, nothing after the
+             * bad directive can consume an argument at all, so the bad-dereference
+             * failure mode is structurally impossible rather than merely unlikely.
+             *
+             * Returning here, rather than setting a flag the loop tests on every
+             * '%', is byte-for-byte the same output (under either shape every
+             * remaining byte emits literally, the '%' of a later %% included) and
+             * costs vformat no extra live value, which matters on the pinned
+             * backend for the reason recorded above conv_c.
+             *
+             * Two disclosures. Poisoning is not retroactive: a "%*q" has already
+             * fetched its width at the '*' above, before conv was known, and that
+             * fetch is not unwound. It is an int fetch that is never dereferenced,
+             * so the memory-safety class stays closed. And there is deliberately
+             * no diagnostic: vformat is reentrant through vfprintf, and writing to
+             * fd 2 from here would give snprintf-into-a-caller-buffer a side effect
+             * on a file descriptor that no caller expects. The visibly wrong text
+             * in the caller's own stream is the whole of the signal. */
             out_ch(o, '%');
             if (conv != '\0')
                 out_ch(o, conv);
-            break;
+            while (*p)
+                out_ch(o, *p++);
+            return;
         }
     }
 }

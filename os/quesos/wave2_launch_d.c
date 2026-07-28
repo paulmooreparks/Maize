@@ -8,9 +8,13 @@
  * real target file; the split is a fixture-shape mitigation, not evidence of a
  * defect in any of these tools.
  *
- * AC 9683/9684 substrate, part D: sha512-224sum, sha512-256sum, tsort, uniq.
- * uuencode is excluded entirely (maize-298: reproducible VM page-fault crash), not
- * merely moved to another part; no "part E" fixture exists.
+ * AC 9683/9684 substrate, part D: sha512-224sum, sha512-256sum, tsort, uniq and
+ * uuencode. uuencode was excluded from every part until maize-393, because its
+ * process faulted on the guest RT's missing %o conversion: uuencode.c:67 prints
+ * "begin %o %s\n", the unrecognised %o consumed no vararg, and the following %s
+ * fetched the mode integer as a pointer, so strlen dereferenced near null. With %o
+ * in the formatter the tool runs to completion, and the check below is byte-exact
+ * on stdout because the property under test is that no '%' survives into it.
  *
  * Requires /bin mounted and a writable /rw mount seeded with a few small fixture
  * files (seed(), below). Every execve passes a real, valid (if empty) envp array.
@@ -125,6 +129,17 @@ int main(void) {
 
     a3[0] = "uniq"; a3[1] = "/rw/w2dup"; a3[2] = 0;
     check_output("uniq", "/bin/uniq.mzx", a3, 0, "a\nb\n");
+
+    /* maize-393: the tool the missing %o conversion made unshippable. The header
+     * line carries st.st_mode & 0777 through the now-working %o, and the expected
+     * string below is pinned from an observed run rather than assumed, because what
+     * hostfs reports for a seed()-created file is not something this fixture gets to
+     * decide. The load-bearing property is that the expected string contains no '%'
+     * anywhere: before the fix the header line was "begin %o %s" and the process
+     * faulted before reaching the body at all. */
+    { char *av[4]; av[0] = "uuencode"; av[1] = "/rw/w2a"; av[2] = "w2a"; av[3] = 0;
+      check_output("uuencode", "/bin/uuencode.mzx", av, 0,
+                   "begin 644 w2a\n,;&EN93$*;&EN93(*\n`\nend\n"); }
 
     if (g_fail) {
         printf("wave2-launch-d: FAIL (see above)\n");

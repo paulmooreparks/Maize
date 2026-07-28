@@ -38,18 +38,18 @@ static const char *WAVE1[] = {
 
 /* The wave-2 default set (maize-292, build-userland.sh's SBASE_WAVE2): every sbase
    tool an actual build AND a real quesOS smoke run confirmed compiles, links, and
-   BEHAVES correctly against the current guest RT, plus the patched `kill`. 15 tools
-   the card's spec expected to be build-ready turned out, empirically, to need an
-   RT/toolchain surface out of this card's stdin-only scope (decision 9695) and are
+   BEHAVES correctly against the current guest RT, plus the patched `kill`. 14 tools
+   maize-292's spec expected to be build-ready turned out, empirically, to need an
+   RT/toolchain surface out of that card's stdin-only scope (decision 9695) and are
    NOT in this list: dd, env, nohup, pathchk, tail, test (Group A) and sort, split,
    strings, tr, uudecode, wc (Group B) fail to build or link; expand and unexpand
    build and link clean but fail their smoke run (a pre-existing cproc/qbe 64-bit
    signed/unsigned ternary mis-promotion in parselist()'s
-   MIN(LLONG_MAX, SIZE_MAX), unrelated to any libc gap); uuencode ALSO builds and
-   links clean but crashes the whole VM (an uncaught page fault) even as the sole
-   check in its own single-tool smoke fixture. See build-userland.sh's SBASE_WAVE2
-   comment for the per-tool reason. Single point of truth for both waves, moved
-   into the driver (mirrors the wave-1 comment this replaces).
+   MIN(LLONG_MAX, SIZE_MAX), unrelated to any libc gap). uuencode was a fifteenth
+   until maize-393 gave the guest RT its missing %o conversion; it ships now. See
+   build-userland.sh's SBASE_WAVE2 comment for the per-tool reason. Single point of
+   truth for both waves, moved into the driver (mirrors the wave-1 comment this
+   replaces).
 
    maize-382 AC 10252: this array and build-userland.sh's SBASE_WAVE2 must stay
    tool-for-tool identical, because the two drivers' no-argument defaults are the
@@ -63,7 +63,7 @@ static const char *WAVE2[] = {
     "sponge", "tee", "unlink", "yes",
     "cmp", "cols", "comm", "cut", "fold", "head", "join", "md5sum",
     "paste", "rev", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum",
-    "sha512-224sum", "sha512-256sum", "tsort", "uniq",
+    "sha512-224sum", "sha512-256sum", "tsort", "uniq", "uuencode",
     "kill"
 };
 
