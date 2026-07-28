@@ -554,7 +554,7 @@ run_trap_halt_test() {
     src="$2"
     diag="$3"
     want="$4"
-    diag2="$5"
+    diag2="${5:-}"   # optional; this runner runs under `set -u`, so default it explicitly
     TOTAL=$((TOTAL + 1))
     cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
     asm_path="${TEST_RUN_DIR}/${src}"
@@ -645,7 +645,7 @@ run_jit_fault_diff_test() {
     name="$1"
     src="$2"
     diag="$3"
-    diag2="$4"
+    diag2="${4:-}"   # optional; this runner runs under `set -u`, so default it explicitly
     TOTAL=$((TOTAL + 1))
     cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
     asm_path="${TEST_RUN_DIR}/${src}"
