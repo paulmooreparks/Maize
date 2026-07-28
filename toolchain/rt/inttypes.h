@@ -16,7 +16,7 @@
 
 #include "stdint.h"
 
-/* Length-modifier prefixes for the Maize printf (%d/%i/%u/%x/%X + `l`). */
+/* Length-modifier prefixes for the Maize printf (%d/%i/%u/%o/%x/%X + `l`). */
 #define __PRI8   ""
 #define __PRI16  ""
 #define __PRI32  ""

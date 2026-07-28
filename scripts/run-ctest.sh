@@ -1633,9 +1633,12 @@ _mz_want "rw_bounds_selfcheck" && mz_timed "rw_bounds_selfcheck" run_ctest "rw_b
 # and va_copy. Prints a single PASS line.
 _mz_want "varargs" && mz_timed "varargs" run_ctest "varargs"
 # maize-99 variadic printf over the stdarg ABI: direct-emit correctness for every
-# conversion (%d %i %u %x %X %c %s %p %%, %ld/%lu/%lx, width + zero-pad, INT_MIN /
-# LONG_MIN) matched byte-for-byte, plus an snprintf return/truncation self-check
-# and a >256-byte line proving chunked flush. Ends in a single "selfcheck PASS".
+# conversion (%d %i %u %o %x %X %c %s %p %%, %ld/%lu/%lo/%lx, width + zero-pad,
+# INT_MIN / LONG_MIN) matched byte-for-byte, a 22-digit ULONG_MAX octal render
+# proving the widened digit buffers, an snprintf return/truncation self-check,
+# a >256-byte line proving chunked flush, and a desync-containment case proving
+# an unrecognised conversion (maize-393) does not consume the vararg after it.
+# Ends in a single "selfcheck PASS".
 _mz_want "printf" && mz_timed "printf" run_ctest "printf"
 # maize-144 RT libc gaps for the DOOM boot: printf/sprintf PRECISION (%.Nd min-digits
 # incl. the DOOM STCFN%.3d lump shape, %.Ns string truncation, %8.3d width+precision,
@@ -4022,7 +4025,7 @@ run_userland94_fixtures() {
     TOTAL=$((TOTAL + 1))
     set +e; out=$(ul94_run /progs/printf_launch.mzx); set -e
     if printf '%s\n' "$out" | grep -qF "printf-launch: PASS"; then
-        echo "[PASS] userland94_printf (vendored printf %s/%d)"
+        echo "[PASS] userland94_printf (vendored printf %s/%d/%o)"
     else
         echo "[FAIL] userland94_printf"; printf '%s\n' "$out" | sed 's/^/          | /'
         FAIL_COUNT=$((FAIL_COUNT + 1))
@@ -4542,11 +4545,11 @@ run_userland_wave2_fixtures() {
             "$quesos" "$1" 2>/dev/null
     }
 
-    # AC 9683/9684: every wave-2 tool the shipped set carries (32 of the 46 that
+    # AC 9683/9684: every wave-2 tool the shipped set carries (31 of the 46 that
     # maize-292's own triage listed; see build-userland.sh's SBASE_WAVE2 comment
     # for the 14 that its build/run discovered cannot ship, and why) responds to a
     # trivial smoke invocation with the expected exit code. Split four ways
-    # (part A: 12 tools; part B: 10; part C: 5; part D: 5), each its own quesOS
+    # (part A: 11 tools; part B: 10; part C: 5; part D: 5), each its own quesOS
     # boot: an earlier, larger single-fixture draft crashed the whole VM partway
     # through (an uncaught page fault; quesOS has no user-mode fault recovery
     # yet), and smaller boots stay well under whatever fork/pipe/stack-shape

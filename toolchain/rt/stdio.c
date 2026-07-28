@@ -276,9 +276,12 @@ emit_field(struct fmtout *o, char sign, const char *body, size_t blen,
  * in base 10, and 16 in base 16. Each caller sizes its own buffer for the base it
  * asks for, which is why conv_p passes a 16-byte tail of pbuf and is correct.
  * u_to_digits' own scratch gets no such choice, because base arrives as a runtime
- * argument, so tmp must hold the base-8 worst case whatever the caller asked for.
- * The 24 here is that 22 plus headroom (maize-393; the pre-%o code assumed 20 and
- * would have overrun by two bytes on a wide octal render). */
+ * argument, so tmp must hold the worst case over the bases this formatter actually
+ * uses (8, 10 and 16), not a bound derived from base 8 alone. A caller adding a
+ * smaller base, such as C23's %b at base 2 (up to 64 digits), needs to re-derive
+ * this bound rather than assume 22 still covers it. The 24 here is base 8's 22
+ * plus headroom (maize-393; the pre-%o code assumed 20 and would have overrun by
+ * two bytes on a wide octal render). */
 static size_t
 u_to_digits(unsigned long mag, unsigned base, int upper, char *out)
 {
