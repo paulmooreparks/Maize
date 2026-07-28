@@ -1620,6 +1620,14 @@ _mz_want "clock" && mz_timed "clock" run_ctest "clock"
 # secure (oversized npixels -> -EINVAL, a dst/src base+len wrap -> -EFAULT, each
 # with no guest write and no crash). Prints a single "palette-blit: PASS" line.
 _mz_want "palette_blit_selfcheck" && mz_timed "palette_blit_selfcheck" run_ctest "palette_blit_selfcheck"
+# maize-326 guest-length bounds on the older Linux-numbered syscalls (SYS $00 /
+# $01 / $D9): a self-checking fixture proving an oversized count is rejected with
+# -EINVAL and a wrapping address+count with -EFAULT at sys_read, sys_write and
+# sys_getdents64, each before any host allocation or guest-memory read, with the
+# destination sentinel intact and the VM still running. Also drives one
+# well-formed call per syscall so the check is shown to reject only bad shapes.
+# Prints a single "rw-bounds: PASS" line.
+_mz_want "rw_bounds_selfcheck" && mz_timed "rw_bounds_selfcheck" run_ctest "rw_bounds_selfcheck"
 # maize-98 varargs / stdarg ABI: a self-checking fixture exercising the register
 # save area, va_arg over mixed scalar classes, the register->overflow boundary,
 # and va_copy. Prints a single PASS line.

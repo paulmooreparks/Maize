@@ -512,6 +512,24 @@ namespace maize {
                (never wall-clock-adjusted), so the result is non-decreasing by
                construction. */
             std::chrono::steady_clock::time_point clock_baseline;
+
+            /* maize-326: the one cap regime for this file. Every dispatch case that
+               lets a raw guest-supplied count size a host buffer materialization or
+               a host memory access rejects the call before that count reaches an
+               allocation. MAX_BULK_BYTES is the value $F4/$F5 settled on at
+               maize-216 (256 MiB); it lives here so the five sites that share it
+               ($F4, $F5, sys_read, sys_write, sys_getdents64) reference one
+               definition rather than each keeping a copy. $F3 keeps its own
+               MAX_BLIT_PIXELS, which counts pixels rather than bytes, but shares
+               these -errno values.
+
+               abi_einval / abi_efault are Linux EINVAL and EFAULT. Returning
+               static_cast<u_word>(-abi_einval) puts the result in the [-4095,-1]
+               band the guest RT's __syscall_ret already reads as an error, which is
+               the idiom maize-213/216/247 established. */
+            constexpr u_word MAX_BULK_BYTES {1u << 28};   /* 256 MiB */
+            constexpr long   abi_einval {22};
+            constexpr long   abi_efault {14};
         }
 
         /* maize-114: install the parsed mount table (maize.cpp calls this once at
@@ -560,6 +578,26 @@ namespace maize {
                     u_word fd {regs::r0.h0()};
                     u_word address {regs::r1.w0};
                     u_word count {regs::r2.w0};
+
+                    /* maize-326 (deny-by-default, load-bearing): count is a raw
+                       guest register value and buf.resize(count) below is the host
+                       allocation it sizes. An implausible count throws
+                       std::length_error or std::bad_alloc out of resize, and nothing
+                       up the stack catches it, so the guest can abort the host
+                       process with one syscall. Reject BEFORE the resize, and before
+                       the fd is inspected, matching the $F3/$F4/$F5 posture. A guest
+                       C caller's negative ssize_t arrives here as a huge unsigned
+                       value and is caught by the cap, so no separate signedness
+                       check is needed. */
+                    if (count == 0) {
+                        return 0;                                 /* benign no-op */
+                    }
+                    if (count > MAX_BULK_BYTES) {
+                        return static_cast<u_word>(-abi_einval);  /* oversized request */
+                    }
+                    if (address + count < address) {
+                        return static_cast<u_word>(-abi_efault);  /* dst range wraps */
+                    }
 
                     std::vector<u_byte> buf;
                     buf.resize(count);
@@ -646,6 +684,24 @@ namespace maize {
                     u_word fd {regs::r0.h0()};
                     u_word address {regs::r1.w0};
                     u_word count {regs::r2.w0};
+
+                    /* maize-326: the mirror image of sys_read's site, one level
+                       down. mm.read(address, count) reaches
+                       memory_module::read's retval.reserve(count) (src/cpu.cpp),
+                       which is just as unbounded as a resize and throws the same
+                       way. The bound belongs here at the syscall boundary, where
+                       the value is known to be guest-supplied, rather than inside
+                       memory_module::read, which also serves trusted VM-internal
+                       callers. Reject before mm.read runs. */
+                    if (count == 0) {
+                        return 0;                                 /* benign no-op */
+                    }
+                    if (count > MAX_BULK_BYTES) {
+                        return static_cast<u_word>(-abi_einval);  /* oversized request */
+                    }
+                    if (address + count < address) {
+                        return static_cast<u_word>(-abi_efault);  /* src range wraps */
+                    }
 
                     std::vector<u_byte> str = mm.read(address, count);
                     u_byte const* buf {str.data()};
@@ -745,6 +801,19 @@ namespace maize {
                     u_word fd {regs::r0.h0()};
                     u_word dirp {regs::r1.w0};
                     u_word count {regs::r2.w0};
+
+                    /* maize-326: same shape as sys_read. The check runs before the
+                       fd is validated, so an oversized or wrapping request is
+                       rejected whether or not the fd was ever opened. */
+                    if (count == 0) {
+                        return 0;                                 /* benign no-op */
+                    }
+                    if (count > MAX_BULK_BYTES) {
+                        return static_cast<u_word>(-abi_einval);  /* oversized request */
+                    }
+                    if (dirp + count < dirp) {
+                        return static_cast<u_word>(-abi_efault);  /* dst range wraps */
+                    }
 
                     std::vector<u_byte> buf;
                     buf.resize(count);
@@ -1003,9 +1072,9 @@ namespace maize {
                    access, mirroring the framebuffer-present idiom (devices.cpp:
                    base == 0 || base + size < base). */
                 case 0x00F3U: {
+                    /* Pixels, not bytes, so this cap stays local; abi_einval and
+                       abi_efault come from the shared set above (maize-326). */
                     constexpr u_word MAX_BLIT_PIXELS {1u << 24};  /* 16,777,216 (up to 4096x4096) */
-                    constexpr long abi_einval {22};
-                    constexpr long abi_efault {14};
 
                     u_word dst_addr {regs::r0.w0};
                     u_word src_addr {regs::r1.w0};
@@ -1082,10 +1151,6 @@ namespace maize {
                    unrelated blocks and (b) an enormous n driving unbounded host
                    CPU / block allocation. Both are rejected BEFORE any access. */
                 case 0x00F4U: {
-                    constexpr u_word MAX_BULK_BYTES {1u << 28};  /* 256 MiB */
-                    constexpr long abi_einval {22};
-                    constexpr long abi_efault {14};
-
                     u_word dst_addr {regs::r0.w0};
                     u_word src_addr {regs::r1.w0};
                     u_word n        {regs::r2.w0};
@@ -1126,10 +1191,6 @@ namespace maize {
                    (NO guest write on rejection). Same deny-by-default checks as $F4
                    (no src range to validate). */
                 case 0x00F5U: {
-                    constexpr u_word MAX_BULK_BYTES {1u << 28};  /* 256 MiB */
-                    constexpr long abi_einval {22};
-                    constexpr long abi_efault {14};
-
                     u_word dst_addr {regs::r0.w0};
                     u_byte value    {static_cast<u_byte>(regs::r1.w0 & 0xFFu)};
                     u_word n        {regs::r2.w0};

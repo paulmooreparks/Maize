@@ -159,6 +159,7 @@ foreach(_t
         caddroff fp syscall_raw syscall_write syscall_errno syscall_close str bulkmem
         ctype sbrk malloc
         stdint minmax_signedness rthdrs2 packed atexit strtol clock palette_blit_selfcheck
+        rw_bounds_selfcheck
         varargs printf libcgaps libcgaps3 exitcode abort noreturn kilo_next_cap
         kilo_xalloc_die kilo_xalloc_die_exit kilo_hl_tab_comment kilo_hl_space_comment
         run_qbe_flag run_args_test run_image_resolution run_wx_reject_test
