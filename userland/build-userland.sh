@@ -139,7 +139,8 @@ if [ -z "$PROGS" ]; then PROGS="${SBASE_WAVE1} ${SBASE_WAVE2} oksh"; fi
 stage_cache_key() {
     _k_proj="$1"
     # Submodule SHA comes from the host-side precompute (D14): git does not resolve
-    # inside the git-less mirror. Fall back to a source-side git read only when the env
+    # inside the git-less tree scripts/run-ctest.sh re-roots itself into when it runs
+    # this script as a child. Fall back to a source-side git read only when the env
     # is unset (an in-place, non-mirrored run that skipped precompute).
     case "$_k_proj" in
         sbase) _k_sha="${MAIZE_KEY_SBASE:-}" ;;

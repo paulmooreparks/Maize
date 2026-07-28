@@ -66,13 +66,15 @@ if (-not [System.IO.Path]::IsPathRooted($OutPath)) {
 }
 $OutPath = [System.IO.Path]::GetFullPath($OutPath)
 
-# Git Bash is required: the cproc/QBE C toolchain is POSIX-only. maize-258 repoints
-# this forwarder from WSL to Git Bash (mzcc.cmd's already-shipped pattern,
-# install-mazm.ps1:250-292): the WSL-native-mirror the underlying .sh script applies
-# on a /mnt/* repo excludes /build, so cc-maize.sh could not find mazm inside the
-# mirror (maize-265's blast radius). A Git-Bash-resolved repo root is never /mnt/*,
-# so the mirror guard never engages. Fail fast with a clear message rather than a
-# raw .NET exception when bash.exe cannot be found.
+# Git Bash is required: the cproc/QBE C toolchain is POSIX-only. That reason stands on
+# its own, and it is why maize-258 repointed this forwarder from WSL to Git Bash
+# (mzcc.cmd's already-shipped pattern, install-mazm.ps1:250-292). Unlike
+# userland/build-userland.sh and demos/build-demos.sh, os/quesos/build-quesos.sh never
+# sourced scripts/lib/harness-env.sh and never applied the WSL-native mirror maize-265
+# removed from those two, so it was never exposed to the mirror's /build exclusion:
+# this script has always run in place against the real tree, on every host, which is
+# why it worked even before maize-265 landed. Fail fast with a clear message rather
+# than a raw .NET exception when bash.exe cannot be found.
 $BashExe = Resolve-GitBash
 if (-not $BashExe) {
     # -ErrorAction Continue: Set-StrictMode/EAP='Stop' would otherwise make Write-Error

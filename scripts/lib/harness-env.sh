@@ -5,11 +5,19 @@
 # top-level state). Six POSIX-sh harness entry points source it, and they split into
 # two groups by whether they produce tools or only consume them:
 #
-#   Producers (run-tests.sh, run-ctest.sh, build-toolchain.sh) throttle AND mirror.
-#   They cmake/make their own binaries, so re-rooting them onto WSL-native storage
-#   pays for itself, and maize_sync_back_artifacts hands the results back afterwards.
-#   The mirror rsync excludes /build precisely because these scripts build a fresh
-#   one inside the mirror.
+#   Producers (run-tests.sh, build-toolchain.sh) throttle AND mirror. run-tests.sh
+#   cmakes and builds its own tree; build-toolchain.sh make/ninjas qbe and cproc.
+#   Both hand the results back via maize_sync_back_artifacts, so re-rooting them onto
+#   WSL-native storage pays for itself, and the mirror rsync excludes /build precisely
+#   because each of them builds a fresh one inside the mirror.
+#
+#   run-ctest.sh also throttles AND mirrors, but it is a HYBRID rather than a
+#   producer: it runs no cmake of its own, and its only build action is a conditional
+#   build-toolchain.sh call when qbe or cproc-qbe are absent. It still needs
+#   build/<preset>/mazm for the guest suite, and the /build exclusion above hides that
+#   from the mirror the same way it hid it from the two consumers before maize-265, so
+#   a direct /mnt-rooted run-ctest.sh invocation carries the same exposure that card
+#   removed from build-userland.sh and build-demos.sh. Tracked separately as maize-398.
 #
 #   Consumers (cc-maize.sh, userland/build-userland.sh, demos/build-demos.sh)
 #   throttle only. They build no tools at all, they read build/<preset>/{mazm,mzld,
@@ -19,9 +27,9 @@
 #   two, which had mirrored and then died on "mazm not found" at their first compile.
 #
 #   maize_apply_throttle         once, near the top, to renice/ionice the whole run
-#   maize_native_mirror_run ...  producers only, once, near the top (BEFORE argument
-#                                parsing consumes "$@"), to re-root the run on
-#                                WSL-native storage
+#   maize_native_mirror_run ...  producers + the run-ctest.sh hybrid, once, near the
+#                                top (BEFORE argument parsing consumes "$@"), to
+#                                re-root the run on WSL-native storage
 #   maize_bounded_jobs           at each real parallel-build site, to cap ninja/make
 #   maize_is_ci                  to skip the cap + niceness under CI
 #
