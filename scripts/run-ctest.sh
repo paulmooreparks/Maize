@@ -1561,6 +1561,11 @@ _mz_want "fp" && mz_timed "fp" run_ctest "fp"
 _mz_want "syscall_raw" && mz_timed "syscall_raw" run_ctest "syscall_raw"
 _mz_want "syscall_write" && mz_timed "syscall_write" run_ctest "syscall_write"
 _mz_want "syscall_errno" && mz_timed "syscall_errno" run_ctest "syscall_errno"
+# maize-327: close on the stdio reservations 0/1/2 returns 0 instead of the spurious
+# -EBADF the hostfs fd table used to produce. Every reported line is written to fd 1
+# after close(1), so the stdout diff also proves the recorded semantics (bare success:
+# the reservation stays usable).
+_mz_want "syscall_close" && mz_timed "syscall_close" run_ctest "syscall_close"
 # maize-76 freestanding libc slice: string.h (str), ctype.h (ctype), the malloc
 # family over the sbrk free-list allocator (malloc), and the sbrk wrapper itself
 # (sbrk). Each is a self-checking fixture printing a single PASS line.

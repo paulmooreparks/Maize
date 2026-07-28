@@ -156,7 +156,8 @@ endfunction()
 # ceiling is 180s, so it still diagnoses first).
 foreach(_t
         hello capstone globals ptrdata ldzfold voidcall freelist addrlocalphi spill
-        caddroff fp syscall_raw syscall_write syscall_errno str bulkmem ctype sbrk malloc
+        caddroff fp syscall_raw syscall_write syscall_errno syscall_close str bulkmem
+        ctype sbrk malloc
         stdint minmax_signedness rthdrs2 packed atexit strtol clock palette_blit_selfcheck
         varargs printf libcgaps libcgaps3 exitcode abort noreturn kilo_next_cap
         kilo_xalloc_die kilo_xalloc_die_exit kilo_hl_tab_comment kilo_hl_space_comment

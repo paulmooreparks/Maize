@@ -1,0 +1,5 @@
+close(0) ok
+close(1) ok
+close(2) ok
+close(3) rejected
+write(1) after close(1) ok

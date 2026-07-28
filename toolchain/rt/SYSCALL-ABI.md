@@ -147,6 +147,17 @@ only when a `--mount` / `--mount-home` grant installs a mount table (or the defa
 sandbox root is present); `read`/`write` for a granted fd `>= 3` resolve through that
 table (lifting the M4 real-file restriction).
 
+`$03` (`sys_close`, maize-327) carves the stdio reservations out ahead of that table,
+exactly as `read`/`write` do. Closing fd `0`, `1`, or `2` always returns 0: those three
+are not hostfs descriptors, so the close is a no-op at this layer rather than the
+`-EBADF` the fd table would otherwise report. The reservation is not deallocated and
+remains usable, so a `read`/`write` on the same fd after the close behaves exactly as it
+did before it. A guest that needs real per-process close semantics for a standard
+descriptor gets them from quesOS, whose own fd table owns that lifecycle; the native
+provider has no process abstraction to hang such state on. A granted fd `>= 3` is
+unaffected: it still resolves through the table and still returns `-EBADF` for an unknown
+or already-closed descriptor.
+
 `$52`/`$53`/`$57` (`sys_rename` / `sys_mkdir` / `sys_unlink`, maize-151) are the
 path-mutating hostfs syscalls, mirroring their Linux x86-64 numbers (82 / 83 / 87). Each
 takes guest path pointer(s) rather than an fd: the core normalizes the path against the

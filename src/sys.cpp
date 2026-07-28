@@ -686,9 +686,24 @@ namespace maize {
                 }
 
                 /* maize-114 sys_close: fd R0.H0. Frees the guest fd and closes the
-                   backend handle. -EBADF on an unknown/closed fd. */
+                   backend handle. -EBADF on an unknown/closed fd.
+
+                   maize-327: fd 0/1/2 are VM-wide stdio reservations, never registered
+                   in the hostfs fd table (its slot index is fd - 3), so routing them to
+                   hostfs_close returned a spurious -EBADF. Carve them out exactly as the
+                   fd >= 3 dispatch in sys_read/sys_write above already does. Closing one
+                   is a correctness no-op at this layer: the reservation is not
+                   deallocated, and a later sys_read/sys_write on it keeps working exactly
+                   as it does today. Per-process close/reopen semantics for a std fd
+                   already live one layer up, in quesOS's ofd/pcb fd table
+                   (os/quesos/quesos.c); this provider has no process notion to hang that
+                   state on. The comparison is on the unsigned u_word, so a negative C fd
+                   zero-extends to a large value and still falls through to hostfs_close. */
                 case 0x0003U: {
                     u_word fd {regs::r0.h0()};
+                    if (fd <= 2) {
+                        return 0;
+                    }
                     int64_t rc = hostfs_close(hostfs, static_cast<int>(fd));
                     return static_cast<u_word>(rc);
                 }
