@@ -541,11 +541,20 @@ run_priv_fault_trap_test
 # delivery, and a cause-0 unallocated condition encoding ($D9), which had no fixture of any
 # kind before. Wrapped in `timeout` so a regression that parks instead of halting is reported
 # as a failure rather than hanging the suite.
+#
+# Card maize-325 added the optional fifth argument. An unhandled cause-8 halt now prints a
+# second stderr line decoding CR1 and CR2 (the faulting VA, the access kind, and the PRESENT
+# and USER bits), and that line is the deliverable of an investigation, so it is asserted
+# rather than left to drift. A leg that passes no fifth argument asserts only the first line,
+# exactly as before. The Windows twin (Invoke-TrapTest in run-tests.ps1) takes the same extra
+# argument; keep the two in step, because a runner edited on one side only rots the other
+# side's CI silently (card maize-215).
 run_trap_halt_test() {
     name="$1"
     src="$2"
     diag="$3"
     want="$4"
+    diag2="$5"
     TOTAL=$((TOTAL + 1))
     cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
     asm_path="${TEST_RUN_DIR}/${src}"
@@ -565,22 +574,43 @@ run_trap_halt_test() {
     out=$(cat "$out_file")
     err=$(cat "$err_file")
     rm -f "$out_file" "$err_file"
+    diag2_ok=0
+    if [ -z "$diag2" ] || printf '%s' "$err" | grep -qF "$diag2"; then
+        diag2_ok=1
+    fi
     if [ "$me" -eq "$want" ] \
         && printf '%s' "$err" | grep -qF "$diag" \
+        && [ "$diag2_ok" -eq 1 ] \
         && ! printf '%s' "$out" | grep -qF "FAIL"; then
         echo "[PASS] ${name}"
     else
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
         echo "        expected: exit ${want} (clean halt), '${diag}' on stderr, no FAIL marker on stdout"
+        if [ -n "$diag2" ]; then
+            echo "        expected: '${diag2}' on stderr"
+        fi
         echo "        actual:   exit ${me}; stdout=\"${out}\"; stderr=\"${err}\""
     fi
 }
 
+# maize-325 fault-detail coverage across these four legs. trap_halt_nohandler faults in
+# supervisor mode on a not-present mapping, so it pins access=load, present=0, user=0;
+# trap_halt_user_store is its complement, a user-mode store to a present but supervisor-only
+# mapping, which pins access=store, present=1, user=1. Between them every decoded field is
+# asserted at both of its observed values except access=fetch, which no unhandled-halt
+# fixture drives today and which therefore ships unasserted. trap_halt_doublefault asserts
+# the stale-values note, because raise_page_fault's double-fault branch throws before it
+# latches CR1 and CR2 and the printed VA is the FIRST fault's, not the double fault's.
 run_trap_halt_test "trap_halt_nohandler"   "test_trap_halt_nohandler.mazm" \
-    "unhandled interrupt: vector 8, no handler installed" 72
+    "unhandled interrupt: vector 8, no handler installed" 72 \
+    "fault detail: VA 0x80000000, access=load, present=0, user=0"
+run_trap_halt_test "trap_halt_user_store"  "test_trap_halt_user_store.mazm" \
+    "unhandled interrupt: vector 8, no handler installed" 72 \
+    "fault detail: VA 0x40000000, access=store, present=1, user=1"
 run_trap_halt_test "trap_halt_doublefault" "test_trap_halt_doublefault.mazm" \
-    "double fault: page fault at VA" 72
+    "double fault: page fault at VA" 72 \
+    "fault detail: VA 0x80000000, access=load, present=0, user=0 (latched by the first fault;"
 run_trap_halt_test "trap_halt_unalloc_cond" "test_trap_halt_unalloc_cond.mazm" \
     "unknown opcode" 64
 
@@ -604,10 +634,18 @@ run_trap_halt_test "trap_halt_unalloc_cond" "test_trap_halt_unalloc_cond.mazm" \
 # on the windows-native (MSYS2 / llvm-mingw) SEH leg, where a phase-2 unwind across the
 # no-CFI emitted frame hard-crashes pre-fix. The Windows twin (run-tests.ps1) runs the same
 # fixtures. Keep the two in sync.
+#
+# Card maize-325 added the optional fourth argument, which names the cause-8 fault-detail
+# line (the CR1 / CR2 decode run() prints on an unhandled page fault). Requiring both runs to
+# carry the same decoded VA, access kind, PRESENT and USER puts the interpreter-versus-JIT
+# agreement check that maize-325's investigation performed by hand into CI, which is where it
+# has to live for the next fault to inherit it. Legs that pass no fourth argument behave
+# exactly as before.
 run_jit_fault_diff_test() {
     name="$1"
     src="$2"
     diag="$3"
+    diag2="$4"
     TOTAL=$((TOTAL + 1))
     cp "${ASM_DIR}/${src}" "${TEST_RUN_DIR}/${src}"
     asm_path="${TEST_RUN_DIR}/${src}"
@@ -626,9 +664,15 @@ run_jit_fault_diff_test() {
     if MAIZE_JIT_QUIET=1 "$MAIZE_RAW" --bare --jit --jit-threshold 1 "$bin_path" >"$j_out" 2>"$j_err"; then j_rc=0; else j_rc=$?; fi
     jo=$(cat "$j_out"); je=$(cat "$j_err"); rm -f "$j_out" "$j_err"
 
+    diag2_ok=0
+    if [ -z "$diag2" ] \
+        || { printf '%s' "$ie" | grep -qF "$diag2" && printf '%s' "$je" | grep -qF "$diag2"; }; then
+        diag2_ok=1
+    fi
     if [ "$i_rc" -ne 0 ] && [ "$j_rc" -eq "$i_rc" ] \
         && printf '%s' "$ie" | grep -qF "$diag" \
         && printf '%s' "$je" | grep -qF "$diag" \
+        && [ "$diag2_ok" -eq 1 ] \
         && ! printf '%s' "$io" | grep -qF "FAIL" \
         && ! printf '%s' "$jo" | grep -qF "FAIL"; then
         echo "[PASS] ${name}"
@@ -636,12 +680,17 @@ run_jit_fault_diff_test() {
         FAIL_COUNT=$((FAIL_COUNT + 1))
         echo "[FAIL] ${name}"
         echo "        expected: interp and jit both nonzero exit + '${diag}' on stderr + matching status, no FAIL on stdout"
+        if [ -n "$diag2" ]; then
+            echo "        expected: '${diag2}' on both stderrs"
+        fi
         echo "        actual:   interp exit ${i_rc} stderr=\"${ie}\"; jit exit ${j_rc} stderr=\"${je}\""
     fi
 }
 
-run_jit_fault_diff_test "jit_fault_nohandler"  "test_jit_fault_nohandler.mazm"  "unhandled interrupt: vector 8, no handler installed"
-run_jit_fault_diff_test "jit_fault_doublefault" "test_jit_fault_doublefault.mazm" "double fault: page fault"
+run_jit_fault_diff_test "jit_fault_nohandler"  "test_jit_fault_nohandler.mazm"  "unhandled interrupt: vector 8, no handler installed" \
+    "fault detail: VA 0x80000000, access=load, present=0, user=0"
+run_jit_fault_diff_test "jit_fault_doublefault" "test_jit_fault_doublefault.mazm" "double fault: page fault" \
+    "fault detail: VA 0x80000000, access=load, present=0, user=0 (latched by the first fault;"
 
 # --- maize-180: the four new privileged instructions + the previously-ungated ops -------
 # Each fixture drops to user mode via the IRET trampoline and executes one privileged

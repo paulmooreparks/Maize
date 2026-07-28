@@ -1073,6 +1073,16 @@ namespace maize {
             u_word current_instr_pc = 0;
             bool delivering_trap = false;
 
+            /* Card maize-325: set only by raise_page_fault's double-fault branch, which
+               throws BEFORE it latches CR1 / CR2, so on that path the two control registers
+               still describe the FIRST fault. run()'s cause-8 diagnostic reads this to say
+               so; without it the printed VA silently misattributes the first fault's address
+               to the double fault. delivering_trap cannot stand in for it, because that flag
+               is still set on the ordinary no-handler path too (deliver_vectored throws out
+               of the frame-push before raise_page_fault clears it). Diagnostic-only state:
+               nothing guest-visible reads it, and the VM halts immediately after. */
+            bool page_fault_detail_is_stale = false;
+
             /* Bare-mode identity fast path for guest-address translation (card maize-194).
                Inline on the fetch/memory hot path: a single SATP.MODE check returns the VA
                unchanged in Bare mode (MODE != 1, including undefined MODE 2-15), paying no
@@ -2011,6 +2021,7 @@ namespace maize {
                 err << "double fault: page fault at VA 0x" << std::hex << va
                     << " during trap-frame delivery (cause "
                     << std::dec << static_cast<int>(trap::cause_page_fault) << ")";
+                page_fault_detail_is_stale = true;   // CR1 / CR2 still hold the first fault (maize-325)
                 throw guest_trap_halt {trap::cause_page_fault, err.str()};
             }
             control_regs[1].w0 = va;                                        // CR1 FAULT_VA
@@ -6118,6 +6129,39 @@ namespace maize {
                     std::cerr << "maize: unhandled guest trap: " << halt.detail
                         << " (PC 0x" << std::hex << current_instr_pc << std::dec << ")"
                         << std::endl;
+                    /* Card maize-325: cause 8 is the one halt whose diagnostic leaves out the
+                       facts an operator needs. raise_page_fault latches the faulting VA into
+                       CR1 and the error word into CR2 (layout in the comment on that function)
+                       and nothing ever prints them, so an unhandled guest page fault reported
+                       a PC and no address at all. Decode both onto a second line, scoped to
+                       this cause alone: no new CLI flag, no new plumbing through
+                       guest_trap_halt, and no change to any other cause's output. The
+                       double-fault branch of raise_page_fault throws BEFORE that latch, so on
+                       that path CR1 and CR2 still describe the FIRST fault; that branch sets
+                       page_fault_detail_is_stale, which the trailing note keys off, and
+                       without the note the line would silently misattribute the first fault's
+                       address to the double fault. This runs for the JIT path too, because
+                       jit_faultsafe_call defers the throw and jit_dispatch rethrows it into
+                       this same catch (card maize-351). */
+                    if (halt.cause == trap::cause_page_fault) {
+                        const u_word fault_err = control_regs[2].w0;
+                        const u_word kind_bits = (fault_err >> 1) & 0x3;
+                        const char* access =
+                              (kind_bits == static_cast<u_word>(access_kind::fetch)) ? "fetch"
+                            : (kind_bits == static_cast<u_word>(access_kind::load))  ? "load"
+                            : (kind_bits == static_cast<u_word>(access_kind::store)) ? "store"
+                            :                                                          "reserved";
+                        std::cerr << "maize:   fault detail: VA 0x" << std::hex
+                            << control_regs[1].w0 << std::dec
+                            << ", access=" << access
+                            << ", present=" << (fault_err & 1)
+                            << ", user=" << ((fault_err >> 3) & 1);
+                        if (page_fault_detail_is_stale) {
+                            std::cerr << " (latched by the first fault; a double fault halts"
+                                         " before CR1 and CR2 are updated)";
+                        }
+                        std::cerr << std::endl;
+                    }
                     sys::record_trap_halt(halt.cause);
                     power_off();
                     break;

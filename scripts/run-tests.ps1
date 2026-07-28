@@ -426,7 +426,14 @@ function Invoke-UndefMultirefTest {
 # that omit it keep the old nonzero-only assertion. The VM run is bounded at 10 seconds,
 # matching the `timeout 10` the shell twin uses on the same fixtures, so a regression that
 # parks instead of halting fails this runner rather than hanging Windows CI.
-function Invoke-TrapTest($name, $src, $errSubstr, $expectExit = $null) {
+#
+# maize-325 adds the optional $errSubstr2 parameter, matching the fifth argument its shell
+# twin's run_trap_halt_test grew at the same time. An unhandled cause-8 halt now prints a
+# second stderr line decoding CR1 and CR2 (the faulting VA, the access kind, and the PRESENT
+# and USER bits); callers that name that line assert it, and callers that omit the parameter
+# assert only the first line as before. Both runners have to carry the new argument, since a
+# runner edited on one side only rots the other side's CI silently (card maize-215).
+function Invoke-TrapTest($name, $src, $errSubstr, $expectExit = $null, $errSubstr2 = $null) {
     $srcPath = Join-Path $AsmDir $src
     $asmPath = Join-Path $TestRunDir $src
     Copy-Item -Path $srcPath -Destination $asmPath -Force
@@ -438,6 +445,7 @@ function Invoke-TrapTest($name, $src, $errSubstr, $expectExit = $null) {
     }
 
     $exitWant = if ($null -eq $expectExit) { 'nonzero exit' } else { "exit $expectExit (clean halt)" }
+    $diagWant = if ([string]::IsNullOrEmpty($errSubstr2)) { "'$errSubstr' on stderr" } else { "'$errSubstr' and '$errSubstr2' on stderr" }
 
     # The run is bounded. run-tests.sh wraps its twin in `timeout 10` so that a regression
     # which parks instead of halting is REPORTED as a failure; this side had no equivalent,
@@ -459,7 +467,7 @@ function Invoke-TrapTest($name, $src, $errSubstr, $expectExit = $null) {
         return [pscustomobject]@{
             Name     = $name
             Pass     = $false
-            Expected = "$exitWant, '$errSubstr' on stderr, no fall-through marker on stdout"
+            Expected = "$exitWant, $diagWant, no fall-through marker on stdout"
             Actual   = 'timed out after 10 seconds; the VM never halted'
         }
     }
@@ -470,11 +478,12 @@ function Invoke-TrapTest($name, $src, $errSubstr, $expectExit = $null) {
     if ($null -eq $err) { $err = '' }
 
     $exitOk = if ($null -eq $expectExit) { $maizeExit -ne 0 } else { $maizeExit -eq $expectExit }
-    $pass = $exitOk -and ($err -like "*$errSubstr*") -and ($out -notlike '*FAIL*')
+    $diag2Ok = [string]::IsNullOrEmpty($errSubstr2) -or ($err -like "*$errSubstr2*")
+    $pass = $exitOk -and ($err -like "*$errSubstr*") -and $diag2Ok -and ($out -notlike '*FAIL*')
     return [pscustomobject]@{
         Name     = $name
         Pass     = $pass
-        Expected = "$exitWant, '$errSubstr' on stderr, no fall-through marker on stdout"
+        Expected = "$exitWant, $diagWant, no fall-through marker on stdout"
         Actual   = "exit ${maizeExit}; stdout=`"$(Trim-TrailingNewlines $out)`"; stderr=`"$(Trim-TrailingNewlines $err)`""
     }
 }
@@ -498,7 +507,12 @@ function Invoke-TrapTest($name, $src, $errSubstr, $expectExit = $null) {
 # emitted frame (caught in a C++ frame, re-thrown from jit_dispatch), so both runs reach the
 # identical terminate + exit status and it passes. (On the linux gcc leg both pre- and
 # post-fix already reach the same clean terminate; see the run-tests.sh note.)
-function Invoke-JitFaultDiffTest($name, $src, $diag) {
+#
+# maize-325 adds the optional $diag2 parameter, matching the fourth argument its shell twin
+# grew at the same time. Naming the cause-8 fault-detail line here makes both runs prove they
+# decoded the same CR1 and CR2, which puts the interpreter-versus-JIT fault-fact agreement
+# that maize-325's investigation checked by hand into CI.
+function Invoke-JitFaultDiffTest($name, $src, $diag, $diag2 = $null) {
     $srcPath = Join-Path $AsmDir $src
     $asmPath = Join-Path $TestRunDir $src
     Copy-Item -Path $srcPath -Destination $asmPath -Force
@@ -531,13 +545,15 @@ function Invoke-JitFaultDiffTest($name, $src, $diag) {
     $i = Invoke-OneMaize "--bare $bp" $null
     $j = Invoke-OneMaize "--bare --jit --jit-threshold 1 $bp" @{ 'MAIZE_JIT_QUIET' = '1' }
 
+    $diag2Ok = [string]::IsNullOrEmpty($diag2) -or (($i.Err -like "*$diag2*") -and ($j.Err -like "*$diag2*"))
     $pass = ($i.Exit -ne 0) -and ($j.Exit -eq $i.Exit) `
-        -and ($i.Err -like "*$diag*") -and ($j.Err -like "*$diag*") `
+        -and ($i.Err -like "*$diag*") -and ($j.Err -like "*$diag*") -and $diag2Ok `
         -and ($i.Out -notlike '*FAIL*') -and ($j.Out -notlike '*FAIL*')
+    $diagWant = if ([string]::IsNullOrEmpty($diag2)) { "'$diag'" } else { "'$diag' and '$diag2'" }
     return [pscustomobject]@{
         Name     = $name
         Pass     = $pass
-        Expected = "interp and jit both nonzero exit + '$diag' on stderr + matching status, no FAIL on stdout"
+        Expected = "interp and jit both nonzero exit + $diagWant on stderr + matching status, no FAIL on stdout"
         Actual   = "interp exit $($i.Exit) stderr=`"$(Trim-TrailingNewlines $i.Err)`"; jit exit $($j.Exit) stderr=`"$(Trim-TrailingNewlines $j.Err)`""
     }
 }
@@ -767,17 +783,32 @@ $results += Invoke-TrapTest 'priv_fault_trap' 'test_priv_fault.mazm' 'privileg' 
 # fault with entry[8] unset, a double fault during trap-frame delivery, and a cause-0
 # unallocated condition encoding) and assert the exact 64 + cause sentinel, which a signal
 # death cannot produce. Mirrors run-tests.sh's run_trap_halt_test; keep the two in sync.
+# maize-325 fault-detail coverage across these four legs. trap_halt_nohandler faults in
+# supervisor mode on a not-present mapping, so it pins access=load, present=0, user=0;
+# trap_halt_user_store is its complement, a user-mode store to a present but supervisor-only
+# mapping, which pins access=store, present=1, user=1. Between them every decoded field is
+# asserted at both of its observed values except access=fetch, which no unhandled-halt
+# fixture drives today and which therefore ships unasserted. trap_halt_doublefault asserts
+# the stale-values note, because raise_page_fault's double-fault branch throws before it
+# latches CR1 and CR2 and the printed VA is the FIRST fault's, not the double fault's.
 $results += Invoke-TrapTest 'trap_halt_nohandler'   'test_trap_halt_nohandler.mazm' `
-    'unhandled interrupt: vector 8, no handler installed' 72
+    'unhandled interrupt: vector 8, no handler installed' 72 `
+    'fault detail: VA 0x80000000, access=load, present=0, user=0'
+$results += Invoke-TrapTest 'trap_halt_user_store'  'test_trap_halt_user_store.mazm' `
+    'unhandled interrupt: vector 8, no handler installed' 72 `
+    'fault detail: VA 0x40000000, access=store, present=1, user=1'
 $results += Invoke-TrapTest 'trap_halt_doublefault' 'test_trap_halt_doublefault.mazm' `
-    'double fault: page fault at VA' 72
+    'double fault: page fault at VA' 72 `
+    'fault detail: VA 0x80000000, access=load, present=0, user=0 (latched by the first fault;'
 $results += Invoke-TrapTest 'trap_halt_unalloc_cond' 'test_trap_halt_unalloc_cond.mazm' `
     'unknown opcode' 64
 # maize-351: a std::logic_error thrown from a JIT-compiled paged block (unhandled cause-8
 # with no handler; a double fault during trap-frame delivery) must reach the same outcome as
 # the interpreter path, not a broken-unwind crash across the emitted frame.
-$results += Invoke-JitFaultDiffTest 'jit_fault_nohandler'   'test_jit_fault_nohandler.mazm'   'unhandled interrupt: vector 8, no handler installed'
-$results += Invoke-JitFaultDiffTest 'jit_fault_doublefault' 'test_jit_fault_doublefault.mazm' 'double fault: page fault'
+$results += Invoke-JitFaultDiffTest 'jit_fault_nohandler'   'test_jit_fault_nohandler.mazm'   'unhandled interrupt: vector 8, no handler installed' `
+    'fault detail: VA 0x80000000, access=load, present=0, user=0'
+$results += Invoke-JitFaultDiffTest 'jit_fault_doublefault' 'test_jit_fault_doublefault.mazm' 'double fault: page fault' `
+    'fault detail: VA 0x80000000, access=load, present=0, user=0 (latched by the first fault;'
 # maize-180: the four new privileged instructions + the previously-ungated ops each raise
 # cause-4 in user mode (MOVTCR/TLBINV, the forged-RF IRET escalation, HALT/SETINT/SETSYSG).
 $results += Invoke-TrapTest 'mmu_priv_movtcr'        'test_mmu_priv_movtcr.mazm'          'privileg'  68

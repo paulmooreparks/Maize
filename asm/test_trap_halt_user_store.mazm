@@ -1,0 +1,91 @@
+; **********************************************************************************
+; Card maize-325: the second half of the cause-8 fault-detail decode.
+;
+; asm/test_trap_halt_nohandler.mazm already drives an unhandled cause-8 halt, but it
+; faults in supervisor mode on a not-present mapping, so it pins the printed decode to
+; access=load, present=0, user=0 and leaves the other value of every field unasserted.
+; USER is the bit the maize-325 investigation forks on first, so it needs a fixture of
+; its own. This one takes the opposite value of three of the four fields at once: a
+; user-mode STORE to a mapping that is present but supervisor-only, which the VM reports
+; as access=store, present=1, user=1 at VA 0x40000000.
+;
+; The page-table shape is lifted from asm/test_mmu_pagefault_user.mazm, which asserts the
+; same CR1 / CR2 values from inside a guest handler; the difference here is that no
+; handler is installed at entry[8], so the fault reaches halt_no_interrupt_handler and the
+; host prints the decode instead. Keep the two in step if the Sv48 setup changes.
+;
+;   0x10000 Root: Root[0] = 0x11001 -> L2
+;   0x11000 L2:   L2[0] = 0x1F (identity 1 GiB superpage, RWXU, so user code and stack
+;                 still translate); L2[1] = 0x12001 -> L1 (covers VA 0x40000000)
+;   0x12000 L1:   L1[0] = 0x13001 -> L0
+;   0x13000 L0:   L0[0] = 0x14007 leaf -> 0x14000, V R W with U clear (supervisor-only)
+; **********************************************************************************
+
+$0000`0000:
+    ; ---- Root[0] @ 0x10000 = 0x11001 (-> L2) ----
+    CP $11001 R8
+    CLR R9
+    CP $10000 R9.H0
+    ST R8 @R9
+
+    ; ---- L2[0] @ 0x11000 = 0x1F (identity 1 GiB superpage) ----
+    CP $1F R8
+    CLR R9
+    CP $11000 R9.H0
+    ST R8 @R9
+
+    ; ---- L2[1] @ 0x11008 = 0x12001 (-> L1, the 1 GiB slot holding VA 0x40000000) ----
+    CP $12001 R8
+    CLR R9
+    CP $11008 R9.H0
+    ST R8 @R9
+
+    ; ---- L1[0] @ 0x12000 = 0x13001 (-> L0) ----
+    CP $13001 R8
+    CLR R9
+    CP $12000 R9.H0
+    ST R8 @R9
+
+    ; ---- L0[0] @ 0x13000 = 0x14007 leaf -> 0x14000, V R W, U clear ----
+    CP $14007 R8
+    CLR R9
+    CP $13000 R9.H0
+    ST R8 @R9
+
+    ; ---- stack pointer into the identity region ----
+    CLR RS
+    CP $00080000 RS.H0
+
+    ; ---- enable Sv48 (no cause-8 handler installed at $1040) ----
+    CP $10001 R0
+    MOVTCR R0 $00
+
+    ; ---- drop to user mode via the IRET trampoline ----
+    CLR R0
+    CP user_code R0.H0
+    PUSH R0                  ; [SP] = user PC
+    CLR R1
+    CP $08 R1.B4             ; user RF: bit_running (35) set, bit_privilege (32) clear
+    PUSH R1                  ; [SP] = user RF
+    IRET                     ; enter user mode at user_code
+
+user_code:
+    ; ---- the faulting access: a user STORE to a present, supervisor-only mapping ----
+    CLR R3
+    CP $40000000 R3.H0
+    CLR R4
+    ST R4.H0 @R3
+
+    ; ---- unreachable unless the fault was not raised ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1.H0
+    CP $1B R2
+    SYS $01
+    HALT
+
+; **********************************************************************************
+fail_string:
+    STRING "trap-halt-user-store: FAIL\n\0"
