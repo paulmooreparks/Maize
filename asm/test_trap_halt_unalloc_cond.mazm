@@ -4,7 +4,8 @@
 ; exception reaching std::terminate() and abort().
 ;
 ; $D9 is the Jcc block's row-3 column-2 byte, condition index 11, which the ISA leaves
-; unallocated (maize_cpu.h leaves $D9 for Jcc and $EC / $ED for SETcc reserved). That is
+; unallocated. The spare inventory is exactly two bytes, $D9 (Jcc) and $ED (SETcc), per
+; docs/spec/reservations.md; $EC is SETP, allocated at shared-predicate index 10. That is
 ; the cause-0 sibling of an unknown opcode: maize_cpu.h defines cause 0 as "unknown opcode
 ; or unallocated condition encoding", and both eval_condition's default arm and
 ; raise_unknown_opcode raise it. tick()'s dispatch table installs only the eleven

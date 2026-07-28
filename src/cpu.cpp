@@ -1330,12 +1330,14 @@ namespace maize {
                            cause_illegal_instruction), so it halts the VM the same controlled
                            way its sibling raise_unknown_opcode does rather than escaping as an
                            uncaught host exception. This arm is defense in depth, not a live
-                           guest path: tick()'s dispatch table installs only the eleven
-                           allocated Jcc/SETcc bytes and routes every unallocated one ($D9,
-                           $EC, $ED) to LBL_default, so a guest executing one reaches
+                           guest path: tick()'s dispatch table installs only the allocated
+                           Jcc/SETcc bytes and routes the two unallocated ones ($D9 and $ED)
+                           to LBL_default, so a guest executing either reaches
                            raise_unknown_opcode first, and this arm can fire only if a future
                            opcode is installed at one of those bytes without extending the
-                           predicate table. Message text is unchanged. */
+                           predicate table. $D9 and $ED are the whole spare inventory per
+                           docs/spec/reservations.md; $EC is SETP, allocated at shared-
+                           predicate index 10 alongside JP ($D8). Message text is unchanged. */
                         std::stringstream err {};
                         err << "unallocated condition encoding: " << std::hex << static_cast<unsigned>(regs::ri.b0());
                         throw guest_trap_halt {trap::cause_illegal_instruction, err.str()};
