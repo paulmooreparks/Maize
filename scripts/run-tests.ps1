@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     Build both Maize binaries and run the in-scope asm/ test suite (Windows).
@@ -423,7 +423,9 @@ function Invoke-UndefMultirefTest {
 # twin took. "Nonzero" was satisfied by the abort() an uncaught C++ exception produced, so
 # these cases passed while the halt mechanism was a host crash. Callers that pass the
 # clean-halt sentinel (64 + cause) assert a controlled exit no crash can imitate; callers
-# that omit it keep the old nonzero-only assertion.
+# that omit it keep the old nonzero-only assertion. The VM run is bounded at 10 seconds,
+# matching the `timeout 10` the shell twin uses on the same fixtures, so a regression that
+# parks instead of halting fails this runner rather than hanging Windows CI.
 function Invoke-TrapTest($name, $src, $errSubstr, $expectExit = $null) {
     $srcPath = Join-Path $AsmDir $src
     $asmPath = Join-Path $TestRunDir $src
@@ -435,21 +437,39 @@ function Invoke-TrapTest($name, $src, $errSubstr, $expectExit = $null) {
         return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'fixture assembles cleanly'; Actual = 'mazm failed to assemble' }
     }
 
-    $stdoutFile = [System.IO.Path]::GetTempFileName()
-    $stderrFile = [System.IO.Path]::GetTempFileName()
-    $prevEap = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    & $MaizeExe $binPath > $stdoutFile 2> $stderrFile
-    $maizeExit = $LASTEXITCODE
-    $ErrorActionPreference = $prevEap
-    $out = Get-Content -Raw -Path $stdoutFile -ErrorAction SilentlyContinue
-    $err = Get-Content -Raw -Path $stderrFile -ErrorAction SilentlyContinue
-    Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
+    $exitWant = if ($null -eq $expectExit) { 'nonzero exit' } else { "exit $expectExit (clean halt)" }
+
+    # The run is bounded. run-tests.sh wraps its twin in `timeout 10` so that a regression
+    # which parks instead of halting is REPORTED as a failure; this side had no equivalent,
+    # so the same regression would have wedged Windows CI instead of failing it. The raw
+    # .NET Process API rather than the Start-Process cmdlet, mirroring Invoke-ObjBackjmpTest
+    # below: under Windows PowerShell 5.1, Start-Process -PassThru with -RedirectStandard*
+    # to file paths leaves $proc.ExitCode empty even after WaitForExit(timeout) returns
+    # true. Stream redirection also sidesteps the PS 5.1 stderr NativeCommandError artifact
+    # the previous `2> file` form was working around, so no temp files are needed here.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $MaizeExe
+    $psi.Arguments = "`"$binPath`""
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    if (-not $proc.WaitForExit(10000)) {
+        try { $proc.Kill() } catch { }
+        return [pscustomobject]@{
+            Name     = $name
+            Pass     = $false
+            Expected = "$exitWant, '$errSubstr' on stderr, no fall-through marker on stdout"
+            Actual   = 'timed out after 10 seconds; the VM never halted'
+        }
+    }
+    $out = $proc.StandardOutput.ReadToEnd()
+    $err = $proc.StandardError.ReadToEnd()
+    $maizeExit = $proc.ExitCode
     if ($null -eq $out) { $out = '' }
     if ($null -eq $err) { $err = '' }
 
     $exitOk = if ($null -eq $expectExit) { $maizeExit -ne 0 } else { $maizeExit -eq $expectExit }
-    $exitWant = if ($null -eq $expectExit) { 'nonzero exit' } else { "exit $expectExit (clean halt)" }
     $pass = $exitOk -and ($err -like "*$errSubstr*") -and ($out -notlike '*FAIL*')
     return [pscustomobject]@{
         Name     = $name
@@ -743,14 +763,16 @@ $results += Invoke-UndefMultirefTest
 $results += Invoke-TrapTest 'brk_trap'        'test_brk.mazm'        'breakpoint' 67
 $results += Invoke-TrapTest 'priv_fault_trap' 'test_priv_fault.mazm' 'privileg'   68
 # maize-298: an unhandled synchronous trap halts the host cleanly instead of crashing it.
-# These two fixtures cover the paths with no other clean-halt coverage (a cause-8 page fault
-# with entry[8] unset, and a double fault during trap-frame delivery) and assert the exact
-# 64 + cause sentinel, which a signal death cannot produce. Mirrors run-tests.sh's
-# run_trap_halt_test; keep the two in sync.
+# These three fixtures cover the paths with no other clean-halt coverage (a cause-8 page
+# fault with entry[8] unset, a double fault during trap-frame delivery, and a cause-0
+# unallocated condition encoding) and assert the exact 64 + cause sentinel, which a signal
+# death cannot produce. Mirrors run-tests.sh's run_trap_halt_test; keep the two in sync.
 $results += Invoke-TrapTest 'trap_halt_nohandler'   'test_trap_halt_nohandler.mazm' `
     'unhandled interrupt: vector 8, no handler installed' 72
 $results += Invoke-TrapTest 'trap_halt_doublefault' 'test_trap_halt_doublefault.mazm' `
     'double fault: page fault at VA' 72
+$results += Invoke-TrapTest 'trap_halt_unalloc_cond' 'test_trap_halt_unalloc_cond.mazm' `
+    'unknown opcode' 64
 # maize-351: a std::logic_error thrown from a JIT-compiled paged block (unhandled cause-8
 # with no handler; a double fault during trap-frame delivery) must reach the same outcome as
 # the interpreter path, not a broken-unwind crash across the emitted frame.

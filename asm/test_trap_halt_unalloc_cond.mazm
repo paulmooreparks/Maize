@@ -1,0 +1,41 @@
+; **********************************************************************************
+; Card maize-298: a guest that executes an unallocated condition encoding must halt the
+; VM through a clean, controlled host-process exit, never through an uncaught C++
+; exception reaching std::terminate() and abort().
+;
+; $D9 is the Jcc block's row-3 column-2 byte, condition index 11, which the ISA leaves
+; unallocated (maize_cpu.h leaves $D9 for Jcc and $EC / $ED for SETcc reserved). That is
+; the cause-0 sibling of an unknown opcode: maize_cpu.h defines cause 0 as "unknown opcode
+; or unallocated condition encoding", and both eval_condition's default arm and
+; raise_unknown_opcode raise it. tick()'s dispatch table installs only the eleven
+; ALLOCATED Jcc/SETcc bytes and leaves every other byte pointing at LBL_default, so a
+; guest executing $D9 reaches raise_unknown_opcode; this fixture pins that guest-visible
+; path, which is the one an unallocated encoding actually takes.
+;
+; run_trap_halt_test asserts the exact host exit status (64 + cause 0 = 64), which a
+; SIGABRT death (128 + 6 = 134) fails, along with the "unknown opcode" diagnostic on
+; stderr and the absence of the unreachable fall-through marker on stdout. Shaped after
+; asm/test_brk.mazm, the other unpaged single-cause trap fixture.
+;
+; The two bytes after $D9 stand in for the operand-descriptor and 1-byte immediate a real
+; Jcc carries. Nothing decodes them, because the trap is raised on the opcode byte itself;
+; they are here so the stream is a plausible instruction rather than a bare stray byte.
+; **********************************************************************************
+
+$0000`0000:
+    CLR R0
+    DATA $D9 $00 $00
+
+    ; ---- unreachable: only runs if the unallocated encoding is silently accepted ----
+    CLR R0
+    CLR R1
+    CLR R2
+    CP $01 R0
+    CP fail_string R1
+    CP $13 R2               ; 19 bytes
+    SYS $01
+    HALT
+
+; **********************************************************************************
+fail_string:
+    STRING "unalloc-cond: FAIL\n\0"

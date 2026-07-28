@@ -343,9 +343,9 @@ The reference VM (`src/cpu.cpp`, `src/maize_cpu.h`) grounds this chapter:
   VM's own `guest_trap_halt`, which `cpu::run()` catches. It prints one diagnostic line to
   standard error carrying the cause text and the faulting PC, powers the VM off through the
   ordinary shutdown path, and leaves the host process with exit status 64 + cause, so cause
-  3 reports 67 and cause 8 reports 72. A guest that faults must never take the host process
-  down with it, which is why the halt runs through a controlled exit rather than an uncaught
-  host-language exception. Another VM is free to surface the halt however its host makes
+  3 reports 67 and cause 8 reports 72. The reference VM does not let a guest fault take the
+  host process down with it, which is why the halt runs through a controlled exit rather than
+  an uncaught host-language exception. Another VM is free to surface the halt however its host makes
   sense; what the contract fixes is that the machine stops with the cause observable.
 - **Privileged operation (cause 4)**: the RF privilege bit is set on power-up. IN / OUT /
   OUTR enforce it, and the gate extends to MOVTCR / MOVFCR,

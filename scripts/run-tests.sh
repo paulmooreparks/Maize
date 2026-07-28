@@ -536,9 +536,10 @@ run_priv_fault_trap_test
 # the diagnostic and powers the VM off; main() then returns the 64 + cause sentinel. This
 # runner asserts that contract directly: the exact sentinel status (so a SIGABRT's 134, or
 # any other signal death, fails), the site's own diagnostic text on stderr, and no
-# fall-through marker on stdout. The two fixtures cover the paths with no other clean-halt
-# coverage: a cause-8 page fault with entry[8] unset, and a double fault during trap-frame
-# delivery. Wrapped in `timeout` so a regression that parks instead of halting is reported
+# fall-through marker on stdout. The three fixtures cover the paths with no other clean-halt
+# coverage: a cause-8 page fault with entry[8] unset, a double fault during trap-frame
+# delivery, and a cause-0 unallocated condition encoding ($D9), which had no fixture of any
+# kind before. Wrapped in `timeout` so a regression that parks instead of halting is reported
 # as a failure rather than hanging the suite.
 run_trap_halt_test() {
     name="$1"
@@ -580,6 +581,8 @@ run_trap_halt_test "trap_halt_nohandler"   "test_trap_halt_nohandler.mazm" \
     "unhandled interrupt: vector 8, no handler installed" 72
 run_trap_halt_test "trap_halt_doublefault" "test_trap_halt_doublefault.mazm" \
     "double fault: page fault at VA" 72
+run_trap_halt_test "trap_halt_unalloc_cond" "test_trap_halt_unalloc_cond.mazm" \
+    "unknown opcode" 64
 
 # --- maize-351: JIT/exception-boundary differential -------------------------------------
 # A guest condition the VM reports by throwing a std::logic_error (an unhandled cause-8 with

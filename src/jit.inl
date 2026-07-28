@@ -543,10 +543,14 @@ void jit_faultsafe_call() {
            return to the dispatcher" signal so the ALREADY-EMITTED jit_emit_fault_check ret
            stops the block at the throwing thunk with no new emitted code; jit_dispatch
            checks jit_pending_error FIRST and rethrows, so the fault-resume path never runs
-           for the error case. AC6 enforcement: if a future change routes a NEW throw type
-           through this boundary (for example by giving DIV/MOD or an unallocated Jcc/SETcc
-           JIT coverage, both excluded today at jit_alu_helper / the Jcc/SETcc emitters), it
-           MUST be added here or it will crash the emitted frame exactly as this card fixes. */
+           for the error case. AC6 enforcement: any throw type that can cross this boundary
+           MUST be caught here, or it will crash the emitted frame exactly as this card fixes.
+           maize-298 settled the two cases this note used to name as gaps. DIV/MOD raise
+           guest_trap_halt through raise_divide_error, and an unallocated Jcc/SETcc encoding
+           raises it through raise_unknown_opcode (and through eval_condition's default arm),
+           so both are already covered by the catch above and lifting either JIT exclusion
+           introduces no new type here. A genuinely new throw type still has to be added to
+           this list before whatever raises it gets JIT coverage. */
         jit_pending_fault = true;
         jit_pending_error = std::current_exception();
     }
@@ -2651,9 +2655,10 @@ void jit_dispatch() {
                here, from jit_dispatch's own ordinary C++ frame (called via tick() inside
                run()'s try block), so it unwinds normally and reaches the exact same top-level
                outcome the interpreter path reaches for the identical guest program. run()'s
-               catch(page_fault_redirect) does not match it (this is not a page fault), so it
-               escapes to the language's default unhandled-exception path just as it does on
-               the non-JIT run. Checked BEFORE the jit_pending_fault branch so the fault-resume
+               catch(page_fault_redirect) does not match it (this is not a page fault), but
+               since maize-298 its catch(guest_trap_halt) does, so it lands on the clean-halt
+               path there (one diagnostic line, power_off, exit status 64 + cause) exactly as
+               it does on the non-JIT run. Checked BEFORE the jit_pending_fault branch so the fault-resume
                path never runs for an error. */
             std::exception_ptr e = jit_pending_error;
             jit_pending_error = nullptr;

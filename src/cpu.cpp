@@ -621,6 +621,29 @@ namespace maize {
         void tlb_flush_all();
         void tlb_flush_va(u_word va);
 
+        /* Clean-halt signal for an unhandled synchronous guest trap (card maize-298). Every
+           no-handler and double-fault site throws this; run() catches it, prints the
+           diagnostic, records the halt status, and powers the VM off, so an unhandled guest
+           trap ends the host process through a normal controlled exit instead of an uncaught
+           exception reaching std::terminate() and abort(). A guest that faults must never
+           crash the host, which is the VM's isolation contract.
+
+           Deliberately a dedicated type rather than a broadened catch on std::logic_error:
+           a generic catch would also swallow an unrelated internal VM bug that happens to
+           throw logic_error and report a genuine maize defect as a clean guest fault. detail
+           carries each throwing site's existing message text verbatim (the substring the
+           suites assert on); cause carries the trap-taxonomy cause, which fixes the host
+           exit status via sys::record_trap_halt.
+
+           Declared here, up with the translate_slow / tlb_flush forward declarations rather
+           than down beside halt_no_interrupt_handler, because eval_condition throws it from
+           inside the anonymous namespace below and enclosing-namespace lookup only reaches
+           declarations that precede the point of use. */
+        struct guest_trap_halt {
+            u_byte cause;
+            std::string detail;
+        };
+
         namespace {
             flag<bit_carryout> carryout_flag {regs::rf};
             flag<bit_negative> negative_flag {regs::rf};
@@ -1302,9 +1325,20 @@ namespace maize {
                     case 9: return !carryout_flag;                                              // AE (unsigned >=)
                     case 10: return (bool)parity_flag;                                          // P  (unordered / NaN, maize-122)
                     default: {
+                        /* card maize-298: an unallocated condition encoding shares cause 0
+                           with an unknown opcode (maize_cpu.h groups them under
+                           cause_illegal_instruction), so it halts the VM the same controlled
+                           way its sibling raise_unknown_opcode does rather than escaping as an
+                           uncaught host exception. This arm is defense in depth, not a live
+                           guest path: tick()'s dispatch table installs only the eleven
+                           allocated Jcc/SETcc bytes and routes every unallocated one ($D9,
+                           $EC, $ED) to LBL_default, so a guest executing one reaches
+                           raise_unknown_opcode first, and this arm can fire only if a future
+                           opcode is installed at one of those bytes without extending the
+                           predicate table. Message text is unchanged. */
                         std::stringstream err {};
                         err << "unallocated condition encoding: " << std::hex << static_cast<unsigned>(regs::ri.b0());
-                        throw std::logic_error(err.str());
+                        throw guest_trap_halt {trap::cause_illegal_instruction, err.str()};
                     }
                 }
             }
@@ -1862,24 +1896,6 @@ namespace maize {
             }
             copy_regval_reg(control_regs[crn], subreg_enum::w0, dst, dst_subreg);
         }
-
-        /* Clean-halt signal for an unhandled synchronous guest trap (card maize-298). Every
-           no-handler and double-fault site throws this; run() catches it, prints the
-           diagnostic, records the halt status, and powers the VM off, so an unhandled guest
-           trap ends the host process through a normal controlled exit instead of an uncaught
-           exception reaching std::terminate() and abort(). A guest that faults must never
-           crash the host, which is the VM's isolation contract.
-
-           Deliberately a dedicated type rather than a broadened catch on std::logic_error:
-           a generic catch would also swallow an unrelated internal VM bug that happens to
-           throw logic_error and report a genuine maize defect as a clean guest fault. detail
-           carries each throwing site's existing message text verbatim (the substring the
-           suites assert on); cause carries the trap-taxonomy cause, which fixes the host
-           exit status via sys::record_trap_halt. */
-        struct guest_trap_halt {
-            u_byte cause;
-            std::string detail;
-        };
 
         /* Deterministic no-handler halt for a vectored interrupt (card maize-21). An
            enabled IRQ whose table entry is zero (uninstalled) halts the VM with the
