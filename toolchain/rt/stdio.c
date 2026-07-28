@@ -477,13 +477,13 @@ vformat(struct fmtout *o, const char *fmt, va_list ap)
              * offending byte verbatim so the format bug stays visible, then stop
              * interpreting and drain the rest of fmt as literal bytes (maize-393).
              *
-             * The draining is the safety property, not a nicety. This directive
+             * The draining is what carries the safety property. This directive
              * consumed no vararg, so ap's cursor no longer lines up with the
-             * caller's argument list; a later %s or %p would fetch an integer and
-             * dereference it. uuencode's "begin %o %s\n" faulted in exactly that
-             * way before %o existed. Once the tail is literal, nothing after the
-             * bad directive can consume an argument at all, so the bad-dereference
-             * failure mode is structurally impossible rather than merely unlikely.
+             * caller's argument list, and a later %s or %p would fetch an integer
+             * and dereference it. uuencode's "begin %o %s\n" faulted in exactly
+             * that way before %o existed. Once the tail is literal, nothing after
+             * the bad directive can consume an argument at all, which makes the
+             * bad-dereference failure mode structurally impossible.
              *
              * Returning here, rather than setting a flag the loop tests on every
              * '%', is byte-for-byte the same output (under either shape every
@@ -491,14 +491,15 @@ vformat(struct fmtout *o, const char *fmt, va_list ap)
              * costs vformat no extra live value, which matters on the pinned
              * backend for the reason recorded above conv_c.
              *
-             * Two disclosures. Poisoning is not retroactive: a "%*q" has already
-             * fetched its width at the '*' above, before conv was known, and that
-             * fetch is not unwound. It is an int fetch that is never dereferenced,
-             * so the memory-safety class stays closed. And there is deliberately
-             * no diagnostic: vformat is reentrant through vfprintf, and writing to
-             * fd 2 from here would give snprintf-into-a-caller-buffer a side effect
-             * on a file descriptor that no caller expects. The visibly wrong text
-             * in the caller's own stream is the whole of the signal. */
+             * Two things are worth disclosing. Poisoning is not retroactive: a
+             * "%*q" has already fetched its width at the '*' above, before conv
+             * was known, and that fetch is not unwound. It is an int fetch that is
+             * never dereferenced, so the memory-safety class stays closed. And
+             * there is deliberately no diagnostic, because vformat is reentrant
+             * through vfprintf and writing to fd 2 from here would give an
+             * snprintf into a caller's buffer a side effect on a file descriptor
+             * that no caller expects. The visibly wrong text in the caller's own
+             * stream is the whole of the signal. */
             out_ch(o, '%');
             if (conv != '\0')
                 out_ch(o, conv);
