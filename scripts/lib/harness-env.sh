@@ -2,13 +2,26 @@
 # harness-env.sh (maize-263): shared helpers for the test/build harness scripts.
 #
 # This file is SOURCED, never executed directly (it defines functions and sets no
-# top-level state). The six POSIX-sh harness entry points (run-tests.sh,
-# run-ctest.sh, build-toolchain.sh, cc-maize.sh, userland/build-userland.sh,
-# demos/build-demos.sh) source it and call:
+# top-level state). Six POSIX-sh harness entry points source it, and they split into
+# two groups by whether they produce tools or only consume them:
+#
+#   Producers (run-tests.sh, run-ctest.sh, build-toolchain.sh) throttle AND mirror.
+#   They cmake/make their own binaries, so re-rooting them onto WSL-native storage
+#   pays for itself, and maize_sync_back_artifacts hands the results back afterwards.
+#   The mirror rsync excludes /build precisely because these scripts build a fresh
+#   one inside the mirror.
+#
+#   Consumers (cc-maize.sh, userland/build-userland.sh, demos/build-demos.sh)
+#   throttle only. They build no tools at all, they read build/<preset>/{mazm,mzld,
+#   maize} and toolchain/{qbe,cproc}, and that same /build exclusion means a mirror
+#   never carries the build tree they need. So they run in place on the real tree.
+#   maize-263 D15 drew that line for cc-maize.sh and maize-265 drew it for the other
+#   two, which had mirrored and then died on "mazm not found" at their first compile.
 #
 #   maize_apply_throttle         once, near the top, to renice/ionice the whole run
-#   maize_native_mirror_run ...  once, near the top (BEFORE argument parsing consumes
-#                                "$@"), to re-root the run on WSL-native storage
+#   maize_native_mirror_run ...  producers only, once, near the top (BEFORE argument
+#                                parsing consumes "$@"), to re-root the run on
+#                                WSL-native storage
 #   maize_bounded_jobs           at each real parallel-build site, to cap ninja/make
 #   maize_is_ci                  to skip the cap + niceness under CI
 #

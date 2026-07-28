@@ -77,13 +77,15 @@ $OutDir = [System.IO.Path]::GetFullPath($OutDir)
 $RootDir = Join-Path $HOME '.maize\rootfs'
 $RootMissingBefore = (-not $OutOverridden) -and (-not (Test-Path $RootDir))
 
-# Git Bash is required: the cproc/QBE C toolchain is POSIX-only. maize-258 repoints
-# this forwarder from WSL to Git Bash (mzcc.cmd's already-shipped pattern,
-# install-mazm.ps1:250-292): the WSL-native-mirror the underlying .sh script applies
-# on a /mnt/* repo excludes /build, so cc-maize.sh could not find mazm inside the
-# mirror (maize-265's blast radius). A Git-Bash-resolved repo root is never /mnt/*,
-# so the mirror guard never engages. Fail fast with a clear message rather than a
-# raw .NET exception when bash.exe cannot be found.
+# Git Bash is required: the cproc/QBE C toolchain is POSIX-only. That reason stands on
+# its own, and it is why maize-258 repointed this forwarder from WSL to Git Bash
+# (mzcc.cmd's already-shipped pattern, install-mazm.ps1:250-292). maize-258 gave a
+# second reason that has since been retired: back then userland/build-userland.sh
+# re-rooted a /mnt/* repo into a WSL-native mirror that excludes /build, so cc-maize.sh
+# could not find mazm inside it, and a Git-Bash-resolved repo root (never /mnt/*) routed
+# around that. maize-265 removed that re-root, so the script now runs in place against
+# the real tree on every host. Fail fast with a clear message rather than a raw .NET
+# exception when bash.exe cannot be found.
 $BashExe = Resolve-GitBash
 if (-not $BashExe) {
     # -ErrorAction Continue: Set-StrictMode/EAP='Stop' would otherwise make Write-Error

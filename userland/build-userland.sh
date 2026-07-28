@@ -47,17 +47,23 @@ verify_mzx() {
     return 0
 }
 
-# --- maize-263: WSL-native mirror + throttle, BEFORE arg parsing consumes "$@" so
-#     --out and the program list reach the mirrored child intact. --out is a
-#     caller-supplied path resolved against the unchanged PWD (no cd), so the .mzx
-#     outputs still land where the caller asked. The staged-source cache (C2) below
-#     removes the per-run submodule re-copy; the loop itself is serial (no -j). ----
+# --- maize-265: throttle only, and this script runs in place on the real tree. It
+#     builds no tools; it only consumes build/<preset>/{mazm,mzld,maize} and
+#     toolchain/{qbe,cproc} through cc-maize.sh. The harness re-root onto WSL-native
+#     storage is for scripts that BUILD their own tools inside the re-rooted copy and
+#     hand the results back, which is why that copy deliberately omits /build, so a
+#     pure consumer re-rooted there found no mazm and died on every compile. Same call
+#     maize-263 D15 made for cc-maize.sh, and the side os/quesos/build-quesos.sh has
+#     always sat on. The staged-source cache (C2) below removes the per-run submodule
+#     re-copy; the loop itself is serial (no -j). ------------------------------------
 . "${REPO_ROOT}/scripts/lib/harness-env.sh"
 maize_apply_throttle
-# Precompute submodule SHAs host-side before re-exec (D14): the C2 stage-cache key
-# needs sbase/oksh HEADs, and git does not resolve inside the git-less mirror.
+# Precompute submodule SHAs host-side (D14): the C2 stage-cache key needs sbase/oksh
+# HEADs, and git does not resolve inside the git-less tree scripts/run-ctest.sh re-roots
+# itself into before running this script as a child. The `:=` assignments inside the
+# helper keep an inherited MAIZE_KEY_* value, so the call is a no-op in that nested case
+# and reads git only when this script is the outermost one.
 maize_precompute_submodule_keys "$REPO_ROOT"
-maize_native_mirror_run "$REPO_ROOT" "$SCRIPT_DIR" "$(basename "$0")" -- "$@"
 
 USERLAND_STAGE_CACHE_ROOT="${MAIZE_USERLAND_STAGE_CACHE:-$HOME/.cache/maize/userland-stage}"
 
