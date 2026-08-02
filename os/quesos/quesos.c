@@ -271,6 +271,10 @@ u8 quesos_stack[QUESOS_STACK_SIZE];
 #define SIGINT   2
 #define SIGQUIT  3
 #define SIGKILL  9
+#define SIGSEGV  11   /* maize-369: the death a guest page fault is reported as. 11 is what
+                       * toolchain/rt/string.c and userland/oksh/siglist.c both already
+                       * decode as "Segmentation fault", so a shell reports it with no
+                       * further work. */
 #define SIGTERM  15
 #define SIGCHLD  17
 /* maize-361: the job-control set (Linux values, matching toolchain/rt/signal.h). SIGSTOP,
@@ -571,6 +575,21 @@ static void qos_put_u64(u64 v) {
     if (v == 0) { sys_write(1, "0", 1); return; }
     while (v > 0 && i < 24) { tmp[i++] = (char)('0' + (int)(v % 10)); v /= 10; }
     while (i > 0) { char c = tmp[--i]; sys_write(1, &c, 1); }
+}
+
+/* maize-369: "0x" plus exactly 16 lowercase hex digits, in one write. Fixed width keeps the
+ * page-fault diagnostic's va/pc/rf/rs fields column-stable for grep and for the harness's
+ * pinned regex, and lowercase matches the VM's own std::hex rendering of the same values. */
+static void qos_put_hex64(u64 v) {
+    char tmp[18];
+    int i;
+    tmp[0] = '0';
+    tmp[1] = 'x';
+    for (i = 0; i < 16; ++i) {
+        unsigned nib = (unsigned)((v >> (60 - 4 * i)) & 0xFul);
+        tmp[2 + i] = (char)(nib < 10 ? ('0' + (int)nib) : ('a' + (int)nib - 10));
+    }
+    sys_write(1, tmp, 18);
 }
 
 /* ==================================================================================
@@ -3719,6 +3738,120 @@ static void terminate_by_signal(struct pcb *p, int sig) {
     p->exit_status = 0;
     reap_tail(p);
     schedule();   /* noreturn */
+}
+
+/* ==================================================================================
+ * maize-369: the cause-8 (page fault) handler, C half. Entered from
+ * quesos_pagefault_handler (quesos_boot.mazm) on quesOS's kernel stack, supervisor,
+ * provider flag clear, with the trap frame already read out into its five arguments.
+ * Never returns: it either reaps the faulting process or powers the machine off.
+ *
+ * Before this existed, ANY guest page fault halted the whole VM, because
+ * deliver_vectored halts on a zero trap-table entry. That made one process's bad access
+ * fatal to every other process, and it destroyed the operator's only instrument for
+ * observing the fault under investigation as maize-400.
+ *
+ * The kill is NOT catchable, and the asymmetry is deliberate: a FAULTED SIGSEGV goes
+ * straight to terminate_by_signal and never consults pcb->handler[], while a SENT one
+ * (kill -SEGV) still routes through raise_on_pcb and remains catchable. Three reasons.
+ * Dispatching a handler means push_signal_frame writing a trampoline and a 17-word frame
+ * onto the user stack, which may be exactly the memory that just faulted; a page fault is
+ * FAULT-class, so returning from the handler re-executes the faulting access and refaults
+ * forever; and the trampoline deliberately records no pcb->saved_rs, so the frame would be
+ * laid at a stale RS. See the trampoline's own comment for what a later change would have
+ * to do first.
+ *
+ * CR2's layout (src/cpu.cpp, docs/spec/trap-model.md): bit 0 PRESENT (0 = no valid
+ * mapping, 1 = a mapping was found and the permission check failed), bits 2:1
+ * ACCESS_KIND (0 fetch, 1 load, 2 store), bit 3 USER, bits 63:4 reserved zero.
+ * ================================================================================== */
+
+/* Re-entry guard (AC-10). D-6 argued that recursion is bounded because "the PANIC branch
+ * only prints and powers off", but that branch prints pid and path, which are reads through
+ * g_current, and the very scenario it guards against is a corrupt PCB pointer: the branch
+ * could refault on its own diagnostic, re-enter, and loop forever. This counter makes the
+ * bound structural instead of argued. It is reset immediately before the terminal handoff
+ * and nowhere else, so it covers exactly the window in which this function dereferences a
+ * PCB (the decode and the diagnostic), which is the window that can refault. It must be
+ * reset there rather than left set, because terminate_by_signal never returns and the next
+ * process to fault is an ordinary, unrelated fault that must be handled normally. */
+static int g_pf_in_handler = 0;
+
+void quesos_page_fault(u64 va, u64 err, u64 pc, u64 rf, u64 rs) {
+    int present = (int)(err & 1ul);
+    int kind    = (int)((err >> 1) & 3ul);
+    int user    = (int)((err >> 3) & 1ul);
+    int panic;
+
+    /* First statement, and it dereferences nothing: one fixed literal, then halt. */
+    if (g_pf_in_handler) {
+        qos_puts("[quesos] PANIC: page fault inside the page-fault handler; halting\n");
+        quesos_poweroff();
+    }
+    g_pf_in_handler = 1;
+
+    /* USER clear means the KERNEL faulted, so there is no process to reap and reaping the
+     * current one would be a lie. A null g_current is the same situation. The two forms
+     * carry visibly different text because "the kernel faulted" and "a process faulted"
+     * want completely different operator responses. */
+    panic = (user == 0) || (g_current == 0);
+
+    /* Not gated by g_verbose: the g_verbose lines trace ordinary operation, and a fault is
+     * not ordinary operation. This line has to appear in a default interactive session,
+     * because that session is the only instrument that has reproduced the maize-400 fault.
+     * It goes to fd 1 through qos_puts, a native write issued with the syscall-guest flag
+     * clear, so it reaches the host's stdout directly and never consults the dying
+     * process's fd table; that is why it survives the reap and survives a process whose own
+     * stdout was a pipe or a redirect. Consistency with alloc_frame's existing PANIC idiom
+     * is why fd 1 rather than fd 2. */
+    qos_puts(panic ? "[quesos] PANIC: kernel page fault: " : "[quesos] page fault: ");
+    qos_puts("pid=");
+    if (g_current != 0) {
+        qos_put_u64((u64)g_current->pid);
+        qos_puts(" (");
+        qos_puts(g_current->path);
+        qos_puts(")");
+    } else {
+        qos_puts("none");
+    }
+    qos_puts(" va=");
+    qos_put_hex64(va);
+    qos_puts(" access=");
+    if (kind == 0)      { qos_puts("fetch"); }
+    else if (kind == 1) { qos_puts("load"); }
+    else if (kind == 2) { qos_puts("store"); }
+    else                { qos_puts("reserved"); }   /* unreachable fourth encoding */
+    qos_puts(" present=");
+    qos_puts(present ? "1" : "0");
+    qos_puts(" user=");
+    qos_puts(user ? "1" : "0");
+    qos_puts(" pc=");
+    qos_put_hex64(pc);
+    /* The saved RF carries the privilege, interrupt and syscall-guest bits plus the settled
+     * condition flags of the faulting context, which is the open question in maize-400; the
+     * pre-fault RS is the value the trampoline computed as frame RS + 32, not the RS this
+     * handler was entered with. */
+    qos_puts(" rf=");
+    qos_put_hex64(rf);
+    qos_puts(" rs=");
+    qos_put_hex64(rs);
+
+    if (panic) {
+        qos_puts(" halting\n");
+        quesos_poweroff();   /* noreturn; the guard stays set, nothing below can run */
+    }
+    qos_puts(" killed by SIGSEGV\n");
+
+    /* The handler's own PCB-dereferencing window is over. reap_tail and schedule() run
+     * outside it, so a fault taken in there gets a full PANIC diagnostic on its first
+     * re-entry and is caught by the guard on its second. */
+    g_pf_in_handler = 0;
+
+    /* terminate_by_signal is the join point, so a fault death is bookkeeping-identical to a
+     * kill -SEGV death: term_signal set, reap_tail (console restore, fdtable_close_all,
+     * fb_release_held, SIGCHLD to the parent), then schedule() into the next process. No
+     * second reap path is invented. */
+    terminate_by_signal(g_current, SIGSEGV);   /* noreturn */
 }
 
 /* Below the interrupted frame (left intact at saved_rs), lay out the trampoline bytes,

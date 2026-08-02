@@ -3224,7 +3224,8 @@ run_quesos_ac_fixtures() {
                fb_mmap_paint fb_noncontig_reject fb_mmap_isolation fb_mmap_enomem \
                bulk_forward bulk_noncontig bulk_bounds bulk_kernel_range \
                bigalloc bigalloc_coalesce fb_present kbd_acl bigfootprint_fork loader_guard bigimage \
-               palette_blit_guard satp_stress; do
+               palette_blit_guard satp_stress \
+               pagefault_kill pagefault_toplevel pagefault_kernel pagefault_jit; do
         if ! cc_maize_compile_bounded "quesos_ac: ${src}.c" "${progs}/${src}.mzx" \
                 "${REPO_ROOT}/os/quesos/${src}.c" "$log"; then
             TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
@@ -3547,6 +3548,92 @@ run_quesos_ac_fixtures() {
             echo "[FAIL] quesos_satp_jit_equiv"
             echo "        interp: \"$(tr '\n' '|' < "$satp_int")\""
             echo "        jit:    \"$(tr '\n' '|' < "$satp_jit")\""
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+    fi
+
+    # maize-369: the cause-8 (page fault) handler. Before it existed, EVERY guest page
+    # fault halted the whole VM (deliver_vectored halts on a zero trap-table entry), so one
+    # process's bad access killed every other process and ended the operator's session.
+    # All four legs below were run against a pre-change quesOS first (AC-1): the two-entry
+    # worklist exited 72 with "unhandled interrupt: vector 8, no handler installed" on
+    # stderr and NOTHING on stdout, so the 72-to-0 move below is a real discriminator
+    # rather than a test that could only ever pass.
+    quesos_ac_case quesos_pagefault_kill "pagefault-kill: PASS" pagefault_kill
+
+    # The top-level arm (parent 0, which is what a worklist process and therefore the
+    # operator's DOOM session takes), run as the FIRST of two worklist entries so the same
+    # invocation also proves the scheduler kept going past the fault. Inline rather than
+    # through quesos_ac_case for two reasons: this case asserts on the VM's exit code, and
+    # quesos_ac_case pipes its capture through grep, which would make $? grep's status
+    # instead of the guest's. rc is captured on the statement immediately after the
+    # assignment, with no pipe anywhere in it. QUESOS_VERBOSE is deliberately absent from
+    # the environment, which simultaneously proves the diagnostic is not gated by g_verbose.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(MSYS2_ARG_CONV_EXCL='/progs' timeout 90 "$MAIZE" --no-root \
+        --mount "${nat}=/progs:ro" "$quesos" \
+        /progs/pagefault_toplevel.mzx -- /progs/pagefault_kill.mzx 2>/dev/null)
+    rc=$?
+    set -e
+    pf_top_re='\[quesos\] page fault: pid=[0-9]+ \(/progs/pagefault_toplevel\.mzx\) va=0x0{16} access=store present=0 user=1 pc=0x[0-9a-f]{16} rf=0x[0-9a-f]{16} rs=0x[0-9a-f]{16} killed by SIGSEGV'
+    if [ "$rc" -eq 0 ] \
+        && printf '%s\n' "$out" | grep -qE "$pf_top_re" \
+        && printf '%s\n' "$out" | grep -qF "pagefault-kill: PASS" \
+        && printf '%s\n' "$out" | grep -qE '\[quesos\] page fault: .* present=1 user=1 '; then
+        echo "[PASS] quesos_pagefault_toplevel (VM survives a top-level fault: exit 0, was 72)"
+    else
+        echo "[FAIL] quesos_pagefault_toplevel (exit ${rc}, expected 0)"
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # The supervisor arm: a bad user pointer handed to sys_open faults inside
+    # copy_user_path with CR2's USER bit clear, which is a kernel panic rather than a
+    # process kill. The absence of the process-form line is what proves the two branches
+    # did not collapse into one.
+    TOTAL=$((TOTAL + 1))
+    set +e
+    out=$(MSYS2_ARG_CONV_EXCL='/progs' timeout 90 "$MAIZE" --no-root \
+        --mount "${nat}=/progs:ro" "$quesos" /progs/pagefault_kernel.mzx 2>/dev/null)
+    set -e
+    if printf '%s\n' "$out" | grep -qE '\[quesos\] PANIC: kernel page fault:.* user=0 ' \
+        && ! printf '%s\n' "$out" | grep -qE '^\[quesos\] page fault:'; then
+        echo "[PASS] quesos_pagefault_kernel (supervisor fault panics, no process-form line)"
+    else
+        echo "[FAIL] quesos_pagefault_kernel"
+        printf '%s\n' "$out" | sed 's/^/          | /'
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+
+    # The COMPILED tier, which is the tier that actually motivated this card: DOOM runs
+    # compiled, and every other leg here faults on a cold store that runs interpreted, so
+    # without this one all of them could pass with jit_faultsafe_call / jit_dispatch never
+    # exercised. The fixture runs its faulting store 5000 times through a real object first,
+    # so at --jit-threshold 50 the block is long since compiled and still resident (a
+    # --jit-report run of this same fixture shows 103 blocks compiled, 80.6% of executed
+    # instructions covered, and zero page invalidations or cache flushes) before the pointer
+    # is aimed at VA 0 and the SAME block runs once more. Driven through BARE_MAIZE for the
+    # same reason quesos_satp_jit_equiv is: $MAIZE may have been pinned to one JIT mode by
+    # the MAIZE_JIT wrapper, and this leg must run compiled regardless.
+    TOTAL=$((TOTAL + 1))
+    if [ -z "$BARE_MAIZE" ]; then
+        echo "[FAIL] quesos_pagefault_jit: raw maize binary not found in ${BUILD_DIR}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    else
+        set +e
+        out=$(MSYS2_ARG_CONV_EXCL='/progs' timeout 120 "$BARE_MAIZE" --jit --jit-threshold 50 \
+            --no-root --mount "${nat}=/progs:ro" "$quesos" /progs/pagefault_jit.mzx 2>/dev/null)
+        rc=$?
+        set -e
+        pf_jit_re='\[quesos\] page fault: pid=[0-9]+ \(/progs/pagefault_jit\.mzx\) va=0x0{16} access=store present=0 user=1 '
+        if [ "$rc" -eq 0 ] \
+            && printf '%s\n' "$out" | grep -qE "$pf_jit_re" \
+            && printf '%s\n' "$out" | grep -qF "pagefault-jit: PASS"; then
+            echo "[PASS] quesos_pagefault_jit (cause 8 delivered out of a compiled block)"
+        else
+            echo "[FAIL] quesos_pagefault_jit (exit ${rc}, expected 0)"
+            printf '%s\n' "$out" | sed 's/^/          | /'
             FAIL_COUNT=$((FAIL_COUNT + 1))
         fi
     fi

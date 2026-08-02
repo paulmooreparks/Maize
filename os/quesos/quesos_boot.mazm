@@ -3,8 +3,9 @@
 ;
 ; The parts of quesOS that must be assembly because they touch CPU state the C ABI
 ; cannot express: the boot entry + kernel-stack switch, the cause-7 (SYS) trap
-; trampoline, the SETSYSG/CLRSYSG provider toggle, and the process context switch
-; (save/restore the full GP register set across a MOVTCR address-space swap + IRET).
+; trampoline, the cause-8 (page fault) trampoline, the SETSYSG/CLRSYSG provider toggle,
+; and the process context switch (save/restore the full GP register set across a MOVTCR
+; address-space swap + IRET).
 ; The portable half (process table, page tables, fork, exec, dispatch) is quesos.c;
 ; the two share the globals and the extern boundary declared below.
 ;
@@ -21,6 +22,17 @@
 ;     [RS + 16]  saved RF   (pre-trap flags: privilege user, syscall-guest set)
 ;     [RS + 24]  saved PC   (the instruction after the child's SYS: the IRET target)
 ; IRET pops saved RF then saved PC (two words), expecting RS at [saved RF].
+;
+; maize-369: the cause-8 (page fault) trampoline is the ONE handler here that does no
+; PUSHALL and records no pcb->saved_rs. Every other trampoline saves the interrupted GP
+; context because it RESUMES that context; the cause-8 path never does. Its process is
+; about to be reaped, a page fault is FAULT-class (so an IRET back would re-execute the
+; faulting access and refault forever), and writing 13 words to a user stack that may be
+; exactly what faulted is what turns a recoverable fault into a double-fault machine halt.
+; That asymmetry is safe ONLY while a faulted SIGSEGV stays undispatchable; see the
+; comment at quesos_pagefault_handler for what a later change would have to do first.
+; Its frame is the same four words, with aux always 0 and saved PC being the faulting
+; instruction's OWN pc (a FAULT re-executes, it does not skip).
 ; ==================================================================================
 
 SECTION CODE
@@ -49,6 +61,7 @@ GLOBAL quesos_kbd_read
 
 EXTERN quesos_main             ; quesos.c: init entry, runs the worklist (noreturn)
 EXTERN quesos_syscall          ; quesos.c: cause-7 dispatcher (reads g_current->saved_rs)
+EXTERN quesos_page_fault       ; quesos.c: cause-8 handler (report + reap; noreturn)
 EXTERN quesos_timer_tick       ; quesos.c: timer preemption (marks runnable + schedule)
 EXTERN quesos_keyboard_tick    ; quesos.c: keyboard IRQ sink (leave scancode latched + schedule)
 EXTERN quesos_console_irq      ; quesos.c: console IRQ (deliver a byte + schedule)
@@ -98,6 +111,13 @@ _start:
     ; handler only drains the IRQ and resumes; it never consumes the scancode.
     CP  quesos_keyboard_handler R3
     CP  $1110 RT
+    ST  R3 @RT
+
+    ; maize-369: install the cause-8 (page fault) handler at entry 8
+    ; (0x1000 + 8*8 = 0x1040). Without it deliver_vectored reads a zero
+    ; entry and halts the whole VM on any guest page fault.
+    CP  quesos_pagefault_handler R3
+    CP  $1040 RT
     ST  R3 @RT
 
     ; Switch to quesOS's kernel stack: full-descending, top = base + size (0x10000).
@@ -267,6 +287,64 @@ keyboard_no_save:
     ADD $00010000 R1
     CP  R1 SP
     CALL quesos_keyboard_tick  ; mark current runnable + schedule (noreturn); scancode latched
+    HALT                       ; safety net (unreachable)
+
+; ----------------------------------------------------------------------------------
+; quesos_pagefault_handler (maize-369): cause-8 (page fault) entry. Runs supervisor,
+; interrupts masked, CR0 still the faulting process's satp, and RS at the aux word of the
+; four-word frame (aux is always 0 for cause 8; saved PC is the FAULTING instruction's own
+; pc, because a page fault is FAULT-class and re-executes rather than skipping). Without a
+; non-zero entry 8 the VM's deliver_vectored halts the whole machine on any guest page
+; fault, which is the defect this card fixes.
+;
+; Three points of the register discipline are load-bearing and none is stylistic.
+;
+; NO PUSHALL, AND NO pcb->saved_rs RECORD. The other three trampolines save the interrupted
+; GP context onto the user stack and record RS in the PCB because they resume that context.
+; This one never resumes it: the faulting process is about to be reaped, and writing 13
+; words to a user stack that may itself be what faulted would turn a recoverable fault into
+; a double-fault machine halt (that PUSHALL takes a fresh cause-8, and THAT delivery's frame
+; push faults with delivering_trap set, which is the double fault). Nothing downstream reads
+; the dying process's saved_rs: reap_tail does not, and raise_on_pcb / push_signal_frame
+; operate on the PARENT's.
+;
+; D-2 IS THE PRECONDITION FOR THAT RULE (maize-369 AC-11). Skipping the saved_rs record is
+; safe only because a FAULTED page fault is an uncatchable kill that is never dispatched to
+; a user handler. pcb->saved_rs is therefore left STALE here, carrying whatever the process's
+; last syscall or timer preemption left in it. If a page fault is ever made dispatchable to
+; a user SIGSEGV handler, push_signal_frame would lay its trampoline, return word and 17-word
+; frame relative to that stale RS, which is silent memory corruption rather than a visible
+; fault. So a later change that wants a catchable page fault MUST first make this trampoline
+; save the GP context and record pcb->saved_rs; catchability is not merely risky today, it is
+; unimplemented. (A SENT SIGSEGV, kill -SEGV, still routes through raise_on_pcb and stays
+; catchable; only the faulted one is not.)
+;
+; THE FRAME WORDS ARE READ BEFORE THE STACK SWITCH. For a SUPERVISOR fault the frame was
+; pushed onto quesos_stack itself, and resetting SP to the top of that array lets the C frame
+; grow down over it. Reading into R2/R3/R4 first is immune to that.
+;
+; CLRSYSG BEFORE THE CALL. A faulting user process runs with the syscall-guest flag set and
+; deliver_vectored saves RF without clearing it, while the C half writes its diagnostic
+; through the native provider; without CLRSYSG that first write would trap back to cause 7
+; from supervisor mode.
+;
+; R0..R5 are the GP argument registers (toolchain/qbe-maize/abi.c), so five arguments plus
+; the R5 stack scratch fit with no stack traffic.
+; ----------------------------------------------------------------------------------
+quesos_pagefault_handler:
+    MOVFCR $01 R0              ; R0 = CR1 FAULT_VA
+    MOVFCR $02 R1              ; R1 = CR2 FAULT_ERR
+    LEA $18 RS RT              ; RT = &saved PC (RS + 24)
+    LD  @RT R2                 ; R2 = faulting PC
+    LEA $10 RS RT              ; RT = &saved RF (RS + 16)
+    LD  @RT R3                 ; R3 = pre-fault RF
+    LEA $20 RS R4              ; R4 = pre-fault RS (RS + 32)
+
+    CLRSYSG                    ; the C half's own SYS must reach the native provider
+    CP  quesos_stack R5
+    ADD $00010000 R5
+    CP  R5 SP
+    CALL quesos_page_fault     ; (va, err, pc, rf, rs); noreturn
     HALT                       ; safety net (unreachable)
 
 ; ----------------------------------------------------------------------------------
