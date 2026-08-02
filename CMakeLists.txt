@@ -34,7 +34,12 @@ set(MAIZE_PRESENTER_SOURCES
   "src/presenter_transport_posix.cpp"
   "src/presenter_transport_win32.cpp"
   "src/presenter_link.cpp")
-set(MAIZE_VM_SOURCES "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" "src/perf.cpp" "src/host_tty.cpp" ${MAIZE_HOSTFS_SOURCES} ${MAIZE_PRESENTER_SOURCES})
+# maize-345: the Windows console readiness probe and its pre-read byte buffer. Guarded
+# on _WIN32 like the hostfs and presenter backends, so it compiles to nothing on POSIX,
+# and listed on BOTH targets that compile src/sys.cpp (the VM binaries below and mazm)
+# because sys.cpp now calls into it and would otherwise fail to link.
+set(MAIZE_CONSOLE_PROBE_SOURCES "src/console_probe_win32.cpp")
+set(MAIZE_VM_SOURCES "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" "src/perf.cpp" "src/host_tty.cpp" ${MAIZE_CONSOLE_PROBE_SOURCES} ${MAIZE_HOSTFS_SOURCES} ${MAIZE_PRESENTER_SOURCES})
 add_executable(maizeg ${MAIZE_VM_SOURCES})
 add_executable(maize  ${MAIZE_VM_SOURCES})
 
@@ -57,7 +62,7 @@ endif()
 # It is distinct from MAIZE_DISPLAY: the headless CI `maizeg` (no MAIZE_DISPLAY) still honors
 # those knobs for the scancode-injection tests; only the console `maize` opts out.
 target_compile_definitions(maize PRIVATE MAIZE_CONSOLE_ONLY)
-add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp" "src/host_tty.cpp" ${MAIZE_HOSTFS_SOURCES})
+add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp" "src/host_tty.cpp" ${MAIZE_CONSOLE_PROBE_SOURCES} ${MAIZE_HOSTFS_SOURCES})
 add_executable(mzld "src/mzld.cpp")
 add_executable(mzdis "src/mzdis.cpp")
 
@@ -85,6 +90,21 @@ add_executable(mzcc
   "src/mzcc_cache.c"
   "src/mzcc_sched.c")
 set_property(TARGET mzcc PROPERTY C_STANDARD 11)
+
+# maize-345: the Windows console test binary. It owns a console of its own (FreeConsole +
+# AllocConsole + CONIN$) and injects input records into it, which is the only way anything
+# in this tree reaches the interactive-console branch of the readiness probe: the pty
+# keystroke leg is Linux-only and the Windows CI suite feeds a pipe. It links the console
+# TU plus src/host_tty.cpp, because AC-14 drives the console input-mode mask through
+# host_tty's own init/termios_set/restore rather than through a copy of it.
+#
+# A test, not a deliverable: deliberately absent from scripts/install-mazm.ps1,
+# scripts/install-mazm.sh, the Ctrl+Shift+B task and the MAIZE_SANITIZE list below (it
+# exercises Win32 console API behaviour, not VM code).
+if (WIN32)
+  add_executable(console_probe_test "src/console_probe_test_win32.cpp" "src/host_tty.cpp" ${MAIZE_CONSOLE_PROBE_SOURCES})
+  set_property(TARGET console_probe_test PROPERTY CXX_STANDARD 20)
+endif()
 
 find_package(Threads REQUIRED)
 target_link_libraries(maizeg PRIVATE Threads::Threads)

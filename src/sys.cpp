@@ -1,6 +1,7 @@
 #include "maize.h"
 // #include "maize_sys.h"
 #include "console_io.h"
+#include "console_probe_win32.h"
 #include "host_tty.h"
 #include "hostfs/hostfs_core.h"
 #include <cerrno>
@@ -311,8 +312,33 @@ namespace maize {
             constexpr u_word chunk_max {0x7FFFFFFF};
         }
 
+        /* maize-345: the probe and the fd-0 read must agree on ONE handle, so a future
+           AllocConsole-shaped reassignment cannot peek one console and read another.
+           _init() captures hStdin at startup; fall back to GetStdHandle for the (test
+           and pre-init) case where it has not run. */
+        namespace {
+            HANDLE stdin_handle() {
+                if (hStdin != INVALID_HANDLE_VALUE && hStdin != nullptr) { return hStdin; }
+                return GetStdHandle(STD_INPUT_HANDLE);
+            }
+        }
+
         u_word read(u_word fd, void* buf, u_word count) {
             if (fd == 0) {
+                /* maize-345: an interactive console goes through the console TU, whose
+                   read is buffered so the bytes the console retains past a one-byte
+                   guest read stay visible to the readiness probe. Pipes and files keep
+                   the chunking loop below, byte for byte. */
+                HANDLE h {stdin_handle()};
+                if (console_probe::is_console(h)) {
+                    unsigned long want {static_cast<unsigned long>(
+                        count < chunk_max ? count : chunk_max)};
+                    long rc {console_probe::read_console(
+                        h, reinterpret_cast<u_byte*>(buf), want)};
+                    if (rc < 0) { return neg_errno(abi_eio); }
+                    return static_cast<u_word>(rc);
+                }
+
                 u_byte* cursor {reinterpret_cast<u_byte*>(buf)};
                 u_word total_read {0};
 
@@ -399,45 +425,13 @@ namespace maize {
         }
 
         /* maize-238 (Branch A, decision 9285): NON-CONSUMING host-stdin readiness probe.
-           Windows stdin has no single O_NONBLOCK knob, so dispatch on the handle type (the
-           maize-237 console-vs-pipe-vs-file divergence): a pipe uses PeekNamedPipe to test
-           for buffered bytes without consuming; a redirected file compares position to size
-           without consuming; an interactive console reports "data pending" so the on-demand
-           data-port read blocks for a real line (no deadlock) -- poll/select on a native
-           Windows console is correspondingly imprecise, the honestly-stated AC 9199 gap
-           (the pty keystroke leg is Linux-only; the Windows CI suite feeds a pipe). Returns
-           1 (a data byte is pending), 0 (nothing pending yet), or -1 (end of input). Consumes
-           nothing, so the ordinary blocking read() path stays the sole consumer. */
+           maize-345 moved the Windows handle-type dispatch into src/console_probe_win32.cpp
+           so that maize-313 can replace the mechanism behind this seam without unpicking
+           this file. What stays here is the seam itself and its 1/0/-1 contract (see
+           src/maize_sys.h): 1 a data byte is pending, 0 nothing pending yet, -1 end of
+           input. */
         int console_stdin_ready() {
-            HANDLE h {GetStdHandle(STD_INPUT_HANDLE)};
-            if (h == INVALID_HANDLE_VALUE || h == nullptr) {
-                return -1;
-            }
-            DWORD type {GetFileType(h)};
-            if (type == FILE_TYPE_PIPE) {
-                DWORD avail {0};
-                if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) {
-                    return -1;   // broken pipe == EOF (write end closed)
-                }
-                return (avail > 0) ? 1 : 0;   // buffered bytes == data pending; else nothing yet
-            }
-            if (type == FILE_TYPE_CHAR) {
-                // A char handle is either an interactive console or a null-ish device (NUL).
-                // GetConsoleMode succeeds only on a real console (the isatty analog): treat a
-                // real console as data pending (defer to the blocking data-port read), and a
-                // non-console char device (NUL, whose reads return 0) as EOF so the data port
-                // never synthesizes a NUL byte from a zero-length read.
-                DWORD mode {0};
-                return GetConsoleMode(h, &mode) ? 1 : -1;
-            }
-            if (type == FILE_TYPE_DISK) {
-                LARGE_INTEGER pos, size, zero;
-                zero.QuadPart = 0;
-                if (!SetFilePointerEx(h, zero, &pos, FILE_CURRENT)) { return 1; }
-                if (!GetFileSizeEx(h, &size)) { return 1; }
-                return (pos.QuadPart < size.QuadPart) ? 1 : -1;   // bytes remaining vs EOF
-            }
-            return 1;   // unknown handle type: a read resolves data vs EOF
+            return console_probe::stdin_ready(stdin_handle());
         }
 
 #else
