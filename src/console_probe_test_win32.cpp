@@ -19,6 +19,7 @@
 
 #ifdef _WIN32
 
+#include "console_io.h"
 #include "console_probe_win32.h"
 #include "host_tty.h"
 
@@ -363,6 +364,354 @@ void case_nul_device() {
     }
 }
 
+/* AC-4: raw mode delivers every byte of a multi-byte translation, proved with one-byte
+   reads and a re-probe between them. The expected sequences come from the --measure run
+   quoted at the top of src/console_probe_win32.cpp; the console holds ONE virtual-key
+   record and synthesizes the bytes at read time, retaining what it does not deliver where
+   no PeekConsoleInput can see it, so a peek-only predicate would report 0 with two bytes
+   of an arrow key still readable. The comparison is against what an INJECTED record
+   produces, and the real-keypress sequence is the corroborating evidence --diagnostic
+   collects, so a ConPTY-versus-conhost difference reads as the finding it is rather than
+   as a red test. */
+void run_drain_case(const char* name, const INPUT_RECORD* recs, DWORD count,
+                    const char* want, int wantlen) {
+    arm(name);
+    set_raw();
+    flush_queue();
+    if (!inject(recs, count)) {
+        disarm();
+        fail(name, "WriteConsoleInputW failed");
+        return;
+    }
+    unsigned char got[64];
+    int n {drain(got, static_cast<int>(sizeof got))};
+    disarm();
+
+    bool ok {n == wantlen && std::memcmp(got, want, static_cast<size_t>(n)) == 0};
+    if (ok) {
+        pass(name);
+    } else {
+        char gothex[192], wanthex[192], d[512];
+        hex(got, n, gothex, sizeof gothex);
+        hex(reinterpret_cast<const unsigned char*>(want), wantlen, wanthex, sizeof wanthex);
+        std::snprintf(d, sizeof d, "drained %d byte(s) [%s], expected %d [%s]",
+                      n, gothex, wantlen, wanthex);
+        fail(name, d);
+    }
+    expect_quiescent(name);
+    flush_queue();
+}
+
+void case_drain_raw() {
+    {
+        INPUT_RECORD abc[3] {char_rec(L'a'), char_rec(L'b'), char_rec(L'c')};
+        run_drain_case("drain_raw_abc", abc, 3, "abc", 3);
+    }
+    {
+        INPUT_RECORD left {key_rec(true, VK_LEFT, 0)};
+        run_drain_case("drain_raw_arrow_left", &left, 1, "\x1B[D", 3);
+    }
+    {
+        /* The non-ASCII expectation is DERIVED from the console's input code page rather
+           than hard-coded, because maize never calls SetConsoleCP and the session's page
+           decides the answer: U+00E9 is one byte (0x82) under 437 and two under 65001. */
+        const wchar_t wide[2] {L'\x00E9', 0};
+        char want[8] {0};
+        int wantlen {WideCharToMultiByte(GetConsoleCP(), 0, wide, 1, want,
+                                         static_cast<int>(sizeof want), nullptr, nullptr)};
+        if (wantlen <= 0) {
+            fail("drain_raw_nonascii", "the input code page cannot encode U+00E9");
+        } else {
+            INPUT_RECORD e {char_rec(L'\x00E9')};
+            run_drain_case("drain_raw_nonascii", &e, 1, want, wantlen);
+        }
+    }
+}
+
+/* OQ-8: every member of the final vt_translated set gets a drain-loop case of its own.
+   An over-inclusive member (the predicate claims the console translates a key it does
+   not) makes the probe answer 1 and the fill then blocks inside ReadFile, which trips the
+   per-case watchdog; an under-inclusive one accumulates nothing here. Testing the arrows
+   alone, as cycle 2 left it, would have left Home, End, PgUp, PgDn, Ins, Del and the
+   twelve F-keys unexercised, and section 2 names every one of them as a required member
+   in the world the measurement found. */
+void case_vt_coverage() {
+    struct row { WORD vk; const char* name; const char* want; };
+    const row rows[] = {
+        { VK_LEFT,   "vt_VK_LEFT",   "\x1B[D" },
+        { VK_RIGHT,  "vt_VK_RIGHT",  "\x1B[C" },
+        { VK_UP,     "vt_VK_UP",     "\x1B[A" },
+        { VK_DOWN,   "vt_VK_DOWN",   "\x1B[B" },
+        { VK_HOME,   "vt_VK_HOME",   "\x1B[H" },
+        { VK_END,    "vt_VK_END",    "\x1B[F" },
+        { VK_PRIOR,  "vt_VK_PRIOR",  "\x1B[5~" },
+        { VK_NEXT,   "vt_VK_NEXT",   "\x1B[6~" },
+        { VK_INSERT, "vt_VK_INSERT", "\x1B[2~" },
+        { VK_DELETE, "vt_VK_DELETE", "\x1B[3~" },
+        { VK_F1,     "vt_VK_F1",     "\x1BOP" },
+        { VK_F2,     "vt_VK_F2",     "\x1BOQ" },
+        { VK_F3,     "vt_VK_F3",     "\x1BOR" },
+        { VK_F4,     "vt_VK_F4",     "\x1BOS" },
+        { VK_F5,     "vt_VK_F5",     "\x1B[15~" },
+        { VK_F6,     "vt_VK_F6",     "\x1B[17~" },
+        { VK_F7,     "vt_VK_F7",     "\x1B[18~" },
+        { VK_F8,     "vt_VK_F8",     "\x1B[19~" },
+        { VK_F9,     "vt_VK_F9",     "\x1B[20~" },
+        { VK_F10,    "vt_VK_F10",    "\x1B[21~" },
+        { VK_F11,    "vt_VK_F11",    "\x1B[23~" },
+        { VK_F12,    "vt_VK_F12",    "\x1B[24~" },
+    };
+    for (const row& r : rows) {
+        INPUT_RECORD rec {key_rec(true, r.vk, 0)};
+        run_drain_case(r.name, &rec, 1, r.want, static_cast<int>(std::strlen(r.want)));
+    }
+}
+
+/* Read one screen-buffer row starting at the current cursor line, for the AC-5 echo
+   observation. */
+void read_screen_row(wchar_t* dst, int cap) {
+    dst[0] = 0;
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (!GetConsoleScreenBufferInfo(g_out, &csbi)) { return; }
+    COORD at {0, csbi.dwCursorPosition.Y};
+    DWORD read {0};
+    if (!ReadConsoleOutputCharacterW(g_out, dst, static_cast<DWORD>(cap - 1), at, &read)) {
+        return;
+    }
+    dst[read] = 0;
+    // Trim the trailing blanks the console pads a row with.
+    for (int i = static_cast<int>(read) - 1; i >= 0 && dst[i] == L' '; --i) { dst[i] = 0; }
+}
+
+/* AC-5: cooked mode. A partial line must report NOT ready, because a cooked console
+   delivers nothing until the line is complete, so reporting ready there is exactly this
+   card's defect wearing cooked clothing; the same line plus Enter must report ready and
+   then drain completely, including the terminator the console appends. The echo half is a
+   recorded observation rather than a threshold (D-12), so it is printed and not asserted:
+   OQ-6 carries the consequence and it is not fixable on this card either way. */
+void case_cooked_line() {
+    const char* n1 {"cooked_partial_line_not_ready"};
+    arm(n1);
+    set_cooked();
+    flush_queue();
+    INPUT_RECORD partial[2] {char_rec(L'a'), char_rec(L'b')};
+    inject(partial, 2);
+    wchar_t before[128];
+    read_screen_row(before, 128);
+    int r {console_probe::stdin_ready(g_in)};
+    disarm();
+    if (r == 0) { pass(n1); }
+    else {
+        char d[96];
+        std::snprintf(d, sizeof d, "expected 0 for a partial line, got %d", r);
+        fail(n1, d);
+    }
+
+    const char* n2 {"cooked_full_line_ready_and_drains"};
+    arm(n2);
+    INPUT_RECORD cr {key_rec(true, VK_RETURN, L'\r')};
+    inject_one(cr);
+    r = console_probe::stdin_ready(g_in);
+    if (r != 1) {
+        disarm();
+        char d[96];
+        std::snprintf(d, sizeof d, "expected 1 once Enter was queued, got %d", r);
+        fail(n2, d);
+    } else {
+        unsigned char got[64];
+        int n {drain(got, static_cast<int>(sizeof got))};
+        wchar_t after[128];
+        read_screen_row(after, 128);
+        disarm();
+        if (n == 4 && std::memcmp(got, "ab\r\n", 4) == 0) {
+            pass(n2);
+        } else {
+            char gothex[192], d[320];
+            hex(got, n, gothex, sizeof gothex);
+            std::snprintf(d, sizeof d,
+                "drained %d byte(s) [%s], expected 4 [61 62 0D 0A]", n, gothex);
+            fail(n2, d);
+        }
+        emitf("       (echo observation, OQ-6: screen row before the read was \"%ls\", "
+              "after the read \"%ls\")\n", before, after);
+    }
+    expect_quiescent(n2);
+    flush_queue();
+}
+
+/* AC-13: no probe-side state outlives a single guest read, and the cooked-line-then-raw
+   sequence in particular reports not ready rather than latching ready for the rest of the
+   session. This is the criterion that catches the silent no-op, the defect that survived
+   cycle 1 because nothing could detect it. Against the withdrawn cooked-remainder flag it
+   fails by either of two routes: a wrong answer at step 6 if the console keeps the cooked
+   remainder across the mode switch, or a watchdog kill at step 5 if it drops it. Step 6 is
+   the assertion, and no blocking read is needed to detect the failure, because the wrong
+   answer IS the failure. */
+void case_cooked_then_raw() {
+    const char* n {"cooked_then_raw_no_latched_ready"};
+    arm(n);
+    set_cooked();
+    flush_queue();
+    INPUT_RECORD line[3] {char_rec(L'a'), char_rec(L'b'), key_rec(true, VK_RETURN, L'\r')};
+    if (!inject(line, 3)) {
+        disarm();
+        fail(n, "WriteConsoleInputW failed");
+        return;
+    }
+
+    if (console_probe::stdin_ready(g_in) != 1) {
+        disarm();
+        fail(n, "step 2: the probe did not report ready for a complete cooked line");
+        return;
+    }
+
+    // Step 3: read exactly two bytes with two single-byte reads, so the console's line
+    // remainder is left in the pre-read buffer rather than in the console.
+    unsigned char two[2] {0, 0};
+    for (int i = 0; i < 2; ++i) {
+        if (console_probe::read_console(g_in, &two[i], 1) != 1) {
+            disarm();
+            fail(n, "step 3: a single-byte read of a line reported ready returned nothing");
+            return;
+        }
+    }
+    if (two[0] != 'a' || two[1] != 'b') {
+        disarm();
+        char d[96];
+        std::snprintf(d, sizeof d, "step 3: expected 'a','b', got 0x%02X,0x%02X",
+                      two[0], two[1]);
+        fail(n, d);
+        return;
+    }
+
+    // Step 4: switch to raw, clearing ENABLE_LINE_INPUT, with bytes still owed.
+    set_raw();
+
+    // Step 5: the probe must still report ready, and the drain loop must deliver the
+    // rest of the line one byte at a time. Input queued before a mode switch is
+    // delivered after it, which matches the POSIX reference this card brings Windows
+    // into line with: a termios change does not discard already-queued input unless the
+    // caller asks for a flush.
+    unsigned char rest[16];
+    int n_rest {drain(rest, static_cast<int>(sizeof rest))};
+    disarm();
+    if (n_rest != 2 || rest[0] != '\r' || rest[1] != '\n') {
+        char resthex[64], d[192];
+        hex(rest, n_rest, resthex, sizeof resthex);
+        std::snprintf(d, sizeof d,
+            "step 5: expected the remaining 2 bytes [0D 0A] after the mode switch, got "
+            "%d [%s]", n_rest, resthex);
+        fail(n, d);
+        flush_queue();
+        return;
+    }
+
+    // Step 6: the assertion. Record queue empty, buffer drained, so the probe MUST say 0.
+    int r {console_probe::stdin_ready(g_in)};
+    if (r == 0) {
+        pass(n);
+    } else {
+        char d[128];
+        std::snprintf(d, sizeof d,
+            "step 6: probe answered %d with the queue empty and everything drained "
+            "(readiness latched across the mode switch)", r);
+        fail(n, d);
+    }
+    flush_queue();
+}
+
+/* AC-14: the console input-mode mask, verified in BOTH branches. Cycle 1 specified the
+   mask and tested nothing, and the cooked branch is where it matters most, because it
+   wrote the inherited mode back verbatim.
+
+   The test drives this through host_tty's own entry points rather than a copy of them:
+   set an inherited mode that HAS the bits the mask must remove plus several that must
+   survive, then host_tty::init() (which captures its original from GetStdHandle, which
+   AllocConsole reassigned to this console), then termios_set with a raw image and with a
+   cooked one, reading the mode back after each. The final restore() must put the original
+   back, unmasked, which also covers the restore path.
+
+   The AC's "every other bit of the original inherited mode is unchanged" is asserted
+   literally for the cooked branch. For the raw branch it is asserted as the documented
+   raw transform, which additionally clears the three line-discipline bits and sets VT
+   input: raw mode changes those by definition, so a literal reading of the clause cannot
+   hold there and asserting it would be asserting something false. */
+void case_host_tty_mask() {
+    const char* n {"host_tty_input_mode_mask"};
+    arm(n);
+
+    const DWORD inherited {ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT
+                           | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT
+                           | ENABLE_INSERT_MODE | ENABLE_QUICK_EDIT_MODE
+                           | ENABLE_EXTENDED_FLAGS};
+    if (!SetConsoleMode(g_in, inherited)) {
+        disarm();
+        fail(n, "could not install the crafted inherited console mode");
+        return;
+    }
+
+    /* host_tty::init() takes its handles from GetStdHandle. AllocConsole reassigns the
+       standard handles only where they were not already redirected, and under the test
+       runner this process's stdout IS redirected to a pipe, so point them at the console
+       explicitly. The report keeps going to the handle captured before FreeConsole, so
+       the harness still sees these lines. */
+    HANDLE saved_in {GetStdHandle(STD_INPUT_HANDLE)};
+    HANDLE saved_out {GetStdHandle(STD_OUTPUT_HANDLE)};
+    SetStdHandle(STD_INPUT_HANDLE, g_in);
+    SetStdHandle(STD_OUTPUT_HANDLE, g_out);
+
+    host_tty::init();
+    if (!host_tty::active()) {
+        disarm();
+        SetStdHandle(STD_INPUT_HANDLE, saved_in);
+        SetStdHandle(STD_OUTPUT_HANDLE, saved_out);
+        fail(n, "host_tty::init() did not see an interactive console");
+        return;
+    }
+
+    unsigned char image[maize::console::TERMIOS_SIZE];
+    host_tty::termios_get(image);
+
+    const DWORD mask {ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT};
+    const DWORD want_cooked {inherited & ~mask};
+    const DWORD want_raw {(want_cooked
+                           & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT))
+                          | ENABLE_VIRTUAL_TERMINAL_INPUT};
+
+    // Raw: the guest clears ICANON.
+    unsigned lflag {static_cast<unsigned>(image[maize::console::TERMIOS_OFF_LFLAG])
+                    | (static_cast<unsigned>(image[maize::console::TERMIOS_OFF_LFLAG + 1]) << 8)};
+    image[maize::console::TERMIOS_OFF_LFLAG] =
+        static_cast<unsigned char>((lflag & ~maize::console::TERMIOS_ICANON) & 0xFF);
+    host_tty::termios_set(image);
+    DWORD got_raw {current_mode()};
+
+    // Cooked: the guest sets ICANON again.
+    image[maize::console::TERMIOS_OFF_LFLAG] =
+        static_cast<unsigned char>((lflag | maize::console::TERMIOS_ICANON) & 0xFF);
+    host_tty::termios_set(image);
+    DWORD got_cooked {current_mode()};
+
+    host_tty::restore();
+    DWORD got_restored {current_mode()};
+    SetStdHandle(STD_INPUT_HANDLE, saved_in);
+    SetStdHandle(STD_OUTPUT_HANDLE, saved_out);
+    disarm();
+
+    bool ok {got_raw == want_raw && got_cooked == want_cooked
+             && got_restored == inherited};
+    if (ok) {
+        pass(n);
+    } else {
+        char d[384];
+        std::snprintf(d, sizeof d,
+            "raw 0x%08lX (want 0x%08lX), cooked 0x%08lX (want 0x%08lX), "
+            "restored 0x%08lX (want 0x%08lX)",
+            got_raw, want_raw, got_cooked, want_cooked, got_restored, inherited);
+        fail(n, d);
+    }
+}
+
 }  // namespace
 
 /* ======================================================================================
@@ -510,7 +859,13 @@ int run_cases() {
 
     case_empty_queue();
     case_classification();
+    case_drain_raw();
+    case_vt_coverage();
+    case_cooked_line();
+    case_cooked_then_raw();
     case_nul_device();
+    // Last: it hands the console to host_tty, which installs its own atexit restore.
+    case_host_tty_mask();
 
     emitf("console_probe: %d passed, %d failed (%d total)\n",
           g_cases - g_failures, g_failures, g_cases);

@@ -74,10 +74,25 @@ namespace maize {
 			DWORD g_orig_in = 0;
 			DWORD g_orig_out = 0;
 
+			/* maize-345 (D-6): while the VM owns the console its input queue must carry key
+			   records only. A console whose inherited mode has mouse input on and quick-edit
+			   off queues a mouse-move record per pointer motion, which can head-block the
+			   readiness probe's peek window; in cooked mode that is unrecoverable, because the
+			   probe is forbidden from consuming there (the console's own line editor needs
+			   those records for history and editing). The guest has no mouse and reads the
+			   window size by polling GetConsoleScreenBufferInfo (get_winsize below) rather
+			   than by consuming resize records, so masking these two loses nothing. Every
+			   other bit passes through unchanged, including the extended-flags and quick-edit
+			   bits, and restore() still puts back the unmasked mode init() saved. */
+			constexpr DWORD kInputMaskOff = ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT;
+
 			void apply_host(bool raw) {
 				if (!g_active) { return; }
+				/* The cooked branch needs this as much as the raw one: before maize-345 it
+				   wrote g_orig_in back verbatim. */
+				DWORD base_in = g_orig_in & ~kInputMaskOff;
 				if (raw) {
-					DWORD in = g_orig_in;
+					DWORD in = base_in;
 					in &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
 					in |= ENABLE_VIRTUAL_TERMINAL_INPUT;   // arrow keys etc. as VT escape sequences
 					SetConsoleMode(g_hin, in);
@@ -88,7 +103,7 @@ namespace maize {
 					   \n -> CR-LF, or its output stair-steps. */
 					SetConsoleMode(g_hout, g_orig_out | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN);
 				} else {
-					SetConsoleMode(g_hin, g_orig_in);
+					SetConsoleMode(g_hin, base_in);
 					SetConsoleMode(g_hout, g_orig_out);
 				}
 			}

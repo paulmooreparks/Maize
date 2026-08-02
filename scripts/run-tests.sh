@@ -1842,6 +1842,16 @@ run_console_esc_test() {
 
 run_console_esc_test
 
+# maize-345: the Windows console readiness-probe leg (Invoke-ConsoleProbeTest in
+# run-tests.ps1) has no Linux twin and is not silently omitted. It drives
+# console_probe_test.exe, which owns a console of its own via FreeConsole + AllocConsole +
+# CONIN$ and injects INPUT_RECORDs into it with WriteConsoleInputW; there is no POSIX
+# equivalent of any of that, and the POSIX readiness probe it would be testing is a real
+# poll(fd0)+FIONREAD that this suite's pty keystroke legs already cover. Listed here per
+# the maize-215 test-runner-sync rule, the same way run-tests.ps1 lists the POSIX-only
+# presenter and pty legs it cannot run.
+echo "[SKIP] console_probe (Win32 console-injection harness is Windows-only; runs on the Windows leg of run-tests.ps1)"
+
 PASS_COUNT=$((TOTAL - FAIL_COUNT))
 echo ""
 echo "${PASS_COUNT} passed, ${FAIL_COUNT} failed (${TOTAL} total)"

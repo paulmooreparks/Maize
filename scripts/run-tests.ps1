@@ -676,6 +676,45 @@ function Invoke-KeyboardTest {
     return [pscustomobject]@{ Name = $name; Pass = $pass; Expected = $expected; Actual = $actual }
 }
 
+# --- maize-345: the Windows console readiness probe (interactive console) ---------------
+# The other legs feed a pipe, so none of them reaches the FILE_TYPE_CHAR branch of
+# console_stdin_ready; the pty keystroke leg that would is Linux-only. console_probe_test
+# owns a console of its own (FreeConsole + AllocConsole + CONIN$) and injects input
+# records into it, so the predicate, the pre-read byte buffer, the cooked and raw
+# retention behaviour and the host_tty input-mode mask are all exercised against a real
+# console object. It prints one PASS/FAIL line per case and exits nonzero on any failure,
+# so this runner reports its lines verbatim rather than reformatting them.
+#
+# A runner without a console host (OQ-2) cannot AllocConsole. The binary prints a [SKIP]
+# line and exits 0 in that case, which this leg reports as a pass with the reason visible,
+# rather than failing a machine that simply cannot host the configuration.
+function Invoke-ConsoleProbeTest {
+    $name = 'console_probe'
+    $exe = Join-Path $BuildDir 'console_probe_test.exe'
+    if (-not (Test-Path $exe)) {
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'exit 0'; Actual = "not built: $exe" }
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stdout = $proc.StandardOutput.ReadToEnd()
+    $null = $proc.StandardError.ReadToEnd()
+    if (-not $proc.WaitForExit(120000)) {
+        try { $proc.Kill() } catch { }
+        return [pscustomobject]@{ Name = $name; Pass = $false; Expected = 'exit 0'; Actual = 'timed out (the binary carries its own per-case watchdog, so this means it never started)' }
+    }
+    $me = $proc.ExitCode
+
+    foreach ($line in ($stdout -split "`r?`n")) {
+        if ($line.Trim().Length -gt 0) { Write-Host "        $line" }
+    }
+    return [pscustomobject]@{ Name = $name; Pass = ($me -eq 0); Expected = 'exit 0 (every console case passes)'; Actual = "exit $me" }
+}
+
 # --- maize-240: a masked-window IRQ collision must deliver BOTH vectors ----------------
 # A periodic timer (vector 32) and the console readiness IRQ (vector 33) raised inside the
 # same masked window must both survive delivery; the old single-slot latch dropped one, and
@@ -822,6 +861,7 @@ $results += Invoke-TimerPeriod1Test
 $results += Invoke-SysreadTest
 $results += Invoke-KeyboardTest
 $results += Invoke-IrqCollisionTest
+$results += Invoke-ConsoleProbeTest
 $results += Invoke-FbRejectTest
 $results += Invoke-FbStopTest
 
