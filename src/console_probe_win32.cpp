@@ -30,13 +30,15 @@
    see, and then reads the bytes back one at a time behind a sentinel so no read can block.
 
    RAW MODE IS THE PER-BYTE-RECORD WORLD, the one the spec named first. The console
-   expands a virtual key into ONE KEY_EVENT RECORD PER BYTE, and it does so when the
-   record is QUEUED rather than when it is read. Each expanded record carries
-   wVirtualKeyCode 0, wVirtualScanCode 0 and one byte of the sequence in UnicodeChar. One
-   injected VK_LEFT leaves THREE records queued (0x1B, 0x5B, 0x44) and the count falls
-   3, 2, 1, 0 across the three one-byte reads; VK_F5 leaves five and falls 5, 4, 3, 2, 1,
-   0. Every byte of every sequence below is therefore visible to a peek, and a peek-only
-   predicate would NOT strand any of them:
+   expands a virtual key into ONE KEY_EVENT RECORD PER BYTE, and the expansion is already
+   done by the time the record is visible to a peek, before any read has happened. Each
+   expanded record carries wVirtualKeyCode 0, wVirtualScanCode 0 and one byte of the
+   sequence in UnicodeChar. One injected VK_LEFT leaves THREE records queued (0x1B, 0x5B,
+   0x44) and the count falls 3, 2, 1, 0 across the three one-byte reads; VK_F5 leaves five
+   and falls 5, 4, 3, 2, 1, 0. What decides the expansion is the console mode in force when
+   the record is QUEUED, which the vtoff_* rows measure directly: the same injection under
+   VT input clear leaves the virtual key intact. Every byte of every sequence below is
+   therefore visible to a peek, and a peek-only predicate would NOT strand any of them:
 
        VK_LEFT    1B 5B 44        VK_PRIOR   1B 5B 35 7E     VK_F1   1B 4F 50
        VK_RIGHT   1B 5B 43        VK_NEXT    1B 5B 36 7E     VK_F2   1B 4F 51
@@ -61,9 +63,12 @@
    load-bearing. Records for "ab" then Enter stay unexpanded in the queue, each with its
    real virtual key and scan code. The FIRST one-byte read consumes all three records and
    the queue drops to zero while three bytes (62 0D 0A) are still owed. Those bytes live
-   inside conhost where no peek can see them, and FlushConsoleInputBuffer does not discard
-   them either, so a peek-only predicate answers 0 with a line's tail still readable and
-   the guest parks on input it already has.
+   inside conhost where no peek can see them, so a peek-only predicate answers 0 with a
+   line's tail still readable and the guest parks on input it already has. A
+   FlushConsoleInputBuffer does not appear to discard them: the observation behind that
+   sentence is indirect, and it is that an early version of --measure flushed between rows
+   and the previous cooked line's tail still surfaced as two phantom bytes at the head of
+   a later row, with that row's own record still queued.
 
    Two consequences drive everything below, and they are not the two an earlier version of
    this comment drew. The pre-read byte buffer is required, for COOKED mode, because it is
@@ -211,9 +216,12 @@ namespace {
        the read consumed it and produced nothing. VK_F5 and VK_BACK behave the same way.
 
        So on this console every member of this set is OVER-inclusive in the only state
-       where the set is consulted, which is the dangerous direction: the probe answers 1,
-       the fill then blocks inside ReadFile until some other key is pressed, and that is
-       this card's own failure mechanism reappearing inside its fix. The narrow window and
+       where the set is consulted, which is the dangerous direction. The probe answers 1;
+       the fill would then find no byte in that record and, since a console ReadFile waits
+       for one, would block until some other key was pressed, which is this card's own
+       failure mechanism reappearing inside its fix. That last step is the one thing here
+       NOT measured, deliberately: the case that reaches this state does not read, because
+       a read that blocks is exactly what the per-case watchdog kills. The narrow window and
        the recovery-on-next-keystroke bound the cost, and an UNDER-inclusive member would
        cost only one keystroke of latency (the record stays queued, the next ordinary
        character makes the probe answer 1, and the following read steps over the stale

@@ -326,9 +326,12 @@ namespace maize {
         u_word read(u_word fd, void* buf, u_word count) {
             if (fd == 0) {
                 /* maize-345: an interactive console goes through the console TU, whose
-                   read is buffered so the bytes the console retains past a one-byte
-                   guest read stay visible to the readiness probe. Pipes and files keep
-                   the chunking loop below, byte for byte. */
+                   read is buffered so that the bytes a COOKED read leaves owed past a
+                   one-byte guest read stay visible to the readiness probe; conhost holds
+                   those inside itself where no peek can see them. Raw mode does not need
+                   the buffer (one record per byte, all of it peekable) and takes the same
+                   path anyway. Pipes and files keep the chunking loop below, byte for
+                   byte. */
                 HANDLE h {stdin_handle()};
                 if (console_probe::is_console(h)) {
                     unsigned long want {static_cast<unsigned long>(
