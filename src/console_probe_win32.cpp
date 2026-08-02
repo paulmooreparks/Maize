@@ -33,7 +33,12 @@
                                   VK_F7      1B 5B 31 38 7E  VK_F11  1B 5B 32 33 7E
                                   VK_F8      1B 5B 31 39 7E  VK_F12  1B 5B 32 34 7E
 
-       VK_SHIFT, VK_CONTROL, VK_MENU, VK_CAPITAL: no bytes at all.
+       VK_BACK    7F              VK_TAB     09              VK_RETURN  0D
+       VK_ESCAPE: no bytes at all, which is why it is the one control key NOT in
+       vt_translated (see the set below).
+
+       VK_SHIFT, VK_CONTROL, VK_MENU, VK_CAPITAL, VK_LWIN, VK_NUMLOCK, VK_SCROLL,
+       VK_APPS: no bytes at all, which is what the OQ-7 flush allowlist rests on.
        'a': 61.  U+00E9 under code page 437: the single byte 82.
        Cooked mode, records for "ab" then Enter: 61 62 0D 0A, delivered one byte per
        read with the record queue empty from the first byte onward.
@@ -157,9 +162,25 @@ namespace {
        translates to nothing, the fill would then block until some other key was pressed,
        and that is this card's own failure mechanism reappearing inside its fix.
 
-       Keys whose translation is a single control character (Backspace, Tab, Escape,
-       Enter) are absent on purpose: the console puts that character in UnicodeChar, so
-       record_yields_byte's character clause already covers them. */
+       The last three members are here because measurement contradicted the reasoning
+       that first left them out. Backspace, Tab, Escape and Enter were originally absent
+       on the theory that the console puts their control character in UnicodeChar, so the
+       character clause above would already cover them. Measured with UnicodeChar 0, that
+       theory is wrong for three of the four: VK_BACK yields 7F (the VT DEL convention,
+       not 08), VK_TAB yields 09 and VK_RETURN yields 0D, all translated at read time
+       exactly like an arrow key. VK_ESCAPE is the one member of that group that does NOT
+       fit, and it is said out loud rather than left implicit: it yields nothing at all,
+       so it stays OUT of this set and a bare Escape record with no character is correctly
+       reported as nothing pending.
+
+       The asymmetry is worth stating, because it is what makes adding a member safe. An
+       OVER-inclusive member is the dangerous direction: the probe answers ready for a key
+       the console translates to nothing, and the fill then blocks, which is this card's
+       own failure mechanism. Measurement is what rules that out, and every member here is
+       measured non-empty. An UNDER-inclusive member costs one keystroke of latency (the
+       record stays queued, and the next ordinary character makes the probe answer 1 and
+       the following read returns the translation first) and, since OQ-7 made the flush an
+       allowlist, cannot cost the keystroke itself. */
     bool vt_translated(WORD vk) {
         switch (vk) {
             case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN:
@@ -168,6 +189,7 @@ namespace {
             case VK_F1: case VK_F2: case VK_F3: case VK_F4:
             case VK_F5: case VK_F6: case VK_F7: case VK_F8:
             case VK_F9: case VK_F10: case VK_F11: case VK_F12:
+            case VK_BACK: case VK_TAB: case VK_RETURN:
                 return true;
             default:
                 return false;

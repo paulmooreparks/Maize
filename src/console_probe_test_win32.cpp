@@ -460,10 +460,38 @@ void case_vt_coverage() {
         { VK_F10,    "vt_VK_F10",    "\x1B[21~" },
         { VK_F11,    "vt_VK_F11",    "\x1B[23~" },
         { VK_F12,    "vt_VK_F12",    "\x1B[24~" },
+        /* The three control keys measurement put INTO the set, against the reasoning
+           that first left them out. VK_BACK yields 7F (the VT DEL convention) rather
+           than the 08 a reader would predict. */
+        { VK_BACK,   "vt_VK_BACK",   "\x7F" },
+        { VK_TAB,    "vt_VK_TAB",    "\x09" },
+        { VK_RETURN, "vt_VK_RETURN", "\x0D" },
     };
     for (const row& r : rows) {
         INPUT_RECORD rec {key_rec(true, r.vk, 0)};
         run_drain_case(r.name, &rec, 1, r.want, static_cast<int>(std::strlen(r.want)));
+    }
+
+    /* VK_ESCAPE is the member of that control-key group that does NOT belong, and the
+       negative is asserted rather than left implicit: a bare Escape record with no
+       character yields no bytes, so the probe must report nothing pending. If a future
+       console starts translating it, this case fails and the set gets a new member. */
+    {
+        const char* n {"vt_VK_ESCAPE_not_translated"};
+        arm(n);
+        set_raw();
+        flush_queue();
+        INPUT_RECORD esc {key_rec(true, VK_ESCAPE, 0)};
+        inject_one(esc);
+        int r {console_probe::stdin_ready(g_in)};
+        disarm();
+        if (r == 0) { pass(n); }
+        else {
+            char d[96];
+            std::snprintf(d, sizeof d, "expected 0 (the console translates it to nothing), got %d", r);
+            fail(n, d);
+        }
+        flush_queue();
     }
 }
 
@@ -818,7 +846,15 @@ const vk_row kVkCandidates[] = {
     { VK_F5, "VK_F5" }, { VK_F6, "VK_F6" }, { VK_F7, "VK_F7" }, { VK_F8, "VK_F8" },
     { VK_F9, "VK_F9" }, { VK_F10, "VK_F10" }, { VK_F11, "VK_F11" }, { VK_F12, "VK_F12" },
     { VK_SHIFT, "VK_SHIFT" }, { VK_CONTROL, "VK_CONTROL" }, { VK_MENU, "VK_MENU" },
-    { VK_CAPITAL, "VK_CAPITAL" },
+    { VK_CAPITAL, "VK_CAPITAL" }, { VK_LWIN, "VK_LWIN" }, { VK_NUMLOCK, "VK_NUMLOCK" },
+    { VK_SCROLL, "VK_SCROLL" }, { VK_APPS, "VK_APPS" },
+    /* The four keys whose translation is a single control character. They are absent
+       from vt_translated on the theory that the console puts the character in
+       UnicodeChar, so record_yields_byte's character clause already covers them; these
+       rows are what turns that theory into a measurement, by injecting each one with
+       UnicodeChar 0 and recording what a read produces. */
+    { VK_BACK, "VK_BACK" }, { VK_TAB, "VK_TAB" }, { VK_ESCAPE, "VK_ESCAPE" },
+    { VK_RETURN, "VK_RETURN" },
 };
 
 int run_measure() {
