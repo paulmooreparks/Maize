@@ -171,6 +171,51 @@ bool inject(const INPUT_RECORD* recs, DWORD count) {
 
 bool inject_one(const INPUT_RECORD& r) { return inject(&r, 1); }
 
+/* ---- queue observation ---------------------------------------------------------------
+   The record queue is a different observable from the byte stream, and cycle 2 shipped a
+   claim about the first while measuring only the second. These two helpers are what makes
+   the queue observable: GetNumberOfConsoleInputEvents answers how many records are
+   waiting, and PeekConsoleInputW answers what they are. Neither consumes anything and
+   neither can block, so a case or a measurement may call them freely.
+
+   Read the counterexamples doc's Entry 35 before writing a sentence about the console into
+   a comment: name the API call whose return value the sentence is about, and check that
+   the instrument calls it. */
+DWORD queued_records() {
+    DWORD n {0};
+    if (!GetNumberOfConsoleInputEvents(g_in, &n)) { return static_cast<DWORD>(-1); }
+    return n;
+}
+
+/* Print every record currently queued, one line each. Peeks only. The count goes out
+   unindented so a caller can emit a label first; the per-record lines take the indent. */
+void dump_queue(const char* indent) {
+    DWORD pending {queued_records()};
+    if (pending == static_cast<DWORD>(-1)) {
+        emitf("GetNumberOfConsoleInputEvents failed, error %lu\n", GetLastError());
+        return;
+    }
+    emitf("%lu record(s) queued\n", pending);
+    if (pending == 0) { return; }
+    INPUT_RECORD rec[64];
+    DWORD got {0};
+    if (!PeekConsoleInputW(g_in, rec, 64, &got)) {
+        emitf("%sPeekConsoleInputW failed, error %lu\n", indent, GetLastError());
+        return;
+    }
+    for (DWORD i = 0; i < got; ++i) {
+        const INPUT_RECORD& r {rec[i]};
+        if (r.EventType == KEY_EVENT) {
+            const KEY_EVENT_RECORD& k {r.Event.KeyEvent};
+            emitf("%s  [%lu] KEY down=%d vk=0x%02X sc=0x%02X uChar=0x%04X\n",
+                  indent, i, k.bKeyDown ? 1 : 0, k.wVirtualKeyCode, k.wVirtualScanCode,
+                  static_cast<unsigned>(k.uChar.UnicodeChar));
+        } else {
+            emitf("%s  [%lu] EventType=%u (not a KEY_EVENT)\n", indent, i, r.EventType);
+        }
+    }
+}
+
 /* The drain loop quesOS actually runs: probe, and while it answers 1 read EXACTLY one
    byte and append it, stopping when the probe answers 0 (src/devices.cpp:62 reads one
    byte per data-port read). Reading with a multi-byte buffer passes in all three
@@ -270,14 +315,28 @@ void case_empty_queue() {
 }
 
 /* AC-3: record classification, one record per case into an otherwise empty queue, in raw
-   mode. The key-up case carries a NON-ZERO UnicodeChar on purpose, so a filter that keys
-   on the character alone and ignores bKeyDown fails it. This is the criterion that stops
-   the fix recreating the bug in a subtler form by counting non-byte records as pending. */
+   mode. This is the criterion that stops the fix recreating the bug in a subtler form by
+   counting non-byte records as pending.
+
+   Every row asserts TWO things, and the first of them is why. A row that only asserted the
+   probe's answer would pass vacuously wherever conhost discards the record before it ever
+   reaches the queue, and three rows here are in exactly that position: a key-up record and
+   a bare-modifier key-down are dropped at WRITE time, so the probe returns 0 from its
+   `pending == 0` early exit without the classifier being consulted at all. A green line
+   there proves nothing about the predicate. So each row also states how many records the
+   console kept, which is a real observable with a real way to fail, and the predicate's own
+   coverage lives in case_classifier_unit below, where the records are synthesized and the
+   console cannot drop them.
+
+   The key-up row carries a NON-ZERO UnicodeChar on purpose, so that when the classifier IS
+   consulted (in the unit case, or on a console that queues key-ups) a filter keying on the
+   character alone and ignoring bKeyDown fails it. */
 void case_classification() {
     struct row {
         const char*  name;
         INPUT_RECORD rec;
-        int          want;
+        int          want_queued;   // records the console keeps for this injection
+        int          want;          // the probe's answer
     };
 
     INPUT_RECORD mouse;      std::memset(&mouse, 0, sizeof mouse);
@@ -298,13 +357,14 @@ void case_classification() {
     menu.Event.MenuEvent.dwCommandId = 0;
 
     const row rows[] = {
-        { "cls_keydown_with_char_is_ready",   char_rec(L'a'),                     1 },
-        { "cls_keyup_with_char_not_ready",    key_rec(false, 'A', L'a'),          0 },
-        { "cls_modifier_keydown_not_ready",   key_rec(true, VK_SHIFT, 0),         0 },
-        { "cls_mouse_event_not_ready",        mouse,                              0 },
-        { "cls_window_size_event_not_ready",  resize,                             0 },
-        { "cls_focus_event_not_ready",        focus,                              0 },
-        { "cls_menu_event_not_ready",         menu,                               0 },
+        { "cls_keydown_with_char_is_ready",        char_rec(L'a'),            1, 1 },
+        { "cls_keyup_dropped_at_write_time",       key_rec(false, 'A', L'a'), 0, 0 },
+        { "cls_modifier_keydown_dropped_at_write_time",
+                                                   key_rec(true, VK_SHIFT, 0), 0, 0 },
+        { "cls_mouse_event_not_ready",             mouse,                     1, 0 },
+        { "cls_window_size_event_not_ready",       resize,                    1, 0 },
+        { "cls_focus_event_not_ready",             focus,                     1, 0 },
+        { "cls_menu_event_not_ready",              menu,                      1, 0 },
     };
 
     for (const row& r : rows) {
@@ -318,13 +378,17 @@ void case_classification() {
             fail(r.name, d);
             continue;
         }
+        // Before the probe: the probe's raw branch may consume this record (D-5's flush).
+        DWORD queued {queued_records()};
         int got {console_probe::stdin_ready(g_in)};
         disarm();
-        if (got == r.want) {
+        if (got == r.want && queued == static_cast<DWORD>(r.want_queued)) {
             pass(r.name);
         } else {
-            char d[96];
-            std::snprintf(d, sizeof d, "expected %d, got %d", r.want, got);
+            char d[160];
+            std::snprintf(d, sizeof d,
+                "expected probe %d with %d record(s) queued, got probe %d with %lu queued",
+                r.want, r.want_queued, got, queued);
             fail(r.name, d);
         }
         // Drain whatever the case made readable so the next case starts clean. Armed,
@@ -334,6 +398,151 @@ void case_classification() {
         drain(sink, 32);
         disarm();
         flush_queue();
+    }
+}
+
+/* The 25 members of vt_translated, with the byte sequence --measure recorded for each.
+   Shared by the console-level drain cases and by the predicate-level unit cases, so the
+   two can never disagree about what the set contains. */
+struct vt_member { WORD vk; const char* name; const char* bytes; };
+
+const vt_member kVtMembers[] = {
+    { VK_LEFT,   "VK_LEFT",   "\x1B[D" },     { VK_RIGHT,  "VK_RIGHT",  "\x1B[C" },
+    { VK_UP,     "VK_UP",     "\x1B[A" },     { VK_DOWN,   "VK_DOWN",   "\x1B[B" },
+    { VK_HOME,   "VK_HOME",   "\x1B[H" },     { VK_END,    "VK_END",    "\x1B[F" },
+    { VK_PRIOR,  "VK_PRIOR",  "\x1B[5~" },    { VK_NEXT,   "VK_NEXT",   "\x1B[6~" },
+    { VK_INSERT, "VK_INSERT", "\x1B[2~" },    { VK_DELETE, "VK_DELETE", "\x1B[3~" },
+    { VK_F1,     "VK_F1",     "\x1BOP" },     { VK_F2,     "VK_F2",     "\x1BOQ" },
+    { VK_F3,     "VK_F3",     "\x1BOR" },     { VK_F4,     "VK_F4",     "\x1BOS" },
+    { VK_F5,     "VK_F5",     "\x1B[15~" },   { VK_F6,     "VK_F6",     "\x1B[17~" },
+    { VK_F7,     "VK_F7",     "\x1B[18~" },   { VK_F8,     "VK_F8",     "\x1B[19~" },
+    { VK_F9,     "VK_F9",     "\x1B[20~" },   { VK_F10,    "VK_F10",    "\x1B[21~" },
+    { VK_F11,    "VK_F11",    "\x1B[23~" },   { VK_F12,    "VK_F12",    "\x1B[24~" },
+    /* The three control keys measurement put INTO the set, against the reasoning that
+       first left them out. VK_BACK yields 7F (the VT DEL convention) rather than the 08 a
+       reader would predict. */
+    { VK_BACK,   "VK_BACK",   "\x7F" },       { VK_TAB,    "VK_TAB",    "\x09" },
+    { VK_RETURN, "VK_RETURN", "\x0D" },
+};
+
+/* AC-3 and OQ-9, at the level the predicate actually lives at. record_yields_byte is a
+   pure classifier over a peeked record, and the spec exposes it saying it is "testable
+   with synthesized records, which is the whole reason it is exposed". Until this case
+   existed nothing in the automated suite called it: its only two call sites in this binary
+   were inside --diagnostic, which is a manual mode, and every other case drove it through
+   stdin_ready against a real console.
+
+   Driving it through the console cannot cover it, for two independent reasons that only
+   showed up once the record queue was measured rather than inferred. Conhost DISCARDS some
+   record shapes at write time, so those never reach the classifier at all. And conhost
+   EXPANDS virtual keys into per-byte records before they queue, so every record it does
+   present carries a non-zero UnicodeChar and the classifier answers at its character
+   clause, leaving the vt_translated clause below it unreached. The 25-member set was
+   therefore untested in both directions while 25 green lines said otherwise.
+
+   These cases synthesize the records and call the classifier directly. No console is
+   involved, so no console behaviour can make one of them vacuous, and the set's membership
+   is asserted in both directions and under both console modes. */
+void case_classifier_unit() {
+    const DWORD vt_on {ENABLE_VIRTUAL_TERMINAL_INPUT};
+    const DWORD vt_off {0};
+
+    {
+        const char* n {"clf_keydown_with_char_yields_byte"};
+        INPUT_RECORD r {char_rec(L'a')};
+        check(n, console_probe::record_yields_byte(r, vt_on)
+                 && console_probe::record_yields_byte(r, vt_off),
+              "a key-down carrying a character must yield a byte in either console mode");
+    }
+    {
+        const char* n {"clf_keyup_yields_nothing"};
+        INPUT_RECORD r {key_rec(false, 'A', L'a')};
+        check(n, !console_probe::record_yields_byte(r, vt_on),
+              "a key-up yields nothing even when it carries a character");
+    }
+    {
+        const char* n {"clf_non_key_records_yield_nothing"};
+        INPUT_RECORD recs[4];
+        for (INPUT_RECORD& r : recs) { std::memset(&r, 0, sizeof r); }
+        recs[0].EventType = MOUSE_EVENT;
+        recs[1].EventType = WINDOW_BUFFER_SIZE_EVENT;
+        recs[2].EventType = FOCUS_EVENT;
+        recs[3].EventType = MENU_EVENT;
+        bool ok {true};
+        for (const INPUT_RECORD& r : recs) {
+            if (console_probe::record_yields_byte(r, vt_on)) { ok = false; }
+        }
+        check(n, ok, "mouse, resize, focus and menu records yield no bytes");
+    }
+    {
+        /* The OQ-7 flush allowlist's case (c) at the predicate level. These are the keys
+           whose records conhost drops at write time, so the console can never present one
+           to the probe; synthesizing them is the only way to assert the classification. */
+        const char* n {"clf_bare_modifiers_yield_nothing"};
+        const WORD vks[] = {
+            VK_SHIFT, VK_LSHIFT, VK_RSHIFT, VK_CONTROL, VK_LCONTROL, VK_RCONTROL,
+            VK_MENU, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN, VK_APPS,
+            VK_CAPITAL, VK_NUMLOCK, VK_SCROLL,
+        };
+        char detail[128] {0};
+        for (WORD vk : vks) {
+            INPUT_RECORD r {key_rec(true, vk, 0)};
+            if (console_probe::record_yields_byte(r, vt_on)) {
+                std::snprintf(detail, sizeof detail,
+                              "vk 0x%02X is classified as yielding a byte", vk);
+                break;
+            }
+        }
+        check(n, detail[0] == 0, detail[0] ? detail : "");
+    }
+    {
+        const char* n {"clf_vt_members_yield_byte_when_vt_on"};
+        char detail[128] {0};
+        for (const vt_member& m : kVtMembers) {
+            INPUT_RECORD r {key_rec(true, m.vk, 0)};
+            if (!console_probe::record_yields_byte(r, vt_on)) {
+                std::snprintf(detail, sizeof detail, "%s is not in vt_translated", m.name);
+                break;
+            }
+        }
+        check(n, detail[0] == 0, detail[0] ? detail : "");
+    }
+    {
+        /* The mode guard, which is what keeps the set out of cooked mode: the console's own
+           line editor owns those records there, and D-5 excludes cooked mode from the flush
+           for the same reason. */
+        const char* n {"clf_vt_members_yield_nothing_when_vt_off"};
+        char detail[128] {0};
+        for (const vt_member& m : kVtMembers) {
+            INPUT_RECORD r {key_rec(true, m.vk, 0)};
+            if (console_probe::record_yields_byte(r, vt_off)) {
+                std::snprintf(detail, sizeof detail,
+                              "%s yields a byte with VT input off", m.name);
+                break;
+            }
+        }
+        check(n, detail[0] == 0, detail[0] ? detail : "");
+    }
+    {
+        /* The other direction of the membership: keys that are NOT in the set must stay
+           out of it. VK_ESCAPE leads because it is the one control key measurement kept
+           out, and an over-inclusive member is the direction that stalls a read. */
+        const char* n {"clf_vt_nonmembers_yield_nothing_when_vt_on"};
+        const WORD vks[] = {
+            VK_ESCAPE, VK_SPACE, VK_PAUSE, VK_SNAPSHOT, VK_SELECT, VK_HELP,
+            VK_F13, VK_F14, VK_CLEAR, VK_OEM_1, VK_OEM_PLUS, VK_OEM_COMMA,
+            'A', '0',
+        };
+        char detail[128] {0};
+        for (WORD vk : vks) {
+            INPUT_RECORD r {key_rec(true, vk, 0)};
+            if (console_probe::record_yields_byte(r, vt_on)) {
+                std::snprintf(detail, sizeof detail,
+                              "vk 0x%02X is in vt_translated and should not be", vk);
+                break;
+            }
+        }
+        check(n, detail[0] == 0, detail[0] ? detail : "");
     }
 }
 
@@ -366,13 +575,15 @@ void case_nul_device() {
 
 /* AC-4: raw mode delivers every byte of a multi-byte translation, proved with one-byte
    reads and a re-probe between them. The expected sequences come from the --measure run
-   quoted at the top of src/console_probe_win32.cpp; the console holds ONE virtual-key
-   record and synthesizes the bytes at read time, retaining what it does not deliver where
-   no PeekConsoleInput can see it, so a peek-only predicate would report 0 with two bytes
-   of an arrow key still readable. The comparison is against what an INJECTED record
-   produces, and the real-keypress sequence is the corroborating evidence --diagnostic
-   collects, so a ConPTY-versus-conhost difference reads as the finding it is rather than
-   as a red test. */
+   quoted at the top of src/console_probe_win32.cpp, where conhost expands an arrow key
+   into one record per byte at the moment the record is queued. A stranded byte therefore
+   shows up here as a SHORT accumulation rather than as a hang, in either console world:
+   a peek-only predicate would answer correctly for these records, and it is cooked mode
+   where the retained remainder makes the buffer load-bearing (case_cooked_line).
+
+   The comparison is against what an INJECTED record produces, and the real-keypress
+   sequence is the corroborating evidence --diagnostic collects, so a ConPTY-versus-conhost
+   difference reads as the finding it is rather than as a red test. */
 void run_drain_case(const char* name, const INPUT_RECORD* recs, DWORD count,
                     const char* want, int wantlen) {
     arm(name);
@@ -428,69 +639,163 @@ void case_drain_raw() {
     }
 }
 
-/* OQ-8: every member of the final vt_translated set gets a drain-loop case of its own.
-   An over-inclusive member (the predicate claims the console translates a key it does
-   not) makes the probe answer 1 and the fill then blocks inside ReadFile, which trips the
-   per-case watchdog; an under-inclusive one accumulates nothing here. Testing the arrows
-   alone, as cycle 2 left it, would have left Home, End, PgUp, PgDn, Ins, Del and the
-   twelve F-keys unexercised, and section 2 names every one of them as a required member
-   in the world the measurement found. */
+/* Every key in vt_translated gets a drain-loop case of its own: probe, one-byte read,
+   re-probe, compare against the sequence --measure recorded. Testing the arrows alone
+   would leave Home, End, PgUp, PgDn, Ins, Del and the twelve F-keys unexercised.
+
+   What these cases prove, stated precisely, because OQ-8's resolution once claimed more.
+   Conhost expands each of these keys into one record per byte when the record is QUEUED,
+   so what runs here is the character clause of record_yields_byte over already-expanded
+   records, plus the buffer, plus the drain loop. The membership of vt_translated is NOT
+   what these cases exercise, because the clause that consults it is never reached: that
+   is what case_classifier_unit covers directly and what case_vt_clause_after_mode_switch
+   reaches through the console. What these cases DO prove is the byte sequence for each
+   key end to end, through the real probe and the real read path, which is what AC-4 asks
+   for and what would catch a console whose translation changed. */
 void case_vt_coverage() {
-    struct row { WORD vk; const char* name; const char* want; };
-    const row rows[] = {
-        { VK_LEFT,   "vt_VK_LEFT",   "\x1B[D" },
-        { VK_RIGHT,  "vt_VK_RIGHT",  "\x1B[C" },
-        { VK_UP,     "vt_VK_UP",     "\x1B[A" },
-        { VK_DOWN,   "vt_VK_DOWN",   "\x1B[B" },
-        { VK_HOME,   "vt_VK_HOME",   "\x1B[H" },
-        { VK_END,    "vt_VK_END",    "\x1B[F" },
-        { VK_PRIOR,  "vt_VK_PRIOR",  "\x1B[5~" },
-        { VK_NEXT,   "vt_VK_NEXT",   "\x1B[6~" },
-        { VK_INSERT, "vt_VK_INSERT", "\x1B[2~" },
-        { VK_DELETE, "vt_VK_DELETE", "\x1B[3~" },
-        { VK_F1,     "vt_VK_F1",     "\x1BOP" },
-        { VK_F2,     "vt_VK_F2",     "\x1BOQ" },
-        { VK_F3,     "vt_VK_F3",     "\x1BOR" },
-        { VK_F4,     "vt_VK_F4",     "\x1BOS" },
-        { VK_F5,     "vt_VK_F5",     "\x1B[15~" },
-        { VK_F6,     "vt_VK_F6",     "\x1B[17~" },
-        { VK_F7,     "vt_VK_F7",     "\x1B[18~" },
-        { VK_F8,     "vt_VK_F8",     "\x1B[19~" },
-        { VK_F9,     "vt_VK_F9",     "\x1B[20~" },
-        { VK_F10,    "vt_VK_F10",    "\x1B[21~" },
-        { VK_F11,    "vt_VK_F11",    "\x1B[23~" },
-        { VK_F12,    "vt_VK_F12",    "\x1B[24~" },
-        /* The three control keys measurement put INTO the set, against the reasoning
-           that first left them out. VK_BACK yields 7F (the VT DEL convention) rather
-           than the 08 a reader would predict. */
-        { VK_BACK,   "vt_VK_BACK",   "\x7F" },
-        { VK_TAB,    "vt_VK_TAB",    "\x09" },
-        { VK_RETURN, "vt_VK_RETURN", "\x0D" },
-    };
-    for (const row& r : rows) {
-        INPUT_RECORD rec {key_rec(true, r.vk, 0)};
-        run_drain_case(r.name, &rec, 1, r.want, static_cast<int>(std::strlen(r.want)));
+    char name[64];
+    for (const vt_member& m : kVtMembers) {
+        std::snprintf(name, sizeof name, "vt_%s", m.name);
+        INPUT_RECORD rec {key_rec(true, m.vk, 0)};
+        run_drain_case(name, &rec, 1, m.bytes, static_cast<int>(std::strlen(m.bytes)));
     }
 
-    /* VK_ESCAPE is the member of that control-key group that does NOT belong, and the
-       negative is asserted rather than left implicit: a bare Escape record with no
-       character yields no bytes, so the probe must report nothing pending. If a future
-       console starts translating it, this case fails and the set gets a new member. */
+    /* VK_ESCAPE is the control key measurement kept OUT of the set, and the negative is
+       asserted rather than left implicit. The assertion is in two parts on purpose: the
+       probe's answer alone would pass vacuously, because conhost drops a bare Escape
+       key-down at write time and the probe then returns 0 from its `pending == 0` early
+       exit without consulting the classifier. The record count is the part that can fail.
+       The classifier's own answer for VK_ESCAPE is asserted in case_classifier_unit. */
     {
-        const char* n {"vt_VK_ESCAPE_not_translated"};
+        const char* n {"vt_VK_ESCAPE_dropped_at_write_time"};
         arm(n);
         set_raw();
         flush_queue();
         INPUT_RECORD esc {key_rec(true, VK_ESCAPE, 0)};
         inject_one(esc);
+        DWORD queued {queued_records()};
         int r {console_probe::stdin_ready(g_in)};
         disarm();
-        if (r == 0) { pass(n); }
+        if (r == 0 && queued == 0) { pass(n); }
         else {
-            char d[96];
-            std::snprintf(d, sizeof d, "expected 0 (the console translates it to nothing), got %d", r);
+            char d[160];
+            std::snprintf(d, sizeof d,
+                "expected probe 0 with 0 record(s) queued (the console discards it), "
+                "got probe %d with %lu queued", r, queued);
             fail(n, d);
         }
+        flush_queue();
+    }
+}
+
+/* OQ-9, reached through the console rather than through a synthesized record: the one
+   queue state in which record_yields_byte's vt_translated clause decides the answer.
+
+   A record queued while ENABLE_VIRTUAL_TERMINAL_INPUT was CLEAR keeps its virtual key and
+   its zero UnicodeChar, and turning VT input on afterwards does not expand it. quesOS
+   reaches this state when a guest switches from cooked to raw with input already queued.
+   The clause is consulted here and answers 1.
+
+   This case deliberately does NOT read. The --measure rows labelled vtoff_* record what a
+   read does in this state on this console: it consumes the record and produces no byte, so
+   a read here would block until the watchdog killed the process. That is the over-inclusive
+   direction, it is why OQ-9 is open and gated on Done, and it is why the set's comment in
+   src/console_probe_win32.cpp explains the hold rather than claiming the clause is free.
+   The case pins the two facts that decide the question, so that a console which behaves
+   differently (a ConPTY-backed terminal is the open case) shows up here as a red line
+   rather than as a silent change of meaning. */
+void case_vt_clause_after_mode_switch() {
+    const char* n {"vt_clause_reached_after_cooked_to_raw_switch"};
+    arm(n);
+    DWORD m {current_mode()};
+    m &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT
+           | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT);
+    SetConsoleMode(g_in, m);
+    flush_queue();
+    INPUT_RECORD left {key_rec(true, VK_LEFT, 0)};
+    inject_one(left);
+
+    INPUT_RECORD peeked[4];
+    DWORD got {0};
+    bool unexpanded {PeekConsoleInputW(g_in, peeked, 4, &got) && got == 1
+                     && peeked[0].EventType == KEY_EVENT
+                     && peeked[0].Event.KeyEvent.wVirtualKeyCode == VK_LEFT
+                     && peeked[0].Event.KeyEvent.uChar.UnicodeChar == 0};
+
+    set_raw();   // VT input on, with the unexpanded record already queued
+    bool classified {console_probe::record_yields_byte(peeked[0], current_mode())};
+    int r {console_probe::stdin_ready(g_in)};
+    disarm();
+
+    if (unexpanded && classified && r == 1) { pass(n); }
+    else {
+        char d[192];
+        std::snprintf(d, sizeof d,
+            "expected 1 unexpanded VK_LEFT record (got %lu record(s), unexpanded=%d), "
+            "the classifier to reach vt_translated (got %d), and the probe to answer 1 "
+            "(got %d)", got, unexpanded ? 1 : 0, classified ? 1 : 0, r);
+        fail(n, d);
+    }
+    flush_queue();
+}
+
+/* D-5's flush, asserted rather than described. The probe consumes the leading run of
+   records it proved cannot yield a byte under any console mode, and nothing in the suite
+   checked that it does. Only case (a) of the allowlist is reachable through this console,
+   because conhost drops key-up and bare-modifier records at write time, so a mouse record
+   is the instrument.
+
+   Both directions are here. Alone, the record is consumed. Behind a real character, the
+   probe answers 1 at the character and consumes nothing, which is the property that keeps
+   the flush from eating input that a later read would have returned. */
+void case_flush_leading_unreadable() {
+    INPUT_RECORD mouse;
+    std::memset(&mouse, 0, sizeof mouse);
+    mouse.EventType = MOUSE_EVENT;
+    mouse.Event.MouseEvent.dwEventFlags = MOUSE_MOVED;
+
+    {
+        const char* n {"flush_consumes_leading_mouse_record"};
+        arm(n);
+        set_raw();
+        flush_queue();
+        inject_one(mouse);
+        int r {console_probe::stdin_ready(g_in)};
+        DWORD after {queued_records()};
+        disarm();
+        if (r == 0 && after == 0) { pass(n); }
+        else {
+            char d[160];
+            std::snprintf(d, sizeof d,
+                "expected probe 0 and the record consumed, got probe %d with %lu queued",
+                r, after);
+            fail(n, d);
+        }
+        flush_queue();
+    }
+    {
+        const char* n {"flush_spares_records_behind_a_character"};
+        arm(n);
+        set_raw();
+        flush_queue();
+        inject_one(mouse);
+        INPUT_RECORD a {char_rec(L'a')};
+        inject_one(a);
+        int r {console_probe::stdin_ready(g_in)};
+        DWORD after {queued_records()};
+        disarm();
+        if (r == 1 && after == 2) { pass(n); }
+        else {
+            char d[160];
+            std::snprintf(d, sizeof d,
+                "expected probe 1 with both records still queued, got probe %d with %lu queued",
+                r, after);
+            fail(n, d);
+        }
+        unsigned char sink[8];
+        arm(n);
+        drain(sink, 8);
+        disarm();
         flush_queue();
     }
 }
@@ -775,27 +1080,37 @@ bool own_a_console() {
     return true;
 }
 
-/* --measure (OQ-3, OQ-7, OQ-8). Answers "what bytes does a read produce for THIS record"
-   without ever risking a blocking read, which a naive probe-then-read measurement cannot
-   promise for a record the console may translate to nothing.
+/* --measure (OQ-3, OQ-7, OQ-8, OQ-9). Answers two SEPARATE questions per candidate, and
+   keeping them separate is the whole point of this instrument's second version.
 
-   The trick is a sentinel. Inject the candidate record, then inject a plain 'Z' key-down
-   that certainly yields a byte, then read one byte at a time until the 'Z' arrives. Every
-   read is guaranteed to complete, because there is always at least the sentinel byte left
-   in the console, and whatever arrives BEFORE the 'Z' is exactly the candidate's
-   translation. An empty prefix means the console translates that record to nothing, which
-   is the answer that keeps a virtual key OUT of vt_translated.
+   Question 1, the records: how many records does injecting this candidate leave queued,
+   and what are they? Answered by GetNumberOfConsoleInputEvents and PeekConsoleInputW,
+   which read nothing and cannot block. Cycle 2 of this card shipped an answer to this
+   question having never made either call, inferring it from question 2 instead, and the
+   inference was wrong for raw mode. See the counterexamples doc, Entry 35.
 
-   This is the instrument that produced the expected sequences the cases assert. Reading
-   is done with ReadFile rather than through read_console, so the measurement is of the
-   CONSOLE and not of this card's buffer. */
-void measure_one(const char* label, const INPUT_RECORD* recs, DWORD count, bool cooked) {
-    if (cooked) { set_cooked(); } else { set_raw(); }
-    flush_queue();
-    if (!inject(recs, count)) {
-        emitf("  %-24s WriteConsoleInputW failed\n", label);
-        return;
-    }
+   Question 2, the bytes: what byte sequence does a read produce for this candidate? That
+   one needs real reads, and a naive probe-then-read cannot promise they complete for a
+   record the console may translate to nothing. The trick is a sentinel. Inject the
+   candidate, then inject a plain 'Z' key-down that certainly yields a byte, then read one
+   byte at a time until the 'Z' arrives. Every read is guaranteed to complete, because
+   there is always at least the sentinel byte left in the console, and whatever arrives
+   BEFORE the 'Z' is exactly the candidate's translation. An empty prefix means the console
+   translates that record to nothing, which is the answer that keeps a virtual key OUT of
+   vt_translated.
+
+   The queue depth is sampled again after every byte, with the sentinel's own records
+   subtracted, so the trace says how many of the CANDIDATE's records are still queued. That
+   trace is what distinguishes the two worlds this card's spec named. A count that falls in
+   step with the bytes is the per-byte-record world, where the expansion happened when the
+   record was queued and every byte is peekable. A count that hits zero while bytes are
+   still owed is the retained-remainder world, where the console holds bytes no peek can
+   see and only a byte buffer can make them visible to readiness.
+
+   Reading is done with ReadFile rather than through read_console, so the measurement is of
+   the CONSOLE and not of this card's buffer. */
+void measure_bytes(const char* label, bool cooked, DWORD candidate_records) {
+    // The sentinel makes every read below non-blocking.
     if (cooked) {
         INPUT_RECORD tail[2] {char_rec(L'Z'), key_rec(true, VK_RETURN, L'\r')};
         inject(tail, 2);
@@ -803,8 +1118,14 @@ void measure_one(const char* label, const INPUT_RECORD* recs, DWORD count, bool 
         INPUT_RECORD tail[2] {char_rec(L'Z'), key_rec(false, 'Z', L'Z')};
         inject(tail, 2);
     }
+    DWORD after_sentinel {queued_records()};
+    DWORD sentinel_records {
+        (after_sentinel != static_cast<DWORD>(-1) && candidate_records != static_cast<DWORD>(-1)
+         && after_sentinel >= candidate_records)
+            ? after_sentinel - candidate_records : 0};
 
     unsigned char got[64];
+    DWORD left[64];
     int n {0};
     arm(label);
     for (; n < 64; ++n) {
@@ -812,27 +1133,118 @@ void measure_one(const char* label, const INPUT_RECORD* recs, DWORD count, bool 
         DWORD rd {0};
         if (!ReadFile(g_in, &b, 1, &rd, nullptr) || rd != 1) { break; }
         got[n] = b;
+        DWORD now {queued_records()};
+        left[n] = (now != static_cast<DWORD>(-1) && now > sentinel_records)
+                      ? now - sentinel_records : 0;
         if (b == 'Z') { ++n; break; }
     }
     disarm();
 
-    // Trim the sentinel and anything the console appended after it.
+    /* Trim at the first sentinel byte. A candidate whose own translation contained 0x5A
+       would be reported short here, so the residual check below turns that from a silent
+       truncation into a labelled one. */
     int prefix {n};
     for (int i = 0; i < n; ++i) {
         if (got[i] == 'Z') { prefix = i; break; }
     }
     char hexbuf[256];
     hex(got, prefix, hexbuf, sizeof hexbuf);
-    emitf("  %-24s %d byte(s): %s\n", label, prefix, prefix ? hexbuf : "(none)");
 
-    // Drain the console back to empty so the next measurement starts clean.
+    char trace[192];
+    int toff {0};
+    trace[0] = 0;
+    for (int i = 0; i < prefix && toff + 8 < static_cast<int>(sizeof trace); ++i) {
+        toff += std::snprintf(trace + toff, sizeof trace - static_cast<size_t>(toff),
+                              "%lu ", left[i]);
+    }
+    emitf("       %d byte(s): %-24s candidate records left after each read: %s\n",
+          prefix, prefix ? hexbuf : "(none)", prefix ? trace : "(no reads)");
+    /* The decisive number for a candidate that yielded NO bytes: if its records are gone
+       once the sentinel byte has been read, the console consumed them and produced nothing,
+       which is the over-inclusive direction the predicate must not take. Inferring that
+       from the empty byte row alone is the mistake Entry 35 is about. */
+    if (prefix < n) {
+        emitf("       candidate records left once the sentinel byte arrived: %lu\n",
+              left[prefix]);
+    }
+
+    /* Drain the console back to empty so the next measurement starts clean, counting what
+       came after the sentinel. In raw mode the sentinel is one byte and its key-up record
+       is dropped at write time, so a clean run leaves nothing: a non-zero residual means
+       the byte we stopped on was NOT the sentinel, which is the 0x5A collision this trim
+       cannot otherwise see. In cooked mode the residual is the line's own tail and is
+       expected, so it is not flagged there. */
+    int residual {0};
+    arm(label);
+    if (cooked) {
+        /* A cooked read's remainder lives inside the console rather than in the record
+           queue, and FlushConsoleInputBuffer does NOT discard it, which the queue-based
+           drain below cannot reach. The first version of this loop left it there and it
+           surfaced as two phantom bytes at the head of a later row. The sentinel line ends
+           with 0x0A, and every byte of it is already owed, so reading through that byte
+           terminates and leaves the console genuinely empty. */
+        for (int i = 0; i < 64; ++i) {
+            unsigned char b {0};
+            DWORD rd {0};
+            if (!ReadFile(g_in, &b, 1, &rd, nullptr) || rd != 1) { break; }
+            ++residual;
+            if (b == 0x0A) { break; }
+        }
+    }
     DWORD pending {0};
     while (GetNumberOfConsoleInputEvents(g_in, &pending) && pending > 0) {
         unsigned char b {0};
         DWORD rd {0};
         if (!ReadFile(g_in, &b, 1, &rd, nullptr) || rd != 1) { break; }
+        ++residual;
+    }
+    disarm();
+    if (!cooked && residual > 0) {
+        emitf("       AMBIGUOUS: %d byte(s) followed the sentinel, so the row above may be "
+              "truncated at a 0x5A inside the candidate's own translation\n", residual);
     }
     flush_queue();
+}
+
+/* Inject under the mode being measured, observe the queue, then observe the bytes. */
+void measure_one(const char* label, const INPUT_RECORD* recs, DWORD count, bool cooked) {
+    if (cooked) { set_cooked(); } else { set_raw(); }
+    flush_queue();
+    if (!inject(recs, count)) {
+        emitf("  %-24s WriteConsoleInputW failed\n", label);
+        return;
+    }
+    emitf("  %-24s ", label);
+    dump_queue("       ");
+    measure_bytes(label, cooked, queued_records());
+}
+
+/* The one queue state on this console in which record_yields_byte's vt_translated clause
+   is reachable, and the reason the clause is kept rather than deleted.
+
+   The expansion of a virtual key into a VT byte sequence happens when the record is
+   QUEUED, not when it is read, so the console mode in force at queue time decides what the
+   queue holds. A record that arrived while ENABLE_VIRTUAL_TERMINAL_INPUT was OFF keeps its
+   virtual key and its zero UnicodeChar, and if VT input is switched on before that record
+   is read, the predicate has nothing but the virtual key to classify it by. quesOS reaches
+   exactly this state whenever a guest switches the console from cooked to raw with input
+   already queued, which is the switch AC-13 is built around. */
+void measure_vt_off_then_raw(const char* label, WORD vk) {
+    DWORD m {current_mode()};
+    m &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT
+           | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT);
+    SetConsoleMode(g_in, m);
+    flush_queue();
+    INPUT_RECORD rec {key_rec(true, vk, 0)};
+    if (!inject_one(rec)) {
+        emitf("  %-24s WriteConsoleInputW failed\n", label);
+        return;
+    }
+    emitf("  %-24s ", label);
+    dump_queue("       ");
+    DWORD candidate_records {queued_records()};
+    set_raw();   // VT input on, with the record already queued
+    measure_bytes(label, false, candidate_records);
 }
 
 struct vk_row { WORD vk; const char* name; };
@@ -885,6 +1297,13 @@ int run_measure() {
                               key_rec(true, VK_RETURN, L'\r')};
         measure_one("cooked_ab_CR", line, 3, true);
     }
+
+    emitf("measure: queued with VT input OFF, then read with VT input ON "
+          "(the only state where the vt_translated clause is reachable)\n");
+    measure_vt_off_then_raw("vtoff_VK_LEFT", VK_LEFT);
+    measure_vt_off_then_raw("vtoff_VK_F5", VK_F5);
+    measure_vt_off_then_raw("vtoff_VK_BACK", VK_BACK);
+    measure_vt_off_then_raw("vtoff_VK_ESCAPE", VK_ESCAPE);
     return 0;
 }
 
@@ -895,8 +1314,11 @@ int run_cases() {
 
     case_empty_queue();
     case_classification();
+    case_classifier_unit();
     case_drain_raw();
     case_vt_coverage();
+    case_vt_clause_after_mode_switch();
+    case_flush_leading_unreadable();
     case_cooked_line();
     case_cooked_then_raw();
     case_nul_device();

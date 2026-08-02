@@ -10,19 +10,33 @@
    outstanding, so the scheduler, the timer tick and every other process stop with it.
 
    ---------------------------------------------------------------------------------
-   WHAT THE CONSOLE ACTUALLY DOES (measured, not assumed)
+   WHAT THE CONSOLE ACTUALLY DOES (measured, and stated in the vocabulary of the
+   instrument that measured it)
 
-   AC-4 and OQ-3 asked which of three worlds a Windows console is in when a raw-mode
-   read consumes a record whose translation is longer than one byte. It is the third
-   one, the one cycle 1 did not name: the console holds ONE virtual-key record, it
-   synthesizes the byte sequence at READ time, and it retains the bytes it did not
-   deliver where no PeekConsoleInput can see them.
+   AC-4 and OQ-3 asked which of three worlds a Windows console is in when a raw-mode read
+   consumes a record whose translation is longer than one byte. Raw mode and cooked mode
+   turn out to be in DIFFERENT worlds. An earlier version of this comment named the third
+   world for both, having inferred a fact about the record queue from an instrument that
+   only ever watched the byte stream; the instrument now watches both observables and the
+   raw-mode half of that answer is reversed. The general lesson is Entry 35 of the
+   workbench's Convention counterexamples document, and the local rule is: name the API
+   call a sentence is about, then check that the instrument calls it.
 
    Measured with console_probe_test_win32.exe --measure on Windows 11 (build 26200),
    classic conhost via AllocConsole, input code page 437, raw mode as
    host_tty::apply_host sets it (ENABLE_VIRTUAL_TERMINAL_INPUT set, ENABLE_LINE_INPUT /
-   ENABLE_ECHO_INPUT / ENABLE_PROCESSED_INPUT clear). One injected key-down record per
-   row, read back one byte at a time:
+   ENABLE_ECHO_INPUT / ENABLE_PROCESSED_INPUT clear). Each row injects one key-down record
+   carrying UnicodeChar 0, reports what GetNumberOfConsoleInputEvents and PeekConsoleInputW
+   see, and then reads the bytes back one at a time behind a sentinel so no read can block.
+
+   RAW MODE IS THE PER-BYTE-RECORD WORLD, the one the spec named first. The console
+   expands a virtual key into ONE KEY_EVENT RECORD PER BYTE, and it does so when the
+   record is QUEUED rather than when it is read. Each expanded record carries
+   wVirtualKeyCode 0, wVirtualScanCode 0 and one byte of the sequence in UnicodeChar. One
+   injected VK_LEFT leaves THREE records queued (0x1B, 0x5B, 0x44) and the count falls
+   3, 2, 1, 0 across the three one-byte reads; VK_F5 leaves five and falls 5, 4, 3, 2, 1,
+   0. Every byte of every sequence below is therefore visible to a peek, and a peek-only
+   predicate would NOT strand any of them:
 
        VK_LEFT    1B 5B 44        VK_PRIOR   1B 5B 35 7E     VK_F1   1B 4F 50
        VK_RIGHT   1B 5B 43        VK_NEXT    1B 5B 36 7E     VK_F2   1B 4F 51
@@ -33,32 +47,44 @@
                                   VK_F7      1B 5B 31 38 7E  VK_F11  1B 5B 32 33 7E
                                   VK_F8      1B 5B 31 39 7E  VK_F12  1B 5B 32 34 7E
 
-       VK_BACK    7F              VK_TAB     09              VK_RETURN  0D
-       VK_ESCAPE: no bytes at all, which is why it is the one control key NOT in
-       vt_translated (see the set below).
+       VK_BACK, VK_TAB and VK_RETURN queue ONE record each, carrying 7F, 09 and 0D in
+       UnicodeChar. VK_BACK's 7F is the VT DEL convention rather than the 08 a reader
+       would predict, which is why it was measured instead of reasoned about (Entry 34).
+       VK_ESCAPE and the bare modifier and lock keys (VK_SHIFT, VK_CONTROL, VK_MENU,
+       VK_CAPITAL, VK_LWIN, VK_NUMLOCK, VK_SCROLL, VK_APPS) queue ZERO records: the
+       console drops them at WRITE time rather than translating them to nothing at read
+       time. That is what the OQ-7 flush allowlist rests on, and it is also why those
+       records cannot be presented to the probe through this console at all.
+       'a': one record, 61.  U+00E9 under code page 437: one record, the single byte 82.
 
-       VK_SHIFT, VK_CONTROL, VK_MENU, VK_CAPITAL, VK_LWIN, VK_NUMLOCK, VK_SCROLL,
-       VK_APPS: no bytes at all, which is what the OQ-7 flush allowlist rests on.
-       'a': 61.  U+00E9 under code page 437: the single byte 82.
-       Cooked mode, records for "ab" then Enter: 61 62 0D 0A, delivered one byte per
-       read with the record queue empty from the first byte onward.
+   COOKED MODE IS THE RETAINED-REMAINDER WORLD, and this half is what makes the buffer
+   load-bearing. Records for "ab" then Enter stay unexpanded in the queue, each with its
+   real virtual key and scan code. The FIRST one-byte read consumes all three records and
+   the queue drops to zero while three bytes (62 0D 0A) are still owed. Those bytes live
+   inside conhost where no peek can see them, and FlushConsoleInputBuffer does not discard
+   them either, so a peek-only predicate answers 0 with a line's tail still readable and
+   the guest parks on input it already has.
 
-   Two consequences drive everything below. vt_translated is NOT empty, so a naive
-   filter that keys on UnicodeChar alone would report an arrow key as nothing pending
-   and silently break arrow-key history at the oksh prompt. And a peek-only predicate
-   strands the tail of every one of those sequences, in raw mode as much as in cooked
-   mode, which is why the pre-read byte buffer below exists.
+   Two consequences drive everything below, and they are not the two an earlier version of
+   this comment drew. The pre-read byte buffer is required, for COOKED mode, because it is
+   the only thing that makes the retained remainder visible to readiness. And vt_translated
+   is a DEFENSIVE clause rather than the load-bearing one it was described as, because
+   every record this console queues that can yield a byte carries a non-zero UnicodeChar
+   and the character clause answers first. The set's own comment carries the one state in
+   which the clause is reached, what the console does there, and why the set is kept.
 
    Maize never calls SetConsoleCP, so the input code page is whatever the session
    inherited. Under 437 a non-ASCII key is one byte; under 65001 (UTF-8) it is two or
    more. The buffer holds either without caring, which is the point of holding bytes
    rather than predicting them.
 
-   OQ-5 remains open for the operator: WriteConsoleInputW proves how the predicate
-   classifies records and proves nothing about which records a REAL keypress queues,
-   and an AllocConsole console is classic conhost while a Windows Terminal session is
-   ConPTY-backed. console_probe_test_win32.exe --diagnostic answers that against the
-   inherited console and is run by hand. */
+   OQ-5 and OQ-9 remain open for the operator, and they are the same run: WriteConsoleInputW
+   proves how the predicate classifies records and proves nothing about which records a REAL
+   keypress queues, and an AllocConsole console is classic conhost while a Windows Terminal
+   session is ConPTY-backed. Everything above describes what conhost does with an injected
+   record. console_probe_test_win32.exe --diagnostic prints the record count, every record
+   field and the bytes one real keypress produces, against the INHERITED console, and is run
+   by hand. */
 
 #include "console_probe_win32.h"
 
@@ -78,11 +104,19 @@ namespace {
 
     /* ---- the pre-read byte buffer ---------------------------------------------------
        Filled by the READ path, never by the probe, and drained by every host read of
-       fd 0. This is what makes the retention measured above visible to readiness: the
-       fill asks for PREREAD_CAP bytes rather than one, so a cooked line arrives whole
-       and an arrow key's three bytes arrive together, the probe reports the buffer
-       through pre_read_pending(), and successive single-byte data-port reads
-       (src/devices.cpp:62) deliver them in order.
+       fd 0. This is what makes the COOKED-mode retention measured above visible to
+       readiness: the fill asks for PREREAD_CAP bytes rather than one, so a cooked line
+       arrives whole instead of leaving its tail inside conhost behind an empty record
+       queue, the probe reports the buffer through pre_read_pending(), and successive
+       single-byte data-port reads (src/devices.cpp:62) deliver them in order.
+
+       Raw mode does not need it. Conhost queues one record per byte there, so a peek sees
+       every byte and the record queue alone would answer correctly. The buffer is harmless
+       in that mode (it holds bytes the guest is about to ask for and reports them for
+       exactly as long as it holds them), it costs one ReadFile instead of several for a
+       multi-byte key, and having one path rather than a mode-dependent pair is worth more
+       than the saving. The claim to make for raw mode is that the buffer is unnecessary,
+       not that it is load-bearing.
 
        No state here can outlive a single guest read. g_pre_pos and g_pre_len describe
        bytes that actually exist and the pending count strictly decreases as the guest
@@ -155,32 +189,55 @@ namespace {
         return g_pre_pos < g_pre_len || g_fill_was_full;
     }
 
-    /* The virtual keys this console translates into a byte sequence at read time when
-       ENABLE_VIRTUAL_TERMINAL_INPUT is set. Every member was measured non-empty by the
-       --measure run quoted at the top of this file, which is what OQ-8 asks for: an
-       over-inclusive member would make the probe answer ready for a key the console
-       translates to nothing, the fill would then block until some other key was pressed,
-       and that is this card's own failure mechanism reappearing inside its fix.
+    /* The virtual keys that produce a byte sequence under ENABLE_VIRTUAL_TERMINAL_INPUT.
+       Every member was measured non-empty by the --measure run quoted at the top of this
+       file, and the byte tables there are what the set was derived from rather than
+       hand-written.
 
-       The last three members are here because measurement contradicted the reasoning
-       that first left them out. Backspace, Tab, Escape and Enter were originally absent
-       on the theory that the console puts their control character in UnicodeChar, so the
+       WHEN THIS CLAUSE IS REACHED, WHICH IS NOT WHERE IT WAS THOUGHT TO BE. Conhost
+       expands a virtual key into one record per byte when the record is QUEUED, so every
+       record it hands the probe in raw mode already carries a non-zero UnicodeChar and
+       record_yields_byte answers true one clause earlier. That leaves exactly one state in
+       which this set decides anything: a record queued while ENABLE_VIRTUAL_TERMINAL_INPUT
+       was CLEAR keeps its virtual key and its zero UnicodeChar, and switching the console
+       to raw afterwards does not expand it retroactively. quesOS reaches that state when a
+       guest switches from cooked to raw with input already queued, and when a key is typed
+       into the inherited cooked console before host_tty::apply_host runs.
+
+       WHAT THE CONSOLE DOES IN THAT STATE, measured rather than reasoned about, by the
+       --measure rows labelled vtoff_*. Injecting VK_LEFT with VT input clear leaves ONE
+       record queued with wVirtualKeyCode 0x25 and UnicodeChar 0. Turning VT input on and
+       reading yields NO byte for it, and the record is gone once the next byte arrives, so
+       the read consumed it and produced nothing. VK_F5 and VK_BACK behave the same way.
+
+       So on this console every member of this set is OVER-inclusive in the only state
+       where the set is consulted, which is the dangerous direction: the probe answers 1,
+       the fill then blocks inside ReadFile until some other key is pressed, and that is
+       this card's own failure mechanism reappearing inside its fix. The narrow window and
+       the recovery-on-next-keystroke bound the cost, and an UNDER-inclusive member would
+       cost only one keystroke of latency (the record stays queued, the next ordinary
+       character makes the probe answer 1, and the following read steps over the stale
+       record and returns the character), which is why the asymmetry says prefer under.
+
+       The set is nevertheless KEPT, and that is a deliberate hold rather than an
+       oversight. Deleting it would be deciding, on classic-conhost evidence about INJECTED
+       records, what a ConPTY-backed Windows Terminal does with a REAL keypress: a terminal
+       that decodes VT itself may well queue the unexpanded virtual-key record, and there
+       this clause is the only thing that reports an arrow key as pending at all. Choosing
+       between those on unmeasured behaviour is what pushed this card back twice already.
+       OQ-9 carries the decision and is gated on Done, and the operator's --diagnostic run
+       against a real keypress in both terminals is what answers it. If that run shows both
+       terminals expanding at queue time, this clause has no reachable use and should go.
+
+       The last three members are here because measurement contradicted the reasoning that
+       first left them out. Backspace, Tab, Escape and Enter were originally absent on the
+       theory that the console puts their control character in UnicodeChar, so the
        character clause above would already cover them. Measured with UnicodeChar 0, that
-       theory is wrong for three of the four: VK_BACK yields 7F (the VT DEL convention,
-       not 08), VK_TAB yields 09 and VK_RETURN yields 0D, all translated at read time
-       exactly like an arrow key. VK_ESCAPE is the one member of that group that does NOT
-       fit, and it is said out loud rather than left implicit: it yields nothing at all,
-       so it stays OUT of this set and a bare Escape record with no character is correctly
-       reported as nothing pending.
-
-       The asymmetry is worth stating, because it is what makes adding a member safe. An
-       OVER-inclusive member is the dangerous direction: the probe answers ready for a key
-       the console translates to nothing, and the fill then blocks, which is this card's
-       own failure mechanism. Measurement is what rules that out, and every member here is
-       measured non-empty. An UNDER-inclusive member costs one keystroke of latency (the
-       record stays queued, and the next ordinary character makes the probe answer 1 and
-       the following read returns the translation first) and, since OQ-7 made the flush an
-       allowlist, cannot cost the keystroke itself. */
+       theory is wrong for three of the four: VK_BACK queues a record carrying 7F (the VT
+       DEL convention, not 08), VK_TAB carries 09 and VK_RETURN carries 0D. VK_ESCAPE is
+       the one member of that group that does NOT fit, and it is said out loud rather than
+       left implicit: conhost drops it at write time and it yields nothing, so it stays OUT
+       of this set. */
     bool vt_translated(WORD vk) {
         switch (vk) {
             case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN:
@@ -230,7 +287,17 @@ namespace {
        So the flush consumes only (a) records that are not KEY_EVENT, (b) key-up records,
        and (c) key-down records with no character whose virtual key is a bare modifier or
        lock key. That covers the autorepeat hazard exactly, and no record any console mode
-       could translate is ever consumed. */
+       could translate is ever consumed.
+
+       What can actually ARRIVE here, on the console measured at the top of this file, is
+       only (a). Conhost drops key-up records and bare-modifier key-down records at write
+       time, so cases (b) and (c) never see a record from this console and only case (a) is
+       exercised (flush_consumes_leading_mouse_record in the test binary asserts it). They
+       stay because the autorepeat hazard D-5 was written against is a report about a real
+       keyboard rather than an injection, because a ConPTY-backed terminal may queue what
+       conhost drops, and because a clause that consumes nothing costs nothing. Their being
+       unreachable through this console is stated here rather than left for a reader to
+       discover from a green suite that never reached them. */
     bool record_is_unreadable_in_any_mode(const INPUT_RECORD& r) {
         if (r.EventType != KEY_EVENT) { return true; }
         if (!r.Event.KeyEvent.bKeyDown) { return true; }
