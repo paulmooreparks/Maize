@@ -98,7 +98,47 @@ namespace {
 
        This is single-threaded state by construction. The CPU thread is the only caller
        on the VM path, and mazm links this TU without ever calling read_console, so the
-       buffer stays empty in that process. */
+       buffer stays empty in that process. (mazm does read stdin, at src/mazm.cpp's
+       tokenize(std::cin, tree), but never through here; the claim to make when grepping
+       is "the only host reads of fd 0 in the VM path", not "in the tree".)
+
+       ---------------------------------------------------------------------------------
+       WHAT A FILL PROMISES, AND THE TWO CASES WHERE IT DOES NOT
+
+       "The fill cannot block" is true of the ordinary path and is NOT an invariant, and
+       saying it flatly invites a reader to skip the guard. In raw mode a console ReadFile
+       returns as soon as any input is available, and in cooked mode when the line
+       completes, which is exactly what today's one-byte read waits for; so a fill issued
+       after a probe that answered 1 from a queued readable record returns promptly.
+
+       Two paths break it, both of them stated elsewhere in this file and neither of them
+       new:
+         - the cooked peek ceiling, where a full peek window with no line terminator in it
+           reports ready and the fill then waits for the line to be finished; and
+         - g_fill_was_full, which reports ready with zero bytes actually in hand.
+       Both are bounded, both are today's behaviour rather than a regression, and both are
+       why maize-313 is still wanted.
+
+       ---------------------------------------------------------------------------------
+       TWO USER-VISIBLE CONSEQUENCES OF BUFFERING
+
+       Short reads now happen where they did not. read_console never issues a second
+       ReadFile to top up a partly satisfied request, because that second read could
+       block, so a caller asking for 64 bytes with 3 in the buffer gets 3. Every existing
+       caller already survives that: console_device::port_read asks for one byte
+       (src/devices.cpp:62), drain_stdin passes rc through (:136), the SYS read(0) path
+       copies n bytes and returns n rather than count (src/sys.cpp), host_tty's
+       check_kill_escape counts consecutive Ctrl-] across calls in file-scope state so a
+       run split over two short reads still triggers, and the guest ABI's read is allowed
+       to return fewer bytes than were asked for.
+
+       Type-ahead now belongs to the VM rather than to the parent shell, which nobody had
+       written down. Today a one-byte raw read leaves the rest of what you typed as
+       records in the console's own input buffer, and the shell that launched maize
+       inherits them when maize exits. After this card up to PREREAD_CAP bytes of it are
+       inside this process and are discarded at exit. That is a behaviour change, it is
+       arguably an improvement (leaked type-ahead executing in the parent shell is its own
+       hazard), and it is recorded here rather than discovered later. */
     constexpr unsigned long PREREAD_CAP {8192};
 
     unsigned char g_pre[PREREAD_CAP];
