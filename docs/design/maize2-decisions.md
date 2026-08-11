@@ -138,6 +138,18 @@ Alternatives considered and rejected: digit-count-as-width-declaration (rejected
 
 The recorded wart: `.w` exists as a length specifier only on the immediate move, softening the bare-mnemonic-is-the-word-form rule at the single place where bareness would otherwise have to pick an encoding.
 
+## D8 addendum: the trap-entry scratch register
+
+**Status: RATIFIED. Operator, 2026-08-12, during the Phase 4 coherence read.** The base gains one supervisor read-write scratch CSR, named `scratch` at number $4009, with no side effects and a reset value of zero, and one instruction, `csr_swap rs $csr rd`, which atomically writes rs into the named control and status register and the register's old value into rd, under exactly the access rules and traps of a `csr_write` to the same number. The opcode is $C4, length class `op r r i2`, five bytes.
+
+The grounds: the Phase 4 read found that a trap handler's first act, reading the trap-stack CSR, necessarily destroys one general register before anything can be saved. A syscall handler sacrifices a0, which the syscall contract rewrites with the result anyway, but an interrupt handler owes the interrupted program every register and had no register to sacrifice, so full context preservation, and with it preemptive multitasking, was unimplementable. The swap-plus-scratch pair is the RISC-V sscratch pattern: the handler exchanges a0 with a preloaded per-CPU pointer, saves everything through it including the swapped-out user a0, and re-arms the scratch register before returning. D8's frame shape and its no-general-register-saved-by-hardware rule are unchanged.
+
+Alternatives considered and rejected: a hardware-banked register swapped on trap entry (touches D8's hardware contract directly and adds trap-entry state); dedicating tp (r1) to the kernel by convention (unsound, because the machine does not enforce the ABI and a user program that writes r1 would corrupt the kernel).
+
+## D10 addendum: page-less extensions
+
+**Status: RATIFIED. Operator, 2026-08-12, during the Phase 4 coherence read.** An extension allocates at most one opcode page rather than exactly one. An extension that adds no instructions, of which a purely CSR-carried extension such as the anticipated `meter` is the natural case, allocates no escape byte, and its boot-information extension-list entry carries the no-page sentinel the memory-model chapter already defines. The feature bitmap allocates one bit per ratified extension, not per allocated page. D10's original sentence describing each extension as having "an allocated opcode page" describes the common case and is not a requirement; this ruling records that reading. The grounds: the escape pages are a hard budget of seven, and spending one on an extension with no instructions wastes the scarcest resource in the architecture.
+
 ## Interactions ledger
 
 Ratifying D3 as flagless unlocks D7's register-condition select, D8's minimal frame, and the D11 vocabulary. D2 and D1 together fix the operand byte, which D5, D6, and D7 encode against. D8 and D12 jointly define the CSR space, and D13 rides on both. D4 threads through D8 (which registers stay live across a syscall trap). D10's opcode pages depend on D1's escape structure. D11 depends on D3 for spellings and can otherwise ratify independently.

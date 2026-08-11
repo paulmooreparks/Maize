@@ -517,18 +517,23 @@ opcode on them.
 
 The control and status registers hold every piece of architectural state that is not a
 general register, including the trap-model state, the paging root, the floating-point
-rounding mode and sticky flags, the feature bitmap, and the syscall-provider selection bit.
-Two instructions reach the whole space, and the privileged-architecture chapter owns the
+rounding mode and sticky flags, the feature bitmap, the trap-entry scratch word, and the
+syscall-provider selection bit.
+Three instructions reach the whole space, and the privileged-architecture chapter owns the
 numbering and the meaning of each register.
 
 | Mnemonic | Operands | Semantics | Form |
 |:---------|:---------|:----------|:-----|
 | `csr_read` | `csr_read $csr rd` | Writes the current value of the named control and status register into rd. | `op r i2` |
 | `csr_write` | `csr_write rs $csr` | Writes the value in rs into the named control and status register. | `op r i2` |
+| `csr_swap` | `csr_swap rs $csr rd` | Atomically writes rs into the named register and that register's old value into rd. | `op r r i2` |
 
 The 16-bit register number carries its own access rules, so the machine can enforce them
 without a lookup table. The layout of the number and the access rules it implies are owned
 by the privileged-architecture chapter, which states them once for the whole specification.
+`csr_swap` exists for the trap-entry bootstrap: a handler's first read of the trap-stack
+register necessarily lands in a general register, and the swap is what lets an interrupt
+handler bank one register in the supervisor scratch register without losing its value.
 
 ## System and traps
 

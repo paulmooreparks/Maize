@@ -89,7 +89,7 @@ section's own lowering note describes.
 
 Floating-point control state lives in the control and status register space, under the name
 `fcsr`, and not in dedicated instructions. Software reads it with `csr_read` and writes it
-with `csr_write`, the same two instructions that reach every other control and status
+with `csr_write`, the same instructions that reach every other control and status
 register. The privileged-architecture chapter owns the register's number and its access class;
 this chapter owns the meaning of its bits.
 

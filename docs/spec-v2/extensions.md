@@ -41,8 +41,10 @@ Every extension carries the following, all of them fixed at ratification.
 - A name, written as a short lowercase identifier in the mnemonic alphabet, for example
   `cap` or `vec`.
 - A version, independent of the base version and of every other extension's version.
-- Exactly one allocated opcode page, reached through one of the seven escape bytes the
-  encoding chapter reserves.
+- At most one allocated opcode page, reached through one of the seven escape bytes the
+  encoding chapter reserves. An extension that adds instructions allocates exactly one; an
+  extension whose whole contribution is registers and state allocates none, and its
+  boot-information entry carries the no-page value the memory-model chapter defines.
 - A contiguous allocated range within the control-and-status-register space, which may be
   empty when the extension adds no architectural state.
 - A specification chapter of its own, written to the same normative standard as this text,
@@ -73,8 +75,9 @@ machine implements none of them, and a binary that uses one of them traps on eve
 
 An extension's instructions live on one 256-entry opcode page, reached through one escape
 byte. The encoding chapter fixes the mechanism, and this chapter fixes the policy around
-it: the primary page reserves seven escape bytes, `$F8` through `$FE`, an extension is
-allocated exactly one of them at ratification, and no two extensions share a page.
+it: the primary page reserves seven escape bytes, `$F8` through `$FE`, an extension that
+adds instructions is allocated exactly one of them at ratification, an extension that adds
+none is allocated none, and no two extensions share a page.
 
 Every regularity invariant in the encoding chapter binds an extension page exactly as it
 binds the primary page. Length is a pure function of the escape byte plus the page opcode
@@ -93,7 +96,8 @@ different architecture rather than a second escape level bolted onto this one.
 
 Architectural state an extension adds lives in that extension's own range of the
 control-and-status-register space. The privileged-architecture chapter owns the numbering
-of that space, including the access-rule bits carried in each register number; this chapter
+of that space, including the access-rule bits carried in each register number and the three
+instructions that reach it; this chapter
 fixes only the allocation rule, which is that an extension writes to no register outside its
 allocated range and reads no register outside its allocated range for its own purposes.
 
@@ -103,17 +107,19 @@ whether or not the extension is present. An extension also cannot collide with a
 extension's state, so any two ratified extensions are implementable together without
 negotiation between their authors.
 
-An extension that adds no state receives no range. Nothing in the architecture requires an
-extension to add state in order to add instructions.
+An extension that adds no state receives no range, and an extension that adds no
+instructions receives no page. Nothing in the architecture requires an extension to add
+state in order to add instructions, or instructions in order to add state; an extension
+carries at least one of the two, or it would define nothing.
 
 ## Discovery
 
 Software discovers which extensions a machine implements through two mechanisms, and both
 are present on every conforming machine including a base-only one.
 
-The feature bitmap is a read-only control and status register in which each allocated
-escape page has one bit, set when the machine implements the extension owning that page and
-clear when it does not. A program reads it with `csr_read` and tests a bit, which is a
+The feature bitmap is a read-only control and status register in which each ratified
+extension has one bit, set when the machine implements that extension and clear when it does
+not, whether or not the extension allocates an opcode page. A program reads it with `csr_read` and tests a bit, which is a
 two-instruction check cheap enough to sit on a hot path. The privileged-architecture chapter
 fixes the register's number and its behavior at every privilege level; the bit index of each
 extension is allocated by the extension registry at ratification, alongside the extension's
@@ -211,8 +217,8 @@ freeze exists to prevent.
 ## The registry
 
 The extension registry is the document that records, for every ratified extension, its
-name, its escape byte, its control-and-status-register range, its feature-bitmap bit, its
-current version, and its declared dependencies. It is part of the architecture, and it is
+name, its escape byte where it allocates one, its control-and-status-register range, its
+feature-bitmap bit, its current version, and its declared dependencies. It is part of the architecture, and it is
 the sole authority on which allocations are taken.
 
 Allocation is part of ratification and never precedes it. An extension under design holds
@@ -227,13 +233,14 @@ Ratifying an extension therefore requires all of the following to land together.
    every input, valid or invalid, given a defined outcome.
 2. The extension's conformance-suite section exists and passes against a reference
    implementation.
-3. The registry records the name, the escape byte, the register range, the bitmap bit, the
-   initial version, and any declared dependencies.
+3. The registry records the name, the escape byte where one is allocated, the register
+   range, the bitmap bit, the initial version, and any declared dependencies.
 4. The allocations do not collide with any existing allocation, and the extension's chapter
    contains nothing on the forbidden list above.
 
-Deallocation does not exist. A ratified extension's escape byte, register range, and bitmap
-bit belong to it permanently, even if the extension is later superseded by a newer version
+Deallocation does not exist. Every allocation a ratified extension holds, its escape byte
+where it has one, its register range, and its bitmap bit, belongs to it permanently, even if
+the extension is later superseded by a newer version
 of itself or falls out of use, because a binary assembled against it must keep trapping
 predictably on machines that do not implement it rather than silently decoding as something
 new.

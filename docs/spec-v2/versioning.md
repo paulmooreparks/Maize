@@ -89,8 +89,9 @@ trap cause are all outside what a minor increment may do.
 ### What a major increment means
 
 A major increment is a different extension wearing a familiar name. When an extension's
-design has to change incompatibly, the result takes a new name, a new escape byte, a new
-register range, and a new feature-bitmap bit, and it enters the registry as a fresh
+design has to change incompatibly, the result takes a new name, a new feature-bitmap bit,
+and fresh allocations for whatever escape byte and register range it needs, and it enters
+the registry as a fresh
 allocation while the old extension keeps everything it was allocated.
 
 The naming convention makes the relationship legible: the successor of `vec` version `1.x`

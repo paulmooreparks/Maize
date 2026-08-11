@@ -138,14 +138,14 @@ never fetches the byte after it. A base-only machine therefore traps on all seve
 | `$80`..`$9F` | Loads and stores | 22 | 10 |
 | `$A0`..`$AF` | Extract and insert | 12 | 4 |
 | `$B0`..`$B7` | Block memory | 3 | 5 |
-| `$B8`..`$C7` | System, control registers, TLB, ports | 12 | 4 |
+| `$B8`..`$C7` | System, control registers, TLB, ports | 13 | 3 |
 | `$C8`..`$F7` | Floating point | 44 | 4 |
 | `$F8`..`$FE` | Extension escape bytes | 7 escapes | 0 |
 | `$FF` | Breakpoint | 1 | 0 |
 
-The totals are 186 assigned instruction opcodes, 7 escape bytes, and 63 reserved bytes. The
+The totals are 187 assigned instruction opcodes, 7 escape bytes, and 62 reserved bytes. The
 reserved set is `$00`, `$0A`..`$0F`, `$3E`..`$3F`, `$54`..`$5F`, `$6A`..`$6F`, `$77`..`$7F`,
-`$96`..`$9F`, `$AC`..`$AF`, `$B3`..`$B7`, `$C4`..`$C7`, and `$F4`..`$F7`.
+`$96`..`$9F`, `$AC`..`$AF`, `$B3`..`$B7`, `$C5`..`$C7`, and `$F4`..`$F7`.
 
 ## Decoding, in order
 

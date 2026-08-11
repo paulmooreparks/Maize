@@ -174,8 +174,8 @@ trap checks.
 Reserved and unimplemented space is tested positively rather than left alone, because
 silence there is indistinguishable from tolerance and tolerance is a conformance failure.
 
-The base section executes each of the 63 reserved primary opcode bytes in turn and asserts
-63 illegal-instruction traps differing only in the offending byte and the faulting address.
+The base section executes each of the 62 reserved primary opcode bytes in turn and asserts
+62 illegal-instruction traps differing only in the offending byte and the faulting address.
 It executes each of the seven escape bytes for extensions the machine does not implement and
 asserts the illegal-instruction trap on the escape byte itself, with the faulting address
 equal to the escape byte's own address. It places a byte after each such escape byte that

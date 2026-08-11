@@ -41,12 +41,12 @@ executes as a no-operation, and no reserved byte has a defaulted interpretation.
 | `$80`..`$9F` | Loads and stores | 22 | 10 |
 | `$A0`..`$AF` | Extract and insert | 12 | 4 |
 | `$B0`..`$B7` | Block memory | 3 | 5 |
-| `$B8`..`$C7` | System, control registers, TLB, ports | 12 | 4 |
+| `$B8`..`$C7` | System, control registers, TLB, ports | 13 | 3 |
 | `$C8`..`$F7` | Floating point | 44 | 4 |
 | `$F8`..`$FE` | Extension escape bytes | 7 escapes | 0 |
 | `$FF` | Breakpoint | 1 | 0 |
 
-The totals are 186 assigned instruction opcodes, 7 escape bytes, and 63 reserved bytes.
+The totals are 187 assigned instruction opcodes, 7 escape bytes, and 62 reserved bytes.
 
 ## A.2 The zero-byte guard
 
@@ -273,7 +273,8 @@ the count slot; the value slot of `block_set` is the one slot in the band that a
 | `$C1` | `tlb_invalidate_address` | `tlb_invalidate_address rs` | `op r` | 2 |
 | `$C2` | `port_in` | `port_in rp rd` | `op r r` | 3 |
 | `$C3` | `port_out` | `port_out rs rp` | `op r r` | 3 |
-| `$C4`..`$C7` | reserved | | | |
+| `$C4` | `csr_swap` | `csr_swap rs $csr rd` | `op r r i2` | 5 |
+| `$C5`..`$C7` | reserved | | | |
 
 ## A.12 Floating point, `$C8`..`$F7`
 
@@ -365,7 +366,7 @@ cause.
 ## A.15 Reserved bytes, enumerated
 
 The complete reserved set is `$00`, `$0A`..`$0F`, `$3E`..`$3F`, `$54`..`$5F`, `$6A`..`$6F`,
-`$77`..`$7F`, `$96`..`$9F`, `$AC`..`$AF`, `$B3`..`$B7`, `$C4`..`$C7`, and `$F4`..`$F7`,
-which is 63 bytes. Every one of them raises the illegal-instruction trap when fetched, and a
-conformance binary that executes each of the 63 in turn observes 63 identical traps
+`$77`..`$7F`, `$96`..`$9F`, `$AC`..`$AF`, `$B3`..`$B7`, `$C5`..`$C7`, and `$F4`..`$F7`,
+which is 62 bytes. Every one of them raises the illegal-instruction trap when fetched, and a
+conformance binary that executes each of the 62 in turn observes 62 identical traps
 differing only in the offending byte and the faulting address.

@@ -506,10 +506,11 @@ The debugger takes control, and resuming continues at the next instruction.
 
 The control and status registers hold every piece of architectural state that is not a
 general register, including the trap-model state, the paging root, the floating-point
-rounding mode and sticky flags, the feature bitmap, and the syscall-provider selection bit.
-Two instructions reach the whole space. The privileged-architecture chapter owns the
+rounding mode and sticky flags, the feature bitmap, the trap-entry scratch word, and the
+syscall-provider selection bit.
+Three instructions reach the whole space. The privileged-architecture chapter owns the
 numbering and the meaning of each individual register, and this chapter owns the access
-mechanism the two instructions implement.
+mechanism the three instructions implement.
 
 A register number is an unsigned 16-bit value carried as an immediate, and it carries its own
 access rules in its high bits so that the machine enforces them arithmetically without a
@@ -519,10 +520,11 @@ the side effects a write may carry, and this chapter restates none of it. What e
 below adds is what the instruction does once the access rules permit the access, and which of
 those rules it can trip.
 
-The assembly syntax writes the register number first for `csr_read` and last for `csr_write`,
-following the source-to-destination rule, while the encoding places the operand byte first
-and the 2-byte immediate after it in both cases, following the fixed component order of the
-encoding chapter.
+The assembly syntax writes the register number first for `csr_read`, last for `csr_write`,
+and between the value source and the old-value destination for `csr_swap`,
+following the source-to-destination rule, while the encoding places every operand byte first
+and the 2-byte immediate after them in all three cases, following the fixed component order
+of the encoding chapter.
 
 ### csr_read
 
@@ -586,6 +588,42 @@ register changes value and no side effect occurs.
 
 The word in r6 lands in the supervisor-level register at index 2, together with whatever side
 effect that register defines.
+
+### csr_swap
+
+**Syntax:**
+
+    csr_swap rs $csr rd
+
+**Encoding:** Length class `op r r i2`, five bytes, opcode `$C4` in the opcode-map appendix.
+The operand byte for rs precedes the operand byte for rd, and the 2-byte immediate carries the
+unsigned register number, little-endian, after both.
+
+**Operation:** The machine applies the four access rules the privileged-architecture chapter
+fixes, exactly as a `csr_write` to the same number applies them, and, when they permit the
+access, writes the full 64-bit value of rs into the named control and status register and
+that register's old value into rd, as one indivisible operation with no observable state
+between the read and the write. The value written obeys the target register's own
+value-validation rules, and any side effect the target carries takes place as part of this
+instruction. Naming the same register as rs and rd exchanges that register with the named
+control and status register, which is the instruction's reason for existing: a trap handler
+executes `csr_swap r2 scratch r2` as its first instruction to bank the interrupted program's
+r2 in the supervisor scratch register while gaining a kernel pointer, losing nothing. When rd
+is r0 the instruction behaves as a `csr_write`; when rs is r0 it writes zero and delivers the
+old value.
+
+**Traps:** Exactly the traps of a `csr_write` to the same number with the same value: the
+illegal-operand trap on a reserved privilege encoding, on a read-only number, on an
+unimplemented number, and, with subcode 6, on a value the target register does not accept;
+the privileged-operation trap on an access below the required privilege level. In every
+trapping case neither rd nor the named register changes.
+
+**Example:**
+
+    csr_swap r2 scratch r2
+
+The handler's first instruction: r2 now holds the kernel pointer the scratch register was
+preloaded with, and the scratch register holds the interrupted program's r2.
 
 ## TLB maintenance
 

@@ -230,8 +230,8 @@ Every immediate field in the base appears below with its width and the range the
   same range as the ALU immediate.
 - The shift-count immediate is 8 bits and accepts -128 through 255.
 - The syscall number of `sys #imm` is 8 bits and accepts -128 through 255.
-- The control-and-status-register number of `csr_read` and `csr_write` is 16 bits and accepts
-  -32768 through 65535.
+- The control-and-status-register number of `csr_read`, `csr_write`, and `csr_swap` is 16 bits
+  and accepts -32768 through 65535.
 - The bit position and the bit width of the general bitfield instructions are 8 bits each and
   each accepts -128 through 255. Whether a value that fits is also a valid operand is the
   instruction's own rule, stated in its entry, and the assembler applies that rule after the

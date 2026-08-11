@@ -83,7 +83,7 @@ which they can be interrupted. The trap-model chapter owns this.
 
 Privilege has two levels, supervisor and user, with encoding room reserved for a third that
 this version does not define. Every piece of architectural state that is not a general
-register lives in a numbered control-and-status-register space that two instructions reach,
+register lives in a numbered control-and-status-register space that three instructions reach,
 with the required privilege level and the read-only property encoded in the register number
 itself. The privileged-architecture chapter owns the numbering, the page-table format, and
 the translation rules.

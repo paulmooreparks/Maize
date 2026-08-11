@@ -58,8 +58,10 @@ plant one in user code.
 ## The control and status register space
 
 Control and status registers hold every piece of architectural state that is not a general
-register. Two instructions reach the whole space, `csr_read $csr rd` and `csr_write rs $csr`,
-and neither instruction is itself privileged; the register number carries the access rules.
+register. Three instructions reach the whole space, `csr_read $csr rd`, `csr_write rs $csr`,
+and the atomic exchange `csr_swap rs $csr rd`, and none of the three is itself privileged;
+the register number carries the access rules, and a `csr_swap` is checked exactly as a
+`csr_write` to the same number.
 
 ### The number layout
 
@@ -95,7 +97,7 @@ one: writing the paging root flushes cached translations.
 
 Index values `$0000` through `$0FFF` belong to the base, and this chapter assigns them. Index
 values `$1000` through `$1FFF` belong to extensions, allocated in blocks of `$100` by the
-extension registry, so an extension's state is reachable through the same two instructions and
+extension registry, so an extension's state is reachable through the same three instructions and
 is discoverable through the same feature bitmap. An unallocated extension index is a
 well-formed unimplemented number and traps like any other.
 
@@ -117,6 +119,7 @@ number not in it is unimplemented.
 | `$4006` | `interrupt_enable2` | Supervisor | Read-write | Enable bits for causes 128 through 191 |
 | `$4007` | `interrupt_enable3` | Supervisor | Read-write | Enable bits for causes 192 through 255 |
 | `$4008` | `syscall_provider` | Supervisor | Read-write | Bit 0 selects the syscall provider; every other bit is reserved and written as zero |
+| `$4009` | `scratch` | Supervisor | Read-write | A scratch word the machine itself never reads or writes, held for the trap-entry register bootstrap |
 | `$6000` | `interrupt_pending0` | Supervisor | Read-only | Pending bits for causes 0 through 63 |
 | `$6001` | `interrupt_pending1` | Supervisor | Read-only | Pending bits for causes 64 through 127 |
 | `$6002` | `interrupt_pending2` | Supervisor | Read-only | Pending bits for causes 128 through 191 |

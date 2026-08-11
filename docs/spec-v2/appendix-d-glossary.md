@@ -93,14 +93,14 @@ out. It is the register-file equivalent of the carry flag this machine does not 
 
 **Control and status register.** A control and status register holds a piece of architectural
 state that is not a general register, is named by an unsigned 16-bit number rather than by an
-operand byte, and is reached only by `csr_read` and `csr_write`. The number itself carries the
-minimum privilege level and the read-only property. The privileged-architecture chapter owns
+operand byte, and is reached only by `csr_read`, `csr_write`, and the atomic exchange
+`csr_swap`. The number itself carries the minimum privilege level and the read-only property. The privileged-architecture chapter owns
 the space.
 
 **Feature bitmap.** The feature bitmap is the read-only control and status register in which
-each allocated extension opcode page has one bit, set when the machine implements the
-extension owning that page. It answers the fast presence question, and the boot-information
-block's extension list answers the version question.
+each ratified extension has one bit, set when the machine implements that extension, whether
+or not it allocates an opcode page. It answers the fast presence question, and the
+boot-information block's extension list answers the version question.
 
 **Link register.** The link register is r31, into which both forms of `call` write the address
 of the following instruction and from which `return` transfers. Its architectural role is
@@ -283,8 +283,9 @@ every other ratified extension is absent.
 expected result. It carries a third version component, and nothing a program can observe
 distinguishes one erratum level from another.
 
-**Extension.** An extension is a named, versioned, optional unit of architecture with exactly
-one allocated opcode page, its own contiguous control-and-status-register range, its own
+**Extension.** An extension is a named, versioned, optional unit of architecture with at
+most one allocated opcode page (none when it adds no instructions), its own contiguous
+control-and-status-register range, its own
 specification chapter, and its own conformance-suite section. It is ratified as a whole and
 implemented as a whole.
 

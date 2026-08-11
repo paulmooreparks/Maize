@@ -318,10 +318,18 @@ them or not. Maize v2 has no equivalent, and there is no instruction that saves 
 register set, so the cost cannot creep back in.
 
 A handler's first act is to read the trap-stack register, and that read necessarily lands in
-a general register, so entering a handler costs one register before anything can be saved. A
-syscall handler pays that cost where the convention has already priced it in: r2 is `a0`, the
-register the syscall contract rewrites with the result anyway, so claiming it first loses the
-interrupted program nothing. A short syscall-handler prologue and epilogue look like this,
+a general register, so entering a handler costs one register before anything can be saved.
+Two disciplines cover the two kinds of handler. A syscall handler pays that cost where the
+convention has already priced it in: r2 is `a0`, the register the syscall contract rewrites
+with the result anyway, so claiming it first loses the interrupted program nothing. A
+handler that owes the interrupted program every register, which is what an interrupt handler
+owes, banks one instead: the kernel preloads the supervisor scratch register with a pointer
+to a per-context save area, the handler's first instruction is `csr_swap r2 scratch r2`,
+which yields that pointer while parking the interrupted r2 in the scratch register, the
+handler saves what it uses through the pointer, recovers the parked value with a `csr_read`
+into a register already saved, stores it, and re-arms the scratch register before
+`trap_return`. Nothing is lost at any point, which is the property the swap exists to
+provide. A short syscall-handler prologue and epilogue look like this,
 with the trap stack doubling as the handler's working stack:
 
     handler:

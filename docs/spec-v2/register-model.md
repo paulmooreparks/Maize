@@ -198,8 +198,8 @@ the register model rather than as properties of particular instructions.
 
 The control and status registers are architectural state, and they are not part of the register
 file. They live in a separate numbered space, no operand byte reaches them, and the only
-instructions that touch them are `csr_read` and `csr_write`, which name a register by a 16-bit
-number carried as an immediate rather than by an operand byte. Their numbering, their access
+instructions that touch them are `csr_read`, `csr_write`, and `csr_swap`, which name a
+register by a 16-bit number carried as an immediate rather than by an operand byte. Their numbering, their access
 rules, and the meaning of each one belong to the privileged-architecture chapter.
 
 Every piece of architectural state that is neither a general register nor the program counter
