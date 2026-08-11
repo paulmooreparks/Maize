@@ -128,6 +128,16 @@ The four convention calls, as resolved:
 - Case: **RATIFIED as proposed.** Lowercase is canonical and the assembler is case-sensitive, keeping exactly one spelling per program element, which is the same single-source discipline as the no-alias rule.
 - The length-specifier spelling: **RATIFIED as proposed.** The dot is kept (`load.zb`, `store.q`, `add.h`), because under D5 the dotted surface is small (memory operations plus `.h` arithmetic), the dot makes the width family visible as a family, and it keeps compound-name underscores unambiguous as word separation. Width letters follow the terminology ruling: byte, quarter-word, half-word, word.
 
+## D11 addendum: immediate-move width explicitness
+
+**Status: RATIFIED. Operator, 2026-08-11, during the Phase 2 draft review.** The bare `move` mnemonic is the register-to-register form only. Every immediate move names its width with a length specifier: the narrow forms as already drafted (`move.zb`, `move.sb`, `move.zq`, `move.sq`, `move.zh`, `move.sh`), and the 64-bit immediate form spelled `move.w`. An immediate move without a width specifier is a syntax error. Neither the base marker nor the digit count of a literal ever carries width information, so `$01`, `$0001`, and `#1` remain interchangeable spellings of the same value everywhere. The disassembler emits every immediate at its encoded width (two, four, eight, or sixteen hex digits), so a disassemble-and-reassemble round trip is byte-exact.
+
+The grounds are the poka-yoke principle applied to encoding width: the ten-byte and three-byte spellings of "put 1 in r1" are different instructions, and the earlier draft rule (an undotted literal selects the 64-bit form) let the assembler make that choice silently. Where an encoding choice exists, the source names it; the register form stays bare because nothing is chosen there.
+
+Alternatives considered and rejected: digit-count-as-width-declaration (rejected because it makes leading zeros semantically load-bearing, breaks base interchangeability, and orphans decimal, which has no width spelling); a value-magnitude diagnostic on the undotted form (rejected because line legality would depend on the literal's value, and a small constant wanting a wide patch slot would have no spelling); smallest-form auto-selection (rejected as a silent assembler decision, the exact instinct this ruling exists to serve).
+
+The recorded wart: `.w` exists as a length specifier only on the immediate move, softening the bare-mnemonic-is-the-word-form rule at the single place where bareness would otherwise have to pick an encoding.
+
 ## Interactions ledger
 
 Ratifying D3 as flagless unlocks D7's register-condition select, D8's minimal frame, and the D11 vocabulary. D2 and D1 together fix the operand byte, which D5, D6, and D7 encode against. D8 and D12 jointly define the CSR space, and D13 rides on both. D4 threads through D8 (which registers stay live across a syscall trap). D10's opcode pages depend on D1's escape structure. D11 depends on D3 for spellings and can otherwise ratify independently.
