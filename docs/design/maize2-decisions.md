@@ -34,7 +34,7 @@ Names: `r0` through `r31` canonical, with assembler aliases `zero`, `ra` (r31), 
 
 ## D1: the base encoding
 
-**Status: PROPOSED. Recommendation: byte-granular, table-regular, variable-length encoding designed for software decode; no bit-packed fixed word.**
+**Status: RATIFIED as proposed. Operator, 2026-08-11.** The v2 encoding is byte-granular, table-regular, and variable-length, designed for software decode: one opcode byte plus one escape byte per extension page, whole-byte operands, byte-aligned little-endian immediates, length a pure function of the first one or two bytes, reserved opcodes trapping. No bit-packed fixed word, and no compressed form in the base. The escape-page structure becomes D10's opcode-space anchor; D5, D6, and D7 encode against this once D2 fixes the operand byte. The reasoning below stands as the trail.
 
 This is a software machine first. Its two consumers are an interpreter (wants cheap length determination and dispatch) and a JIT (wants regular patterns and dense code, since guest bytes occupy host cache). Hardware-style fixed 32-bit words optimize instruction-fetch parallelism that no shipped Maize realization has, at the cost of bit-field extraction on every operand read and immediate values shredded across fields. v1's byte orientation was the right instinct; its sins were the nibble-packed register cap and irregularity, and those are what v2 fixes.
 
