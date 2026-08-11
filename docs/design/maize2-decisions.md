@@ -24,7 +24,7 @@ Consequences if ratified: D7's select takes a register condition rather than a f
 
 ## D2: the register file
 
-**Status: PROPOSED. Recommendation: 32 full-width registers, r0 hardwired to zero, link register at r31, everything else ABI convention.**
+**Status: RATIFIED as proposed. Operator, 2026-08-11.** Thirty-two full-width registers. r0 is hardwired zero (reads zero, discards writes), r31 is the link register written by the call instruction, the stack pointer is r30 by ABI convention only, and the architecture references a stack pointer nowhere except the D8 kernel-stack CSR. No sub-register file. Canonical names r0 through r31, with zero, ra, sp, and the D4 ABI names as register aliases, and the disassembler emitting the ABI names. The operand byte's register field is therefore 5 bits, which D5, D6, and D7 encode against. The reasoning below stands as the trail.
 
 The brief fixes 32 registers; the open design is their shape. Proposed: r0 reads as zero and discards writes (the RISC-V x0 device, which gives the ISA free forms for move, negate, compare-against-zero, and discard, and simplifies codegen); r31 is the link register written by the call instruction, since a load-store machine wants branch-and-link rather than v1's pushed return address; the stack pointer is r30 by ABI convention only, with the architecture itself referencing a stack pointer nowhere except the trap model's kernel stack CSR (D8). No sub-register file exists; positional access is the D6 extract/insert design.
 
