@@ -1,6 +1,6 @@
 # Maize v2 Decision Document
 
-**Status: working document, Phase 1 of the v2 spec campaign.** Every decision below is PROPOSED until the operator ratifies it, and rulings are folded back in with their dates. The input contract is `maize2-design-brief.md`; nothing here contradicts a brief constraint without saying so out loud. Spec prose (Phase 2) starts only against ratified decisions.
+**Status: COMPLETE. All thirteen decisions and the terminology ruling are ratified, operator, 2026-08-11.** This document is now the v2 decision record: Phase 2 chapter drafting proceeds against it, and any change to a ratified decision is a new dated ruling here, never a silent edit. The input contract was `maize2-design-brief.md`; two recommendations were overruled during ratification (D11 operand order and D11 decimal marking, both in the operator's direction), and every other decision was ratified as proposed.
 
 The proposed ratification order follows the dependency structure rather than the numbering: D3 first because flags-versus-flagless cascades into the select instruction, the trap model, and the assembler vocabulary; then D2 and D1, which fix the encoding's raw material; then the rest.
 
@@ -87,46 +87,46 @@ The characterization pressure is recorded here explicitly: syscall-bound code ga
 
 ## D12: the privileged architecture
 
-**Status: PROPOSED. Recommendation: carry v1's Sv48 paging and two-level privilege forward nearly unchanged; move control registers into a numbered CSR space.**
+**Status: RATIFIED as proposed. Operator, 2026-08-11.** Sv48 paging, the software TLB model, page-fault delivery, and two-level privilege carry forward with the page-table format unchanged; the CR file generalizes to a numbered CSR space with csr_read/csr_write; encoding room is reserved for a third privilege level without defining one.
 
 Sv48 translation, the software TLB model, page-fault delivery, and supervisor/user separation are proven on v1 and quesOS's paging code ports almost verbatim if the page-table format stays identical, which is the proposal. Changes are limited to what other decisions force: the CR file generalizes to a numbered CSR space with `csr_read`/`csr_write` (making room for the D8 kernel-stack CSR, the D10 feature CSRs, and future extension state), TLB maintenance keeps its two operations under D11 naming, and encoding room is reserved for a third privilege level without defining one.
 
 ## D13: syscall-ABI continuity
 
-**Status: PROPOSED. Recommendation: keep the trap shape recognizably v1; replace SETSYSG/CLRSYSG opcodes with a CSR bit.**
+**Status: RATIFIED as proposed. Operator, 2026-08-11.** The SYS instruction, its cause, the syscall number's register, and arguments-in-registers stay shaped as v1, so the quesOS port is a recompile plus a mechanical trampoline rewrite; the provider-select toggle becomes a CSR bit and the SETSYSG/CLRSYSG opcodes do not carry into v2.
 
 The SYS instruction, its cause, the syscall number's register, and arguments-in-registers all stay shaped as in v1, so the quesOS port is the promised recompile plus a mechanical trampoline rewrite, and both ABIs (Linux-compat and native) carry over undisturbed. The one cleanup: the provider-select flag becomes a CSR bit rather than two dedicated opcodes, since dedicating opcode space to a mode toggle was always encoding extravagance, and the shrinking native provider makes the toggle progressively less load-bearing anyway.
 
 ## D4: the calling convention
 
-**Status: PROPOSED. Recommendation: a RISC-V-flavored convention sized to 32 registers.**
+**Status: RATIFIED as proposed. Operator, 2026-08-11.** Arguments r2 through r9 doubling as return registers, roughly ten callee-saved, the rest temporaries, ra at r31 and sp at r30, 16-byte stack alignment, no red zone, small structs in registers and large by reference, varargs on the stack past the register arguments. The full ABI supplement is Phase 2 prose against this register-role map.
 
 Eight argument registers that are also the return registers (arguments r2 through r9, results in r2/r3), roughly ten callee-saved registers, the rest caller-saved temporaries, `ra` at r31, `sp` at r30, 16-byte stack alignment (headroom for a future vector extension), no red zone, small structs up to two words passed in registers and larger ones by reference, and varargs entirely on the stack past the register arguments. The full ABI supplement is Phase 2 prose; the decision fixes the register-role map and the alignment so D1's encoding examples and the backend plan can proceed.
 
 ## D9: memory architecture details
 
-**Status: PROPOSED. Recommendation: as the brief states, with a boot-information block for discovery.**
+**Status: RATIFIED as proposed. Operator, 2026-08-11.** Little-endian only; bounded configurable physical memory discovered via the boot-information block plus a CSR; misaligned access defined-allow with a documented performance note; naturally aligned accesses up to eight bytes single-copy atomic; the brief's implementation notes ride as non-normative appendix material.
 
 Little-endian only. Guest physical memory is bounded and configurable, discovered through a boot-information block the VM places in memory plus a CSR reporting its address, rather than probing. Misaligned access stays defined-allow (the v1 stance, kept deliberately as a teaching-friendly simplification with a documented performance note). Naturally aligned accesses up to eight bytes are single-copy atomic; misaligned accesses carry no atomicity guarantee. The implementation notes from the brief (flat host reservation, inline-TLB JIT loads, dirty-page tracking, the reserved capability tag plane) ride along as non-normative appendix material.
 
 ## D10: extension governance
 
-**Status: PROPOSED. Recommendation: named, versioned extensions with CSR-discoverable presence and per-extension opcode pages.**
+**Status: RATIFIED as proposed. Operator, 2026-08-11.** The base freezes once, forever. Named, independently versioned extensions with per-extension opcode pages behind the D1 escape byte and their own CSR ranges; discovery via a feature-bitmap CSR plus a versioned list in the boot-information block; conformance claims name base plus exact extension set; unknown opcodes trap, never no-op.
 
 The base freezes once, forever. Each extension has a name (`base`, `cap`, `vec`, `meter`, `atomic` as the anticipated first set), an independent version, an allocated opcode page behind the D1 escape byte, and any state it adds lives in its own CSR range. Discovery is a feature CSR (a presence bitmap for fast checks) plus an extension list in the D9 boot-information block carrying versions. A conformance claim names the base version plus the exact extension set, and the conformance suite is factored the same way, so a base-only VM is a complete, certifiable machine. Nothing in reserved space ever executes as a no-op; unknown opcodes trap, which is what makes forward compatibility testable.
 
 ## D11: the assembler conventions
 
-**Status: PROPOSED, with several sub-questions already settled in direction by the operator (see the brief).**
+**Status: RATIFIED in full. Operator, 2026-08-11.** All four convention calls are resolved: operand order source-to-destination (ruled, overruling the recommendation), always-explicit numeric bases (ruled, overruling the recommendation; the poka-yoke principle), lowercase case-sensitive mnemonics (as proposed), and the dot for length specifiers (as proposed).
 
 Settled and restated: full lowercase word mnemonics; underscores spell compound names; the dot is reserved for operand structure, surviving inside names only as the possible length-specifier form; one canonical name per operation with the alias table deferred; the `@` memory sigil and the digit-separator flexibility carry over.
 
-The three genuinely open calls, with recommendations:
+The four convention calls, as resolved:
 
 - Operand order: **RULED, source-to-destination. Operator, 2026-08-11, overruling the destination-first recommendation.** v2 keeps v1's order: `add r1 r2 r3` reads "add r1 and r2 into r3," `store r4 @r9` reads "store r4 into memory at r9," `load @r9 r4` reads "load from memory into r4." The operator's grounds: the recommendation's premise was wrong, since not every assembler is destination-first (AT&T syntax, GAS's own dialect on x86, is source-first), and the imperative reading, verb source into destination, is the natural English parse for word mnemonics. Comma-free layout is kept, and the disassembler, the spec examples, and the toolchain all emit source-first.
 - Decimal marking: **RULED, always-explicit bases are mandatory. Operator, 2026-08-11, overruling the bare-decimal recommendation.** Every numeric literal names its base: `#` decimal, `$` hex, `%` binary, with no bare numbers accepted. The operator's grounds: no accidents. A base is never inferred by the lexer or by a reader, which is the v1 discipline carried forward unchanged, and it is a correctness stance rather than a style preference. The operator named the principle poka-yoke, and it generalizes across v2: reserved opcodes trap, invalid encodings trap, memory operations cannot merge into register slices, and literals cannot be misread, all the same mistake-proofing instinct applied at the ISA, the assembler, and the tooling.
-- Case: lowercase is canonical and the assembler is case-sensitive, keeping exactly one spelling per program element, which is the same single-source discipline as the no-alias rule.
-- The length-specifier spelling, the one sanctioned maybe-dot: keep the dot (`load.zb`, `store.q`, `add.h`), because under D5 the dotted surface is small (memory operations plus `.h` arithmetic), the dot makes the width family visible as a family, and it keeps compound-name underscores unambiguous as word separation. Width letters follow the terminology ruling: byte, quarter-word, half-word, word.
+- Case: **RATIFIED as proposed.** Lowercase is canonical and the assembler is case-sensitive, keeping exactly one spelling per program element, which is the same single-source discipline as the no-alias rule.
+- The length-specifier spelling: **RATIFIED as proposed.** The dot is kept (`load.zb`, `store.q`, `add.h`), because under D5 the dotted surface is small (memory operations plus `.h` arithmetic), the dot makes the width family visible as a family, and it keeps compound-name underscores unambiguous as word separation. Width letters follow the terminology ruling: byte, quarter-word, half-word, word.
 
 ## Interactions ledger
 
