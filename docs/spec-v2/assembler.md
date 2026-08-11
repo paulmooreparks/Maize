@@ -359,7 +359,10 @@ line, then the including file and its line.
 Inclusion earns its place because a constant is not a linkable symbol. Syscall numbers, device
 port numbers, and control-and-status-register numbers are values rather than addresses, so
 `extern` cannot carry them between modules and a shared declarations file is the only mechanism
-that can.
+that can. The toolchain ships such a file, defining a constant for each control and status
+register in the privileged-architecture chapter's table under that table's own names, and the
+examples elsewhere in this specification that write `csr_read fcsr r5` or
+`csr_write r1 trap_vector_base` assume it is included.
 
 ## Branch targets, pc_add, and relocations
 

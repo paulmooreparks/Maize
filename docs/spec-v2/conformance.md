@@ -10,9 +10,10 @@ Conformance in Maize v2 is decidable, and that is a property of how the rest of 
 specification is written rather than a claim made here. Every instruction, every operand
 encoding, and every input value has a defined outcome, where a defined outcome is either a
 stated result or a named trap with a stated cause. No third category exists. Nothing is
-implementation-defined and nothing is undefined, so two conforming machines cannot diverge
-on any input, and a divergence is a defect in one of them rather than latitude either was
-granted.
+implementation-defined and nothing is undefined, so outside the bounded latitude the
+execution-model chapter's determinism section enumerates, two conforming machines cannot
+diverge on any input, and a divergence is a defect in one of them rather than latitude
+either was granted.
 
 Conformance is defined over behavior and never over timing. The base carries no cycle
 counter, and no conformance test may depend on how long anything takes.

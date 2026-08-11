@@ -381,13 +381,15 @@ lower to a host memory routine. They replace the v1 syscall-provided copy and fi
 
 All three instructions name three registers, and all three are restartable under paging.
 The restartability contract is normative and testable: at every point at which the machine
-can be interrupted, the named registers hold the state of the operation as it stands, with
-the pointer registers advanced past the bytes already transferred and the count register
-holding the number of bytes not yet transferred. A page fault therefore leaves the registers
-describing exactly the remaining work, the fault reports the address of the block
-instruction itself, and re-executing that instruction after the fault is serviced completes
-the operation with no byte copied twice and none skipped. On normal completion the count
-register is zero and each pointer register points just past the last byte it touched.
+can be interrupted, the named registers describe exactly the work that remains, with the
+count register holding the number of bytes not yet transferred and each pointer register
+holding the lowest address in its region not yet transferred. A page fault therefore leaves
+the registers describing exactly the remaining work, the fault reports the address of the
+block instruction itself, and re-executing that instruction after the fault is serviced
+completes the operation with no byte copied twice and none skipped. On normal completion the
+count register is zero and each pointer register holds its original value plus the original
+count, pointing just past its region, whatever order the implementation transferred the
+bytes in. The memory reference chapter states the contract in full.
 
 | Mnemonic | Operands | Semantics | Form |
 |:---------|:---------|:----------|:-----|
@@ -407,12 +409,14 @@ particular direction of travel; software that needs a specific direction uses
 A count of zero is valid, performs no access, and raises no fault. `block_set` leaves its
 value register unmodified throughout.
 
-The three register operands name three distinct registers. An encoding of `block_copy`,
-`block_copy_forward`, or `block_set` that names the same register in more than one of its
-three operand slots raises the illegal-operand trap, and the rule applies to r0 like any
-other register because it constrains encodings rather than values. Aliased slots would make
-the mid-operation restart state unrepresentable, since a register that has to be two of
-pointer, counter, and fill value at once cannot describe the work that remains.
+The three register operands name three distinct registers, and r0 is excluded from every
+slot that carries the operation's state. An encoding of `block_copy`, `block_copy_forward`,
+or `block_set` that names the same register in more than one of its three operand slots
+raises the illegal-operand trap, and so does one that names r0 in a pointer slot or in the
+count slot; the value slot of `block_set` is the one slot that admits r0, because that
+register carries no state and r0 there spells a zero fill. Both rules constrain encodings
+rather than values. An aliased slot, and equally a write-discarding register in a state
+slot, would make the mid-operation restart state unrepresentable.
 
 ## Floating point
 

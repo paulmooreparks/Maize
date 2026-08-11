@@ -41,7 +41,7 @@ assigns interrupt causes to sources.
 | Cause | Name | Class | Raised by | Auxiliary word |
 |------:|:-----|:------|:----------|:---------------|
 | 0 | Illegal instruction | Fault | A reserved opcode byte, a reserved entry on an implemented extension page, or an escape byte for an extension the machine does not implement | The offending byte, zero-extended |
-| 1 | Illegal operand | Fault | An operand byte whose form field is undefined for its slot class, an immediate an instruction defines as invalid, a floating-point rounding-mode field holding a reserved encoding, a control-and-status-register number that is well formed but unimplemented, a control-and-status-register number whose privilege field holds a reserved encoding, a write to a read-only control and status register, an encoding of a block-memory instruction that names the same register in more than one of its three operand slots, or a value written to a control and status register that the register does not accept | The offending byte or value, zero-extended. Under subcode 6 the offending value is the value the write supplied, not the register number |
+| 1 | Illegal operand | Fault | An operand byte whose form field is undefined for its slot class, an immediate an instruction defines as invalid, a floating-point rounding-mode field holding a reserved encoding, a control-and-status-register number that is well formed but unimplemented, a control-and-status-register number whose privilege field holds a reserved encoding, a write to a read-only control and status register, an encoding of a block-memory instruction that names the same register in more than one of its three operand slots or that names r0 in a pointer or count slot, or a value written to a control and status register that the register does not accept | The offending byte or value, zero-extended. Under subcode 6 the offending value is the value the write supplied, not the register number |
 | 2 | Divide error | Fault | An integer divide or remainder by zero, or the signed division of the most negative value by -1 | Zero (the condition is in the subcode) |
 | 3 | Breakpoint | Trap | The `breakpoint` instruction | Zero |
 | 4 | Privileged operation | Fault | A privileged instruction executed at user level, or an access to a control and status register whose number names a higher privilege level than the current one | The offending opcode byte, or the register number for a control-and-status-register access |
@@ -87,7 +87,7 @@ does every condition of a listed cause that the list assigns the value 0 to.
   invalid immediate, 2 for a reserved floating-point rounding mode, 3 for an unimplemented
   control-and-status-register number, 4 for a write to a read-only control and status
   register, 5 for a block-memory encoding that names the same register in more than one
-  of its three operand slots, 6 for an invalid value written to a control and status
+  of its three operand slots or that names r0 in a pointer or count slot, 6 for an invalid value written to a control and status
   register, meaning a value that sets a bit the register reserves or that holds a reserved
   encoding in a field the register defines, and 7 for a control-and-status-register number
   whose privilege field holds a reserved encoding. Subcode 6 covers the status word a
@@ -255,11 +255,14 @@ of it. A handler that runs on a stack of its own leaves the trap-stack register 
 disciplines are software policy, and the machine's only rule is the mechanical one: a frame
 is pushed at the trap-stack register's current value minus 32, always.
 
-A **double fault** is a page fault raised by the vector-table read or by any of the four
-frame stores. The machine does not attempt to deliver it, because delivering it would take
+A **double fault** is a page fault or a physical-memory fault raised by the vector-table
+read or by any of the four frame stores. The machine does not attempt to deliver it, because delivering it would take
 the same failing path again. The machine halts instead, writes the original cause and subcode
 into the halt-cause register with a kind of 2, and executes nothing further. An unmapped or
-read-only trap stack is therefore a deterministic stop rather than an unbounded recursion.
+read-only trap stack, and equally a trap stack or vector table sitting in unpopulated
+physical memory, is therefore a deterministic stop rather than an unbounded recursion. The
+physical-memory case matters most in bare mode, where no page fault exists and cause 11 is
+the only way a bad trap-stack address can fail.
 
 Nothing else is a double fault. A fault raised by a handler's own instructions, however soon
 after entry, is an ordinary nested trap.
@@ -282,10 +285,10 @@ resumes. The cause and auxiliary words are not read back into anything; they are
 to consume. Restoring the status word is what returns the machine to user mode and what
 re-enables interrupts, since both live in that word.
 
-A page fault raised while popping the frame abandons the pop, leaves the trap-stack register
-unchanged, and is delivered as an ordinary fault, so the `trap_return` re-executes cleanly
-once the fault is serviced. It is not a double-fault condition, because it occurs at
-`trap_return` rather than at trap entry.
+A page fault or a physical-memory fault raised while popping the frame abandons the pop,
+leaves the trap-stack register unchanged, and is delivered as an ordinary fault, so the
+`trap_return` re-executes cleanly once the fault is serviced. Neither is a double-fault
+condition, because it occurs at `trap_return` rather than at trap entry.
 
 A handler that wants to resume somewhere other than where the trap happened edits the
 program-counter word on the frame before executing `trap_return`. That is how a kernel
@@ -314,21 +317,28 @@ Maize v1 pushed thirteen registers on the way into every handler whether the han
 them or not. Maize v2 has no equivalent, and there is no instruction that saves a fixed
 register set, so the cost cannot creep back in.
 
-A short handler prologue and epilogue look like this, with the trap stack doubling as the
-handler's working stack:
+A handler's first act is to read the trap-stack register, and that read necessarily lands in
+a general register, so entering a handler costs one register before anything can be saved. A
+syscall handler pays that cost where the convention has already priced it in: r2 is `a0`, the
+register the syscall contract rewrites with the result anyway, so claiming it first loses the
+interrupted program nothing. A short syscall-handler prologue and epilogue look like this,
+with the trap stack doubling as the handler's working stack:
 
     handler:
-        csr_read $4001 r30          ; the trap-stack register, holding the frame address
-        store r2 @r30-$08           ; save the two registers this handler uses
-        store r3 @r30-$10
-        subtract r30 $10 r30
-        csr_write r30 $4001         ; nested frames now land beneath the saved registers
-        load @r30+$20 r2            ; the cause word, two words above the saved pair
-        ...
-        add r30 $10 r30
-        csr_write r30 $4001
-        load @r30-$08 r2
-        load @r30-$10 r3
+        csr_read $4001 r2           ; the frame address, into the one register the
+                                    ; syscall contract lets the handler claim outright
+        store r10 @r2-$08           ; save the registers the handler goes on to use
+        store r11 @r2-$10
+        subtract r2 $10 r10
+        csr_write r10 $4001         ; nested frames now land beneath the saved pair
+        load @r2+$18 r10            ; the aux word, carrying the syscall number
+        ...                         ; the body works in r10 and r11, finishes with the
+                                    ; frame, and leaves the result in r2
+        csr_read $4001 r11
+        add r11 $10 r11             ; the frame address again
+        csr_write r11 $4001         ; the trap-stack register is back on the frame
+        load @r11-$08 r10
+        load @r11-$10 r11
         trap_return
 
 ## The syscall boundary
@@ -383,8 +393,9 @@ it once.
 
 For the block-memory instructions, which move an unbounded number of bytes, the contract is
 different and equally exact. Those instructions define their visible mid-operation register
-state: at every point where the machine can stop, the pointer registers have advanced past
-the bytes already transferred and the count register holds the bytes not yet transferred. A
+state: at every point where the machine can stop, the count register holds the bytes not yet
+transferred and each pointer register holds the lowest address in its region not yet
+transferred, which is the direction-neutral invariant the memory reference chapter fixes. A
 fault therefore captures the block instruction's own address, leaves the registers describing
 precisely the remaining work, and re-executing the instruction after the handler runs finishes
 the job with no byte copied twice and none skipped.

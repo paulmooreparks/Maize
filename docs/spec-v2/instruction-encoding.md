@@ -168,7 +168,8 @@ the bit width second.
 Whether a narrow immediate is sign-extended or zero-extended into the full 64-bit value the
 instruction uses is a property of the opcode, stated in the inventory entry and visible in
 the mnemonic wherever the choice exists. The narrow forms of `move` spell the choice with
-`z` and `s` exactly as loads do, and `move.w` carries a full word that no extension touches;
+`z` and `s` exactly as loads do, and `move.w` carries a full word to which no extension rule
+applies;
 ALU immediates and memory displacements are sign-extended;
 branch and jump displacements are sign-extended; a control-and-status-register number is an
 unsigned 16-bit value; a syscall number is an unsigned 8-bit value.

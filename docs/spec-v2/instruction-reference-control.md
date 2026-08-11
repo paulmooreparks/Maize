@@ -442,9 +442,11 @@ global interrupt-disable bit in the status register, so a kernel idling with int
 masked wakes and polls the pending registers while a kernel idling with interrupts enabled
 enters the handler before the following instruction executes. A cause that is already pending
 and enabled when the instruction executes satisfies it immediately, so no interrupt is lost
-by racing to sleep. No register is written and no memory is touched. The instruction is a
-hint about idleness and never about correctness, so a machine that returns from it
-immediately and repeatedly is conforming.
+by racing to sleep. No register is written and no memory is touched. The suspension is real
+rather than advisory: a machine executing this instruction with no cause both pending and
+enabled takes no further instruction, exactly as the execution-model chapter's waiting state
+defines, so a program whose only wake source never fires waits forever rather than falling
+through.
 
 **Traps:** The privileged-operation trap when the machine is at user level, in which case the
 machine does not suspend.

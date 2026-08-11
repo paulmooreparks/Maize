@@ -130,7 +130,8 @@ fault those accesses can raise.
 **Auxiliary word.** The auxiliary word is the fourth word of the trap frame, carrying the one
 value a handler needs that is not derivable from the cause and the program counter: the
 offending byte for a decode-class fault, the faulting virtual address for a page fault, the
-syscall number for a syscall, and zero where the cause has nothing to report.
+faulting physical address for a physical-memory fault, the syscall number for a syscall, and
+zero where the cause has nothing to report.
 
 **Cause.** A cause is the stable number in the range 0 through 255 that names why the machine
 entered the kernel. It is the index into the vector table and the value the frame's cause word
@@ -141,8 +142,8 @@ interrupts.
 inputs a conventional architecture would leave undefined. Where a chapter says an outcome is
 defined, a second implementation reaches the identical architectural state.
 
-**Double fault.** A double fault is a page fault raised by the vector-table read or by any of
-the four frame stores of a trap already being delivered. The machine does not attempt to
+**Double fault.** A double fault is a page fault or a physical-memory fault raised by the
+vector-table read or by any of the four frame stores of a trap already being delivered. The machine does not attempt to
 deliver it; it halts, recording the original cause and a halt kind of 2.
 
 **Fault.** A fault is a condition an instruction ran into, and the frame captures the address

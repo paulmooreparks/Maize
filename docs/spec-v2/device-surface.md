@@ -183,6 +183,20 @@ device-register bits, because a device is not the instruction stream: a driver t
 bit the machine does not implement then degrades to the behavior of a machine without that
 bit, instead of faulting.
 
+## Reset state
+
+Every present class holds one uniform reset state at the instant the first instruction
+executes, and the boot chapter relies on it. The interrupt-enable bit of every class is
+clear. The busy, invalid-request, overrun, and transfer-error status bits of every class are
+clear. No bulk-transfer buffer is registered, so every buffer-address port reads zero. The
+event and data conditions read what is true at that instant: no console input byte has been
+delivered, no key event is queued, no network frame has been received, and no timer expiry
+is pending, so those condition bits are clear, while the console's output-ready bit is set
+whenever output can be accepted and the entropy device's data-available bit is set whenever
+its source is ready. The timer's counting-enable and periodic bits are clear and its period
+reads zero. The framebuffer's selected-surface and scanned-out indices are zero and no
+surface is claimed.
+
 ## Console
 
 The console is the required character device, and it carries a byte-at-a-time input stream
@@ -195,7 +209,10 @@ and a byte-at-a-time output stream.
 
 Status bit 0 is input-available, status bit 3 is output-ready, and status bit 4 is
 end-of-input. Reading offset 3 when input-available is clear yields zero and consumes
-nothing. End-of-input latches once the input stream is exhausted and stays set thereafter, so
+nothing. Writing offset 3 while output-ready is clear discards the byte and sets status bit
+5, the overrun bit, so a program that paces itself on output-ready loses nothing and one
+that does not can see that it lost something. A console whose output can always accept a
+byte holds output-ready permanently set, which is conforming. End-of-input latches once the input stream is exhausted and stays set thereafter, so
 software distinguishes a byte that is not there yet from a byte that will never come.
 
 The interrupt condition is input-available. Reading offset 3 consumes the byte and clears the

@@ -667,11 +667,18 @@ zero, and every byte it covers is translated on its own.
 
 The three register operands of a block-memory instruction name three distinct registers. An
 encoding of `block_copy`, `block_copy_forward`, or `block_set` that names the same register
-in more than one of its three operand slots raises the illegal-operand trap, and the rule
-applies to r0 like any other register because it constrains encodings rather than values.
-Aliased slots would make the mid-operation restart state unrepresentable, since a register
-that has to be two of pointer, counter, and fill value at once cannot describe the work that
-remains.
+in more than one of its three operand slots raises the illegal-operand trap. Aliased slots
+would make the mid-operation restart state unrepresentable, since a register that has to be
+two of pointer, counter, and fill value at once cannot describe the work that remains.
+
+Register r0 is excluded from the slots that carry that state, for the same reason from the
+other side: a register that discards writes cannot hold a pointer that must advance, a count
+that must reach zero, or the completion state the contract fixes. An encoding that names r0
+in a pointer slot or in the count slot of any block-memory instruction raises the
+illegal-operand trap with the same subcode as an aliased slot. The one slot that admits r0
+is the value slot of `block_set`, because that register carries no operation state, is never
+written, and r0 there is the natural spelling of a zero fill. Both rules constrain encodings
+rather than values, so they are decided before any byte is transferred.
 
 ### The restartability contract
 
@@ -745,7 +752,7 @@ restartability contract above defines.
 
 **Traps:** Page fault, on any inaccessible byte of the source region and on any inaccessible or
 read-only byte of the destination region. Illegal-operand, when two of the three operand slots
-name the same register.
+name the same register or any of the three names r0.
 
 **Example:**
 
@@ -774,7 +781,7 @@ bytes still to copy.
 
 **Traps:** Page fault, on any inaccessible byte of the source region and on any inaccessible or
 read-only byte of the destination region. Illegal-operand, when two of the three operand slots
-name the same register.
+name the same register or any of the three names r0.
 
 **Example:**
 
@@ -801,7 +808,8 @@ count. Interruption leaves rd advanced past the bytes already written and rn hol
 of bytes still to write.
 
 **Traps:** Page fault, on any inaccessible or read-only byte of the region. Illegal-operand,
-when two of the three operand slots name the same register.
+when two of the three operand slots name the same register or when the pointer slot or the
+count slot names r0; the value slot admits r0.
 
 **Example:**
 
@@ -894,7 +902,8 @@ of them.
 - A bitfield instruction with a width of zero, and one whose position plus width exceeds 64,
   both raise the illegal-operand trap and modify no register.
 - A block-memory instruction naming the same register in two of its three operand slots raises
-  the illegal-operand trap and transfers no byte.
+  the illegal-operand trap and transfers no byte, and so does one naming r0 in a pointer slot
+  or in the count slot, while `block_set` with r0 in the value slot executes normally.
 - A block-memory instruction interrupted by a page fault leaves the untransferred bytes of each
   region exactly described by its pointer register and its count register, and re-executing it
   after the fault is serviced yields the memory contents that an uninterrupted execution would

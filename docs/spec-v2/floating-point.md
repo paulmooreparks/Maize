@@ -138,7 +138,7 @@ makes a reserved opcode trap and an unmarked numeric literal a syntax error.
 The trap is a property of the operation, not of the write that set the mode. A `csr_write`
 that places a reserved encoding in `frm` succeeds, and the next rounding operation is what
 traps. The non-rounding operations, which are negation, absolute value, minimum, maximum,
-every comparison, the widening conversion, and both float-to-integer conversions, execute
+every comparison, the widening conversion, and the four float-to-integer conversions, execute
 normally under a reserved mode because they never consult it.
 
 ### The sticky exception flags
@@ -1202,8 +1202,9 @@ opcode-map appendix.
 
 **Operation:** The machine reads rs as a signed 64-bit integer, converts it to binary64
 rounding under the current rounding mode, and writes the whole 64-bit result into rd. The
-conversion is exact for every integer of magnitude at most 2^53 and raises `nx` otherwise.
-Zero converts to positive zero.
+conversion is exact for every integer of magnitude at most 2^53, and for a larger integer it
+is exact or raises `nx` exactly as the chapter's conversion rule states, meaning `nx` is
+raised only when the rounded result differs from the integer. Zero converts to positive zero.
 
 **Traps:** Illegal-operand, when the rounding-mode field holds a reserved encoding.
 
@@ -1222,7 +1223,8 @@ opcode-map appendix.
 
 **Operation:** The machine reads rs as a signed 64-bit integer, converts it to binary32
 rounding under the current rounding mode, and writes the 32-bit result zero-extended into rd.
-The conversion is exact for every integer of magnitude at most 2^24 and raises `nx` otherwise.
+The conversion is exact for every integer of magnitude at most 2^24, and a larger integer
+raises `nx` only when the rounded result differs from it.
 
 **Traps:** Illegal-operand, when the rounding-mode field holds a reserved encoding.
 
@@ -1241,8 +1243,8 @@ opcode-map appendix.
 
 **Operation:** The machine reads rs as an unsigned 64-bit integer, converts it to binary64
 rounding under the current rounding mode, and writes the whole 64-bit result into rd. The
-conversion is exact for every value at most 2^53 and raises `nx` otherwise. The result is
-never negative and never infinite.
+conversion is exact for every value at most 2^53, and a larger value raises `nx` only when
+the rounded result differs from it. The result is never negative and never infinite.
 
 **Traps:** Illegal-operand, when the rounding-mode field holds a reserved encoding.
 
@@ -1261,7 +1263,8 @@ opcode-map appendix.
 
 **Operation:** The machine reads rs as an unsigned 64-bit integer, converts it to binary32
 rounding under the current rounding mode, and writes the 32-bit result zero-extended into rd.
-The conversion is exact for every value at most 2^24 and raises `nx` otherwise.
+The conversion is exact for every value at most 2^24, and a larger value raises `nx` only
+when the rounded result differs from it.
 
 **Traps:** Illegal-operand, when the rounding-mode field holds a reserved encoding.
 

@@ -180,9 +180,10 @@ Four terms carry a fixed meaning wherever they appear.
   without breaking a program that a machine has already accepted.
 - **Defined** means that the specification names the outcome for every input, including
   inputs a conventional architecture would leave undefined. Where a chapter says an outcome
-  is defined, a second implementation reaches the identical architectural state, and there is
-  no case in this document where the outcome of an instruction depends on an implementation's
-  choice.
+  is defined, a second implementation reaches the identical architectural state. Where an
+  outcome instead depends on an implementation's choice, the specification says so in those
+  words and states the bound on the choice, and the execution-model chapter's determinism
+  section enumerates the whole of that latitude.
 - **Privileged** means that executing the instruction, or accessing the register, at user
   level raises the privileged-operation trap, and that the trap fires before any other effect
   of the instruction becomes visible.

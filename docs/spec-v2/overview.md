@@ -24,8 +24,9 @@ follow from that and are worth stating before anything else. Every input has a d
 outcome, including every invalid one: an encoding this specification does not assign raises
 a named trap with a stable numeric cause, and no condition anywhere in the machine is left
 undefined or implementation-defined-by-omission. A run is a pure function of the image and
-its declared inputs, so two conforming machines executing the same image observe the same
-architectural state at every instruction boundary.
+its declared inputs, so two conforming machines executing the same image, with the same
+device inputs delivered at the same instruction boundaries, observe the same architectural
+state at every instruction boundary.
 
 The architecture is a small frozen base plus named, independently versioned extensions. The
 base is everything in this document that is not marked as belonging to an extension, and it

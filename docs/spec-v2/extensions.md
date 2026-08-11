@@ -171,6 +171,9 @@ list cannot break any conforming base binary.
   the register-number encoding can express.
 - Define new trap causes drawn from the cause space the trap-model chapter reserves for
   extensions.
+- Assign a new subcode to an existing cause for a trap condition its own instructions raise,
+  taking the next free value for that cause, under the open-subcode rule the trap-model
+  chapter states.
 - Add architectural state reachable only through its own instructions and its own
   registers.
 - Depend on another named extension, provided the dependency is declared at ratification

@@ -12,7 +12,7 @@ live elsewhere in Maize v2 or do not exist at all.
 Maize v2 has thirty-two general registers, named r0 through r31, and every one of them is 64
 bits wide. There is no second register file. Integer values, addresses, and floating-point
 values all live in these registers, and no instruction in the base reads or writes any other
-data storage. The operand byte's register field is five bits, so all thirty-two registers are
+register file, because none exists. The operand byte's register field is five bits, so all thirty-two registers are
 reachable from every operand slot of every instruction and no register number is unassigned.
 
 Two registers carry an architectural role, meaning a role the machine itself implements rather
@@ -233,11 +233,11 @@ The following properties are directly testable by a binary, and a conforming mac
 all of them.
 
 - Every one of the thirty-two register numbers is accepted in every operand slot of every base
-  instruction, and no register number raises an illegal-operand trap on account of its value.
-  The one rule that constrains which numbers appear together is the block-memory family's
-  requirement that its three operand slots name three different registers, which the memory
-  reference chapter states and which constrains an encoding rather than the value of any single
-  number.
+  instruction, with one family of exceptions: the block-memory instructions require their three
+  operand slots to name three different registers and exclude r0 from their pointer and count
+  slots, which the memory reference chapter states and which constrains encodings rather than
+  values. Outside that family, no register number raises an illegal-operand trap on account of
+  its value.
 - A read of r0 yields zero in every operand position of every instruction, including after an
   instruction that named r0 as its destination.
 - An instruction whose destination is r0 still raises the fault its operands demand, tested at

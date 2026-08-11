@@ -72,7 +72,8 @@ Three properties of the program counter hold everywhere.
 - Program counter arithmetic wraps modulo 2^64, so advancing past the highest address yields
   address zero rather than raising a distinct fault. Whether the resulting address is
   accessible is a question for the memory model, and a fetch from an inaccessible address
-  raises a page fault in the ordinary way.
+  raises the fault the memory model assigns it, a page fault under translation or the
+  physical-memory fault outside populated memory.
 
 Instructions carry no alignment requirement. Any byte address is a legal instruction address,
 a branch displacement is a signed byte count, and the machine never masks the low bits of a
@@ -104,9 +105,9 @@ report the following instruction instead; `breakpoint` and `sys` are the two in 
 The block-memory family is the single exception to the all-or-nothing rule, and its exception
 is exact rather than open-ended. `block_copy`, `block_copy_forward`, and `block_set` may be
 interrupted or may fault after transferring some of their bytes, and when that happens their
-three named registers describe the remaining work: each pointer register has advanced past the
-bytes already transferred and the count register holds the number of bytes not yet
-transferred. The instruction reports its own address, and re-executing it completes the
+three named registers describe the remaining work: the count register holds the number of
+bytes not yet transferred and each pointer register holds the lowest address in its region
+not yet transferred, as the memory reference chapter fixes. The instruction reports its own address, and re-executing it completes the
 operation with no byte transferred twice and none skipped. Those registers are the entire
 observable mid-operation state, and the inventory entry for each instruction fixes it; a
 machine holds no hidden progress state that survives a trap.
@@ -138,7 +139,7 @@ otherwise left to the machine to choose. Floating-point arithmetic is bit-exact 
 IEEE 754 rules the inventory states, including the rounding mode the control and status
 register holds, so a floating-point program is as reproducible as an integer one.
 
-Two categories of behavior sit outside the pure-function rule, and both are defined rather
+Three categories of behavior sit outside the pure-function rule, and each is defined rather
 than open.
 
 - Device interactions enter through `port_in`, `port_out`, and interrupts, and they are the
@@ -151,8 +152,12 @@ than open.
   mid-operation state is defined as the remaining-work description rather than as a direction
   of travel. Software that needs a specific direction uses `block_copy_forward`, whose order is
   fixed.
+- A program that edits a live page table and does not invalidate may observe the old
+  translation, the new one, or each on different accesses, within the bound the
+  privileged-architecture chapter states for the translation cache. A program that
+  invalidates as that chapter directs never observes this latitude.
 
-No third category exists. There is no undefined behavior anywhere in this specification: every
+No fourth category exists. There is no undefined behavior anywhere in this specification: every
 byte string the machine can fetch either executes with a defined result or raises a defined
 trap, and every operand value, including every value a compiler would call erroneous, has a
 stated outcome.

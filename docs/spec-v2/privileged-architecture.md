@@ -285,8 +285,9 @@ faulting instruction has taken no architectural effect, or, for a block-memory i
 exactly the effect its restartability contract describes, so servicing the fault and returning
 completes the access.
 
-A page fault raised while the machine is building a trap frame or reading the vector table is
-a double fault, and the trap-model chapter says the machine halts rather than recursing.
+A page fault or a physical-memory fault raised while the machine is building a trap frame or
+reading the vector table is a double fault, and the trap-model chapter says the machine halts
+rather than recursing.
 
 ## The translation cache
 

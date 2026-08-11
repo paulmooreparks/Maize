@@ -98,7 +98,7 @@ instructions with two, store the bit position first and the bit width second.
 Extension of a narrow immediate is a property of the opcode.
 
 - The narrow forms of `move` spell the choice in the mnemonic with `z` and `s`, as the loads do,
-  and `move.w` carries a full word that no extension touches.
+  and `move.w` carries a full word to which no extension rule applies.
 - An ALU immediate and a memory displacement are sign-extended.
 - A branch, jump, or call displacement is sign-extended, and it is a signed 32-bit byte count
   measured from the address of the following instruction.

@@ -254,7 +254,8 @@ operand byte's form field, and a plain slot requires a form field of `%000`.
 | `$B3`..`$B7` | reserved | | | |
 
 An encoding in this band that names the same register in more than one of its three operand
-slots raises the illegal-operand trap.
+slots raises the illegal-operand trap, and so does one that names r0 in a pointer slot or in
+the count slot; the value slot of `block_set` is the one slot in the band that admits r0.
 
 ## A.11 System, control registers, TLB, and ports, `$B8`..`$C7`
 

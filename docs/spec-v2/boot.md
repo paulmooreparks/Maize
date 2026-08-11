@@ -107,9 +107,10 @@ machine has and which of it is usable, and the extension list in the block is th
 companion to the feature bitmap.
 
 The machine has placed every device in its reset state. A device present in the port space
-answers its identification port, holds its interrupt-enable bit clear, has no pending status
-condition, and has no registered bulk-transfer buffer. The device-surface chapter states each
-class's reset condition as part of its contract.
+answers its identification port, holds its interrupt-enable bit clear, has no pending event
+condition and no error bit set, and has no registered bulk-transfer buffer. The
+device-surface chapter's reset-state section states the uniform rule and the per-class
+detail.
 
 The machine has zeroed every byte of physical memory the boot-information block reports as
 usable and that the artifact did not itself fill. Guest software therefore does not have to
@@ -199,6 +200,6 @@ machine exhibits all of them.
   boot-information block is readable.
 - Every byte of usable physical memory that the artifact did not fill reads as zero.
 - Every present device reports its identification value, holds its interrupt-enable bit clear,
-  and reports no pending status condition.
+  and reports no pending event condition and no error bit.
 - No interrupt is delivered before the guest sets the interrupt-enable bit, even after a timer
   programmed by the guest has expired and set its status bit.
