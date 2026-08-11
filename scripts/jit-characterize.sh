@@ -141,16 +141,16 @@ run_mode() {  # tag, then the full command
 }
 
 step "DOOM matrix ($TRIALS trials each)"
-run_mode a_bare_interp "$M"       --show-perf --no-root --mount "$MNT=/ro:ro" "$MNT/doom.mzx" -iwad /ro/min.wad -warp 1 1 -nomonsters
-run_mode b_bare_jit    "$M" --jit --show-perf --no-root --mount "$MNT=/ro:ro" "$MNT/doom.mzx" -iwad /ro/min.wad -warp 1 1 -nomonsters
-run_mode c_ques_interp "$M"       --show-perf --no-root --fb-no-display --mount "$MNT=/ro:ro" "$WORK/quesos.mzx" /ro/doomq.mzx
-run_mode d_ques_jit    "$M" --jit --show-perf --no-root --fb-no-display --mount "$MNT=/ro:ro" "$WORK/quesos.mzx" /ro/doomq.mzx
+run_mode a_bare_interp "$M" --bare --no-jit --show-perf --no-root --mount "$MNT=/ro:ro" "$MNT/doom.mzx" -iwad /ro/min.wad -warp 1 1 -nomonsters
+run_mode b_bare_jit    "$M" --bare --jit    --show-perf --no-root --mount "$MNT=/ro:ro" "$MNT/doom.mzx" -iwad /ro/min.wad -warp 1 1 -nomonsters
+run_mode c_ques_interp "$M" --rom "$WORK/quesos.mzx" --no-jit --show-perf --no-root --fb-no-display --mount "$MNT=/ro:ro" /ro/doomq.mzx
+run_mode d_ques_jit    "$M" --rom "$WORK/quesos.mzx" --jit    --show-perf --no-root --fb-no-display --mount "$MNT=/ro:ro" /ro/doomq.mzx
 
 step "micro legs (syscall-bound vs compute-bound)"
-run_mode scloop_interp  "$M"       --show-perf "$WORK/scloop.mzx"
-run_mode scloop_jit     "$M" --jit --show-perf "$WORK/scloop.mzx"
-run_mode compute_interp "$M"       --show-perf "$WORK/compute.mzx"
-run_mode compute_jit    "$M" --jit --show-perf "$WORK/compute.mzx"
+run_mode scloop_interp  "$M" --bare --no-jit --show-perf "$WORK/scloop.mzx"
+run_mode scloop_jit     "$M" --bare --jit    --show-perf "$WORK/scloop.mzx"
+run_mode compute_interp "$M" --bare --no-jit --show-perf "$WORK/compute.mzx"
+run_mode compute_jit    "$M" --bare --jit    --show-perf "$WORK/compute.mzx"
 
 # ---- Stage 6: the report -----------------------------------------------------
 step "write report"
