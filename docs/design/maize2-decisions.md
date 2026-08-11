@@ -53,7 +53,7 @@ The honest tradeoff: a variable-length encoding is less friendly to a hypothetic
 
 ## D5: width-modifier semantics
 
-**Status: PROPOSED. Recommendation: half-word `.h` operations zero-extend their 32-bit result into the full word; width-modified ALU forms exist for `.h` only; `.b` and `.q` exist only on loads, stores, extract, and insert.**
+**Status: RATIFIED as proposed. Operator, 2026-08-11.** Half-word `.h` operations zero-extend their 32-bit result into the full word; width-modified ALU forms exist for `.h` only; `.b` and `.q` exist only on loads, stores, extract, and insert, with `z` and `s` naming load extension (`load.zb`, `load.sq`; bare `load`/`store` at the word). The reasoning below stands as the trail.
 
 All width letters follow the terminology ruling above: `.h` is the 32-bit half-word, and a bare mnemonic is the full 64-bit word.
 
@@ -63,7 +63,7 @@ Restricting ALU width modifiers to `.h` is a deliberate ISA-size cut: C promotes
 
 ## D6: positional extract and insert
 
-**Status: PROPOSED. Recommendation: as designed in the brief, with immediate-only positions in the base.**
+**Status: RATIFIED as proposed. Operator, 2026-08-11.** Dotted source extracts to a fresh full-width value (zero- or sign-extending variants), dotted destination inserts as the ISA's only merge site, all fourteen positional forms reachable, general bitfield extract and insert with immediate position and width behind them, register-driven positions excluded from the base pending evidence. The boundary invariant holds: width modifiers ride memory operations, positional dots ride register operands of extract and insert, and no memory operation targets a register slice.
 
 A dotted register as a source extracts, producing a fresh zero-extended full-width value (with a sign-extending variant), and reads nothing back into the source. A dotted register as a destination inserts, an explicit read-modify-write that is the only merge site in the ISA. The dotted forms name the eight bytes, four quarters, and two halves (`r3.b5`, `r3.q2`, `r3.h1`). Behind them sit general bitfield extract and insert with immediate bit position and width, of which the dotted forms are aligned shorthands. Register-driven position and width are excluded from the base and wait for evidence, per the selection rule. Flag effects are moot under D3.
 
@@ -71,7 +71,7 @@ The brief's boundary is restated as a spec invariant: width modifiers ride memor
 
 ## D7: the select instruction
 
-**Status: PROPOSED. Recommendation: a conditional-move pair with a register condition, matching the host cmov shape.**
+**Status: RATIFIED as proposed. Operator, 2026-08-11.** The destructive conditional-move pair with a register condition, `select_nz rd rc rs` and `select_z`, lowering one-to-one to host cmov on both JIT targets, with backend select-recognition shipping as part of the same deliverable so the instruction is exercised from day one.
 
 Under flagless D3, select takes its condition from a register. The four-operand general form (`rd = rc ? rt : rf`) encodes wide and lowers to two host instructions; the proposed shape is instead a destructive three-operand pair, `select_nz rd rc rs` (rd becomes rs when rc is nonzero, else unchanged) and `select_z`, which is exactly the host cmov contract on both x86-64 and AArch64 and composes into the general form in two instructions when needed. The v1 lesson rides along: the opcode is inert until the backend recognizes diamond-shaped selects, so the qbe (and later LLVM) select-recognition work is part of the same deliverable, not a follow-up hope.
 
