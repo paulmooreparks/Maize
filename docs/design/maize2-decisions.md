@@ -6,7 +6,7 @@ The proposed ratification order follows the dependency structure rather than the
 
 ## D3: flags versus flagless
 
-**Status: PROPOSED. Recommendation: flagless.**
+**Status: RATIFIED, flagless. Operator, 2026-08-11.** The v2 base ISA carries no condition register. Comparisons are fused compare-and-branch or compare-into-register; the reasoning below stands as the trail. This unlocks D7's register-condition select, D8's no-flag trap frame, and the D11 condition spellings, and it commits the ALU chapter to a deliberate carry-out design for multi-precision arithmetic.
 
 v1 carries a full condition-flag model (C, N, V, Z, P) in the x86 lineage, with per-instruction flag-effect tables in the spec. The alternative is the RISC-V shape: no condition register at all, with fused compare-and-branch instructions and compare-into-register for materialized conditions.
 
