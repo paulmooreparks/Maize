@@ -77,7 +77,7 @@ Under flagless D3, select takes its condition from a register. The four-operand 
 
 ## D8: the trap model
 
-**Status: PROPOSED. Recommendation: a four-word hardware-pushed frame on a kernel-stack CSR, vectored causes, syscall arguments live in registers, and no general-purpose register saved by hardware.**
+**Status: RATIFIED as proposed. Operator, 2026-08-11.** A four-word hardware-pushed frame (pc, status, cause, aux) on a kernel-stack CSR, vectored causes, no general-purpose register saved by hardware, register saving as the kernel's calling-convention-aware choice, syscall arguments live in registers across the boundary, restartability as a spec-wide contract with defined mid-operation state for multi-step instructions, and the spec forbidding nothing about a JIT treating syscalls as call-shaped boundaries. The v1 thirteen-PUSH prologue has no v2 equivalent by construction. The reasoning below stands as the trail.
 
 The v1 pain this kills is the thirteen-PUSH prologue repeated per handler. Proposed: on any trap the machine switches to a kernel stack named by a CSR, pushes exactly four words (pc, status, cause, aux), and vectors by cause. General-purpose registers are the kernel's problem, calling-convention-aware: the syscall path saves only what it uses, and a full register save happens only on an actual context switch. Under flagless D3 there is no condition state to preserve, so the hardware frame is genuinely minimal. Syscall arguments arrive in the D4 argument registers and stay live across the trap boundary; the return value lands in place; a single return instruction pops the frame and resumes.
 
