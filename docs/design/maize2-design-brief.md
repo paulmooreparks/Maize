@@ -66,7 +66,7 @@ v1's separation is kept: behavioral conformance never depends on timing, and the
 
 ### Privileged architecture
 
-The trap/interrupt model, the CR file, and paging carry the v1 lessons (Sv48-shaped translation worked; the choke-point access-kind discipline from the MMU reviews is kept). Whether v2 keeps the exact Sv48 format or revises it is a Phase 1 decision, weighed against quesOS porting cost. The syscall trap shape (cause-7 plus the provider-select flag) should stay recognizably compatible so the quesOS port is a recompile plus a thin trampoline rewrite, not a redesign; this also preserves the quesito-tier and two-ABI plans unchanged.
+The trap/interrupt model, the CR file, and paging carry the v1 lessons (Sv48-shaped translation worked; the choke-point access-kind discipline from the MMU reviews is kept). Whether v2 keeps the exact Sv48 format or revises it is a Phase 1 decision, weighed against quesOS porting cost. The syscall trap shape (cause-7 plus the provider-select flag) should stay recognizably compatible so the quesOS port is a recompile plus a thin trampoline rewrite, not a redesign; this also preserves the two-ABI plan unchanged.
 
 ### Capabilities and vectors are extensions, not base
 
@@ -88,7 +88,7 @@ The v2 VM and tools are written as a single portable-C codebase from day one. Th
 
 The JIT is designed with a front-end/back-end seam from the start: Maize decode on one side, host codegen on the other, so x86-64 and AArch64 (Apple Silicon, with its MAP_JIT/W^X discipline) are two bounded backends behind one interface rather than two JITs. The v1 JIT's host-codegen half is expected to carry over across that seam; its measured results are a Phase 1 input.
 
-The mzvm/quesOS boundary policy applies to v2 from its first commit: the VM is instruction execution, MMU mechanism, trap delivery, devices behind a swappable host-backend interface, and a minimal boot path, with the embedded quesito ROM tier as the default boot payload and quesOS as the full OS. No OS policy enters the v2 VM, which also keeps the eventual portable reference VM story cheap.
+The mzvm/quesOS boundary policy applies to v2 from its first commit: the VM is instruction execution, MMU mechanism, trap delivery, devices behind a swappable host-backend interface, and a minimal boot path, with quesOS as the embedded default boot ROM in the model v1 now ships (a raw image needs --bare, and --rom swaps the OS). The thin quesito tier was measured unnecessary and ruled out on 2026-08-11 (the paged-versus-bare JIT gap closed to 1.7x), so v2 carries one OS and no shim tier. No OS policy enters the v2 VM, which also keeps the eventual portable reference VM story cheap.
 
 ## Migration and parity
 
