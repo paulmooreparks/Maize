@@ -75,8 +75,8 @@ scripts/cc-maize.sh --preset "$PRESET" --dev \
     -D BENCH_DETERMINISTIC -D "BENCH_FRAMES=$FRAMES" \
     -o "$WORK/doomq.mzx" \
     --sources demos/doom/doom.sources \
-    demos/doom/doom_bench_q.c demos/doom/doomgeneric_maize.c >>"$LOG" 2>&1 \
-    || { echo "doom_bench_q build failed; see $LOG" >&2; exit 1; }
+    demos/doom/doom_bench_quesos.c demos/doom/doomgeneric_maize.c >>"$LOG" 2>&1 \
+    || { echo "doom_bench_quesos build failed; see $LOG" >&2; exit 1; }
 
 step "build quesos.mzx ($PRESET)"
 os/quesos/build-quesos.sh --preset "$PRESET" -o "$WORK/quesos.mzx" >>"$LOG" 2>&1 \
