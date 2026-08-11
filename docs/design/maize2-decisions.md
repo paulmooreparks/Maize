@@ -4,6 +4,10 @@
 
 The proposed ratification order follows the dependency structure rather than the numbering: D3 first because flags-versus-flagless cascades into the select instruction, the trap model, and the assembler vocabulary; then D2 and D1, which fix the encoding's raw material; then the rest.
 
+## Terminology ruling: the literal word
+
+**Status: RATIFIED. Operator, 2026-08-11.** Maize uses the literal, classical size vocabulary, as v1's sub-register letters already did: a **word** is the machine's native 64 bits, a **half-word** is 32, a **quarter-word** is 16, and a **byte** is 8. The width letters follow directly, so `.b`, `.q`, and `.h` name byte, quarter-word, and half-word, a bare mnemonic operates at the full word, and the positional forms `r3.b5`, `r3.q0` through `r3.q3`, and `r3.h0`/`r3.h1` are the same letters indexed by position. This is deliberately not the Intel convention (word frozen at 16 by 8086 compatibility) nor the RISC-V and ARM convention (word frozen at 32), both of which are historical accidents preserved for compatibility that v2 does not carry. The spec's terminology chapter states this up front, precisely because every reader arrives with one of the frozen conventions in their head. Earlier drafts of D5 and the brief briefly imported the RISC-V letter meanings; the operator caught the collision and this ruling ends it.
+
 ## D3: flags versus flagless
 
 **Status: RATIFIED, flagless. Operator, 2026-08-11.** The v2 base ISA carries no condition register. Comparisons are fused compare-and-branch or compare-into-register; the reasoning below stands as the trail. This unlocks D7's register-condition select, D8's no-flag trap frame, and the D11 condition spellings, and it commits the ALU chapter to a deliberate carry-out design for multi-precision arithmetic.
@@ -49,11 +53,13 @@ The honest tradeoff: a variable-length encoding is less friendly to a hypothetic
 
 ## D5: width-modifier semantics
 
-**Status: PROPOSED. Recommendation: `.w` operations zero-extend their 32-bit result into the full register; width-modified ALU forms exist for `.w` only; `.b` and `.h` exist only on loads, stores, extract, and insert.**
+**Status: PROPOSED. Recommendation: half-word `.h` operations zero-extend their 32-bit result into the full word; width-modified ALU forms exist for `.h` only; `.b` and `.q` exist only on loads, stores, extract, and insert.**
 
-Zero-extension of 32-bit results is what both JIT host architectures do natively (x86-64 32-bit operations zero the upper half, and AArch64 w-register writes do the same), so `.w` arithmetic lowers to a bare host instruction with no fixup. The RISC-V alternative (sign-extending 32-bit results) costs an explicit extend on both major hosts and buys nothing the compiler needs, since C's `int` semantics are satisfied either way when compares are width-consistent.
+All width letters follow the terminology ruling above: `.h` is the 32-bit half-word, and a bare mnemonic is the full 64-bit word.
 
-Restricting ALU width modifiers to `.w` is a deliberate ISA-size cut: C promotes narrow types to `int` before arithmetic, so byte and halfword ALU forms are dead weight the backend would rarely emit. Narrow widths live where they are real, on the memory operations (`load.u8`, `load.s16`, `store.b`, and their kin) and on extract/insert.
+Zero-extension of half-word results is what both JIT host architectures do natively (x86-64 32-bit operations zero the upper half, and AArch64 w-register writes do the same), so `.h` arithmetic lowers to a bare host instruction with no fixup. The RISC-V alternative (sign-extending 32-bit results) costs an explicit extend on both major hosts and buys nothing the compiler needs, since C's `int` semantics are satisfied either way when compares are width-consistent.
+
+Restricting ALU width modifiers to `.h` is a deliberate ISA-size cut: C promotes narrow types to `int` before arithmetic, so byte and quarter-word ALU forms are dead weight the backend would rarely emit. Narrow widths live where they are real, on the memory operations (`load.zb`, `load.sq`, `store.b`, and their kin, with `z` and `s` naming the extension) and on extract/insert.
 
 ## D6: positional extract and insert
 
@@ -120,7 +126,7 @@ The three genuinely open calls, with recommendations:
 - Operand order: destination-first (`add r3 r1 r2` meaning r3 = r1 + r2), breaking with v1's source-to-destination. The machine now teaches the RISC lineage, every assembler a v2 reader will meet is destination-first, and destination-first reads as assignment, which suits word mnemonics. Comma-free layout is kept; the order changes, the voice does not. The counterargument is v1 muscle memory, and it is real but small against an audience of newcomers and code generators.
 - Decimal marking: bare decimal becomes the default, with `$` hex and `%` binary staying mandatory for their bases and `#` retired. Word mnemonics plus named registers make bare decimal unambiguous to a reader, and the always-marked discipline's benefit shrinks once the only unmarked base is the one humans assume anyway.
 - Case: lowercase is canonical and the assembler is case-sensitive, keeping exactly one spelling per program element, which is the same single-source discipline as the no-alias rule.
-- The length-specifier spelling, the one sanctioned maybe-dot: keep the dot (`load.u8`, `store.w`), because under D5 the dotted surface is small (memory operations plus `.w` arithmetic), the dot makes the width family visible as a family, and it keeps compound-name underscores unambiguous as word separation.
+- The length-specifier spelling, the one sanctioned maybe-dot: keep the dot (`load.zb`, `store.q`, `add.h`), because under D5 the dotted surface is small (memory operations plus `.h` arithmetic), the dot makes the width family visible as a family, and it keeps compound-name underscores unambiguous as word separation. Width letters follow the terminology ruling: byte, quarter-word, half-word, word.
 
 ## Interactions ledger
 
