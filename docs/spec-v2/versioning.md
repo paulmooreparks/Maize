@@ -91,8 +91,7 @@ trap cause are all outside what a minor increment may do.
 A major increment is a different extension wearing a familiar name. When an extension's
 design has to change incompatibly, the result takes a new name, a new feature-bitmap bit,
 and fresh allocations for whatever escape byte and register range it needs, and it enters
-the registry as a fresh
-allocation while the old extension keeps everything it was allocated.
+the registry as a new extension while the old one keeps everything it was allocated.
 
 The naming convention makes the relationship legible: the successor of `vec` version `1.x`
 is `vec2` at version `1.0`. A machine may implement both, one, or neither, and software

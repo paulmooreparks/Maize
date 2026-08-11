@@ -79,8 +79,8 @@ the order below so that a program can predict which trap it gets.
    encoding names no level the machine can check an access against.
 2. An access from a privilege level below the one bits 15 and 14 name raises the
    privileged-operation fault.
-3. A `csr_write` to a number whose read-only bit is set raises the illegal-operand trap with
-   subcode 4, and the register keeps its value.
+3. A `csr_write` or a `csr_swap` to a number whose read-only bit is set raises the
+   illegal-operand trap with subcode 4, and the register keeps its value.
 4. A well-formed number that this machine does not implement raises the illegal-operand trap
    with subcode 3, on read and on write alike. Maize v1 read an undefined control-register index as zero and
    discarded a write to it; v2 traps instead, so a program built against a register the machine

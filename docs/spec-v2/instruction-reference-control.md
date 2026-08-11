@@ -622,8 +622,8 @@ trapping case neither rd nor the named register changes.
 
     csr_swap r2 scratch r2
 
-The handler's first instruction: r2 now holds the kernel pointer the scratch register was
-preloaded with, and the scratch register holds the interrupted program's r2.
+As a handler's first instruction, this leaves r2 holding the kernel pointer the scratch
+register was preloaded with, and the scratch register holding the interrupted program's r2.
 
 ## TLB maintenance
 

@@ -194,8 +194,10 @@ delivered, no key event is queued, no network frame has been received, and no ti
 is pending, so those condition bits are clear, while the console's output-ready bit is set
 whenever output can be accepted and the entropy device's data-available bit is set whenever
 its source is ready. The timer's counting-enable and periodic bits are clear and its period
-reads zero. The framebuffer's selected-surface and scanned-out indices are zero and no
-surface is claimed.
+reads zero. Block storage has no transfer in flight and no transfer has ever completed, so
+its transfer-complete condition is clear, and its block-number and transfer-length ports
+read zero. The framebuffer's selected-surface and scanned-out indices are zero, no surface
+is claimed, and no frame has been presented, so its frame-pending condition is clear.
 
 ## Console
 
@@ -212,8 +214,9 @@ end-of-input. Reading offset 3 when input-available is clear yields zero and con
 nothing. Writing offset 3 while output-ready is clear discards the byte and sets status bit
 5, the overrun bit, so a program that paces itself on output-ready loses nothing and one
 that does not can see that it lost something. A console whose output can always accept a
-byte holds output-ready permanently set, which is conforming. End-of-input latches once the input stream is exhausted and stays set thereafter, so
-software distinguishes a byte that is not there yet from a byte that will never come.
+byte holds output-ready permanently set, which is conforming. End-of-input latches once the
+input stream is exhausted and stays set thereafter, so software distinguishes a byte that is
+not there yet from a byte that will never come.
 
 The interrupt condition is input-available. Reading offset 3 consumes the byte and clears the
 condition when no further byte is waiting.

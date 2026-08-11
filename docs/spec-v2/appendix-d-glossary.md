@@ -94,8 +94,8 @@ out. It is the register-file equivalent of the carry flag this machine does not 
 **Control and status register.** A control and status register holds a piece of architectural
 state that is not a general register, is named by an unsigned 16-bit number rather than by an
 operand byte, and is reached only by `csr_read`, `csr_write`, and the atomic exchange
-`csr_swap`. The number itself carries the minimum privilege level and the read-only property. The privileged-architecture chapter owns
-the space.
+`csr_swap`. The number itself carries the minimum privilege level and the read-only
+property. The privileged-architecture chapter owns the space.
 
 **Feature bitmap.** The feature bitmap is the read-only control and status register in which
 each ratified extension has one bit, set when the machine implements that extension, whether
@@ -143,8 +143,9 @@ inputs a conventional architecture would leave undefined. Where a chapter says a
 defined, a second implementation reaches the identical architectural state.
 
 **Double fault.** A double fault is a page fault or a physical-memory fault raised by the
-vector-table read or by any of the four frame stores of a trap already being delivered. The machine does not attempt to
-deliver it; it halts, recording the original cause and a halt kind of 2.
+vector-table read or by any of the four frame stores of a trap already being delivered. The
+machine does not attempt to deliver it; it halts, recording the original cause and a halt
+kind of 2.
 
 **Fault.** A fault is a condition an instruction ran into, and the frame captures the address
 of the faulting instruction itself so that a handler that removes the condition can return and
@@ -285,9 +286,8 @@ distinguishes one erratum level from another.
 
 **Extension.** An extension is a named, versioned, optional unit of architecture with at
 most one allocated opcode page (none when it adds no instructions), its own contiguous
-control-and-status-register range, its own
-specification chapter, and its own conformance-suite section. It is ratified as a whole and
-implemented as a whole.
+control-and-status-register range, its own specification chapter, and its own
+conformance-suite section. It is ratified as a whole and implemented as a whole.
 
 **Registry.** The extension registry is the document recording, for every ratified extension,
 its name, its escape byte, its register range, its feature-bitmap bit, its current version, and

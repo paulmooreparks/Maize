@@ -44,8 +44,9 @@ exception named below.
 
 The program counter holds the address of the instruction the machine is executing. It is
 architectural state, and it is not a register: no register number names it, no operand byte
-can reach it, and neither `move` nor `csr_read` nor `csr_write` reads or writes it. The
-register model is the whole of the register file, and the program counter is outside it.
+can reach it, and none of `move`, `csr_read`, `csr_write`, and `csr_swap` reads or writes
+it. The register model is the whole of the register file, and the program counter is outside
+it.
 
 Software reads the program counter through exactly one instruction. The instruction
 `pc_add $imm rd` writes the address of the following instruction plus a sign-extended 32-bit
@@ -107,7 +108,8 @@ is exact rather than open-ended. `block_copy`, `block_copy_forward`, and `block_
 interrupted or may fault after transferring some of their bytes, and when that happens their
 three named registers describe the remaining work: the count register holds the number of
 bytes not yet transferred and each pointer register holds the lowest address in its region
-not yet transferred, as the memory reference chapter fixes. The instruction reports its own address, and re-executing it completes the
+not yet transferred, as the memory reference chapter fixes. The instruction reports its own
+address, and re-executing it completes the
 operation with no byte transferred twice and none skipped. Those registers are the entire
 observable mid-operation state, and the inventory entry for each instruction fixes it; a
 machine holds no hidden progress state that survives a trap.

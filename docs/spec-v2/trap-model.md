@@ -87,7 +87,8 @@ does every condition of a listed cause that the list assigns the value 0 to.
   invalid immediate, 2 for a reserved floating-point rounding mode, 3 for an unimplemented
   control-and-status-register number, 4 for a write to a read-only control and status
   register, 5 for a block-memory encoding that names the same register in more than one
-  of its three operand slots or that names r0 in a pointer or count slot, 6 for an invalid value written to a control and status
+  of its three operand slots or that names r0 in a pointer or count slot, 6 for an invalid
+  value written to a control and status
   register, meaning a value that sets a bit the register reserves or that holds a reserved
   encoding in a field the register defines, and 7 for a control-and-status-register number
   whose privilege field holds a reserved encoding. Subcode 6 covers the status word a
@@ -256,9 +257,10 @@ disciplines are software policy, and the machine's only rule is the mechanical o
 is pushed at the trap-stack register's current value minus 32, always.
 
 A **double fault** is a page fault or a physical-memory fault raised by the vector-table
-read or by any of the four frame stores. The machine does not attempt to deliver it, because delivering it would take
-the same failing path again. The machine halts instead, writes the original cause and subcode
-into the halt-cause register with a kind of 2, and executes nothing further. An unmapped or
+read or by any of the four frame stores. The machine does not attempt to deliver it, because
+delivering it would take the same failing path again. The machine halts instead, writes the
+original cause and subcode into the halt-cause register with a kind of 2, and executes
+nothing further. An unmapped or
 read-only trap stack, and equally a trap stack or vector table sitting in unpopulated
 physical memory, is therefore a deterministic stop rather than an unbounded recursion. The
 physical-memory case matters most in bare mode, where no page fault exists and cause 11 is

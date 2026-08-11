@@ -12,8 +12,9 @@ live elsewhere in Maize v2 or do not exist at all.
 Maize v2 has thirty-two general registers, named r0 through r31, and every one of them is 64
 bits wide. There is no second register file. Integer values, addresses, and floating-point
 values all live in these registers, and no instruction in the base reads or writes any other
-register file, because none exists. The operand byte's register field is five bits, so all thirty-two registers are
-reachable from every operand slot of every instruction and no register number is unassigned.
+register file, because none exists. The operand byte's register field is five bits, so all
+thirty-two registers are reachable from every operand slot of every instruction and no
+register number is unassigned.
 
 Two registers carry an architectural role, meaning a role the machine itself implements rather
 than one a calling convention agrees to.
@@ -199,15 +200,17 @@ the register model rather than as properties of particular instructions.
 The control and status registers are architectural state, and they are not part of the register
 file. They live in a separate numbered space, no operand byte reaches them, and the only
 instructions that touch them are `csr_read`, `csr_write`, and `csr_swap`, which name a
-register by a 16-bit number carried as an immediate rather than by an operand byte. Their numbering, their access
-rules, and the meaning of each one belong to the privileged-architecture chapter.
+register by a 16-bit number carried as an immediate rather than by an operand byte. Their
+numbering, their access rules, and the meaning of each one belong to the
+privileged-architecture chapter.
 
 Every piece of architectural state that is neither a general register nor the program counter
 nor memory is a control and status register. That includes the trap-model state, the kernel
 stack address, the paging root, the floating-point rounding mode and sticky exception flags,
-the feature bitmap, and the syscall-provider selection bit. Placing all of it in one numbered
-space is what lets an extension add state without adding an instruction, and what keeps the
-general register file free of anything a compiler cannot allocate.
+the feature bitmap, the trap-entry scratch word, and the syscall-provider selection bit.
+Placing all of it in one numbered space is what lets an extension add state without adding
+an instruction, and what keeps the general register file free of anything a compiler cannot
+allocate.
 
 ## What is not a register
 

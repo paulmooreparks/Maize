@@ -518,9 +518,8 @@ opcode on them.
 The control and status registers hold every piece of architectural state that is not a
 general register, including the trap-model state, the paging root, the floating-point
 rounding mode and sticky flags, the feature bitmap, the trap-entry scratch word, and the
-syscall-provider selection bit.
-Three instructions reach the whole space, and the privileged-architecture chapter owns the
-numbering and the meaning of each register.
+syscall-provider selection bit. Three instructions reach the whole space, and the
+privileged-architecture chapter owns the numbering and the meaning of each register.
 
 | Mnemonic | Operands | Semantics | Form |
 |:---------|:---------|:----------|:-----|

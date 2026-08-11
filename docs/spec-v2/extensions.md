@@ -119,8 +119,9 @@ are present on every conforming machine including a base-only one.
 
 The feature bitmap is a read-only control and status register in which each ratified
 extension has one bit, set when the machine implements that extension and clear when it does
-not, whether or not the extension allocates an opcode page. A program reads it with `csr_read` and tests a bit, which is a
-two-instruction check cheap enough to sit on a hot path. The privileged-architecture chapter
+not, whether or not the extension allocates an opcode page. A program reads it with
+`csr_read` and tests a bit, which is a two-instruction check cheap enough to sit on a hot
+path. The privileged-architecture chapter
 fixes the register's number and its behavior at every privilege level; the bit index of each
 extension is allocated by the extension registry at ratification, alongside the extension's
 escape page and its control-and-status-register block, so the registry entry is the single
@@ -218,8 +219,8 @@ freeze exists to prevent.
 
 The extension registry is the document that records, for every ratified extension, its
 name, its escape byte where it allocates one, its control-and-status-register range, its
-feature-bitmap bit, its current version, and its declared dependencies. It is part of the architecture, and it is
-the sole authority on which allocations are taken.
+feature-bitmap bit, its current version, and its declared dependencies. It is part of the
+architecture, and it is the sole authority on which allocations are taken.
 
 Allocation is part of ratification and never precedes it. An extension under design holds
 no escape byte, no register range, and no bitmap bit, and its draft chapter names none of
