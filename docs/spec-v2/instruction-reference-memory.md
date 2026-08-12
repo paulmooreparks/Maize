@@ -708,15 +708,30 @@ is written as a description of the remaining work rather than as a direction of 
 
 A page fault during a block-memory instruction reports the address of the block instruction
 itself as the faulting instruction address, not an address inside a host memory routine, and
-it reports the inaccessible guest address as the faulting data address. The kernel services
-the fault and resumes; the instruction re-executes and completes. Bytes already written stay
-written, which is why the register state has to be truthful before the fault is delivered.
+it reports the inaccessible guest address as the faulting data address. That address is the
+byte the resumed execution touches first, because the restart-invariant register state above
+already commits an implementation to retrying there, whichever direction it travels, so the
+reported address and the retry point are the same byte by construction. Two conforming
+implementations that choose opposite directions for the same `block_copy` therefore report
+different addresses for what is, from the program's view, the same fault, exactly as their
+pointer and count registers already differ afterward; neither report is wrong. The kernel
+services the fault and resumes; the instruction re-executes and completes. Bytes already
+written stay written, which is why the register state has to be truthful before the fault is
+delivered.
 
-On normal completion the count register holds zero and each pointer register holds its
-original value plus the original count, so it points just past the last byte of its region.
-That final state is the same for every implementation and every direction of travel, and it
-leaves a repeated execution of the same instruction harmless, since a count of zero transfers
-nothing.
+On normal completion of a single, uninterrupted execution the count register holds zero and
+each pointer register holds its original value plus the original count, so it points just past
+the last byte of its region. That final state is the same for every implementation and every
+direction of travel, for such an execution, and it leaves a repeated execution of the same
+instruction harmless, since a count of zero transfers nothing. It does not describe a
+descending pass that faults and resumes. The descending-progress rule above leaves the pointer
+registers unmoved throughout, so a resumed execution begins from the pointers' original value
+and the count remaining at the fault, and completes with each pointer at that starting value
+plus only the count that remained, never the instruction's original count. An ascending pass
+that faults and resumes needs no separate rule, because its pointers advance to the failing
+address and its count holds what remains, so the resumed execution completes at the
+instruction's original pointer values plus its original count, exactly as an uninterrupted one
+does.
 
 ### Overlap
 

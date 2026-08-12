@@ -15,7 +15,7 @@ machine is left undefined or implementation-defined by omission.
 
 ## Status
 
-**Maize base `2.0`, erratum level `2.0.0`. Ratified and frozen on 2026-08-12.**
+**Maize base `2.0`, erratum level `2.0.1`. Ratified and frozen on 2026-08-12.**
 
 That line is this specification's header, and the versioning chapter refers to it by that
 name. Its first two components are the base version, which is what a conformance claim names
@@ -31,10 +31,11 @@ no encoding in the base changes meaning, and no reserved byte in the base is eve
 There is no `2.1` and no mechanism to produce one, so everything that arrives later arrives
 as a named, independently versioned extension under the rules the extensions chapter fixes.
 
-The text can still be corrected. A passage that is ambiguous, self-contradictory, or wrong
-about what the reference implementation and the conformance suite already agree on is an
-erratum, which carries a third version component and changes no conforming machine's
-behavior; the versioning chapter states the rule and the bound on it. A reader who finds two
+The text can still be corrected. A passage that is ambiguous, self-contradictory, wrong about
+what the reference implementation and the conformance suite already agree on, or silent where
+this specification promises no silence, is an erratum, which carries a third version component
+and changes no conforming machine's behavior; the versioning chapter states the rule and the
+bound on it. A reader who finds two
 chapters describing the same behavior differently has found a defect in this text rather
 than a choice the architecture leaves open, and an erratum is how it gets corrected.
 

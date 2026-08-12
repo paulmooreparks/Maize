@@ -39,7 +39,8 @@ anything if the target holds still.
 ### Errata
 
 A ratified specification can still contain a passage that is ambiguous, self-contradictory,
-or wrong about what the reference implementation and the conformance suite already agree on.
+wrong about what the reference implementation and the conformance suite already agree on, or
+silent where this specification promises no silence.
 Correcting such a passage is an erratum, and an erratum carries a third version component:
 `2.0.1`, `2.0.2`, and so on.
 
