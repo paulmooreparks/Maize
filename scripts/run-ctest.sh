@@ -372,6 +372,34 @@ exec 0</dev/null
 
 mkdir -p "${WORK_DIR}"
 
+# maize-441: a HOME with no ~/.maize under it, so the exact-transcript fixtures below
+# are hermetic against the operator's own ~/.maize/env and ~/.maize/config. Both files
+# load unconditionally off the same resolve_home() call before any CLI option is
+# parsed, so an env key the fixture never passed lands in the guest's envp dump, and a
+# config-level mount= grant survives the three-tier shadow merge even when the fixture
+# passes an explicit --root. Redirecting HOME is the suite's established hermeticity
+# idiom (run_launcher_defaults below uses it already), and resolve_home checks HOME
+# before falling back to USERPROFILE, so overriding HOME alone is enough.
+#
+# One shared directory serves every reader, deliberately, rather than a per-fixture
+# copy. Its whole job is to stay empty: every consumer either passes --root or
+# --no-root explicitly, so nothing ever creates the default ~/.maize/rootfs skeleton
+# under it. A directory with no writer has no concurrent-writer hazard under
+# `ctest -jN` and needs no lock. Contrast run_launcher_defaults's fake_home, which
+# stays per-fixture because it SEEDS specific config/env content: proving presence is
+# a different job from proving absence.
+#
+# There is deliberately no `rm -rf` before the mkdir. Under `ctest -jN` this prelude
+# runs in EVERY per-fixture process (the --ctest-env arm sources the resolved toolchain
+# snapshot but still falls through to here), so an rm -rf would be the only concurrent
+# mutation of the shared directory, reintroducing the hazard this design removes, and
+# under `set -eu` a lost race would abort the fixture outright. `mkdir -p` is idempotent
+# and safe from N processes. Nothing writes into the directory, so there is nothing for
+# a clean step to remove.
+CLEAN_HOME="${WORK_DIR}/clean_home"
+mkdir -p "$CLEAN_HOME"
+NAT_CLEAN_HOME=$(host_to_native "$CLEAN_HOME")
+
 # maize-382 (decision D10/D12): per-fixture elapsed time, so the next optimization
 # targets a measured hot spot instead of an inferred one. Every top-level fixture
 # invocation below runs through mz_timed, which appends "<label> <seconds>" to
@@ -649,7 +677,14 @@ run_args_test() {
 
     out="${CC_WORK_DIR}/${name}.out"
     exp="${CC_WORK_DIR}/${name}.exp"
-    ( cd "$CC_WORK_DIR" && "$MAIZE" --env GREETING=hi --env TARGET=maize args.mzx alpha beta ) \
+    # maize-441: HOME=$NAT_CLEAN_HOME keeps the operator's own ~/.maize/env out of the
+    # guest envp this leg diffs against ctest/args.expected. --no-root goes with it: with
+    # neither --root nor --no-root this invocation would take the DEFAULT sandbox-root
+    # path and create $HOME/.maize/rootfs under CLEAN_HOME, which is the one thing that
+    # directory must never see. args.mzx only dumps argv/envp and never touches the
+    # filesystem, so the assertion is unchanged.
+    ( cd "$CC_WORK_DIR" && HOME="$NAT_CLEAN_HOME" "$MAIZE" --no-root \
+        --env GREETING=hi --env TARGET=maize args.mzx alpha beta ) \
         > "$out" 2>/dev/null || true
     tr -d '\r' < "$expfile" > "$exp"
     if cmp -s "$out" "$exp" \
@@ -1230,7 +1265,12 @@ run_hostfs_root_merge() {
     # quesos94 fs_forward precedent, scripts/run-ctest.sh:1396/2170); the host
     # side of each --mount value is already a native path via host_to_native and
     # is left untouched.
-    out=$(MSYS2_ARG_CONV_EXCL='/bin;/tmp' "$MAIZE" --root "${nat_root}" \
+    # maize-441: HOME=$NAT_CLEAN_HOME. A mount= grant in the operator's own
+    # ~/.maize/config is a tier-0 grant, and the three-tier shadow merge drops one only
+    # when a strictly higher tier grants the SAME guest path, so the explicit --root
+    # above does nothing to suppress it and its guest name shows up in this merged "/"
+    # listing.
+    out=$(HOME="$NAT_CLEAN_HOME" MSYS2_ARG_CONV_EXCL='/bin;/tmp' "$MAIZE" --root "${nat_root}" \
         --mount "${nat_bin}=/bin:ro" --mount "${nat_tmp}=/tmp:ro" "$bin" 2>/dev/null)
     set -e
 
@@ -1265,7 +1305,10 @@ run_hostfs_root_merge() {
     bin2="$BIN"
 
     set +e
-    actual2=$(MSYS2_ARG_CONV_EXCL='/bin;/tmp' "$MAIZE" --root "${nat_root}" \
+    # maize-441: this sub-test checks one fixed string and is not perturbed by ~/.maize
+    # today, but it shares the launch shape of the two listing sub-tests around it, so it
+    # takes the same HOME redirect rather than leaving one unhermetic invocation behind.
+    actual2=$(HOME="$NAT_CLEAN_HOME" MSYS2_ARG_CONV_EXCL='/bin;/tmp' "$MAIZE" --root "${nat_root}" \
         --mount "${nat_bin}=/bin:ro" --mount "${nat_tmp}=/tmp:ro" "$bin2" 2>/dev/null | grep -v '^$')
     set -e
 
@@ -1304,7 +1347,8 @@ run_hostfs_root_merge() {
     nat_ndoom=$(host_to_native "$nroot/doomhost")
 
     set +e
-    negout=$(MSYS2_ARG_CONV_EXCL='/bin;/doom' "$MAIZE" --root "${nat_nroot}" \
+    # maize-441: same config-level mount-grant hazard as the positive listing above.
+    negout=$(HOME="$NAT_CLEAN_HOME" MSYS2_ARG_CONV_EXCL='/bin;/doom' "$MAIZE" --root "${nat_nroot}" \
         --mount "${nat_nbin}=/bin:ro" --mount "${nat_ndoom}=/doom:ro" "$bin3" 2>/dev/null)
     set -e
 
@@ -2886,7 +2930,9 @@ run_quesos_argcheck() {
     set +e
     # maize-372: this leg asserts on the now-gated [quesos] init/reap lines, so opt
     # into verbose boot explicitly with -e QUESOS_VERBOSE=1.
-    actual=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
+    # maize-441: HOME=$NAT_CLEAN_HOME so the operator's own ~/.maize/env cannot add a key
+    # to the envp block this leg matches exactly.
+    actual=$(HOME="$NAT_CLEAN_HOME" MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
         -e QUESOS_VERBOSE=1 "$quesos" /progs/argcheck.mzx a b -c 2>/dev/null | grep -v '^$')
     set -e
     # maize-360: quesOS gap-fills the five login-env keys (HOME/USER/LOGNAME/SHELL/PATH)
@@ -2934,7 +2980,8 @@ run_quesos_argcheck() {
     set +e
     # maize-372: this leg asserts on the now-gated [quesos] init/reap lines, so opt
     # into verbose boot explicitly with -e QUESOS_VERBOSE=1.
-    multi=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
+    # maize-441: HOME=$NAT_CLEAN_HOME, same reason as leg 1.
+    multi=$(HOME="$NAT_CLEAN_HOME" MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
         -e QUESOS_VERBOSE=1 "$quesos" /progs/argcheck.mzx one -- /progs/argcheck.mzx two 2>/dev/null | grep -v '^$')
     set -e
     # maize-360: each top-level worklist program gets the five gap-filled login-env keys
@@ -3025,7 +3072,9 @@ run_quesos_default_init() {
     # `C:/Program Files/Git/progs/argcheck.mzx` and quesOS answered
     # "[quesos] cannot start ...", which is what failed this leg on the Windows job
     # only (reproduced natively on a Windows host, then fixed by this list).
-    out=$(MSYS2_ARG_CONV_EXCL='/progs;QUESOS_INIT=' "$DEFAULT_MAIZE" --rom "$quesos" --no-root \
+    # maize-441: HOME=$NAT_CLEAN_HOME so the operator's own ~/.maize/env cannot add a key
+    # to the envp block this leg matches exactly.
+    out=$(HOME="$NAT_CLEAN_HOME" MSYS2_ARG_CONV_EXCL='/progs;QUESOS_INIT=' "$DEFAULT_MAIZE" --rom "$quesos" --no-root \
         --mount "${nat}=/progs:ro" -e QUESOS_INIT=/progs/argcheck.mzx -e QOSVAR=set \
         -e QUESOS_VERBOSE=1 </dev/null 2>/dev/null | grep -v '^$')
     set -e
@@ -3116,7 +3165,10 @@ run_quesos_quiet_boot() {
     # absent), and the program still runs and reaps clean.
     TOTAL=$((TOTAL + 1))
     set +e
-    quiet=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
+    # maize-441: HOME=$NAT_CLEAN_HOME. The exact match is what proves the two gated lines
+    # are absent, so a stray key from the operator's own ~/.maize/env would read as a
+    # quiet-boot failure rather than as the ambient contamination it is.
+    quiet=$(HOME="$NAT_CLEAN_HOME" MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
         "$quesos" /progs/argcheck.mzx 2>/dev/null | grep -v '^$')
     set -e
     expected_quiet=$(printf '%s\n' \
@@ -3141,7 +3193,9 @@ run_quesos_quiet_boot() {
     # line in the expected envp block, proves the strip).
     TOTAL=$((TOTAL + 1))
     set +e
-    verbose=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
+    # maize-441: HOME=$NAT_CLEAN_HOME. The exact match is also what proves QUESOS_VERBOSE
+    # is stripped from the envp, so this leg needs the same isolation as leg A.
+    verbose=$(HOME="$NAT_CLEAN_HOME" MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
         -e QUESOS_VERBOSE=1 "$quesos" /progs/argcheck.mzx 2>/dev/null | grep -v '^$')
     set -e
     expected_verbose=$(printf '%s\n' \
@@ -3169,7 +3223,9 @@ run_quesos_quiet_boot() {
     # line fires; the GATED "[quesos] init:" line stays absent on the same quiet run.
     TOTAL=$((TOTAL + 1))
     set +e
-    err=$(MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
+    # maize-441: HOME=$NAT_CLEAN_HOME. This leg's failing boot prints no envp block today,
+    # but it matches its transcript exactly and shares the launch shape of legs A and B.
+    err=$(HOME="$NAT_CLEAN_HOME" MSYS2_ARG_CONV_EXCL='/progs' "$MAIZE" --no-root --mount "${nat}=/progs:ro" \
         "$quesos" /progs/does-not-exist.mzx 2>/dev/null | grep -v '^$')
     set -e
     expected_err='[quesos] cannot start /progs/does-not-exist.mzx'
