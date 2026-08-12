@@ -30,11 +30,22 @@ What might attribute it is the hook process's own environment, so this file
 keeps the value of CLAUDE_CODE_CHILD_SESSION and derives is_child_session
 from it.
 
-One property worth naming, because maize-432 D-8 leans on it: the hook command
-in .claude/settings.json is cwd-relative, so a hook process launched with a
-working directory in neither tree silently does not run. A dispatch that
-produces zero records is therefore itself the signal that no hook process
-launched. That signal is passive; nothing here alerts on it.
+One property worth naming, because maize-432 D-8 leaned on it and it has since
+changed: the hook command in .claude/settings.json used to be cwd-relative, so
+where the script was found depended on where the last shell command happened to
+leave the working directory. maize-440 made both commands absolute through
+CLAUDE_PROJECT_DIR, so the script is now found regardless of cwd.
+
+The old note also said a hook launched from outside either tree "silently does
+not run", and that was never true. A missing script makes python exit 2, and
+PreToolUse reads exit 2 as a deny, so the call was refused rather than skipped.
+That is not a quiet gap, it is a wedge: one command run from a subdirectory
+blocked every later shell call in the session, including the ones that would
+have repaired it.
+
+A dispatch producing zero records still means no hook process wrote, and that
+signal remains passive; nothing here alerts on it. What has changed is that a
+missing script can no longer be the cause.
 
 How to ask the log a question, written down here because nobody will invent it
 under pressure during a fourth occurrence:
