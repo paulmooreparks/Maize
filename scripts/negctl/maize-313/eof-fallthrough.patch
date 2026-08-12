@@ -1,0 +1,16 @@
+diff --git a/src/devices.cpp b/src/devices.cpp
+index 970e093..c857815 100644
+--- a/src/devices.cpp
++++ b/src/devices.cpp
+@@ -157,10 +157,8 @@ namespace maize {
+ 				   top of this function meant nothing ever raised again and the FIRST parked
+ 				   reader was stranded. Raise here instead. This cannot storm: eof_ is terminal,
+ 				   so that early return bounds this to one raise for the life of the process. */
++				/* NEGATIVE CONTROL: fall through into the rising-edge guard again. */
+ 				eof_ = true;
+-				readable_signaled_ = true;
+-				cpu::raise_irq(cpu::console_irq_vector);
+-				return tick_result::raised;
+ 			}
+ 			// Rising edge only: raise IRQ 33 once when the source becomes readable, not every
+ 			// throttle tick. A dataless-but-readable source (/dev/null) then yields ONE bounded

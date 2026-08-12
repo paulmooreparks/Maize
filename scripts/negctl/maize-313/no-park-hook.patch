@@ -1,0 +1,13 @@
+diff --git a/src/cpu.cpp b/src/cpu.cpp
+index 722196f..1d7ec81 100644
+--- a/src/cpu.cpp
++++ b/src/cpu.cpp
+@@ -6243,7 +6243,7 @@ namespace maize {
+                    which takes that mutex. */
+                 ++park_hook_calls;
+                 input_device::tick_result park_tick = input_device::tick_result::not_ready;
+-                if (park_input_ptr != nullptr) { park_tick = park_input_ptr->on_input_tick(); }
++                /* NEGATIVE CONTROL: the park hook is removed. */
+ 
+                 {
+                     std::unique_lock<std::mutex> lk(int_mutex);

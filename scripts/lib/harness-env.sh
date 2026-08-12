@@ -33,6 +33,13 @@
 #   maize_bounded_jobs           at each real parallel-build site, to cap ninja/make
 #   maize_is_ci                  to skip the cap + niceness under CI
 #
+#   A third group sources this file for maize_require_file alone and neither throttles
+#   nor mirrors: the maize-313 evidence scripts (stdin-wake-audit.sh,
+#   stdin-wake-check.sh, idle-cost-check.sh, negctl/maize-313/run-negative-controls.sh).
+#   They are short-lived measurement and audit runs rather than builds, so re-rooting
+#   them would move the very tree they are auditing and throttling would perturb the
+#   idle-cost numbers they exist to take.
+#
 # The three problems this addresses (maize-263 diagnosis): a repo living on the
 # Windows drive makes every WSL file operation cross the 9P bridge (and get
 # Defender-scanned); ninja/make run with unbounded parallelism on every core; and
@@ -60,6 +67,37 @@
 # both CI and GITHUB_ACTIONS; either suffices. Used only in `if` conditions.
 maize_is_ci() {
     [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]
+}
+
+# maize_require_file <path> [<path>...]
+#   Return 0 when every named path exists as a regular file and is readable. Otherwise
+#   echo the FIRST path that is not, on stdout, and return 1.
+#
+#   maize-313: this exists because grep(1) reports three outcomes and most callers read
+#   only two. It exits 0 on a match, 1 on no match and 2 when it cannot read the file, so
+#   `if grep -q PATTERN file; then fail; else pass; fi` prints a pass for a file that was
+#   renamed or deleted. A grep in a pipeline is worse still, since the pipeline carries
+#   the LAST command's status and the missing file's 2 is discarded outright. The same
+#   shape reached the tree six times on one branch, each time in an audit whose whole
+#   purpose was to notice that a named file had stopped saying something.
+#
+#   So the guard is separated from the check: ask this function whether the evidence is
+#   readable, and only then run the matcher whose two remaining outcomes are the real
+#   answer. Callers report the unreadable case in their own vocabulary, because a build
+#   harness wants to abort where an audit wants to record that the check did not run and
+#   says nothing either way. Echoing the offending path rather than a message is what
+#   lets them do that.
+#
+#   A directory fails the -f test deliberately: every caller here names a source file or
+#   a report, and a directory sitting at that path is a defect rather than evidence.
+maize_require_file() {
+    for _rf_path in "$@"; do
+        if [ ! -f "$_rf_path" ] || [ ! -r "$_rf_path" ]; then
+            printf '%s\n' "$_rf_path"
+            return 1
+        fi
+    done
+    return 0
 }
 
 # maize_nproc: echo the logical core count. nproc on Linux/WSL, sysctl on macOS,

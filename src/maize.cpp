@@ -16,6 +16,7 @@
 #include "devices.h"
 #include "perf.h"
 #include "host_tty.h"
+#include "stdin_source.h"
 #include "presenter_transport.h"
 #include "presenter_link.h"
 #ifndef MAIZE_CONSOLE_ONLY
@@ -56,6 +57,13 @@ static bool stdin_is_interactive() {
 
 #include "maize.h"
 using namespace maize;
+
+/* maize-313: the host stdin source's raise callback, invoked from the source's OWN thread.
+   Its whole body is one raise, and cpu::raise_irq is the only VM object that thread ever
+   touches, which is the entire memory model of the cross-thread half of this card. */
+static void on_console_ready() {
+	maize::cpu::raise_irq(maize::cpu::console_irq_vector);
+}
 
 /* Parse a `<width>x<height>` resolution spec (e.g. "320x200") into positive 16-bit
    dimensions. Returns false on a malformed or zero/overflowing value so the caller can
@@ -1986,6 +1994,13 @@ int main(int argc, char *argv[]) {
 	   read-back-last-written outcome rather than a surprise. */
 	devices::console_device console;
 	console.attach();
+	/* maize-313: set by whichever branch below makes console_device the guest's stdin owner,
+	   and read by the single start-the-source call site after the MAIZE_CONSOLE_ONLY block.
+	   The flag exists so that call site can sit OUTSIDE that block: CMakeLists.txt defines
+	   the macro on the `maize` target alone, so a start() written inside it would compile out
+	   of maizeg entirely and a headless run would get neither the mechanism nor its
+	   degradation. */
+	bool console_source_wanted = false;
 
 	devices::keyboard_device keyboard;
 	keyboard.attach();
@@ -2047,6 +2062,7 @@ int main(int argc, char *argv[]) {
 		cpu::set_active_input(&console);
 		console.set_active_injector(true);   /* maize-238 Branch A: readiness-signal + park/IRQ model */
 		sys::set_stdin_injector(&console);   /* maize-238: single on-demand host-stdin owner */
+		console_source_wanted = true;        /* maize-313: this run wants a host stdin source */
 	}
 
 	/* card maize-114: install the mount table built and validated above (before the
@@ -2101,6 +2117,7 @@ int main(int argc, char *argv[]) {
 		cpu::set_active_input(&console);
 		console.set_active_injector(true);
 		sys::set_stdin_injector(&console);
+		console_source_wanted = true;        /* maize-313: this run wants a host stdin source */
 	}
 
 	sys::init();
@@ -2169,6 +2186,30 @@ int main(int argc, char *argv[]) {
 	}
 #endif
 
+	/* maize-313: start the host stdin source and wire the park hook. This sits OUTSIDE the
+	   MAIZE_CONSOLE_ONLY block above, deliberately and load-bearingly: CMakeLists.txt builds
+	   maizeg and maize from one source list and defines that macro on maize alone, so a call
+	   site inside the block compiles out of maizeg and a headless run would have neither the
+	   source nor the degradation that stands in for it. It also sits AFTER sys::init() and
+	   host_tty::init(), because on Windows the source must not race the stdin-handle capture
+	   and must not run before the input-record mask is applied.
+
+	   set_park_input runs whether or not the source starts, and that is deliberate rather
+	   than an oversight. The park hook's correctness does not depend on a source existing:
+	   with no source it probes once on the way into the park and raises for input that is
+	   already pending, which is better than master and costs one probe per park. */
+	if (console_source_wanted) {
+		cpu::set_park_input(&console);
+		bool src_ok = maize::stdin_source::start(&on_console_ready);
+		console.set_source_running(src_ok);
+		if (verbose) {
+			std::cerr << "maize: host stdin source "
+				<< (src_ok ? "started (the guest may park on HALT)"
+				           : "unavailable (the guest keeps master's idle spin)")
+				<< std::endl;
+		}
+	}
+
 	/* Headless by default (no window, no display dependency). A window is created only
 	   when --display is passed AND a display backend is compiled in (MAIZE_DISPLAY);
 	   otherwise the run stays headless with a one-line note. In windowed mode the guest
@@ -2178,6 +2219,11 @@ int main(int argc, char *argv[]) {
 	   path too (the console build, or a --display build with no backend). The graphical display::run
 	   prints its own richer report (with frames/FPS); used_display suppresses the duplicate. */
 	maize::perf::cpu_source cpu_perf; if (show_perf) { maize::perf::reset(); maize::perf::add(&cpu_perf); }
+	/* maize-313: the park-hook and host-stdin-source counters, on every run that makes
+	   console_device the guest's stdin owner. Registered after the cpu source so the report
+	   reads in the order a person cares about. */
+	maize::perf::stdin_source_report stdin_perf;
+	if (show_perf && console_source_wanted) { maize::perf::add(&stdin_perf); }
 	bool used_display = false;
 
 	if (display_requested) {
@@ -2195,6 +2241,13 @@ int main(int argc, char *argv[]) {
 	else {
 		cpu::run();
 	}
+
+	/* maize-313: stop the source and join its thread, unconditionally and with no grace
+	   period. That is available because no source thread ever blocks in a read: every wait it
+	   performs includes its stop event, and the only non-wait calls it makes
+	   (GetNumberOfConsoleInputEvents, PeekNamedPipe, poll) return promptly. Outside the
+	   MAIZE_CONSOLE_ONLY block for the same reason start() is. */
+	maize::stdin_source::stop();
 
 #ifdef MAIZE_CONSOLE_ONLY
 	/* maize-264: clean-exit presenter teardown. Stop the background link thread, then tear

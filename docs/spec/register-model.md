@@ -111,7 +111,7 @@ of the high half (bit positions within the full 64-bit RF word given for groundi
 | 32 | privilege | Set in privileged (supervisor) mode; cleared in user mode. |
 | 33 | interrupt-enabled | Maskable external interrupts are enabled. Toggled by SETINT / CLRINT. |
 | 34 | interrupt-set | An external interrupt is pending (the raise latch signalling the run loop). |
-| 35 | running | Set once execution begins; cleared by HALT. |
+| 35 | running | Set whenever execution is proceeding; cleared by HALT, and set again when a halted core resumes. |
 
 The privilege bit gates the privileged instructions (Chapter 7 section 7.9; the candidate
 privileged set is finalized with the interrupt and segment work). The interrupt-enable bit

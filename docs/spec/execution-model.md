@@ -73,10 +73,17 @@ arguments after the image become argv; explicitly passed environment entries bec
 
 Execution stops in one of these defined ways:
 
-- **HALT (`$00`).** Halts the core pending an interrupt. With no interrupt source a halted
-  core has nothing to wake it, so the run loop returns and the host process exits 0 with **no
-  recorded status**. Because `$00` is HALT, a run of zeroed memory reached as code halts
-  cleanly rather than executing garbage.
+- **HALT (`$00`).** Halts the core and waits, and the RF interrupt-enable bit at the moment
+  HALT executes settles whether the core ever resumes. With interrupts disabled nothing can be
+  delivered to the core, so the halt is permanent and the run ends there; the run loop returns
+  and the host process exits 0 with **no recorded status**. With interrupts enabled the core
+  parks, resuming when a maskable external interrupt is delivered to it or, at the VM's
+  discretion, with no interrupt delivered at all, so a guest that expects to run only in an
+  interrupt handler must re-issue HALT in a loop. A parked core on a machine where nothing
+  will ever raise stays parked for the life of the process, because the core does not test
+  whether an interrupt source exists. Because `$00` is HALT and a program that has never
+  executed SETINT still has interrupts disabled, a run of zeroed memory reached as code ends
+  the run cleanly rather than executing garbage.
 - **sys_exit (`SYS $3C`).** The status-carrying termination path: it records the low 8 bits
   of R0 as the process exit status and stops the VM, so the host process returns that value.
   Values wrap to the 0..255 range (the host truncates the process status to 8 bits). This is

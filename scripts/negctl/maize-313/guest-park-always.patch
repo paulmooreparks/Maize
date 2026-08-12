@@ -1,0 +1,16 @@
+diff --git a/os/quesos/quesos.c b/os/quesos/quesos.c
+index 875998a..44afa8b 100644
+--- a/os/quesos/quesos.c
++++ b/os/quesos/quesos.c
+@@ -1657,9 +1657,8 @@ static void schedule(void) {
+              * is a plain test: the VM probes host stdin once more on its way into the park
+              * and raises IRQ 33 for anything already pending, so nothing here publishes an
+              * acknowledgement and nothing here can be skipped to any effect. */
+-            if (need_ticks || !(quesos_con_status() & CON_STAT_WAKE)) {
+-                quesos_idle_spin();   /* noreturn: SETINT; spin */
+-            }
++            /* NEGATIVE CONTROL: park unconditionally, with no spin arm at all. */
++            (void)need_ticks;
+             quesos_idle();            /* noreturn: SETINT; HALT; JMP */
+         }
+     }

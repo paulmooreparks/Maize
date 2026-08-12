@@ -3946,6 +3946,45 @@ run_quesos94_fixtures() {
 
 _mz_want "run_quesos94_fixtures" && mz_timed "run_quesos94_fixtures" run_quesos94_fixtures
 
+# maize-313: the stdin-wake group. A HALT-parked CPU retires no instructions, so the console
+# device's input pump cannot see the next stdin byte and quesos_idle had to burn a core
+# instead of parking. These fixtures hold the host stdin source, the park hook that arms it,
+# the relatch that bounds a park on a readable-but-unconsumed stdin, and the end-of-input edge.
+# The group lives in its own script because its negative controls rebuild the VM with one
+# mechanism removed, which run-ctest.sh has no business doing mid-suite; run those separately
+# with scripts/negctl/maize-313/run-negative-controls.sh.
+run_stdin_wake_fixtures() {
+    _sw_out="${WORK_DIR}/stdin-wake.out"
+    set +e
+    sh "${SCRIPT_DIR}/stdin-wake-check.sh" --preset "$PRESET" \
+        --work "${WORK_DIR}/stdin-wake" >"$_sw_out" 2>&1
+    _sw_rc=$?
+    set -e
+    # The report is the only evidence this group produces, so its absence is a failure of the
+    # group rather than a quiet zero legs. Without this guard the redirect below aborts the
+    # whole run under set -e, which reads as a harness crash rather than as a missing report.
+    if ! _sw_bad=$(maize_require_file "$_sw_out"); then
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] stdin_wake: no report at ${_sw_bad}, so the group did not run"
+        return 0
+    fi
+    # The script reports one line per leg, so pass its own report through rather than
+    # collapsing a 13-leg group into one PASS.
+    while IFS= read -r _line; do
+        case "$_line" in
+            '[PASS] '*) TOTAL=$((TOTAL + 1)); echo "$_line" ;;
+            '[FAIL] '*) TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1)); echo "$_line" ;;
+        esac
+    done < "$_sw_out"
+    if [ "$_sw_rc" -ne 0 ] && ! grep -q '^\[FAIL\]' "$_sw_out"; then
+        TOTAL=$((TOTAL + 1)); FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "[FAIL] stdin_wake: the group did not run"
+        sed 's/^/          | /' "$_sw_out" >&2
+    fi
+}
+
+_mz_want "run_stdin_wake_fixtures" && mz_timed "run_stdin_wake_fixtures" run_stdin_wake_fixtures
+
 # maize-94 wave-1 userland: the VENDORED sbase binaries (userland/oksh + userland/sbase
 # submodules, built by mzcc build-userland through the same cross-toolchain pipeline),
 # run UNDER quesOS. Distinct from run_quesos94_fixtures above, which proves the kernel/libc

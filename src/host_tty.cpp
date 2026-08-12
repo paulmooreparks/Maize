@@ -3,7 +3,9 @@
 #include "host_tty.h"
 #include "console_io.h"
 
+#include <atomic>
 #include <cstdlib>
+#include <iostream>
 #include <cstring>
 #include <csignal>
 
@@ -32,7 +34,28 @@ namespace maize {
 			unsigned char g_image[TERMIOS_SIZE];   // current termios image (get returns this)
 			// maize-174: pending synthetic INTR/QUIT byte set by the POSIX SIGINT/SIGQUIT
 			// handler (0 = none). Only a flag write happens in the handler (async-signal-safe).
-			volatile sig_atomic_t g_synth_byte = 0;
+			//
+			// maize-313 (H6): a process-directed signal goes to whichever thread has it
+			// unblocked, and with the CPU parked in HALT there is no fd-0 read for it to
+			// interrupt, so the thread that RUNS the handler and the thread that TAKES the byte
+			// are no longer the same thread. A lock-free atomic is legal in a signal handler and
+			// is what makes that hand-off correct; the static_assert is what keeps it legal on a
+			// host where int is not lock-free.
+			std::atomic<int> g_synth_byte {0};
+			static_assert(std::atomic<int>::is_always_lock_free,
+				"maize-313 H6: the synthetic-byte slot is written from a signal handler, "
+				"so it must be lock-free on every host this builds for");
+
+			// maize-313 (H6): the POSIX stdin source's self-pipe write end, or -1 when no
+			// source is running. Written once by stdin_source::start() and read by the signal
+			// handler, so it is a volatile sig_atomic_t rather than an atomic: the handler must
+			// touch nothing that could be mid-update, and a torn read of this value is not
+			// possible for sig_atomic_t by definition. Masking SIGINT everywhere except the
+			// watcher would also work, but a blocked signal mask is inherited across fork and
+			// preserved across exec, and this process spawns compiler children, so a mask would
+			// hand every one of them a blocked SIGINT. The self-pipe costs one write and is
+			// correct whichever thread runs the handler.
+			volatile sig_atomic_t g_signal_wake_fd = -1;
 
 			// maize-264: best-effort teardown callback (presenter segment + child) invoked from
 			// restore() on every exit path. NULL until the console binary registers it.
@@ -148,8 +171,25 @@ namespace maize {
 			// only, no restore()/raise(). The fd-0 read path (interrupted with EINTR because
 			// this handler carries no SA_RESTART) delivers the byte via take_synthetic_byte().
 			void synth_signal(int sig) {
-				if (sig == SIGINT) { g_synth_byte = 0x03; }
-				else if (sig == SIGQUIT) { g_synth_byte = 0x1C; }
+				if (sig == SIGINT) {
+					g_synth_byte.store(0x03, std::memory_order_release);
+				}
+				else if (sig == SIGQUIT) {
+					g_synth_byte.store(0x1C, std::memory_order_release);
+				}
+				else {
+					return;
+				}
+				// maize-313 (H6): wake the stdin source so the byte reaches a parked guest
+				// without a further keystroke. Both the sig_atomic_t read and write() are
+				// async-signal-safe, and the write is best effort: a full pipe means a wake is
+				// already queued.
+				int fd = g_signal_wake_fd;
+				if (fd >= 0) {
+					const unsigned char b = 1;
+					ssize_t ignored = ::write(fd, &b, 1);
+					(void)ignored;
+				}
 			}
 #endif
 
@@ -199,6 +239,27 @@ namespace maize {
 			}
 			g_orig_in = im;
 			g_orig_out = om;
+			/* maize-313 (D-17): close the input-record mask window. maize-345's kInputMaskOff
+			   is applied only from termios_set, so between here and the guest's first tcsetattr
+			   the INHERITED console mode is in force, and an inherited mode with mouse input on
+			   and quick edit off queues a record per pointer motion. On master that is a
+			   probe-quality problem. With a watcher on the input handle it becomes an idle-cost
+			   problem, because every mouse-move record changes the input buffer and a changed
+			   buffer is a raise. Apply the mask now instead. restore() still puts back the
+			   unmasked g_orig_in saved above, so the guest-visible and shell-visible behaviour
+			   at exit is unchanged, and the guest reads the window size by polling
+			   GetConsoleScreenBufferInfo rather than by consuming resize records, so masking
+			   loses it nothing. */
+			/* A failure here is not fatal, because an unmasked console still delivers keys and
+			   the watcher still works; it costs idle wakes for pointer motion, which is what
+			   AC-20 measures. Report it rather than swallowing it, so that criterion has a
+			   diagnostic to point at instead of an unexplained number. The two GetConsoleMode
+			   calls above fail CLOSED because their answers are the restore values. */
+			if (!SetConsoleMode(g_hin, g_orig_in & ~kInputMaskOff)) {
+				std::cerr << "maize: could not mask console input records (error "
+					<< GetLastError() << "); mouse and focus events may cost idle wakes"
+					<< std::endl;
+			}
 			/* Do NOT change the output mode here: a cooked guest keeps the classic console
 			   \n -> CR-LF. VT output processing is enabled only when a guest goes raw
 			   (apply_host), so a plain program that writes bare \n is not stair-stepped. */
@@ -241,10 +302,13 @@ namespace maize {
 		}
 
 		int take_synthetic_byte() {
-			int b = g_synth_byte;
+			int b = g_synth_byte.exchange(0, std::memory_order_acquire);
 			if (b == 0) { return -1; }
-			g_synth_byte = 0;
 			return b;
+		}
+
+		void set_signal_wake_fd(int fd) {
+			g_signal_wake_fd = fd;
 		}
 
 		void termios_get(unsigned char* image) {

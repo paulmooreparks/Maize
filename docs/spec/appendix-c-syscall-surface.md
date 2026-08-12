@@ -65,5 +65,9 @@ familiar `errno` + `-1` return.
 
 `sys_exit` (`SYS $3C`) is the status-carrying termination path: it records the low 8 bits of
 R0 as the process exit status and stops the VM, so the host process returns that value (codes
-wrap to 0..255). HALT (`$00`) halts the core pending an interrupt and records **no** status,
-so a program that ends via HALT exits 0. See Chapter 9.
+wrap to 0..255). HALT (`$00`) halts the core, and the RF interrupt-enable bit at the moment
+HALT executes settles whether it parks or ends the run. With interrupts disabled the halt is
+permanent: the run loop returns and the host process exits 0 with **no** recorded status. With
+interrupts enabled the core parks instead, resuming on a delivered maskable external interrupt
+or, at the VM's discretion, with no interrupt delivered at all. A program that ends via HALT
+therefore exits 0, since HALT never records a status. See Chapter 9.

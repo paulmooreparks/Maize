@@ -46,7 +46,8 @@ namespace maize {
 
 		/* Console / terminal port device (0x00 data, 0x01 status). Bridges the abstract
 		   console to host stdio: OUT 0x00 writes a byte to stdout, IN 0x00 reads a byte
-		   from stdin, 0x01 reports output-ready / input-available. When selected as the
+		   from stdin, 0x01 reports input-available (bit0), output-ready (bit1), end-of-input
+		   (bit2) and wake-capable (bit3, maize-313). When selected as the
 		   active input source (both --input=console and, under maize-238 Branch A, the
 		   default invocation) its on_input_tick SIGNALS host-stdin readiness and raises
 		   IRQ 33; the byte is consumed later, at read time, by the data port. */
@@ -57,7 +58,19 @@ namespace maize {
 
 			console_device();
 			void attach();
-			void on_input_tick() override;
+			cpu::input_device::tick_result on_input_tick() override;
+
+			/* maize-313 (D-27): clear the rising-edge latch without probing and without
+			   consuming. One statement, on the CPU thread and under no lock, which is where
+			   every other write to readable_signaled_ already happens. */
+			void rearm_ready_edge() override { readable_signaled_ = false; }
+
+			/* maize-313 (H7 rule 2): record whether a host stdin source is running, which the
+			   status port reports to the guest as bit3, CON_STAT_WAKE. A guest running on a VM
+			   whose source failed to start reads the bit clear and spins exactly as it does on
+			   master rather than parking with nothing able to wake it. Written once before
+			   cpu::run() and read only on the CPU thread, so it needs no atomic of its own. */
+			void set_source_running(bool b) { source_running_ = b; }
 
 			/* maize-238 (Branch A): stdin_injector -- the single-host-stdin-owner seam so a
 			   bare-VM guest's SYS $00 read(0) reads host stdin through one path. Because
@@ -89,6 +102,9 @@ namespace maize {
 			// Cleared when the data port is read (a fresh byte re-arms the edge) or when the
 			// source goes non-readable.
 			bool readable_signaled_ {false};
+			// maize-313: a host stdin source is running, so a HALT-parked CPU has a waker and
+			// the guest may park rather than spin. Reported as status bit3.
+			bool source_running_ {false};
 		};
 
 		/* Keyboard device (0x10 data, 0x11 status). Emits raw PC scancodes (Set-1 / XT
@@ -102,12 +118,17 @@ namespace maize {
 
 			keyboard_device();
 			void attach();
-			void on_input_tick() override;
+			cpu::input_device::tick_result on_input_tick() override;
 
 			/* Windowed backend: switch the input source from stdin to the event queue,
 			   and push a Set-1 scancode from the SDL thread (thread-safe). */
 			void use_window_source();
 			void push_event(u_byte scancode);
+
+			/* maize-313: the park hook is wired to console_device alone, so these values are
+			   never read. They are written correctly anyway rather than returned as a
+			   placeholder, because a value that is wrong today is a defect the day somebody
+			   wires the hook to a second device. */
 
 			void port_write(int role, cpu::reg_value const& value, cpu::subreg_enum value_subreg) override;
 			cpu::reg_value port_read(int role, cpu::subreg_enum dst_subreg) override;

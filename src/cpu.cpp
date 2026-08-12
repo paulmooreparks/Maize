@@ -1,6 +1,7 @@
 #include "maize_cpu.h"
 #include "maize_cpu.h"
 #include "maize_sys.h"
+#include "fault_inject.h"
 #include "fpu.h"
 #include <sstream>
 #include <exception>
@@ -1789,6 +1790,28 @@ namespace maize {
                and is driven off-thread (push_event latches + raises; port_read drains). */
             input_device* active_input_ptr = nullptr;
 
+            /* maize-313 (D-25): the device to probe once more on the way into the
+               wait-for-interrupt park. Null on every path that does not make console_device
+               the guest's stdin owner. Set before run() is entered and never written again,
+               so the hook's only predicate is a null check decided outside the loop. */
+            input_device* park_input_ptr = nullptr;
+
+            /* maize-313 (spec section 8.4): see cpu::park_counters. Written on the CPU thread
+               only, and read after run() returns. */
+            std::uint64_t park_tick_returns = 0;
+            std::uint64_t park_hook_calls = 0;
+            std::uint64_t park_relatch_expiries = 0;
+
+            /* maize-313 (D-27): how long a park taken on the `latched` arm may last before the
+               VM re-arms the readiness edge and re-enters the hook, which then raises. It is
+               1000 ms for the reason the forced raise is: the arm is a state that should never
+               arise, so it is priced for the idle state it lives in rather than for a latency
+               it is not expected to serve. Nothing about correctness depends on the value, and
+               it is not a contract: no guest reads it or encodes it, and a conforming VM whose
+               console raises on the readable level rather than on its rising edge needs no
+               relatch at all. */
+            constexpr int wake_relatch_ms = 1000;
+
             /* maize-238 (Branch A, OQ 9204 / decision 9285): throttle gate for the input
                readiness poll. Branch A sets active_input_ptr on the DEFAULT invocation too, so
                the on_input_tick() CALL (a virtual dispatch plus a host stdin poll) would fire
@@ -2246,7 +2269,27 @@ namespace maize {
         }
 
         void set_active_input(input_device* src) {
-            active_input_ptr = src;
+            /* maize-313: the no_pump fault installs nothing, which retires the instruction-tick
+               pump for one run and leaves the park hook as the only caller of on_input_tick.
+               It exists because the pump and the hook cover overlapping intervals: with both
+               live, a guest that retires 16384 instructions between servicing one parked reader
+               and parking again is rescued by the pump, so a build with the hook removed
+               strands the next reader only some of the time. Silencing the pump makes the
+               hook's own criterion an isolation rather than a race. One place rather than two,
+               because a null active_input_ptr also silences the JIT block-boundary call. */
+            active_input_ptr = maize::fault::armed(maize::fault::no_pump) ? nullptr : src;
+        }
+
+        void set_park_input(input_device* src) {
+            park_input_ptr = src;
+        }
+
+        park_counters read_park_counters() {
+            park_counters c;
+            c.tick_returns = park_tick_returns;
+            c.hook_calls = park_hook_calls;
+            c.relatch_expiries = park_relatch_expiries;
+            return c;
         }
 
         /* maize-140: idle-park hooks used by a blocking console read (see the
@@ -6107,6 +6150,23 @@ namespace maize {
             while (is_power_on) {
                 try {
                     tick();
+                    /* maize-313 (AC-26): normal returns from tick(); a throw skips this. The
+                       site matters as much as the counter. Increment it here, inside the try,
+                       and the two exception exits below have to be accounted for: both
+                       preserve the equality with park_hook_calls by incrementing neither,
+                       because the throw skips this statement and neither catch reaches the
+                       hook. Increment it next to the hook instead and the two counters would be
+                       equal by construction and would catch nothing. What the equality then
+                       catches is a later edit that inserts a continue, a break or a second park
+                       between the tick() return and the hook, which is exactly the class of
+                       change that would silently reopen the two-parked-readers hang and is
+                       invisible to every functional test that does not have two readers and two
+                       closely spaced bytes. The counter is named for what it counts: it counts
+                       NORMAL RETURNS rather than returns with power still on, and the two differ
+                       on the shutdown pass, where tick() returns after power_off() cleared
+                       is_power_on, the hook runs one more non-consuming probe and the park block
+                       is skipped. */
+                    ++park_tick_returns;
                 }
                 catch (const page_fault_redirect&) {
                     /* A page fault aborted the faulting instruction mid-flight;
@@ -6167,6 +6227,33 @@ namespace maize {
                     break;
                 }
 
+                /* maize-313 (D-25): the input tick the parked CPU cannot take. tick() has
+                   returned, so the core is about to park and will retire no further
+                   instruction until something raises. Probe host stdin once here, on the CPU
+                   thread, so input that is ALREADY pending raises IRQ 33 before the park
+                   instead of after it, and so the acknowledgement that arms the host stdin
+                   source is published on EVERY path into the park.
+
+                   Four properties of this one call site are the whole of invariant W. It is
+                   unconditional: its only predicate is a null check decided once before run()
+                   is entered, so nothing a guest does can steer around it and no guest edit can
+                   hole it. It covers every park: the wait below is the only wait on int_event
+                   in the tree, tick() reaches this loop only through tick_exit or through a
+                   throw the loop catches above, and tick()'s step-budget exit belongs to the
+                   JIT differential oracle's own direct tick() call rather than to this loop. It
+                   cannot deadlock and cannot lose the raise it causes, because it runs with no
+                   VM lock held and the park predicate re-reads irq_pending under int_mutex
+                   afterwards. And the park it guards is always taken with interrupts enabled,
+                   because both surviving tick_exit sites require running_flag to be false and
+                   the three writers of that flag are HALT with interrupts enabled, power_off,
+                   and a guest RF write.
+
+                   This call must stay OUTSIDE int_mutex: on_input_tick can reach raise_irq,
+                   which takes that mutex. */
+                ++park_hook_calls;
+                input_device::tick_result park_tick = input_device::tick_result::not_ready;
+                if (park_input_ptr != nullptr) { park_tick = park_input_ptr->on_input_tick(); }
+
                 {
                     std::unique_lock<std::mutex> lk(int_mutex);
 
@@ -6187,9 +6274,67 @@ namespace maize {
                            until a source raises a deliverable IRQ (keyboard from the SDL
                            thread, vsync from the display thread). With interrupts disabled
                            HALT instead calls power_off() (a permanent halt with no possible
-                           wake), so HALT-to-end programs still exit. */
-                        while (is_power_on && !(irq_pending && interrupt_enabled_flag)) {
-                            int_event.wait(lk);
+                           wake), so HALT-to-end programs still exit.
+
+                           maize-313 (D-30): the park may also END with no interrupt delivered.
+                           The relatch arm below leaves it on a deadline so a readable host
+                           stdin whose readiness edge is already spent cannot park the core
+                           forever, and the specification is amended to allow that rather than
+                           the design being bent to preserve the old wording. What is NOT
+                           relaxed is that a core reaching HALT without ever having enabled
+                           interrupts still terminates the run. That bound is structural, and
+                           it is enforced above rather than here: HALT with interrupts disabled
+                           takes power_off(), which clears is_power_on, so the whole block
+                           guarded by this `if` is skipped and neither arm below is consulted.
+                           A runaway into zeroed memory is the case that matters, because
+                           opcode $00 is HALT and a guest that has run off into zeroed memory
+                           has not run SETINT: it powers off on the first zero byte, the power
+                           loop exits, and the process exits 0.
+
+                           Two things this bound does NOT rest on, because both are false. It
+                           does not rest on a host stdin source existing: set_park_input runs
+                           whether or not stdin_source::start() succeeded (src/maize.cpp), so
+                           the hook and every arm below are reachable with no source running.
+                           And it does not rest on the park hook's answer, which is computed
+                           before is_power_on is even read. The only precondition for reaching
+                           the relatch arm is a HALT executed with interrupts ENABLED, which
+                           takes a guest that ran SETINT. maize-313 AC-31 is the automated
+                           check, in scripts/stdin-wake-check.sh's zeroed-image legs. */
+                        if (park_tick == input_device::tick_result::latched) {
+                            /* maize-313 (D-27): host stdin is readable and IRQ 33 has already
+                               been raised for that readable state, so the hook raised nothing
+                               and published no ack, and neither watcher is armed. The latch that
+                               suppressed the raise has no event left that clears it: the data
+                               port is not being read, because whatever consumed the last byte is
+                               not consuming this one, and a readiness answer of 0 cannot happen
+                               while the source is readable. Bound the park instead of taking it
+                               forever. On expiry, re-arm the readiness edge and leave the park
+                               WITHOUT delivering; the power loop then re-enters the hook, whose
+                               probe now finds the edge clear and raises.
+
+                               This cannot degenerate into the spin the card exists to remove.
+                               The raise rate is bounded by the clock rather than by the park
+                               rate, so the guest wakes, runs its handler, finds nothing to give
+                               the byte to, parks again, and waits another interval. The deadline
+                               is absolute rather than a fresh duration per iteration, because a
+                               spurious wakeup or a notify that leaves the predicate false must
+                               not postpone the relatch. */
+                            const auto deadline = std::chrono::steady_clock::now()
+                                + std::chrono::milliseconds(wake_relatch_ms);
+                            while (is_power_on && !(irq_pending && interrupt_enabled_flag)) {
+                                if (int_event.wait_until(lk, deadline) == std::cv_status::timeout) { break; }
+                            }
+                            if (is_power_on && !(irq_pending && interrupt_enabled_flag)) {
+                                ++park_relatch_expiries;
+                                lk.unlock();
+                                park_input_ptr->rearm_ready_edge();
+                                continue;              // back to the top of the power loop
+                            }
+                        }
+                        else {
+                            while (is_power_on && !(irq_pending && interrupt_enabled_flag)) {
+                                int_event.wait(lk);
+                            }
                         }
 
                         if (is_power_on) {

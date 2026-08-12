@@ -67,5 +67,13 @@ namespace maize {
 		   returns -1 on Windows (which uses the console-control handler instead). */
 		int take_synthetic_byte();
 
+		/* maize-313 (H6): register the POSIX stdin source's self-pipe write end, or -1 to
+		   clear it. The SIGINT/SIGQUIT handler writes one byte there after setting the
+		   synthetic byte, so the source thread wakes and hands the byte to a guest whose CPU
+		   is parked in HALT with no fd-0 read for the signal to interrupt. A no-op on
+		   Windows, which converts console control events through SetConsoleCtrlHandler and
+		   has no synthetic-byte path at all. */
+		void set_signal_wake_fd(int fd);
+
 	} // namespace host_tty
 } // namespace maize

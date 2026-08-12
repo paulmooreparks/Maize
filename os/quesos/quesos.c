@@ -89,9 +89,28 @@ struct pcb;
 void quesos_switch_to(struct pcb *p);        /* MOVTCR satp; restore regs; IRET (noreturn) */
 void quesos_poweroff(void);                  /* CLRSYSG; SYS $3C (native VM halt)          */
 void quesos_arm_timer(void);                 /* program the instruction-tick timer (OUT)   */
-void quesos_idle(void);                      /* SETINT; spin so on_input_tick keeps running */
-u64  quesos_con_status(void);                /* IN $01: console status (bit0 input-avail)  */
+void quesos_idle(void);                      /* SETINT; HALT; JMP: park until an IRQ arrives */
+void quesos_idle_spin(void);                 /* SETINT; spin so on_input_tick keeps running */
+u64  quesos_con_status(void);                /* IN $01: console status (CON_STAT_* below)  */
 u64  quesos_con_data(void);                  /* IN $00: console data byte (clears avail)   */
+/* Console status bits (src/devices.cpp console_device::port_read), the full layout the
+ * device publishes rather than the subset quesOS happens to test. This block is what the
+ * quesos_con_status declaration above points at, so a reader sent here must find every bit;
+ * an enumeration that stops at the ones its own caller uses is how five of these drifted
+ * apart in the first place. The ratified layout lives in docs/spec/device-surface.md.
+ * These sit here rather than beside console_read below because schedule() tests the wake
+ * bit, and schedule() is defined first. */
+#define CON_STAT_INPUT 0x1ul   /* bit0: a data byte is available to read                 */
+#define CON_STAT_OUTPUT 0x2ul  /* bit1: the output stream will accept a byte. Constant 1  */
+                               /* in this VM, and quesOS writes through SYS $01 rather    */
+                               /* than polling it, so nothing here reads it.              */
+#define CON_STAT_EOF   0x4ul   /* bit2: host stdin is exhausted (real end-of-input)      */
+/* maize-313 bit3: the VM is running a host stdin source, so IRQ 33 can be raised off the
+ * CPU thread and a HALT-parked core has a waker. Clear means the source failed to start,
+ * in which case the only thing that raises IRQ 33 is the instruction-tick pump, which runs
+ * only while instructions execute, so the idle path must spin rather than park. The value
+ * is constant for the lifetime of a run. */
+#define CON_STAT_WAKE  0x8ul
 /* maize-174: the user-mode signal-return trampoline lives in quesos_boot.mazm; its bytes
  * are copied onto a delivering process's stack and RET'd into, so it needs no fixed VA. */
 extern u8 quesos_sigreturn_tramp[];
@@ -1609,21 +1628,46 @@ static void schedule(void) {
             quesos_switch_to(g_current);   /* noreturn */
         }
     }
-    /* Nothing runnable. If a process is parked on console input, spin (interrupts on) so
-     * the console device keeps ticking, latching bytes, and raising IRQ 33, which wakes
-     * the reader; the idle spin is kernel overhead, not a process slice, so it does not
-     * violate "blocked processes consume no slices". Otherwise the worklist is drained
-     * (or the survivors are deadlocked with no possible waker): power off cleanly. */
-    for (i = 0; i < QUESOS_MAX_PROC; ++i) {
-        if (g_proc[i].state == P_BLOCKED
-            && (g_proc[i].block_kind == BLK_CONSOLE || g_proc[i].block_kind == BLK_POLL)) {
-            /* maize-238: a BLK_POLL caller is woken by the console IRQ (fd 0 readiness) or,
-             * for a finite timeout, by the timer-tick deadline sweep, both of which keep
-             * firing during the idle spin (interrupts on). Idle-spin rather than declaring a
-             * deadlock so poll()/select() with a timeout returns 0 on schedule instead of
-             * powering off the VM when nothing else is runnable. */
+    /* Nothing runnable. If a process is parked on a wake this loop can wait for, idle
+     * (interrupts on) rather than declaring a deadlock, so poll()/select() with a timeout
+     * returns 0 on schedule instead of powering off the VM. The idle loop is kernel
+     * overhead, not a process slice, so it does not violate "blocked processes consume no
+     * slices". Otherwise the worklist is drained (or the survivors are deadlocked with no
+     * possible waker): power off cleanly.
+     *
+     * maize-313: WHICH idle loop is a decision that must be computed over the WHOLE scan
+     * rather than on the first match. A single test on the first hit gives the wrong answer
+     * for a mixed set, where one process is parked on BLK_CONSOLE and another on BLK_POLL
+     * with a finite deadline. The park may only replace the spin where the wake is a device
+     * IRQ raised off the CPU thread. It is not, where the wake is the instruction-tick timer,
+     * because a parked CPU retires no instructions and the timer stops with it. Of the nine
+     * block kinds only BLK_POLL carries a deadline, and quesOS has no alarm, no SIGALRM and
+     * no sleep syscall, so a finite-deadline poll is the only timer-driven wake on this path.
+     * A mixed set spins, because the conservative choice is correct for both. */
+    {
+        int want_idle = 0;    /* some process is parked on a wake this loop can wait for */
+        int need_ticks = 0;   /* some parked process needs the instruction-tick timer     */
+        for (i = 0; i < QUESOS_MAX_PROC; ++i) {
+            if (g_proc[i].state != P_BLOCKED) { continue; }
+            if (g_proc[i].block_kind == BLK_CONSOLE) {
+                want_idle = 1;
+            } else if (g_proc[i].block_kind == BLK_POLL) {
+                want_idle = 1;
+                if (g_proc[i].poll_deadline_ms != 0) { need_ticks = 1; }
+            }
+        }
+        if (want_idle) {
             g_current = 0;
-            quesos_idle();   /* noreturn: SETINT; spin */
+            /* Spin when a parked process needs the instruction-tick timer (a finite poll
+             * deadline), and when the VM has no host stdin source to wake us (CON_STAT_WAKE
+             * clear, which is what a failed source start reports). Otherwise park. This read
+             * is a plain test: the VM probes host stdin once more on its way into the park
+             * and raises IRQ 33 for anything already pending, so nothing here publishes an
+             * acknowledgement and nothing here can be skipped to any effect. */
+            if (need_ticks || !(quesos_con_status() & CON_STAT_WAKE)) {
+                quesos_idle_spin();   /* noreturn: SETINT; spin */
+            }
+            quesos_idle();            /* noreturn: SETINT; HALT; JMP */
         }
     }
     quesos_poweroff();
@@ -1991,9 +2035,8 @@ static void signal_fg_group(int sig) { raise_on_pgid(g_fg_pgid, sig); }
  * a native read(0) would park the whole CPU thread and freeze every process (doc 17).
  * Poll the console status port; if a byte is latched, take it; otherwise park the
  * PROCESS on the console IRQ, which delivers the byte and wakes it. */
-/* console status bits (src/devices.cpp console_device::port_read). */
-#define CON_STAT_INPUT 0x1ul   /* bit0: a data byte is available to read                 */
-#define CON_STAT_EOF   0x4ul   /* bit2: host stdin is exhausted (real end-of-input)      */
+/* The console status bits this reads (CON_STAT_INPUT, CON_STAT_EOF, CON_STAT_WAKE) are
+ * defined with the metal-half console declarations near the top of this file. */
 
 static long console_read(struct pcb *self, u64 uva, long count) {
     u8 b;

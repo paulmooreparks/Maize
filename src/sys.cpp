@@ -3,6 +3,7 @@
 #include "console_io.h"
 #include "console_probe_win32.h"
 #include "host_tty.h"
+#include "stdin_source.h"
 #include "hostfs/hostfs_core.h"
 #include <cerrno>
 #include <chrono>
@@ -51,6 +52,17 @@ namespace maize {
             if (fd >= 3) {
                 return neg_errno(abi_ebadf);   // real file I/O is out of scope (M4)
             }
+            /* maize-313 (H6): a synthetic INTR/QUIT byte the stdin source picked up while the
+               CPU was parked is owed to the guest before any host read. Without this check the
+               watcher could hold the byte while the guest blocked in ::read waiting for
+               another one. */
+            if (fd == 0 && count > 0 && stdin_source::pushback_pending()) {
+                int pb = stdin_source::take_pushback();
+                if (pb >= 0) {
+                    *reinterpret_cast<u_byte*>(buf) = static_cast<u_byte>(pb);
+                    return 1;
+                }
+            }
             for (;;) {
                 long r = ::read(static_cast<int>(fd), buf, count);
                 if (r < 0) {
@@ -97,7 +109,7 @@ namespace maize {
            This never sets O_NONBLOCK on fd 0, so the ordinary blocking read() path above is
            unaffected, and the data port stays the sole consumer. Returns 1 (a data byte is
            pending), 0 (nothing pending yet), or -1 (end of input). */
-        int console_stdin_ready() {
+        static int probe_stdin_ready() {
             struct pollfd pfd;
             pfd.fd = 0;
             pfd.events = POLLIN;
@@ -121,6 +133,24 @@ namespace maize {
             // fail-open "data pending" path (a real byte is there when poll says readable, and
             // a genuine tty EOF still surfaces at the data-port read).
             return isatty(0) ? 1 : -1;
+        }
+
+        /* maize-313: the readiness seam keeps its name and its 1/0/-1 contract and gains
+           exactly two things, the arm/ack publication and the POSIX pushback check ahead of
+           the poll. Sampling the level BEFORE the probe rather than after is load-bearing and
+           is the one ordering rule here; src/stdin_source.h says why. */
+        int console_stdin_ready() {
+            if (stdin_source::pushback_pending()) { return 1; }
+            /* maize-313 (H7 rule 3): a source that took its exit protocol is end of input to
+               the guest, which is what makes a dead source and a drained pipe the same thing.
+               Ordered after the pushback check so a synthetic byte already in hand is still
+               delivered, and before the probe because the probe cannot see it. */
+            if (stdin_source::input_ended()) { return -1; }
+            unsigned long lvl = stdin_source::sample_level();
+            int r = probe_stdin_ready();
+            if (r == 0) { stdin_source::ack_not_ready(lvl); }
+            stdin_source::note_probe_answer(r);
+            return r;
         }
 #elif _WIN32
         namespace {
@@ -434,7 +464,17 @@ namespace maize {
            src/maize_sys.h): 1 a data byte is pending, 0 nothing pending yet, -1 end of
            input. */
         int console_stdin_ready() {
-            return console_probe::stdin_ready(stdin_handle());
+            /* maize-313: the Windows probe body is untouched. What is added is the arm/ack
+               publication around it, and the level sample runs BEFORE the probe rather than
+               after for the reason src/stdin_source.h gives. The pushback slot is POSIX-only
+               and answers false here. H7 rule 3: a source that took its exit protocol is end
+               of input to the guest, which the probe itself cannot see. */
+            if (stdin_source::input_ended()) { return -1; }
+            unsigned long lvl = stdin_source::sample_level();
+            int r = console_probe::stdin_ready(stdin_handle());
+            if (r == 0) { stdin_source::ack_not_ready(lvl); }
+            stdin_source::note_probe_answer(r);
+            return r;
         }
 
 #else

@@ -39,7 +39,15 @@ set(MAIZE_PRESENTER_SOURCES
 # and listed on BOTH targets that compile src/sys.cpp (the VM binaries below and mazm)
 # because sys.cpp now calls into it and would otherwise fail to link.
 set(MAIZE_CONSOLE_PROBE_SOURCES "src/console_probe_win32.cpp")
-set(MAIZE_VM_SOURCES "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" "src/perf.cpp" "src/host_tty.cpp" ${MAIZE_CONSOLE_PROBE_SOURCES} ${MAIZE_HOSTFS_SOURCES} ${MAIZE_PRESENTER_SOURCES})
+# maize-313: the execution-independent host stdin source, which raises IRQ 33 from its own
+# thread so a HALT-parked CPU wakes. Two backends behind one seam, each internally
+# #ifdef-guarded so the non-matching one compiles to nothing, following the same convention
+# as the hostfs, presenter-transport and console-probe splits. Listed on BOTH targets that
+# compile src/sys.cpp (the VM binaries below and mazm), because the readiness seam in
+# sys.cpp now publishes the arm/ack acknowledgement and would otherwise fail to link. mazm
+# never starts a source, so its copy stays inert.
+set(MAIZE_STDIN_SOURCE_SOURCES "src/stdin_source_posix.cpp" "src/stdin_source_win32.cpp")
+set(MAIZE_VM_SOURCES "src/maize.cpp" "src/cpu.cpp" "src/sys.cpp" "src/devices.cpp" "src/perf.cpp" "src/host_tty.cpp" ${MAIZE_CONSOLE_PROBE_SOURCES} ${MAIZE_STDIN_SOURCE_SOURCES} ${MAIZE_HOSTFS_SOURCES} ${MAIZE_PRESENTER_SOURCES})
 add_executable(maizeg ${MAIZE_VM_SOURCES})
 add_executable(maize  ${MAIZE_VM_SOURCES})
 
@@ -62,7 +70,7 @@ endif()
 # It is distinct from MAIZE_DISPLAY: the headless CI `maizeg` (no MAIZE_DISPLAY) still honors
 # those knobs for the scancode-injection tests; only the console `maize` opts out.
 target_compile_definitions(maize PRIVATE MAIZE_CONSOLE_ONLY)
-add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp" "src/host_tty.cpp" ${MAIZE_CONSOLE_PROBE_SOURCES} ${MAIZE_HOSTFS_SOURCES})
+add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp" "src/host_tty.cpp" ${MAIZE_CONSOLE_PROBE_SOURCES} ${MAIZE_STDIN_SOURCE_SOURCES} ${MAIZE_HOSTFS_SOURCES})
 add_executable(mzld "src/mzld.cpp")
 add_executable(mzdis "src/mzdis.cpp")
 
@@ -106,11 +114,27 @@ if (WIN32)
   set_property(TARGET console_probe_test PROPERTY CXX_STANDARD 20)
 endif()
 
+
 find_package(Threads REQUIRED)
 target_link_libraries(maizeg PRIVATE Threads::Threads)
 target_link_libraries(maize  PRIVATE Threads::Threads)
 target_link_libraries(mazm PRIVATE Threads::Threads)
 target_link_libraries(mzcc PRIVATE Threads::Threads)
+
+# maize-313: the Windows direct-drive test for the host stdin source. Windows has no quesOS
+# fixture, so the Windows-only claims that need no guest (the pipe watcher's raise latency,
+# the disarmed state issuing no peek, the forced raise under a frozen level indicator, and
+# the unconditional join) are taken here rather than inferred from the POSIX legs. It links
+# the source TU plus src/host_tty.cpp, because a console source requires host_tty::active().
+#
+# A test, not a deliverable: deliberately absent from scripts/install-mazm.ps1,
+# scripts/install-mazm.sh, the Ctrl+Shift+B task and the MAIZE_SANITIZE list below, for the
+# same reason console_probe_test is.
+if (WIN32)
+  add_executable(stdin_source_test "src/stdin_source_test_win32.cpp" "src/host_tty.cpp" ${MAIZE_STDIN_SOURCE_SOURCES})
+  set_property(TARGET stdin_source_test PROPERTY CXX_STANDARD 20)
+  target_link_libraries(stdin_source_test PRIVATE Threads::Threads)
+endif()
 
 if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET maizeg PROPERTY CXX_STANDARD 20)

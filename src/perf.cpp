@@ -2,6 +2,7 @@
 
 #include "perf.h"
 #include "maize.h"      // maize::cpu::instruction_count()
+#include "stdin_source.h"
 
 #include <chrono>
 #include <vector>
@@ -52,6 +53,22 @@ namespace maize {
 			out << "    MIPS         : " << avg << " avg";
 			if (peak_mips) { out << " / " << peak_mips << " peak"; }
 			out << "\r\n";
+		}
+
+		void stdin_source_report::report(std::ostream& out, std::uint64_t /*us*/) const {
+			maize::cpu::park_counters p = maize::cpu::read_park_counters();
+			maize::stdin_source::counters c = maize::stdin_source::snapshot();
+			/* The first two are equal exactly when every path into the park runs the park
+			   hook first. A fixture compares them; printing them side by side is what lets a
+			   human see WHICH one moved when they diverge. */
+			out << "    tick returns : " << p.tick_returns << "\r\n";
+			out << "    park hooks   : " << p.hook_calls << "\r\n";
+			out << "    relatches    : " << p.relatch_expiries << "\r\n";
+			out << "    infinite wait: " << c.infinite_waits << "\r\n";
+			out << "    backstop wait: " << c.backstop_waits << "\r\n";
+			out << "    level raises : " << c.level_raises << "\r\n";
+			out << "    forced raises: " << c.forced_raises << "\r\n";
+			out << "    idle raises  : " << c.idle_raises << "\r\n";
 		}
 
 		void display_source::report(std::ostream& out, std::uint64_t us) const {

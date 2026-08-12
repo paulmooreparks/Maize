@@ -1,0 +1,20 @@
+diff --git a/src/cpu.cpp b/src/cpu.cpp
+index 94d514b..9216cc2 100644
+--- a/src/cpu.cpp
++++ b/src/cpu.cpp
+@@ -4460,12 +4460,9 @@ namespace maize {
+                            with SETINT + an installed handler parks. It carries no exit status;
+                            the status-carrying path is SYS $3C (sys_exit), see src/sys.cpp. */
+                         if (!privilege_flag) { raise_privileged_op(); }   // privileged (card maize-180, §9)
+-                        if (interrupt_enabled_flag) {
+-                            running_flag = false;   // park; is_power_on stays set
+-                        }
+-                        else {
+-                            power_off();
+-                        }
++                        /* NEGATIVE CONTROL: the interrupts-disabled power_off is removed, so
++                           every HALT parks and a core with no interrupt source never returns. */
++                        running_flag = false;
+                         MAIZE_NEXT();
+                     }
+ 

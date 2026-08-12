@@ -674,12 +674,16 @@ written in Maize assembly.
     $0000`0000:             ; The back-tick (`)  is used as a number separator.
                             ; Underscore (_) and comma (,) may also be used as separators.
         CALL main
-        HALT                ; HALT halts the core pending an interrupt. With no interrupt
-                            ; source in the VM, a halted core has nothing to wake it, so the
-                            ; run loop returns and the Maize host process exits 0 with no
-                            ; status. The status-carrying termination path is sys_exit
-                            ; (SYS $3C): it records the low 8 bits of R0 as the process exit
-                            ; status. A C program's crt0 routes main's return value there.
+        HALT                ; HALT halts the core. This program never enables interrupts, so
+                            ; its halt is permanent: the run loop returns and the Maize host
+                            ; process exits 0 with no status. A guest that HAS enabled
+                            ; interrupts parks here instead, and resumes when an interrupt is
+                            ; delivered or, at the VM's discretion, with none delivered at all,
+                            ; so such a guest re-issues HALT in a loop. A guest that parks with
+                            ; nothing left to raise stays parked. The status-carrying
+                            ; termination path is sys_exit (SYS $3C), which records the low 8
+                            ; bits of R0 as the process exit status. A C program's crt0 routes
+                            ; main's return value there.
 
     ; **********************************************************************************
     ; The output message

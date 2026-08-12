@@ -1,0 +1,14 @@
+diff --git a/src/sys.cpp b/src/sys.cpp
+index 7c2c856..7cdde8d 100644
+--- a/src/sys.cpp
++++ b/src/sys.cpp
+@@ -143,7 +143,8 @@ namespace maize {
+             if (stdin_source::pushback_pending()) { return 1; }
+             unsigned long lvl = stdin_source::sample_level();
+             int r = probe_stdin_ready();
+-            if (r == 0) { stdin_source::ack_not_ready(lvl); }
++            /* NEGATIVE CONTROL: the acknowledgement that re-arms the source is not published. */
++            (void)lvl;
+             stdin_source::note_probe_answer(r);
+             return r;
+         }

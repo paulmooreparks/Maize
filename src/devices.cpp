@@ -5,6 +5,7 @@
 
 #include "maize.h"
 #include "devices.h"
+#include "fault_inject.h"
 #include "font8x16.h"
 #include "perf.h"
 #include <cstring>
@@ -72,6 +73,13 @@ namespace maize {
 			}
 			else {
 				u_word s = 0x2;   // bit1 output-ready (stdout is always writable)
+				/* maize-313: bit3 CON_STAT_WAKE, set when a host stdin source is running and
+				   a HALT-parked CPU therefore has a waker. The guest's idle path tests it and
+				   spins when it is clear, so a VM whose source failed to start runs the guest
+				   it shipped with. The value is constant for the lifetime of a guest run,
+				   because the source is started before cpu::run() and stopped after it returns
+				   and no path may stop it while the guest runs. */
+				if (source_running_ || maize::fault::armed(maize::fault::fake_wake)) { s |= 0x8; }
 				/* bit0 input-available / bit2 EOF from a NON-CONSUMING host-stdin readiness
 				   probe (maize-238 Branch A): the probe reports a data byte pending vs real
 				   end-of-input WITHOUT consuming, so the guest can poll fd 0 and the on-demand
@@ -90,7 +98,28 @@ namespace maize {
 			return out;
 		}
 
-		void console_device::on_input_tick() {
+		/* maize-313: the outcome set this returns is derived from the branch structure below
+		   rather than enumerated, because three consecutive spec cycles asserted a totality
+		   the code falsified. The function reads eof_, then the sign of the readiness answer,
+		   then readable_signaled_, and nothing else, so the tree is total by construction: one
+		   leaf for the eof_ early return, which does not probe, plus three signs times two
+		   latch states. Seven leaves, four outcomes.
+
+		     eof_ set, whatever the latch holds .................... terminal
+		     clear, answer 0, latch clear ......................... not_ready
+		     clear, answer 0, latch set ........................... not_ready
+		     clear, answer 1, latch clear ......................... raised
+		     clear, answer 1, latch set ........................... latched
+		     clear, answer -1, latch clear ........................ raised
+		     clear, answer -1, latch set .......................... raised  (D-28)
+
+		   The raised leaves never park at all. The not_ready leaves park with the source armed
+		   at the level the CPU thread itself observed, because console_stdin_ready publishes
+		   the acknowledgement on its way out of an answer of 0. The terminal leaf parks
+		   indefinitely and owes nothing, because no further host input exists and the
+		   end-of-input edge was raised exactly once when it latched. The latched leaf is the
+		   one the park hook has to bound, which is what D-27's relatch does. */
+		cpu::input_device::tick_result console_device::on_input_tick() {
 			// maize-238 Branch A (decision 9285): SIGNAL host-stdin readiness only; consume
 			// nothing. The run loop throttles this call (cpu.cpp INPUT_TICK_MASK, OQ 9204) so
 			// it fires once per few thousand instructions -- a bounded host-stdin poll whose
@@ -100,15 +129,38 @@ namespace maize {
 			// (the data-port read), never pre-read into a latch that could strand across a
 			// fork/exec console handoff (the phase-2 kilo deadlock this model retires).
 			if (eof_) {
-				return;   // end-of-input already latched: nothing more will arrive
+				return tick_result::terminal;   // end-of-input already latched: nothing more will arrive
 			}
 			int r = maize::syscall::console_stdin_ready();
+			if (r < 0 && maize::fault::armed(maize::fault::latch_ready)) {
+				/* maize-313 (AC-29): build the "end of input taken with the readiness edge
+				   already spent" leaf directly. Reaching it naturally needs the bytes consumed
+				   by something other than the console data port, since a data-port read clears
+				   the latch, and the only two in-tree consumers with that property are the
+				   bare-VM drain and the Windows raw-mode probe, neither of which runs under a
+				   quesOS fixture.
+
+				   The injection is scoped to the negative answer deliberately. Forcing the
+				   latch ahead of every probe would also convert every readable answer into the
+				   `latched` outcome, which is a different leaf, and the resulting one-raise-per
+				   relatch-interval cycle would test the relatch rather than this. */
+				readable_signaled_ = true;
+			}
 			if (r == 0) {
 				readable_signaled_ = false;   // source went non-readable: re-arm the edge
-				return;
+				return tick_result::not_ready;
 			}
 			if (r < 0) {
-				eof_ = true;   // a genuinely drained source (pipe/pty at EOF): signal once
+				/* maize-313 (D-28): end of input is its own edge, not a readable state. Falling
+				   through to the rising-edge guard below let a -1 taken with readable_signaled_
+				   ALREADY set latch eof_ and raise nothing, after which the early return at the
+				   top of this function meant nothing ever raised again and the FIRST parked
+				   reader was stranded. Raise here instead. This cannot storm: eof_ is terminal,
+				   so that early return bounds this to one raise for the life of the process. */
+				eof_ = true;
+				readable_signaled_ = true;
+				cpu::raise_irq(cpu::console_irq_vector);
+				return tick_result::raised;
 			}
 			// Rising edge only: raise IRQ 33 once when the source becomes readable, not every
 			// throttle tick. A dataless-but-readable source (/dev/null) then yields ONE bounded
@@ -116,7 +168,13 @@ namespace maize {
 			if (!readable_signaled_) {
 				readable_signaled_ = true;
 				cpu::raise_irq(cpu::console_irq_vector);
+				return tick_result::raised;
 			}
+			/* Readable, and IRQ 33 was already raised for this readable state. Nothing here
+			   raised and nothing published an acknowledgement, so neither watcher is armed and
+			   the caller owns what happens next: the instruction-tick pump ignores this and the
+			   park hook bounds its park on it (D-27). */
+			return tick_result::latched;
 		}
 
 		// maize-238 (Branch A): the single-host-stdin-owner drain for a bare-VM guest's
@@ -214,9 +272,13 @@ namespace maize {
 			return out;
 		}
 
-		void keyboard_device::on_input_tick() {
+		/* maize-313: the park hook is wired to console_device alone, because this method's
+		   headless branch issues a BLOCKING read(0, ...) and pointing the hook here would park
+		   the CPU thread inside a host read. The enum values below are therefore never read.
+		   They are written correctly anyway rather than returned as a placeholder. */
+		cpu::input_device::tick_result keyboard_device::on_input_tick() {
 			if (available_.load(std::memory_order_acquire)) {
-				return;   // a scancode is already latched, waiting to be read
+				return tick_result::latched;   // a scancode is already latched, waiting to be read
 			}
 			if (window_source_) {
 				/* Backstop only. Windowed input is driven by push_event (latch + IRQ on the SDL
@@ -224,25 +286,28 @@ namespace maize {
 				   for the window source and this path is normally never reached. Kept correct for
 				   safety: drain one queued key if one slipped in while the latch was full. */
 				if (queue_size_.load(std::memory_order_acquire) == 0) {
-					return;
+					return tick_result::not_ready;
 				}
 				std::lock_guard<std::mutex> lk(queue_mutex_);
 				pump_latch();
-				return;
+				return available_.load(std::memory_order_acquire)
+					? tick_result::raised
+					: tick_result::not_ready;
 			}
 			/* Headless deterministic injection: read one stdin byte as the Set-1 scancode. */
 			if (exhausted_) {
-				return;
+				return tick_result::terminal;
 			}
 			unsigned char b = 0;
 			u_word n = maize::syscall::read(0, &b, 1);
 			if (n != 1) {
 				exhausted_ = true;   // EOF or error: no more injected scancodes
-				return;
+				return tick_result::terminal;
 			}
 			scancode_ = b;
 			available_.store(true, std::memory_order_release);
 			cpu::raise_irq(cpu::keyboard_irq_vector);
+			return tick_result::raised;
 		}
 
 		// ---- Memory-backed framebuffer (0x50-0x55) ---------------------------------------

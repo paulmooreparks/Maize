@@ -38,6 +38,17 @@ namespace maize {
 			void report(std::ostream& out, std::uint64_t elapsed_us) const override;
 		};
 
+		/* maize-313: the park hook and the host stdin source. Registered on every run that
+		   makes console_device the guest's stdin owner. Every claim that card makes about idle
+		   cost is a claim about how often the watcher wakes, and its central correctness
+		   property is that every path into the CPU's wait-for-interrupt park runs the park
+		   hook first, so both are counted rather than argued. A fixture asserts the two park
+		   counters equal; a human reads the watcher's five. */
+		struct stdin_source_report : source {
+			const char* section() const override { return "stdin"; }
+			void report(std::ostream& out, std::uint64_t elapsed_us) const override;
+		};
+
 		/* Display: frames presented + average FPS. Registered ONLY when a window is
 		   attached, so a headless / console run omits it (no FPS section). The frame count
 		   is read through a getter so this header need not know the framebuffer type. */

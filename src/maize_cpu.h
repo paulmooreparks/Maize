@@ -399,7 +399,24 @@ namespace maize {
 		class input_device {
 		public:
 			virtual ~input_device() = default;
-			virtual void on_input_tick() = 0;
+
+			/* maize-313 (D-25): what one input tick did. The instruction-tick pump ignores
+			   this; the park hook in run() branches on it, because the park is the one caller
+			   that has to know whether anything will wake it. */
+			enum class tick_result {
+				not_ready,   // probed, the source is not readable, the readiness edge is re-armed
+				raised,      // an IRQ was raised, for a rising edge of readability or for end of input
+				latched,     // the source is readable and an IRQ was already raised for this state
+				terminal     // end of input is latched and nothing further will arrive
+			};
+
+			virtual tick_result on_input_tick() = 0;
+
+			/* maize-313 (D-27): clear the rising-edge latch without probing and without
+			   consuming, so the next on_input_tick() raises again for a readable state that is
+			   still unconsumed. Called only from the relatch path in run(). The default is a
+			   no-op, because a device with no readiness edge owes nothing here. */
+			virtual void rearm_ready_edge() {}
 		};
 
 		/* Timer device (card maize-21): the first interrupt source and the end-to-end
@@ -583,7 +600,8 @@ namespace maize {
 		   guest RAM and are presented through the base-address + present control ports, not
 		   a per-pixel data port. */
 		const u_qword console_port_data			{0x0000};   // R: input byte   W: output byte
-		const u_qword console_port_status		{0x0001};   // R: bit0 input-available, bit1 output-ready, bit2 end-of-input (EOF, latched)
+		const u_qword console_port_status		{0x0001};   // R: bit0 input-available, bit1 output-ready, bit2 end-of-input (EOF, latched),
+															// bit3 wake-capable (maize-313: input can raise IRQ 33 while the core is halted)
 		const u_byte  console_irq_vector		{33};
 
 		const u_qword loopback_test_port		{0x000F};   // R/W passive scratch (relocated from port 1)
@@ -1145,6 +1163,28 @@ namespace maize {
 		   consumer). null means no host input device drives stdin: the SYS console path
 		   reads stdin on demand, the default. */
 		void set_active_input(input_device* src);
+
+		/* maize-313 (D-25): install the device the power loop probes ONCE MORE on its way
+		   into the wait-for-interrupt park. The instruction-tick pump above covers the
+		   interval while the CPU retires instructions; this covers the instant it stops, which
+		   is the one instant the pump cannot reach and the whole reason a HALT-parked CPU
+		   could never see the next stdin byte. Null on every path that does not make
+		   console_device the guest's stdin owner. */
+		void set_park_input(input_device* src);
+
+		/* maize-313 (spec section 8.4): the park hook's own instrumentation, printed under
+		   --show-perf. park_tick_returns counts NORMAL returns from tick() and park_hook_calls
+		   counts park-hook invocations, and the two are equal exactly when every path into the
+		   park runs the hook first, which is the machine-checkable form of invariant W's first
+		   step. relatch_expiries counts bounded parks that expired without a raise arriving
+		   first, which attributes a wake to D-27's mechanism rather than to something
+		   incidental. */
+		struct park_counters {
+			std::uint64_t tick_returns {0};
+			std::uint64_t hook_calls {0};
+			std::uint64_t relatch_expiries {0};
+		};
+		park_counters read_park_counters();
 
 		/* Interrupt controller seam (card maize-21). A device raises an IRQ by making a
 		   vector pending through raise_irq; the flat controller coalesces multiple raises

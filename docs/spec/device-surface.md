@@ -269,10 +269,18 @@ is still pollable through its status register.
 The reference device, built in and default. A native terminal remains built in and default.
 
 - **Register skeleton:** a byte-wide data register and a status register. The status
-  register carries at least an input-available bit, an output-ready bit, and an
-  end-of-input (EOF) bit. The EOF bit latches once the host input stream is exhausted (a
-  read returned no byte); it stays set thereafter, so a reader that sees it delivers a
-  zero-length (EOF) read to the program rather than a synthesized data byte.
+  register carries at least an input-available bit, an output-ready bit, an end-of-input
+  (EOF) bit, and a wake-capable bit. The EOF bit latches once the host input stream is
+  exhausted (a read returned no byte); it stays set thereafter, so a reader that sees it
+  delivers a zero-length (EOF) read to the program rather than a synthesized data byte.
+  The wake-capable bit tells a program whether input can raise the console IRQ while the
+  core is halted. A VM sets it when it runs an input source independent of instruction
+  execution, and its value is fixed for the lifetime of a program run. A VM that drives
+  console input only from instruction execution reports it clear, and so does a VM whose
+  independent source failed to start. The safe reading of a clear bit is that a halted core
+  may have nothing able to wake it, so a program must not park on a halt to wait for input
+  when the bit is clear; it polls the status register instead. A program that never halts
+  to wait for input may ignore the bit entirely.
 - **Port access:** flat data register (no `address_reg` indirection). OUT writes one byte to
   the output stream; IN reads one byte from the input stream. A program polls the status
   register for readiness.
@@ -360,7 +368,8 @@ pinout:
     Port         Device / register           R / W meaning
     ----         -------------------------   ------------------------------------------
     $00          console data                R: next input byte    W: output byte
-    $01          console status              R: bit0 input-available, bit1 output-ready, bit2 end-of-input
+    $01          console status              R: bit0 input-available, bit1 output-ready, bit2 end-of-input,
+                                                bit3 wake-capable (input can raise IRQ 33 while the core is halted)
     $10          keyboard data               R: scancode (read clears key-available)
     $11          keyboard status             R: bit0 key-available
     $20 - $22    block device                reserved (no backend in this revision)
@@ -380,8 +389,11 @@ pinout:
                  block transfer-complete 35 (reserved), framebuffer vsync/refresh 36.
 
 **Console.** `OUT $00` emits a byte to the output stream; `IN $00` reads a byte from the
-input stream; `$01` reports output-ready and input-available; input-available raises IRQ
-33, and reading `$00` clears it.
+input stream. `$01` reports output-ready in bit1, input-available in bit0, end-of-input in
+bit2 and wake-capable in bit3. Input-available raises IRQ 33, and reading `$00` clears it.
+Bit2 latches once the input stream is exhausted and stays set. Bit3 is set only when the VM
+can raise IRQ 33 while the core is halted, so a program that halts to wait for input must
+read bit3 first and poll instead when it is clear; the bit does not change during a run.
 
 **Keyboard.** The scancode register carries raw PC hardware scancodes: the **Set-1 (XT)**
 code set. A key press delivers the key's make code; a key release delivers the same code

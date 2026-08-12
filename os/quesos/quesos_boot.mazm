@@ -42,6 +42,7 @@ GLOBAL quesos_switch_to
 GLOBAL quesos_poweroff
 GLOBAL quesos_arm_timer
 GLOBAL quesos_idle
+GLOBAL quesos_idle_spin
 GLOBAL quesos_con_status
 GLOBAL quesos_con_data
 GLOBAL quesos_sigreturn_tramp
@@ -447,12 +448,37 @@ quesos_kbd_read:
 
 ; ----------------------------------------------------------------------------------
 ; quesos_idle(): entered by the scheduler when no process is runnable but one is parked
-; on console input. Spin with interrupts enabled so the CPU keeps ticking: the console
-; device's per-tick input pump only runs while instructions execute, so a HALT here
-; would never see the next stdin byte. The timer / console IRQ fires during the spin,
-; wakes a process, and reschedules away (noreturn from this loop's point of view).
+; on a wake this loop can wait for. Park the core on HALT with interrupts enabled: the
+; run loop then sleeps at about 0 MIPS until a device raises a deliverable IRQ, and
+; maize-313 gave the VM a host stdin source that raises IRQ 33 from its own thread, so
+; the next stdin byte reaches a parked core. Before that card the console device's input
+; pump ran only while instructions executed, which is why this loop had to spin and burn
+; a full host core; quesos_idle_spin below is that loop, kept for the cases the scheduler
+; still has to spin for.
+;
+; SETINT sits INSIDE the loop rather than above it. It costs one instruction per wake and
+; removes any dependence on IRET restoring the interrupt-enabled bit, which matters because
+; the interrupt handlers reached from here are noreturn and IRET is not the normal exit.
+;
+; HALT is privileged and quesOS runs supervisor, so the note above covers it. The three IRQ
+; handlers already guard g_current == 0 and each resets SP to the kernel stack base before
+; dispatching, so repeated park-wake cycles do not grow the kernel stack.
 ; ----------------------------------------------------------------------------------
 quesos_idle:
+quesos_idle_park:
     SETINT                     ; enable interrupts (the trap entry masked them)
+    HALT                       ; wait for interrupt; the run loop parks at about 0 MIPS
+    JMP quesos_idle_park       ; re-park after a serviced IRQ that did not reschedule away
+
+; ----------------------------------------------------------------------------------
+; quesos_idle_spin(): the pre-maize-313 idle loop. The scheduler still enters it in two
+; cases the park cannot serve. A parked process with a finite poll deadline needs the
+; instruction-tick timer, and a parked CPU retires no instructions, so the timer stops
+; with it. And a VM whose host stdin source failed to start reports CON_STAT_WAKE clear,
+; which means nothing off the CPU thread can raise IRQ 33, so the guest must keep the
+; instruction-tick pump running exactly as it did before that card.
+; ----------------------------------------------------------------------------------
 quesos_idle_spin:
-    JMP quesos_idle_spin       ; tick so on_input_tick runs; an IRQ reschedules away
+    SETINT                     ; enable interrupts (the trap entry masked them)
+quesos_idle_spin_loop:
+    JMP quesos_idle_spin_loop  ; tick so on_input_tick runs; an IRQ reschedules away

@@ -716,10 +716,18 @@ unmasked (this is what lets a handler's IRET restore the full saved RF).
 - **Traps:** privileged-operation fault (cause 4) in user mode.
 
 ### HALT
-- **Operation:** halt the clock, stopping execution pending an interrupt. With no interrupt
-  source a halted core has nothing to wake it, so the run loop returns and the host process
-  exits 0 with no recorded status (distinct from the status-carrying SYS $3C exit; Appendix
-  C). Pinned at opcode `$00` so a run of zeroed memory halts. Privileged.
+- **Operation:** halt the clock and wait. The RF interrupt-enable bit at the moment HALT
+  executes settles whether the core ever resumes. With interrupts disabled nothing can be
+  delivered to the core, so the halt is permanent and the run ends there; the run loop returns
+  and the host process exits 0 with no recorded status (distinct from the status-carrying
+  SYS $3C exit; Appendix C). With interrupts enabled the core parks, resuming when a maskable
+  external interrupt is delivered to it or, at the VM's discretion, with no interrupt
+  delivered at all, so a guest that expects to run only in an interrupt handler must re-issue
+  HALT in a loop rather than assume the instruction after it is reached only through IRET. A
+  parked core on a machine where nothing will ever raise stays parked, because the core does
+  not test whether an interrupt source exists. Pinned at opcode `$00` so a run of zeroed
+  memory halts, and such a run takes the interrupts-disabled path because it has never
+  executed SETINT. Privileged.
 - **Forms:** `$00` (zero-operand).
 - **Flags:** C/N/V/Z/P unaffected (the running bit in RF.H1 clears).
 - **Traps:** privileged-operation fault (cause 4) in user mode.

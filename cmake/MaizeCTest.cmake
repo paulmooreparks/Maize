@@ -215,6 +215,11 @@ maize_ctest_fixture(run_quesos_quiet_boot   LABELS "quesos" TIMEOUT 900  QUESOS_
 # ceiling, so the test bound has to sit above that batch's own worst case.
 maize_ctest_fixture(run_quesos_ac_fixtures  LABELS "quesos" TIMEOUT 3600 QUESOS_LOCK)
 maize_ctest_fixture(run_quesos94_fixtures   LABELS "quesos" TIMEOUT 1800 QUESOS_LOCK)
+# maize-313: the stdin-wake group. Several of its legs are deliberately SLOW, because the
+# thing under test is what happens while the guest sits on its idle path: the 200-byte leg
+# spends 4 seconds feeding, the relatch leg waits out two 1000 ms deadlines, and the
+# select-timeout leg holds an open-but-silent stdin. Sized for the compile burst plus that.
+maize_ctest_fixture(run_stdin_wake_fixtures LABELS "quesos" TIMEOUT 1800 QUESOS_LOCK)
 # doom_quesos carries an internal `timeout 480` render step (sized for the ASan leg) plus a
 # 240s pty presenter check, so 1800 leaves it room to diagnose itself first.
 maize_ctest_fixture(run_doom_quesos LABELS "doom;quesos" TIMEOUT 1800 QUESOS_LOCK)
