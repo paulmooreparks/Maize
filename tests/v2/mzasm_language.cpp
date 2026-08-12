@@ -639,6 +639,113 @@ MZ_FIXTURE(include_resolves_csr_names_and_reports_a_cycle) {
 }
 
 // ---------------------------------------------------------------------------------------
+// The two path normalizations, which must agree
+// ---------------------------------------------------------------------------------------
+
+// assemble_file and the include directive each turn a path into the key that identifies a file,
+// and those two keys are compared against each other to detect an include cycle. They must
+// therefore normalize the same way. Until now that invariant was held by nothing but a comment
+// at each site, on a card whose whole subject is checks that bite, and reverting either site
+// alone left the full suite green.
+//
+// A correction to how the consequence was described, because getting this wrong is the same
+// error in miniature. Reverting assemble_file alone does NOT make the cycle go undetected and
+// does NOT fail AC-12. The cycle is still reported, one nesting level late, because the two keys
+// stop colliding until the included file includes itself a second time. The observable
+// difference is the chain: it reads `self.mzasm -> self.mzasm` where the correct output names
+// the path once. That string is what separates the two states, so that string is what this
+// asserts.
+//
+// Both spellings of the path are exercised. On a host whose preferred separator is a backslash,
+// running only one spelling would leave it open whether the check passes because the
+// normalization is right or because the command line happened to be written the way the
+// normalization produces.
+MZ_FIXTURE(include_paths_normalize_identically_at_both_sites) {
+    ScratchDir scratch("normalize");
+
+    const auto count_occurrences = [](const std::string& haystack, const std::string& needle) {
+        std::size_t count = 0;
+        for (std::size_t at = haystack.find(needle); at != std::string::npos;
+             at = haystack.find(needle, at + needle.size())) {
+            ++count;
+        }
+        return count;
+    };
+
+    // The cycle chain, which is the text after "include cycle: " up to the end of that line.
+    const auto cycle_chain = [](const std::string& output) {
+        const std::size_t at = output.find("include cycle: ");
+        if (at == std::string::npos) {
+            return std::string();
+        }
+        const std::size_t from = at + std::string("include cycle: ").size();
+        std::string line = output.substr(from, output.find('\n', from) - from);
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        return line;
+    };
+
+    scratch.write("self.mzasm", "    include \"self.mzasm\"\n");
+    const std::filesystem::path written = scratch.file("self.mzasm");
+
+    struct Spelling {
+        const char* what;
+        std::string path;
+    };
+    const std::vector<Spelling> spellings = {
+        {"the host's preferred separator", std::filesystem::path(written).make_preferred().string()},
+        {"forward slashes", written.generic_string()},
+    };
+
+    for (const Spelling& spelling : spellings) {
+        const RunResult run = run_mzasm({spelling.path});
+        if (run.exit_code == 0) {
+            record_failure(std::string("a self-including file assembled cleanly, given ") +
+                           spelling.what);
+            continue;
+        }
+        const std::string chain = cycle_chain(run.output);
+        if (chain.empty()) {
+            record_failure(std::string("no include cycle was reported, given ") + spelling.what +
+                           ":\n" + run.output);
+            continue;
+        }
+        // The file includes itself directly, so the cycle is one file long and the chain names
+        // it once. Naming it twice means the two sites disagreed and the collision only happened
+        // one level deeper.
+        const std::size_t named = count_occurrences(chain, "self.mzasm");
+        if (named != 1) {
+            std::ostringstream message;
+            message << "given " << spelling.what << ", the cycle chain names the file " << named
+                    << " times and a directly self-including file is a one-file cycle; the chain "
+                       "reads '"
+                    << chain << "'";
+            record_failure(message.str());
+        }
+    }
+
+    // The same invariant seen from the other side. A diagnostic chain crossing an include
+    // boundary prints two file names, one from each normalization site, so a disagreement shows
+    // up as two separator conventions in one chain.
+    scratch.write("inner.mzasm", "    nop\n    not_a_mnemonic\n");
+    const std::string outer =
+        scratch.write("outer.mzasm", "    nop\n    include \"inner.mzasm\"\n");
+    const RunResult nested = run_mzasm({std::filesystem::path(outer).make_preferred().string()});
+    MZ_CHECK(nested.exit_code != 0);
+    if (nested.output.find('\\') != std::string::npos) {
+        record_failure(
+            "a diagnostic chain crossing an include boundary mixes path separators, so the two "
+            "normalization sites disagree:\n" +
+            nested.output);
+    }
+    // Both ends of the chain are present, so the check above is looking at a real two-file chain
+    // rather than passing because one of the lines never printed.
+    MZ_CHECK(nested.output.find("inner.mzasm:2:") != std::string::npos);
+    MZ_CHECK(nested.output.find("outer.mzasm:2:") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------------------
 // AC-13: the .mzi suffix, and mzvm running what mzasm wrote
 // ---------------------------------------------------------------------------------------
 
@@ -713,36 +820,61 @@ namespace {
 //
 // Discovery is by directory and name pattern rather than by a glob string, so the rule a reader
 // checks is the rule the code runs.
-std::vector<std::string> v2_assembler_sources() {
-    struct Source {
-        const char* directory;
-        bool (*matches)(const std::string& filename);
-    };
-    static const std::vector<Source> places = {
-        {"src/v2", [](const std::string& n) {
-             return n.rfind("mzasm", 0) == 0 || n == "mnemonic_v2.h";
-         }},
-        {"tests/v2", [](const std::string& n) {
-             return n.rfind("mzasm", 0) == 0 || n.rfind("appendix_a", 0) == 0;
-         }},
-        {"scripts", [](const std::string& n) { return n.rfind("install-mzasm", 0) == 0; }},
-        {"asm/v2", [](const std::string& n) {
-             return n.size() > 6 && n.compare(n.size() - 6, 6, ".mzasm") == 0;
-         }},
-    };
+// Each place the v2 assembler keeps files, with the pattern that discovers them AND the files
+// that must turn up there. Both halves are load-bearing and they guard opposite failures.
+// Discovery means a file added tomorrow is scanned with no list to edit. The named requirements
+// mean a file that DISAPPEARS from a category fails by name.
+//
+// The requirement is per category and per file rather than one aggregate count, because an
+// aggregate has slack and slack is where a file hides. A floor of fifteen over sixteen files let
+// the scripts pattern narrow to `install-mzasm.sh` alone, silently dropping `install-mzasm.ps1`,
+// with a planted suffix inside it unseen and the fixture green. That file is the PowerShell twin
+// of the shell installer, and this project's history is explicit that Windows CI rots when a
+// change lands in one script of a pair and not the other, so it is named here rather than
+// counted. So is every other file: ten of the sixteen were unnamed under the old floor and any
+// one of them could be lost the same way.
+struct SourceCategory {
+    const char* directory;
+    bool (*matches)(const std::string& filename);
+    std::vector<const char*> required;
+};
 
+const std::vector<SourceCategory>& v2_source_categories() {
+    static const std::vector<SourceCategory> categories = {
+        {"src/v2",
+         [](const std::string& n) { return n.rfind("mzasm", 0) == 0 || n == "mnemonic_v2.h"; },
+         {"mzasm.h", "mzasm_lexer.cpp", "mzasm_assemble.cpp", "mzasm_object.cpp",
+          "mzasm_main.cpp", "mnemonic_v2.h"}},
+        {"tests/v2",
+         [](const std::string& n) {
+             return n.rfind("mzasm", 0) == 0 || n.rfind("appendix_a", 0) == 0;
+         },
+         {"appendix_a.h", "appendix_a.cpp", "mzasm_test_support.h", "mzasm_test_support.cpp",
+          "mzasm_conformance.cpp", "mzasm_corpus.cpp", "mzasm_language.cpp"}},
+        {"scripts",
+         [](const std::string& n) { return n.rfind("install-mzasm", 0) == 0; },
+         // Both, by name. Losing either one is the failure this entry exists to catch.
+         {"install-mzasm.sh", "install-mzasm.ps1"}},
+        {"asm/v2",
+         [](const std::string& n) {
+             return n.size() > 6 && n.compare(n.size() - 6, 6, ".mzasm") == 0;
+         },
+         {"csr.mzasm"}},
+    };
+    return categories;
+}
+
+std::vector<std::string> discover_in(const SourceCategory& category) {
     std::vector<std::string> found;
-    for (const Source& place : places) {
-        std::error_code ec;
-        const std::filesystem::path directory = repo_root() + "/" + place.directory;
-        for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
-            if (!entry.is_regular_file()) {
-                continue;
-            }
-            const std::string filename = entry.path().filename().string();
-            if (place.matches(filename)) {
-                found.push_back(std::string(place.directory) + "/" + filename);
-            }
+    std::error_code ec;
+    const std::filesystem::path directory = repo_root() + "/" + category.directory;
+    for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        const std::string filename = entry.path().filename().string();
+        if (category.matches(filename)) {
+            found.push_back(std::string(category.directory) + "/" + filename);
         }
     }
     std::sort(found.begin(), found.end());
@@ -762,14 +894,21 @@ bool task_object_mentions(const std::string& tasks, const std::string& label,
     if (!found_label) {
         return false;
     }
-    // The task object runs to the next task's label or to the end of the file. Bounding it at a
-    // fixed byte count instead would read into whichever task happens to follow, which passes
-    // only for as long as that neighbour stays clean: this file holds v1 tasks that legitimately
-    // name the v1 suffix, so a fixed window turns a reordering of tasks.json into a failure
-    // about nothing.
+    // The window opens at the task object's own brace rather than at the label text, because
+    // "label" need not be the object's first key and anything ahead of it would otherwise go
+    // unscanned. That error's direction is a false pass, which is the direction that matters.
+    const std::size_t brace = tasks.rfind('{', at);
+    const std::size_t start = brace == std::string::npos ? at : brace;
+
+    // It closes at the next task's label or at the end of the file. Bounding it at a fixed byte
+    // count instead would read into whichever task happens to follow, which passes only for as
+    // long as that neighbour stays clean: this file holds v1 tasks that legitimately name the v1
+    // suffix, so a fixed window turns a reordering of tasks.json into a failure about nothing.
+    // The search for the next label starts at the label TEXT, not at the brace, so this task's
+    // own "label" key does not end the window before it begins.
     const std::size_t next = tasks.find("\"label\"", at);
     const std::size_t end = next == std::string::npos ? tasks.size() : next;
-    return tasks.find(needle, at) < end;
+    return tasks.find(needle, start) < end;
 }
 
 }  // namespace
@@ -779,19 +918,20 @@ MZ_FIXTURE(nothing_in_the_v2_assembler_names_the_v1_suffix) {
     // tasks must not name .mzb anywhere, so a reader is never told that a v2 image might take
     // v1's suffix. The v1 tasks and v1's own mazm keep .mzb and are deliberately not scanned:
     // v1 is untouched by this card.
-    const std::vector<std::string> sources = v2_assembler_sources();
-
-    // A discovery that matched nothing would scan nothing and pass, so the floor is asserted.
-    // The named files are the ones whose absence would mean the discovery itself broke rather
-    // than that the tree changed.
-    MZ_CHECK(sources.size() >= 15);
-    for (const char* required : {"src/v2/mzasm_assemble.cpp", "src/v2/mnemonic_v2.h",
-                                 "tests/v2/appendix_a.cpp", "scripts/install-mzasm.sh",
-                                 "asm/v2/csr.mzasm"}) {
-        if (std::find(sources.begin(), sources.end(), required) == sources.end()) {
-            record_failure(std::string("the source discovery did not find ") + required +
-                           ", so it is not scanning what it claims to scan");
+    // Each category is satisfied on its own terms. A file missing from one category fails on
+    // that category's own requirement rather than being absorbed by slack in another, which is
+    // what an aggregate floor allowed.
+    std::vector<std::string> sources;
+    for (const SourceCategory& category : v2_source_categories()) {
+        const std::vector<std::string> found = discover_in(category);
+        for (const char* required : category.required) {
+            const std::string path = std::string(category.directory) + "/" + required;
+            if (std::find(found.begin(), found.end(), path) == found.end()) {
+                record_failure("the source discovery did not find " + path +
+                               ", so it is not scanning what it claims to scan");
+            }
         }
+        sources.insert(sources.end(), found.begin(), found.end());
     }
 
     for (const std::string& relative : sources) {
@@ -875,6 +1015,22 @@ MZ_FIXTURE(the_task_scanner_stops_at_the_next_task) {
         "{\n  \"tasks\": [\n    {\n      \"label\": \"Only task\",\n"
         "      \"command\": \"mazm foo.mzb\"\n    }\n  ]\n}\n";
     MZ_CHECK(task_object_mentions(trailing, "Only task", ".mzb", found));
+    MZ_CHECK(found);
+
+    // "label" is not required to be a task object's first key, so the window opens at the
+    // object's brace. A needle sitting AHEAD of the label, inside the same object, is inside the
+    // task and must be seen; a window opening at the label text would step over it and pass.
+    const std::string label_not_first =
+        "{\n"
+        "  \"tasks\": [\n"
+        "    {\n"
+        "      \"detail\": \"writes a foo.mzb, which this task may not\",\n"
+        "      \"label\": \"Assemble current .mzasm\",\n"
+        "      \"command\": \"mzasm\"\n"
+        "    }\n"
+        "  ]\n"
+        "}\n";
+    MZ_CHECK(task_object_mentions(label_not_first, "Assemble current .mzasm", ".mzb", found));
     MZ_CHECK(found);
 }
 

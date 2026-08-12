@@ -110,6 +110,7 @@ set(MAIZE_MZASM_FIXTURES
   the_assembler_synthesizes_nothing
   check_touches_nothing_and_a_failure_removes_stale_output
   include_resolves_csr_names_and_reports_a_cycle
+  include_paths_normalize_identically_at_both_sites
   flat_output_takes_the_mzi_suffix
   mzvm_runs_what_mzasm_wrote
   nothing_in_the_v2_assembler_names_the_v1_suffix
