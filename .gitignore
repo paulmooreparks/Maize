@@ -80,6 +80,7 @@ asm/*.mzb
 # mdBook build output (book.toml build-dir); the site is built and deployed
 # by CI, never committed.
 /book/
-/.claude/
+/.claude/*
+!/.claude/settings.json
 toolchain/cproc
 toolchain/qbe

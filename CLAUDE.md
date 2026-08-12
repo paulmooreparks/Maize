@@ -22,6 +22,23 @@ never hold a claim while idle.
   claim discipline, tier mapping, and stage handoffs procedurally.
 - New work gets a card (`add_card`) before or as it starts, never after.
 
+**Isolation is a directive you read and act on, not prose.** A column
+declaring `isolation: worktree` means the dispatching session must read
+that directive off the column and pass `isolation` on the Agent call that
+spawns the stage subagent, on every dispatch including a continuation of
+an existing session, not only the first. Passing it once and then
+continuing by message is not sufficient (maize-432). If you are
+dispatching freehand rather than through `/work` or `/fast-track`, this
+obligation is yours directly: read the column's isolation directive
+before you spawn the subagent.
+
+Two settings-level hooks back this up in this repository
+(`.claude/settings.json`, `scripts/hooks/`): one denies destructive git
+commands run outside `.claude/worktrees/`, the other records the working
+directory of every shell call so a lapse is measurable rather than found
+by accident. Neither is a substitute for passing isolation correctly;
+they exist because passing it correctly has failed three times already.
+
 ## Conventions
 
 - Commits for card work carry the `maize-NN: ` prefix and push to

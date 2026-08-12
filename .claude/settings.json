@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/hooks/deny-destructive-git.py",
+            "timeout": 10,
+            "statusMessage": "Checking git command against the main-checkout guard (maize-432)"
+          },
+          {
+            "type": "command",
+            "command": "python scripts/hooks/record-isolation-cwd.py",
+            "timeout": 10,
+            "statusMessage": "Recording where this shell call ran (maize-432)"
+          }
+        ]
+      }
+    ]
+  }
+}
