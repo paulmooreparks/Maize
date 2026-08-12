@@ -4,7 +4,7 @@ Working state for picking up development. Positioning and milestone sequencing l
 
 ## Where things stand
 
-Milestone 0 (ISA repairs), Milestone 0.5 (stabilization), and the bulk of Milestone 1 (C toolchain) are complete and on `origin/master`. The toolchain runs end to end: C11 source compiles through mzcc, links against the freestanding runtime, and runs on the VM with a working heap, variadic printf, and real errno reporting. CI runs the asm corpus and the C corpus on every push, Linux and Windows, plus a sanitizer leg.
+Milestone 0 (ISA repairs), Milestone 0.5 (stabilization), and the bulk of Milestone 1 (C toolchain) are complete and on `origin/master`. The toolchain runs end to end: C11 source compiles through mzcc, links against the freestanding runtime, and runs on the VM with a working heap, variadic printf, and real errno reporting. CI runs the asm corpus and the C corpus on Linux and Windows, plus a sanitizer leg, as a nightly batch and on demand rather than on every push (maize-318).
 
 Landed:
 - ISA: separate carry/overflow flags per operand width; signed and unsigned div/mod; ADC/SBB; MULW/UMULW; the full branch-complement set; the SETcc family with C-friendly synonyms; SAR; NEG; flat-64 pointer model; guaranteed process-start register/stack contract with a System V-style argc/argv/envp block.

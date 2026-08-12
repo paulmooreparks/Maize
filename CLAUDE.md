@@ -6,11 +6,17 @@ This project's backlog lives on the **maize** workbench in Andoneer
 (yak.andoneer.com, via the `andoneer` MCP connector). Chat is a sidecar;
 the board records what is being worked, by whom, and what stage it is in.
 
-**Claim before you work.** Call `claim_card` (or `pull_next`) the moment
-you start producing output for a card, not when you are about to move it.
-An unclaimed card being worked is dark work: the operator cannot see it
-in flight. If you pause or hit a blocker, `release_card` or `block_card`;
-never hold a claim while idle.
+**Claim before you work.** A card being worked without a claim is dark
+work: the operator cannot see it in flight. The claim is taken the moment
+output starts, not when the card is about to move, and it is released or
+blocked rather than held while idle.
+
+Who takes it depends on where you are. A session working a card directly
+calls `claim_card` or `pull_next` itself. A stage subagent cannot: those
+agents have no `claim_card` tool, by design, so the dispatching session
+holds the claim on their behalf and says so in the brief. Do not tell a
+subagent a claim is held unless you have taken it, because a subagent
+that owns no claim cannot record its own block either.
 
 ## How work flows
 
@@ -57,15 +63,23 @@ they exist because passing it correctly keeps failing.
 
 ## Conventions
 
-- `dev` is the trunk agents write to. Card work goes on
-  `card/<human_id>`, branched from `origin/dev` and pushed there, and
-  Merge lands it on `dev`. `master` is the public line and only a cut
-  advances it, after the operator accepts the work in Dev Acceptance.
-  Never push card work at `master`, `beta` or `stable`; the columns
-  carry `trunk_branch` and `protected_branches` and those directives are
-  the authority if this file ever disagrees with them again.
+- **You never push a branch other than your own card branch.** Card work
+  goes on `card/<human_id>`, branched from `origin/dev` and pushed to
+  `origin/card/<human_id>`. `dev` is the integration line and is reached
+  only through Merge, which is the one stage that pushes it. `master` is
+  the public line and only a cut advances it, after the operator accepts
+  the work in Dev Acceptance. `beta` and `stable` do not exist yet and
+  will follow the same rule when they do. If you find yourself about to
+  push `dev`, `master`, `beta` or `stable`, you are outside your stage.
+  The columns carry `trunk_branch`, `branch_pattern`, `push_policy` and
+  `protected_branches`, and those directives are the authority if this
+  file ever disagrees with them again.
 - Commits for card work carry the `maize-NN: ` prefix.
-- Handoff notes follow the pointer-note protocol: full report as a card
-  comment, short note with the required headings plus the comment link.
+- Handoff notes follow the pointer-note protocol: the full report goes in
+  a card comment, and the move-note stays short and links to it. Columns
+  enforce their own exit checklist on that note, so read the column for
+  which sections it requires rather than assuming; several want
+  `## WHAT SHIPPED` and `## WHAT I CUT`, and a move is refused outright
+  when a required section is missing.
 - No em-dashes and no smart quotes in committed text, card comments, or
   handoff notes.
