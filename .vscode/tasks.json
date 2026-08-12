@@ -2,21 +2,21 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build Maize v2 (mzvm) and run its fixtures",
-            "detail": "maize-418: build the v2 machine (mzvm, mzvmg) and its fixture binary, then run the v2 fixtures only. This is the fast v2 loop and it is what Ctrl+Shift+B runs. It assumes the preset's build directory is already configured; if it is not, run one of the install or build-world tasks once first. The v2 machine has no assembler and no device surface yet, so mzvm's output is the register dump from --registers rather than anything a program prints.",
+            "label": "Build Maize v2 (mzvm, mzasm) and run its fixtures",
+            "detail": "Build the v2 machine (mzvm, mzvmg), the v2 assembler (mzasm), and both fixture binaries, then run the v2 fixtures only. This is the fast v2 loop and it is what Ctrl+Shift+B runs. It assumes the preset's build directory is already configured; if it is not, run one of the install or build-world tasks once first. Every target the v2 ctest label needs must be named here: the ctest step invokes the fixture binaries by path, so a fixture whose target is missing reports Not Run rather than failing to build (maize-435). mzvm has no device surface yet, so its output is the register dump from --registers rather than anything a program prints.",
             "type": "shell",
             "group": {
                 "kind": "build",
                 "isDefault": true
             },
             "windows": {
-                "command": "cmake --build build/windows-llvm-mingw-debug --target mzvm mzvmg mzvm_v2_fixtures && ctest --test-dir build/windows-llvm-mingw-debug -L v2 --output-on-failure"
+                "command": "cmake --build build/windows-llvm-mingw-debug --target mzvm mzvmg mzasm mzvm_v2_fixtures mzasm_tests && ctest --test-dir build/windows-llvm-mingw-debug -L v2 --output-on-failure"
             },
             "linux": {
-                "command": "cmake --build build/linux-debug --target mzvm mzvmg mzvm_v2_fixtures && ctest --test-dir build/linux-debug -L v2 --output-on-failure"
+                "command": "cmake --build build/linux-debug --target mzvm mzvmg mzasm mzvm_v2_fixtures mzasm_tests && ctest --test-dir build/linux-debug -L v2 --output-on-failure"
             },
             "osx": {
-                "command": "cmake --build build/macos-debug --target mzvm mzvmg mzvm_v2_fixtures && ctest --test-dir build/macos-debug -L v2 --output-on-failure"
+                "command": "cmake --build build/macos-debug --target mzvm mzvmg mzasm mzvm_v2_fixtures mzasm_tests && ctest --test-dir build/macos-debug -L v2 --output-on-failure"
             },
             "presentation": {
                 "clear": true,
