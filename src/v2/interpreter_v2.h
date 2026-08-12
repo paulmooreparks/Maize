@@ -29,6 +29,7 @@
 #include <cstdint>
 
 #include "decode_v2.h"
+#include "device_v2.h"
 #include "memory_v2.h"
 #include "registers_v2.h"
 #include "trap_v2.h"
@@ -40,7 +41,8 @@ enum class StepStatus : std::uint8_t {
     Trapped,   // a guest-visible trap condition; see StepResult::trap
     Halted,    // halt executed; the machine is stopped and its state is final
     // A real assigned opcode whose family this build does not implement (D-2): the floating
-    // point band, the system/CSR/TLB/port band other than halt, and breakpoint. This is a HOST
+    // point band, the system/CSR/TLB/port band other than halt and the two port instructions,
+    // and breakpoint. This is a HOST
     // diagnostic about a scaffold gap, never a guest-visible trap. Inventing a trap cause for
     // "not implemented yet" would misrepresent the gap as conformant illegal-instruction
     // behaviour, and it would be wrong the moment maize-419 and maize-420 close it.
@@ -77,11 +79,24 @@ class InterpreterV2 {
     MemoryV2& memory() { return memory_; }
     const MemoryV2& memory() const { return memory_; }
 
+    // The port space (maize-451). Owned the way the register file is owned, so a machine's
+    // devices are constructed with the machine and are in their reset state before the first
+    // instruction executes, which is what boot.md's device clause requires.
+    DeviceSurfaceV2& device_surface() { return devices_; }
+    const DeviceSurfaceV2& device_surface() const { return devices_; }
+
     std::uint64_t pc() const { return pc_; }
     void set_pc(std::uint64_t value) { pc_ = value; }
     bool halted() const { return halted_; }
     std::uint64_t steps_taken() const { return steps_taken_; }
     Privilege privilege() const { return privilege_; }
+
+    // Host-side, reachable from no instruction, and named the way MemoryV2::host_set_size is
+    // named and for the same reason: it stands up a machine state this build has no guest-visible
+    // path into. The only path to user level is trap_return, which is maize-420, so without this
+    // the privileged-operation guards on halt, port_in and port_out would be code that is written
+    // and never once executed, which is a guard nobody can distinguish from a missing one.
+    void host_set_privilege(Privilege level) { privilege_ = level; }
 
   private:
     StepResult execute(const DecodedV2& decoded);
@@ -99,6 +114,7 @@ class InterpreterV2 {
 
     MemoryV2& memory_;
     RegistersV2 registers_{};
+    DeviceSurfaceV2 devices_{};
     std::uint64_t pc_ = 0;
     std::uint64_t steps_taken_ = 0;
     bool halted_ = false;

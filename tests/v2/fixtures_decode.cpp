@@ -258,7 +258,11 @@ V2_FIXTURE(out_of_scope_opcodes_are_a_host_diagnostic) {
         {"sys #imm", op::kSysImm, {op::kSysImm, 0x2A}},
         {"trap_return", op::kTrapReturn, {op::kTrapReturn}},
         {"nop", op::kNop, {op::kNop}},
-        {"port_in", op::kPortIn, {op::kPortIn, 0x04, 0x05}},
+        // port_in and port_out USED to sit here and no longer do: maize-451 implements both, and
+        // the case they vacated is filled by another member of the same band rather than
+        // dropped, so the band's coverage does not thin out as it is implemented.
+        {"wait_for_interrupt", op::kWaitForInterrupt, {op::kWaitForInterrupt}},
+        {"tlb_invalidate_address", op::kTlbInvalidateAddress, {op::kTlbInvalidateAddress, 0x04}},
         {"csr_swap", op::kCsrSwap, {op::kCsrSwap, 0x04, 0x05, 0x00, 0x00}},
         {"float_add", 0xC8, {0xC8, 0x01, 0x02, 0x03}},
         {"unsigned_to_float.h", 0xF3, {0xF3, 0x01, 0x02}},

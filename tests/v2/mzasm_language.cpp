@@ -811,6 +811,69 @@ MZ_FIXTURE(mzvm_runs_what_mzasm_wrote) {
     }
 }
 
+MZ_FIXTURE(mzvm_prints_hello_world) {
+    // maize-451, and the milestone the whole card exists for: the SHIPPED asm/v2/hello.mzasm
+    // assembles with the SHIPPED mzasm and prints through the SHIPPED mzvm. Nothing here is
+    // hand-assembled and nothing is driven in process, because what is being tested is that the
+    // three artifacts a person would actually use agree with each other.
+    //
+    // The scratch tag is "hello" rather than "run" deliberately. ScratchDir builds its path as
+    // "mzasm-<tag>" verbatim, so two fixtures sharing a tag share a directory and delete each
+    // other's files under `ctest -j` (maize-444, which cost nine v2 fixtures).
+    ScratchDir scratch("hello");
+
+    // The shipped sources, copied into the scratch directory rather than assembled where they
+    // live: mzasm writes its image beside its input, and a test that leaves a build artifact in
+    // asm/v2 dirties the working tree of whoever ran it. The bytes assembled are the repository's
+    // own, which is what the criterion is about; only the directory differs, and the include
+    // resolves against the input file's directory either way.
+    std::string hello_source;
+    std::string devices_source;
+    const bool read_hello = read_file_text(repo_root() + "/asm/v2/hello.mzasm", hello_source);
+    const bool read_devices = read_file_text(repo_root() + "/asm/v2/devices.mzasm", devices_source);
+    MZ_CHECK(read_hello);
+    MZ_CHECK(read_devices);
+    if (!read_hello || !read_devices) {
+        return;
+    }
+    scratch.write("devices.mzasm", devices_source);
+    const std::string input = scratch.write("hello.mzasm", hello_source);
+
+    const RunResult assembled = run_mzasm({input});
+    MZ_CHECK_EQ(static_cast<std::uint64_t>(assembled.exit_code), 0u);
+    if (assembled.exit_code != 0) {
+        record_failure("mzasm rejected the shipped hello.mzasm:\n" + assembled.output);
+        return;
+    }
+    const std::string image = scratch.file("hello.mzi");
+    MZ_CHECK(file_exists(image));
+
+    const std::string mzvm = sibling_binary("mzvm");
+    MZ_CHECK(file_exists(mzvm));
+    if (!file_exists(mzvm)) {
+        return;
+    }
+
+    const RunResult ran = run_binary(mzvm, {image});
+    MZ_CHECK_EQ(static_cast<std::uint64_t>(ran.exit_code), 0u);
+
+    // The exact bytes, on standard output alone. Asserting the exit code would pass on a machine
+    // that printed nothing at all, and asserting the combined stream would pass on a machine that
+    // printed the greeting to stderr. This is the assertion the card's exit criterion names, and
+    // it is the reason RunResult carries the two streams separately.
+    const std::string expected = "hello, maize\n";
+    MZ_CHECK_TEXT(ran.standard_output, expected);
+
+    // mzvm's own diagnostics are on stderr, where a guest's output is not. Both halves are
+    // checked: the status line is somewhere, and it is not on stdout.
+    if (ran.standard_error.find("halted") == std::string::npos) {
+        record_failure("mzvm did not report halting on stderr:\n" + ran.standard_error);
+    }
+    if (ran.standard_output.find("halted") != std::string::npos) {
+        record_failure("a diagnostic reached standard output:\n" + ran.standard_output);
+    }
+}
+
 namespace {
 // The files that make up the v2 assembler, DISCOVERED rather than listed. A hand-maintained
 // list would be a rule generalizing over a set whose membership nothing enforces: correct on the

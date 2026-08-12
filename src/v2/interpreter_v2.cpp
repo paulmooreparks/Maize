@@ -853,8 +853,38 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
         return result;
     }
 
+    // port_in and port_out, $C2 and $C3 (maize-451). The port space is disjoint from memory and
+    // these two instructions are the only way to reach it.
+    //
+    // Both are privileged, and the check is written out for the same reason kHalt's is: the
+    // instruction has one, and it cannot fire in this build, because reset is supervisor and the
+    // only path to user level is trap_return, which is maize-420. The auxiliary word of cause 4
+    // is the offending opcode byte rather than a register number, since neither instruction
+    // names a CSR.
+    if (opcode == op::kPortIn || opcode == op::kPortOut) {
+        if (privilege_ != Privilege::Supervisor) {
+            return raise(decoded, cause::kPrivilegedOperation, 0, opcode);
+        }
+        if (opcode == op::kPortIn) {
+            // port_in rp rd. The port identifier is the low quarter-word of the port register
+            // and the upper 48 bits are ignored rather than checked, so a computed port number
+            // pays for no range test.
+            const std::uint16_t port =
+                static_cast<std::uint16_t>(registers_.read(decoded.reg[0]));
+            registers_.write(decoded.reg[1], devices_.port_in(port));
+        } else {
+            // port_out rs rp.
+            const std::uint64_t value = registers_.read(decoded.reg[0]);
+            const std::uint16_t port =
+                static_cast<std::uint16_t>(registers_.read(decoded.reg[1]));
+            devices_.port_out(port, value);
+        }
+        return advance(decoded);
+    }
+
     // Everything left is a real assigned opcode whose family this build does not implement:
-    // $B8..$C7 other than halt (maize-420), $C8..$F7 (maize-419), and $FF breakpoint. The two
+    // $B8..$C7 other than halt, port_in and port_out (maize-420), $C8..$F7 (maize-419), and $FF
+    // breakpoint. The two
     // guard bytes of Appendix A.14 reach "does not execute" by two different and both explicit
     // routes: $00 because it is reserved and the decoder stops on it, $FF because it is
     // assigned and lands here.

@@ -1,0 +1,32 @@
+; devices.mzasm (maize-451): one constant per port the device surface defines.
+;
+; This is the device-surface twin of csr.mzasm and it exists for the same reason. A port number
+; is a value rather than an address, so `extern` cannot carry one between modules and a shared
+; declarations file is the only mechanism that can (assembler.md, Inclusion). The toolchain ships
+; the file so that a program naming a port names it the way device-surface.md spells it.
+;
+; The numbers are absolute port numbers, not class-relative offsets, because `port_in` and
+; `port_out` take a port number. A class block sits at its class code times sixteen, and offsets
+; 0, 1 and 2 mean identification, status-and-acknowledge, and interrupt control in every class.
+;
+; Only the machine block and the console appear below. The other six classes are maize-421, and a
+; constant for a port this machine does not answer would read as an offer the machine cannot
+; keep.
+;
+; Include it as:
+;
+;     include "devices.mzasm"
+;
+; A relative path resolves against the directory of the file containing the directive, so a
+; source outside this directory writes the path that reaches here from its own location.
+
+; The machine block, ports $0000 through $000F. Not a device class: block zero describes the
+; machine itself.
+    constant machine_id          $0000   ; $4D32 in the low quarter-word, base version above it
+    constant machine_presence    $0001   ; bit N set when class N is present
+
+; The console class, ports $0010 through $001F.
+    constant console_id          $0010   ; class code 1 and the class contract version
+    constant console_status      $0011   ; read: status; write: acknowledge
+    constant console_control     $0012   ; bit 0 enables the console's interrupt line
+    constant console_data        $0013   ; read: the next input byte; write: one output byte

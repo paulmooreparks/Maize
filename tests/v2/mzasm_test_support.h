@@ -76,6 +76,15 @@ class ScratchDir {
 struct RunResult {
     int exit_code = 0;
     std::string output;  // standard output and standard error, together
+
+    // The two streams separately (maize-451). A fixture that asserts a binary said something
+    // reads `output` and does not care which stream carried it. A fixture that asserts a guest
+    // program's EXACT output cannot use `output` at all, because a combined stream is exact only
+    // for as long as nothing is ever written to the other one, which is a property no test can
+    // hold on to. mzvm keeps its own diagnostics on stderr and gives stdout to the guest, and
+    // `standard_output` is how a fixture reads that guarantee back.
+    std::string standard_output;
+    std::string standard_error;
 };
 
 RunResult run_mzasm(const std::vector<std::string>& arguments);

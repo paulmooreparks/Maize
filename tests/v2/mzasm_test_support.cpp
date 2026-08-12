@@ -128,16 +128,24 @@ RunResult run_mzasm(const std::vector<std::string>& arguments) {
 RunResult run_binary(const std::string& binary, const std::vector<std::string>& arguments) {
     std::error_code ec;
     static int sequence = 0;
-    const std::filesystem::path capture =
+    const int serial = ++sequence;
+    // The two streams are captured to two files rather than to one (maize-451), because a
+    // fixture asserting a guest program's exact standard output cannot separate the streams
+    // after the fact. `output` is then rebuilt by concatenation, so every fixture written
+    // against the combined field keeps working unchanged.
+    const std::filesystem::path capture_out =
         std::filesystem::temp_directory_path(ec) /
-        ("mzasm-run-output-" + std::to_string(++sequence) + ".txt");
+        ("mzasm-run-output-" + std::to_string(serial) + ".txt");
+    const std::filesystem::path capture_err =
+        std::filesystem::temp_directory_path(ec) /
+        ("mzasm-run-error-" + std::to_string(serial) + ".txt");
 
     std::ostringstream command;
     command << quote(binary);
     for (const std::string& argument : arguments) {
         command << " " << quote(argument);
     }
-    command << " > " << quote(capture.string()) << " 2>&1";
+    command << " > " << quote(capture_out.string()) << " 2> " << quote(capture_err.string());
 
     RunResult result;
     // system() hands the string to the host shell, which on Windows means cmd.exe; the whole
@@ -148,8 +156,11 @@ RunResult run_binary(const std::string& binary, const std::vector<std::string>& 
     const std::string full = command.str();
 #endif
     result.exit_code = std::system(full.c_str());
-    read_file_text(capture.string(), result.output);
-    std::filesystem::remove(capture, ec);
+    read_file_text(capture_out.string(), result.standard_output);
+    read_file_text(capture_err.string(), result.standard_error);
+    result.output = result.standard_output + result.standard_error;
+    std::filesystem::remove(capture_out, ec);
+    std::filesystem::remove(capture_err, ec);
     return result;
 }
 

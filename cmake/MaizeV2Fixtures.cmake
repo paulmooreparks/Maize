@@ -18,7 +18,8 @@ add_executable(mzvm_v2_fixtures
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_decode.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_integer.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_control.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_memory.cpp")
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_memory.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_devices.cpp")
 target_include_directories(mzvm_v2_fixtures PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src/v2"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2")
@@ -56,7 +57,16 @@ set(MAIZE_V2_FIXTURES
   bitfield_extract_and_insert
   block_memory_operand_validity
   block_memory_completion_and_overlap
-  block_memory_restart_invariant)
+  block_memory_restart_invariant
+  device_machine_block_identification_and_presence
+  device_unpopulated_ports_read_zero_and_discard_write
+  device_console_reset_state
+  device_console_output_accumulates_bytes
+  device_console_input_is_permanently_absent
+  device_console_acknowledge_clears_transient_bits_only
+  device_interrupt_control_reads_back_what_it_stores
+  port_instructions_reach_the_port_space
+  port_in_port_out_privileged)
 
 foreach(_fixture ${MAIZE_V2_FIXTURES})
   add_test(NAME "v2_${_fixture}" COMMAND mzvm_v2_fixtures "${_fixture}")
@@ -113,6 +123,7 @@ set(MAIZE_MZASM_FIXTURES
   include_paths_normalize_identically_at_both_sites
   flat_output_takes_the_mzi_suffix
   mzvm_runs_what_mzasm_wrote
+  mzvm_prints_hello_world
   nothing_in_the_v2_assembler_names_the_v1_suffix
   the_task_scanner_stops_at_the_next_task)
 

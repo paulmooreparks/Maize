@@ -1,0 +1,39 @@
+; hello.mzasm (maize-451): the first Maize v2 program a person can watch run.
+;
+; It writes a greeting one byte at a time to the console's data port and halts. That is the
+; whole program, and it is deliberately the shortest straight line from the reset address to an
+; observable byte: no CSR, no stack, no call, no trap, no paging.
+;
+; Flat mode, so the assembler emits a directly loadable image rather than an object file
+; (assembler.md: `origin` and `section` are mutually exclusive, and `origin` is the flat mode).
+; The image loads at $1000, which is both mzvm's default load address and boot.md's reset
+; address, so the two tools meet with no argument negotiation:
+;
+;     mzasm hello.mzasm
+;     mzvm hello.mzi
+;
+; The greeting sits after the `halt` so the machine never fetches a character as an instruction.
+; Flat mode has one address space and no separate code and data placement, so the ordering is the
+; only thing keeping the two apart, and it is worth saying out loud rather than leaving to a
+; reader to notice.
+
+    include "devices.mzasm"
+
+    origin $1000
+
+start:
+    pc_add message r2               ; the greeting's address, computed position-independently
+    move.zb console_data r3         ; the port number, which fits in eight bits
+
+emit_byte:
+    load.zb @r2 r4                  ; the next character
+    branch_eq r4 r0 done            ; r0 supplies the zero the terminator is compared against
+    port_out r4 r3                  ; the low byte of r4 leaves the console
+    add r2 #1 r2
+    jump emit_byte
+
+done:
+    halt
+
+message:
+    data_string_zero "hello, maize\n"

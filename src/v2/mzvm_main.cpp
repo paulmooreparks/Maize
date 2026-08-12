@@ -4,9 +4,15 @@
 // It loads a flat image of instruction bytes into bare-mode physical memory at a chosen
 // address, sets the program counter there, and runs until the machine halts or stops.
 //
-// There is no loader, no boot-information block, no device surface and no console here yet:
-// those arrive with the rest of the machine. What exists is enough to run a program that ends
-// in `halt` and to report where it got to.
+// There is no loader and no boot-information block here yet: those arrive with the rest of the
+// machine. What exists is enough to run a program that ends in `halt`, to report where it got
+// to, and, since maize-451, to emit whatever that program wrote to the console.
+//
+// STDOUT BELONGS TO THE GUEST. Every diagnostic this binary produces about the run itself goes
+// to stderr, and the only thing written to stdout by default is the bytes the guest's console
+// emitted. A fixture can therefore assert the guest's exact output rather than searching for it
+// inside a status line, and a shell pipeline gets the program's output and nothing else.
+// `--registers` is the one exception and is opt-in.
 
 #include <cinttypes>
 #include <cstdint>
@@ -16,10 +22,40 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 #include "interpreter_v2.h"
 #include "memory_v2.h"
 
 namespace {
+
+// Write the guest's console bytes to standard output with no transformation of any kind.
+//
+// On Windows a stream opened in text mode translates a line feed into a carriage return and a
+// line feed on the way out, so a guest that emitted one byte would have two arrive. That is not a
+// cosmetic difference: the console's contract is a byte-at-a-time output stream, and a machine
+// that silently doubles a byte is not delivering the stream the guest wrote. _setmode with
+// _O_BINARY is the documented CRT call that turns the translation off, and the mode is restored
+// afterwards so the `--registers` dump keeps the host's line-ending convention.
+void write_console_bytes(const std::vector<std::uint8_t>& bytes) {
+    if (bytes.empty()) {
+        return;
+    }
+#ifdef _WIN32
+    std::fflush(stdout);
+    const int previous_mode = _setmode(_fileno(stdout), _O_BINARY);
+#endif
+    std::fwrite(bytes.data(), 1, bytes.size(), stdout);
+    std::fflush(stdout);
+#ifdef _WIN32
+    if (previous_mode != -1) {
+        _setmode(_fileno(stdout), previous_mode);
+    }
+#endif
+}
 
 constexpr std::size_t kDefaultMemoryBytes = 1u << 20;  // 1 MiB
 constexpr std::uint64_t kDefaultLoadAddress = 0x1000;
@@ -39,8 +75,10 @@ void print_usage(std::FILE* stream) {
                  "  --registers        print the register file when the machine stops\n"
                  "  -h, --help         print this message\n"
                  "\n"
-                 "The machine runs with paging off and no devices attached. Loading a boot image,\n"
-                 "floating point, system instructions and device I/O are not supported yet.\n");
+                 "The machine runs with paging off. It carries the machine block at port $0000\n"
+                 "and the console class at ports $0010 through $001F, and no other device class,\n"
+                 "so what the guest writes to the console port reaches standard output. Loading a\n"
+                 "boot image, floating point and system instructions are not supported yet.\n");
 }
 
 bool parse_number(const char* text, std::uint64_t& out) {
@@ -156,11 +194,17 @@ int main(int argc, char** argv) {
     maize::v2::InterpreterV2 machine(memory, start_given ? start_address : load_address);
     const maize::v2::StepResult result = machine.run(max_steps);
 
+    // The guest's console output, whatever the machine's stopping reason: bytes the guest emitted
+    // before a trap or a step limit genuinely left the console, and swallowing them would hide
+    // the output of exactly the run a person most wants to see. Written as raw bytes rather than
+    // through printf, so an embedded zero byte or a non-UTF-8 byte reaches stdout unreinterpreted.
+    write_console_bytes(machine.device_surface().console_output());
+
     int exit_code = 0;
     switch (result.status) {
         case maize::v2::StepStatus::Halted:
-            std::printf("halted at $%016" PRIX64 " after %" PRIu64 " instructions\n", result.pc,
-                        machine.steps_taken());
+            std::fprintf(stderr, "halted at $%016" PRIX64 " after %" PRIu64 " instructions\n",
+                         result.pc, machine.steps_taken());
             break;
         case maize::v2::StepStatus::Trapped:
             std::fprintf(stderr,
