@@ -152,6 +152,18 @@ Alternatives considered and rejected: a hardware-banked register swapped on trap
 
 **Status: RATIFIED. Operator, 2026-08-12, during the Phase 4 coherence read.** An extension allocates at most one opcode page rather than exactly one. An extension that adds no instructions, of which a purely CSR-carried extension such as the anticipated `meter` is the natural case, allocates no escape byte, and its boot-information extension-list entry carries the no-page sentinel the memory-model chapter already defines. The feature bitmap allocates one bit per ratified extension, not per allocated page. D10's original sentence describing each extension as having "an allocated opcode page" describes the common case and is not a requirement; this ruling records that reading. The grounds: the escape pages are a hard budget of seven, and spending one on an extension with no instructions wastes the scarcest resource in the architecture.
 
+## Toolchain naming, and the rule for editing ratified text
+
+**Status: RULED. Operator, 2026-08-12, after ratification.** The v2 assembler is `mzasm`, a new binary beside v1's `mazm`, exactly as `mzvm` sits beside `maize`. The linker, disassembler and compiler driver carry over to v2 under their existing names, `mzld`, `mzdis` and `mzcc`, which is possible because v1 becomes a museum piece preserved on the `v1` branch rather than a machine whose toolchain must keep building from `dev`. The coexistence problem therefore needed a new name only twice. The conventional suffix for v2 assembly source is `.mzasm`; v1 sources keep `.mazm`, and existing `.mazm` files are not renamed.
+
+That suffix sentence lives in the assembler chapter, which was ratified and frozen earlier the same day, so the edit needed a rule rather than a judgement call, and the rule is recorded here because it governs every future edit to ratified text.
+
+**The freeze binds what a conformance test can observe.** That is not a softening of the freeze; it is the specification's own drafting rule, which admits a claim into a normative chapter only if a program can observe it through architectural state and would fail on a machine that got it wrong. The suffix sentence fails that test by construction, and the chapter says so itself in the next sentence: the assembler attaches no meaning to the suffix. Changing it changes nothing an implementer, a binary, or a conformance test could ever detect, so it was edited directly and recorded here, with no version component and no erratum.
+
+The converse case is the one that keeps the freeze honest. Anything a conformance binary could tell the difference about goes through the erratum mechanism, whatever its size and whether or not anything has been released. The first real instance is already queued: the trap-model chapter fixes cause 1 subcode 1 for an invalid bitfield immediate but does not say which of the two immediates the auxiliary word carries when the pair is at fault, which a conformance test must know in order to assert the cause word at all. That one is an erratum, and it waits on the card that settles where an erratum's version component is recorded.
+
+The test is therefore not how small a change feels, nor whether the specification has shipped to anyone. It is whether a conformance binary could tell.
+
 ## Interactions ledger
 
 Ratifying D3 as flagless unlocks D7's register-condition select, D8's minimal frame, and the D11 vocabulary. D2 and D1 together fix the operand byte, which D5, D6, and D7 encode against. D8 and D12 jointly define the CSR space, and D13 rides on both. D4 threads through D8 (which registers stay live across a syscall trap). D10's opcode pages depend on D1's escape structure. D11 depends on D3 for spellings and can otherwise ratify independently.

@@ -30,8 +30,10 @@ column convention. The layout this specification uses throughout, and the one th
 emits, places a label definition at column one and indents every other statement by four
 spaces.
 
-The conventional file suffix for assembly source is `.mazm`, carried over from v1. The
-assembler reads whatever path it is given and attaches no meaning to the suffix.
+The conventional file suffix for assembly source is `.mzasm`. Maize v1 assembly uses `.mazm`,
+and the two suffixes exist so that a reader, a build script, and an editor can tell the two
+machines' sources apart without opening them. The assembler reads whatever path it is given
+and attaches no meaning to the suffix.
 
 ## Lexical structure
 
