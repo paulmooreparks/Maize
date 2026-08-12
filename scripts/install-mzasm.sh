@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build the Maize toolchain (maize, maizeg, mzvm, mzvmg, mazm, mzld, mzdis) and install stable
+# Build the Maize toolchain (maize, maizeg, mzvm, mzvmg, mazm, mzasm, mzld, mzdis) and install stable
 # copies into ~/bin (Linux/WSL/macOS).
-# Counterpart of install-mazm.ps1; wired to the default build task via
+# Counterpart of install-mzasm.ps1; wired to the default build task via
 # .vscode/tasks.json. Never prompts.
 
 set -euo pipefail
@@ -22,7 +22,7 @@ fi
 # present; otherwise build headless rather than failing the task on a server host.
 # MAIZE_DISPLAY is passed EXPLICITLY either way: a bare configure would inherit a
 # stale MAIZE_DISPLAY=ON from a prior CMakeCache and then hard-fail find_package(SDL2)
-# once system SDL2 went missing. (On Windows install-mazm.ps1 instead auto-fetches a
+# once system SDL2 went missing. (On Windows install-mzasm.ps1 instead auto-fetches a
 # vendored SDL2; on Linux/WSL, SDL2 comes from the system package manager.)
 if command -v sdl2-config >/dev/null 2>&1 || pkg-config --exists sdl2 2>/dev/null; then
     display_args=(-DMAIZE_DISPLAY=ON)
@@ -37,16 +37,18 @@ fi
 echo "Configuring preset '$PRESET'..."
 cmake --preset "$PRESET" "${display_args[@]}"
 
-echo "Building maize, maizeg, mzvm, mzvmg, mazm, mzld, mzdis, mzcc ($PRESET)..."
-cmake --build "$BUILD_DIR" --target maize maizeg mzvm mzvmg mazm mzld mzdis mzcc
+echo "Building maize, maizeg, mzvm, mzvmg, mazm, mzasm, mzld, mzdis, mzcc ($PRESET)..."
+cmake --build "$BUILD_DIR" --target maize maizeg mzvm mzvmg mazm mzasm mzld mzdis mzcc
 
 mkdir -p "$INSTALL_DIR"
 # maize-217/230: `maize` is the console-subsystem VM (terminal I/O); `maizeg` is the graphical
 # one (SDL window). Both are installed; console programs run under maize, the screen under maizeg.
 # maize-278: mzcc is the compiled C guest-build driver (the native cc-maize.sh replacement).
-# maize-418: mzvm and mzvmg are the Maize v2 machine, a second VM beside v1's maize/maizeg; the
-# tools (mazm, mzld, mzdis) are shared across both machines and keep their names.
-for tool in maize maizeg mzvm mzvmg mazm mzld mzdis mzcc; do
+# maize-418: mzvm and mzvmg are the Maize v2 machine, a second VM beside v1's maize/maizeg.
+# maize-422 (D-1): mzasm is the v2 assembler, a new binary beside v1's mazm rather than a rename
+# of it, so both machines stay assemblable while v1 is still buildable; mzld and mzdis carry
+# their names forward to v2.
+for tool in maize maizeg mzvm mzvmg mazm mzasm mzld mzdis mzcc; do
     cp "$BUILD_DIR/$tool" "$INSTALL_DIR/$tool"
     # cp preserves the source artifact's mtime, so an up-to-date incremental
     # reinstall would leave an old timestamp on the installed copy and look
@@ -108,4 +110,4 @@ if [ -z "$revision" ]; then
     revision="unknown"
 fi
 
-echo "Installed maize, maizeg, mzvm, mzvmg, mazm, mzld, mzdis, mzcc to $INSTALL_DIR (built from $revision)."
+echo "Installed maize, maizeg, mzvm, mzvmg, mazm, mzasm, mzld, mzdis, mzcc to $INSTALL_DIR (built from $revision)."

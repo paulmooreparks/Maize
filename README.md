@@ -248,7 +248,7 @@ once the pinned version is already present.
 A plain clang release build interprets ~26-28% slower than the same source built with
 gcc/Linux (host codegen quality on the interpreter loop, not ISA flags). Maize closes
 that gap with Clang PGO (Profile-Guided Optimization) instead of switching
-compilers: `scripts/install-mazm.ps1` (and the Ctrl+Shift+B build task) apply a
+compilers: `scripts/install-mzasm.ps1` (and the Ctrl+Shift+B build task) apply a
 profile committed at `scripts/pgo-profiles/windows-llvm-mingw-release/` automatically,
 so the shipped `maize.exe`/`maizeg.exe` are profile-guided with no extra step on a
 fresh clone. See `CMakeLists.txt`'s `MAIZE_PGO` option and `scripts/build-pgo.ps1` if
@@ -931,7 +931,7 @@ content-addressed object cache so an unchanged translation unit is not recompile
 
 The whole pipeline builds and runs natively on Windows, no WSL and no MSYS2 required:
 `mzcc` itself is a native binary, and the one piece it still shells out for is building
-the vendored compiler. `mzcc --build` (and `scripts/install-mazm.ps1`, which calls the
+the vendored compiler. `mzcc --build` (and `scripts/install-mzasm.ps1`, which calls the
 same path) runs `scripts/build-toolchain.sh` to compile `cproc-qbe`/`qbe` directly with
 the vendored llvm-mingw clang, skipping only the POSIX-only cproc driver binary (which
 `mzcc` never uses anyway). That toolchain build is the sole place a POSIX shell is

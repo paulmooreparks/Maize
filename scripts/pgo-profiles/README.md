@@ -1,7 +1,7 @@
 # scripts/pgo-profiles: committed Clang PGO profiles (maize-259)
 
 Each subdirectory here is named after the CMake preset it profiles and holds one
-`default.profdata`: the merged, IR-based Clang profile `install-mazm.ps1` feeds to
+`default.profdata`: the merged, IR-based Clang profile `install-mzasm.ps1` feeds to
 `-DMAIZE_PGO=use` by default. This closes the ~26-28% Windows clang-vs-gcc
 interpreter gap (see CMakeLists.txt's `MAIZE_PGO` option): a fresh clone gets the
 profile-guided binary with no training step, because the profile ships in the repo

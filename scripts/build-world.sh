@@ -2,7 +2,7 @@
 # build-world.sh (maize-258): build the whole Maize world with one command.
 #
 # Composes the existing per-piece build scripts, in order: submodule init, native
-# binaries + C toolchain (install-mazm.sh), quesOS (os/quesos/build-quesos.sh), the
+# binaries + C toolchain (install-mzasm.sh), quesOS (os/quesos/build-quesos.sh), the
 # wave-1 userland (userland/build-userland.sh), and the demos (demos/build-demos.sh).
 # No build logic is duplicated here; this script only sequences the existing entry
 # points, checks each one's exit code, and prints a stage banner plus a final
@@ -10,7 +10,7 @@
 #
 # One preset is pinned end to end and passed explicitly to every composed call, so a
 # bare invocation is always internally coherent: every stage resolves tools from the
-# SAME build directory install-mazm.sh just populated, even though the composed
+# SAME build directory install-mzasm.sh just populated, even though the composed
 # scripts' own standalone defaults differ by platform (build-quesos.sh /
 # build-userland.sh / build-demos.sh each resolve their own per-platform default
 # preset independently when --preset is omitted).
@@ -18,7 +18,7 @@
 # This is the documented "I pulled, now what" answer; run it after a fresh clone or
 # pull to build everything in one call.
 #
-# Stage [2/5] (install-mazm.sh) is invoked through an explicit interpreter (bash,
+# Stage [2/5] (install-mzasm.sh) is invoked through an explicit interpreter (bash,
 # which it is specific to) rather than executed directly by path, matching
 # scripts/run-ctest.sh's own established call shape. This is belt-and-suspenders
 # alongside the script's own git-tracked executable bit: a future re-add at mode
@@ -85,18 +85,18 @@ else
     exit "$rc"
 fi
 
-echo "=== [2/5] native binaries + C toolchain (install-mazm.sh) ==="
-if bash "${SCRIPT_DIR}/install-mazm.sh" "${PRESET}" "${INSTALL_DIR}"; then
+echo "=== [2/5] native binaries + C toolchain (install-mzasm.sh) ==="
+if bash "${SCRIPT_DIR}/install-mzasm.sh" "${PRESET}" "${INSTALL_DIR}"; then
     :
 else
     rc=$?
-    echo "build-world.sh: stage [2/5] 'native binaries + C toolchain' failed (exit ${rc}). See install-mazm.sh's own error above; no later stage ran." >&2
+    echo "build-world.sh: stage [2/5] 'native binaries + C toolchain' failed (exit ${rc}). See install-mzasm.sh's own error above; no later stage ran." >&2
     exit "$rc"
 fi
 
 MZCC_EXE="${INSTALL_DIR}/mzcc"
 if [ ! -x "${MZCC_EXE}" ]; then
-    echo "build-world.sh: ${MZCC_EXE} not found or not executable after stage [2/5]; install-mazm.sh should have installed it." >&2
+    echo "build-world.sh: ${MZCC_EXE} not found or not executable after stage [2/5]; install-mzasm.sh should have installed it." >&2
     exit 2
 fi
 

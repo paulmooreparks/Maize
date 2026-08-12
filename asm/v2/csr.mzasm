@@ -1,0 +1,43 @@
+; csr.mzasm (maize-422, decision D-7): one constant per control and status register.
+;
+; assembler.md's Inclusion section states why this file exists and why it has to be a file
+; rather than a linkable module. A constant is not a linkable symbol: control-and-status-register
+; numbers are values rather than addresses, so `extern` cannot carry them between modules and a
+; shared declarations file is the only mechanism that can. The specification's own examples,
+; which write `csr_read fcsr r5` and `csr_write r1 trap_vector_base`, assume this file is
+; included, and it is the file the toolchain ships to make them assemble.
+;
+; The names are privileged-architecture.md's own, verbatim, and the numbers are that chapter's
+; CSR table. Nothing here is abbreviated or renamed for convenience: a second spelling of a
+; register's name is exactly the kind of thing the one-canonical-name rule exists to prevent.
+;
+; Include it as:
+;
+;     include "csr.mzasm"
+;
+; A relative path resolves against the directory of the file containing the directive, so a
+; source outside this directory writes the path that reaches here from its own location.
+
+; User-level registers.
+    constant fcsr                $0000   ; rounding mode and the sticky exception flags
+    constant feature_bitmap      $2000   ; one bit per extension this machine implements
+
+; Supervisor-level read-write registers.
+    constant status              $4000   ; privilege level and the external-interrupt enable
+    constant trap_stack          $4001   ; the full-descending stack trap frames are pushed to
+    constant trap_vector_base    $4002   ; virtual address of the 256-entry vector table
+    constant paging_root         $4003   ; translation mode and the root page table's address
+    constant interrupt_enable0   $4004   ; enables for causes 0 through 63
+    constant interrupt_enable1   $4005   ; enables for causes 64 through 127
+    constant interrupt_enable2   $4006   ; enables for causes 128 through 191
+    constant interrupt_enable3   $4007   ; enables for causes 192 through 255
+    constant syscall_provider    $4008   ; bit 0 selects the syscall provider
+    constant scratch             $4009   ; the trap-entry register bootstrap's scratch word
+
+; Supervisor-level read-only registers.
+    constant interrupt_pending0  $6000   ; pending bits for causes 0 through 63
+    constant interrupt_pending1  $6001   ; pending bits for causes 64 through 127
+    constant interrupt_pending2  $6002   ; pending bits for causes 128 through 191
+    constant interrupt_pending3  $6003   ; pending bits for causes 192 through 255
+    constant halt_cause          $6004   ; why the machine stopped
+    constant boot_info           $6005   ; physical address of the boot-information block

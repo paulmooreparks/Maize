@@ -302,7 +302,7 @@ function Invoke-Test($test) {
     # where the redirected content lands); pwsh 7 is unaffected either way.
     # Relax it for exactly this invocation, then restore immediately and keep
     # relying on $LASTEXITCODE plus the captured $mazmLog content, unchanged, for
-    # pass/fail (see scripts/install-mazm.ps1:90-98 for the same idiom).
+    # pass/fail (see scripts/install-mzasm.ps1:90-98 for the same idiom).
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     & $MazmExe $asmPath *> $mazmLog
@@ -345,7 +345,7 @@ function Invoke-Test($test) {
     # redirected native stderr write into a terminating NativeCommandError even though
     # the 2> redirect captures it fine. Relax it for exactly this invocation, then
     # restore, and keep relying on $LASTEXITCODE plus the captured stdout (same idiom
-    # as the mazm call above and scripts/install-mazm.ps1:90-98).
+    # as the mazm call above and scripts/install-mzasm.ps1:90-98).
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     # maize-221: pipe $null so the child gets a non-interactive (closed) stdin; the

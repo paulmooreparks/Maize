@@ -87,7 +87,7 @@ by `scripts/bootstrap-sdl2.ps1` (the SDL2 counterpart of
 |------|-----------------------------------------|------------------------------------------|----------------|----------------|---------|
 | SDL2 | `.toolchains/SDL2/x86_64-w64-mingw32/`  | github.com/libsdl-org/SDL (mingw devel)  | `2.32.8`       | `2f0a74c2…7249e2` (`SDL2-devel-2.32.8-mingw.zip`) | zlib |
 
-`scripts/install-mazm.ps1` auto-invokes `bootstrap-sdl2.ps1` when the SDL2 dir is
+`scripts/install-mzasm.ps1` auto-invokes `bootstrap-sdl2.ps1` when the SDL2 dir is
 missing and refuses to silently degrade to a headless maize (pass `-Headless` to opt
 out). This closes the recurring "install suddenly breaks" trap: previously SDL2 was a
 manually-placed, unpinned, undocumented directory with no fetch script, so when it
@@ -127,7 +127,7 @@ asm/ PASS/FAIL harness (`scripts/run-tests.{sh,ps1}`).
   and its `configure`/`config.h` step entirely (grep confirms `config.h` is
   `#include`d only by `driver.c`; nothing else in cproc needs it). No MSYS2, no
   WSL. `build-toolchain.sh` is invoked by `mzcc --build` and by
-  `scripts/install-mazm.ps1`; the compiled `mzcc` binary then drives the C
+  `scripts/install-mzasm.ps1`; the compiled `mzcc` binary then drives the C
   compile pipeline itself, natively, with no further shell involvement.
 - Windows, MSYS2 fallback: still supported when `make` is present on PATH (the
   `msys2/setup-msys2` action, `MSYS` msystem, `gcc` + `make`) via the original

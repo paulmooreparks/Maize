@@ -24,7 +24,7 @@
     script runs it on native Windows).
 
     On success this overwrites scripts/pgo-profiles/<Preset>/default.profdata, the
-    profile install-mazm.ps1 ships by default. Review the diff and commit it
+    profile install-mzasm.ps1 ships by default. Review the diff and commit it
     deliberately; this script does not commit for you.
 
 .PARAMETER Preset
@@ -64,7 +64,7 @@ $ShipDir   = Join-Path $RepoRoot "scripts/pgo-profiles/$Preset"
 if (-not (Test-Path $BenchImage)) { Write-Error "BenchImage not found: $BenchImage" -ErrorAction Continue; exit 2 }
 if (-not (Test-Path $Wad))        { Write-Error "Wad not found: $Wad" -ErrorAction Continue; exit 2 }
 
-# --- Resolve cmake the same way install-mazm.ps1 / run-tests.ps1 do ---------------
+# --- Resolve cmake the same way install-mzasm.ps1 / run-tests.ps1 do ---------------
 $cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
 if ($cmakeCmd) { $Cmake = $cmakeCmd.Source }
 elseif (Test-Path 'C:\Program Files\CMake\bin\cmake.exe') { $Cmake = 'C:\Program Files\CMake\bin\cmake.exe' }
@@ -79,7 +79,7 @@ if (-not (Test-Path $LlvmProfdata)) {
 
 # cmake cache vars land on a compiler command line verbatim (MAIZE_PGO_DIR feeds
 # clang's -fprofile-generate=/-fprofile-use=); normalize to forward slashes the
-# same way install-mazm.ps1's SDL2_DIR/MAIZE_PGO_DIR args do, so a native
+# same way install-mzasm.ps1's SDL2_DIR/MAIZE_PGO_DIR args do, so a native
 # backslash path is never handed to clang on the command line.
 $PgoDirArg = ($PgoDir -replace '\\', '/')
 

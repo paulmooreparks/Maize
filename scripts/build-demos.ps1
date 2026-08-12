@@ -22,7 +22,7 @@
     %USERPROFILE%\.maize\rootfs\home\user\doom\doom1.wad or via a mount at run time.
 
     Requires Git for Windows (ships Git Bash) with the Maize C cross-toolchain
-    provisioned (run scripts\install-mazm.ps1 once to set that up). If Git Bash is not
+    provisioned (run scripts\install-mzasm.ps1 once to set that up). If Git Bash is not
     found the script stops with a clear message.
 
 .PARAMETER Preset
@@ -83,7 +83,7 @@ $RootMissingBefore = (-not $OutOverridden) -and (-not (Test-Path $RootDir))
 
 # Git Bash is required: the cproc/QBE C toolchain is POSIX-only. That reason stands on
 # its own, and it is why maize-258 repointed this forwarder from WSL to Git Bash
-# (mzcc.cmd's already-shipped pattern, install-mazm.ps1:250-292). maize-258 gave a
+# (mzcc.cmd's already-shipped pattern, install-mzasm.ps1:250-292). maize-258 gave a
 # second reason that has since been retired: back then demos/build-demos.sh re-rooted a
 # /mnt/* repo into a WSL-native mirror that excludes /build, so cc-maize.sh could not
 # find mazm inside it, and a Git-Bash-resolved repo root (never /mnt/*) routed around

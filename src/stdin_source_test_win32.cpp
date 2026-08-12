@@ -5,8 +5,8 @@
  * handles it creates itself, with a counting stub for the raise callback, so the pipe
  * watcher's timing and the forced raise are measured rather than reasoned about.
  *
- * A test, not a deliverable: deliberately absent from scripts/install-mazm.ps1,
- * scripts/install-mazm.sh, the Ctrl+Shift+B task and the MAIZE_SANITIZE list, for the same
+ * A test, not a deliverable: deliberately absent from scripts/install-mzasm.ps1,
+ * scripts/install-mzasm.sh, the Ctrl+Shift+B task and the MAIZE_SANITIZE list, for the same
  * reason console_probe_test is. The console loop's own branches need a real console and are
  * covered by the interactive checks instead; what is here is everything a pipe handle can
  * reach, which is the whole of the pipe watcher plus the forced raise plus the join.

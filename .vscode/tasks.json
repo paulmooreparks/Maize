@@ -78,6 +78,57 @@
             }
         },
         {
+            "label": "Assemble current .mzasm",
+            "detail": "Run mzasm on the active file; errors land in the Problems panel and are click-to-navigate. This is the Maize v2 assembler, beside the v1 pair above rather than replacing them: two machines, two tools, no inference from the file suffix.",
+            "type": "shell",
+            "command": "mzasm",
+            "args": [
+                "${file}"
+            ],
+            "group": "build",
+            "presentation": {
+                "clear": true,
+                "reveal": "always"
+            },
+            "problemMatcher": {
+                "owner": "mzasm-task",
+                "source": "mzasm",
+                "fileLocation": "absolute",
+                "pattern": {
+                    "regexp": "^mzasm: (.+?):(\\d+): error: (.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "message": 3
+                }
+            }
+        },
+        {
+            "label": "Check current .mzasm (no output file)",
+            "detail": "mzasm --check on the active file: same clickable errors, zero filesystem effects (nothing written, nothing removed).",
+            "type": "shell",
+            "command": "mzasm",
+            "args": [
+                "--check",
+                "${file}"
+            ],
+            "group": "build",
+            "presentation": {
+                "clear": true,
+                "reveal": "always"
+            },
+            "problemMatcher": {
+                "owner": "mzasm-task",
+                "source": "mzasm",
+                "fileLocation": "absolute",
+                "pattern": {
+                    "regexp": "^mzasm: (.+?):(\\d+): error: (.+)$",
+                    "file": 1,
+                    "line": 2,
+                    "message": 3
+                }
+            }
+        },
+        {
             "label": "Build everything (build-world)",
             "detail": "Build the native binaries + tools, the C cross toolchain, quesOS, the wave-1 userland, and the demos, all in one call. Slower than the binaries-only install task below; run it after a fresh clone or pull. On Windows this runs natively via Git Bash, no WSL involved.",
             "type": "shell",
@@ -101,8 +152,8 @@
             "problemMatcher": []
         },
         {
-            "label": "Install maize + maizeg + mzvm + mzvmg + mazm + mzld + mzdis to ~/bin",
-            "detail": "Build maize (console) + maizeg (graphical/SDL), the Maize v2 machine mzvm + mzvmg, and mazm, mzld, and mzdis, and copy them to the user bin directory so editors find stable copies on PATH, then refresh the C cross-toolchain (cproc/qbe + Maize target) so mzcc stays current. Fast binaries-only loop; use Build everything (build-world) for the full \"I pulled\" rebuild. On Windows this runs natively via Git Bash, no WSL involved.",
+            "label": "Install maize + maizeg + mzvm + mzvmg + mazm + mzasm + mzld + mzdis to ~/bin",
+            "detail": "Build maize (console) + maizeg (graphical/SDL), the Maize v2 machine mzvm + mzvmg, and mazm (v1 assembler), mzasm (v2 assembler), mzld, and mzdis, and copy them to the user bin directory so editors find stable copies on PATH, then refresh the C cross-toolchain (cproc/qbe + Maize target) so mzcc stays current. Fast binaries-only loop; use Build everything (build-world) for the full \"I pulled\" rebuild. On Windows this runs natively via Git Bash, no WSL involved.",
             "type": "shell",
             "group": "build",
             "windows": {
@@ -112,14 +163,14 @@
                     "-ExecutionPolicy",
                     "Bypass",
                     "-File",
-                    "${workspaceFolder}/scripts/install-mazm.ps1"
+                    "${workspaceFolder}/scripts/install-mzasm.ps1"
                 ]
             },
             "linux": {
-                "command": "${workspaceFolder}/scripts/install-mazm.sh"
+                "command": "${workspaceFolder}/scripts/install-mzasm.sh"
             },
             "osx": {
-                "command": "${workspaceFolder}/scripts/install-mazm.sh"
+                "command": "${workspaceFolder}/scripts/install-mzasm.sh"
             },
             "problemMatcher": []
         }

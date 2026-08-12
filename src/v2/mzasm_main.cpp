@@ -10,7 +10,7 @@
 // previously good binary behind looking current; that is v1 mazm's own rule and the reasoning
 // carries over unchanged.
 //
-// D-9 fixes the flat-mode suffix at .mzi. v1 keeps .mzb. Two machines whose images are
+// D-9 fixes the flat-mode suffix at .mzi, and v1 keeps its own. Two machines whose images are
 // indistinguishable by name invite feeding one to the other, and neither loader inspects a file
 // before loading it, so the naming is the only place a reader catches the mistake. A suffix is a
 // convention rather than a check, and this buys a naming-level mistake in place of a

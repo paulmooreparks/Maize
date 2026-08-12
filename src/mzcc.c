@@ -1992,17 +1992,17 @@ int resolve_toolchain(const char *preset) {
     char *mazm_base = path_join(BUILD_DIR, "mazm");
     MAZM = resolve_exe(mazm_base);
     free(mazm_base);
-    if (!MAZM) { fprintf(stderr, "mzcc: mazm not found in %s; run scripts/install-mazm.sh (or run-tests.sh) first.\n", BUILD_DIR); return 2; }
+    if (!MAZM) { fprintf(stderr, "mzcc: mazm not found in %s; run scripts/install-mzasm.sh (or run-tests.sh) first.\n", BUILD_DIR); return 2; }
     free(MAIZE);
     char *maize_base = path_join(BUILD_DIR, "maize");
     MAIZE = resolve_exe(maize_base);
     free(maize_base);
-    if (!MAIZE) { fprintf(stderr, "mzcc: maize not found in %s; run scripts/install-mazm.sh (or run-tests.sh) first.\n", BUILD_DIR); return 2; }
+    if (!MAIZE) { fprintf(stderr, "mzcc: maize not found in %s; run scripts/install-mzasm.sh (or run-tests.sh) first.\n", BUILD_DIR); return 2; }
     free(MZLD);
     char *mzld_base = path_join(BUILD_DIR, "mzld");
     MZLD = resolve_exe(mzld_base);
     free(mzld_base);
-    if (!MZLD) { fprintf(stderr, "mzcc: mzld not found in %s; run scripts/install-mazm.sh (or run-tests.sh) first.\n", BUILD_DIR); return 2; }
+    if (!MZLD) { fprintf(stderr, "mzcc: mzld not found in %s; run scripts/install-mzasm.sh (or run-tests.sh) first.\n", BUILD_DIR); return 2; }
 
     /* Preprocessor discovery (cc-maize.sh:314-331, decision D4): $CC, else cc,
        else gcc, else (Windows) the vendored llvm-mingw clang. The section-3c

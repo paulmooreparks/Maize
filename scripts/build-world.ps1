@@ -7,14 +7,14 @@
 
 .DESCRIPTION
     Composes the existing per-piece build scripts, in order: submodule init, native
-    binaries + C toolchain (install-mazm.ps1), quesOS (build-quesos.ps1), the wave-1
+    binaries + C toolchain (install-mzasm.ps1), quesOS (build-quesos.ps1), the wave-1
     userland (build-userland.ps1), and the demos (build-demos.ps1). No build logic is
     duplicated here; this script only sequences the existing entry points, checks each
     one's exit code, and prints a stage banner plus a final artifact/timing summary.
 
     One preset is pinned end to end and passed explicitly to every composed call, so a
     bare invocation is always internally coherent: every stage resolves tools from the
-    SAME build directory install-mazm.ps1 just populated, even though the composed
+    SAME build directory install-mzasm.ps1 just populated, even though the composed
     scripts' own standalone defaults differ by platform.
 
     This is the documented "I pulled, now what" answer; run it after a fresh clone or
@@ -41,10 +41,10 @@
     default (os\quesos\quesos.mzx).
 
 .PARAMETER Headless
-    Passthrough to install-mazm.ps1: build maizeg without the --display window backend.
+    Passthrough to install-mzasm.ps1: build maizeg without the --display window backend.
 
 .PARAMETER NoPgo
-    Passthrough to install-mazm.ps1: build without Clang PGO even when a committed
+    Passthrough to install-mzasm.ps1: build without Clang PGO even when a committed
     profile exists for this preset.
 
 .EXAMPLE
@@ -72,7 +72,7 @@ $RepoRoot = Split-Path -Parent $ScriptDir
 $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 # INTERIM DEPENDENCY NOTE (maize-266 tracks the end state): stage [2/5] below
-# calls into install-mazm.ps1, which resolves Git Bash (Resolve-GitBash,
+# calls into install-mzasm.ps1, which resolves Git Bash (Resolve-GitBash,
 # scripts/lib/gitbash.ps1) to run its interim build-toolchain.sh delegation for
 # the POSIX-only cproc/QBE C toolchain. Git Bash ships with Git for Windows
 # itself, so this adds no dependency beyond Git plus what the repo vendors (no
@@ -113,23 +113,23 @@ if ($stageCode -ne 0) {
 # 7; only a hashtable splat binds by name). An earlier array-splat draft of this
 # script mis-bound '-InstallDir' positionally and failed with
 # "A positional parameter cannot be found that accepts argument '-InstallDir'".
-Write-Host '=== [2/5] native binaries + C toolchain (install-mazm.ps1) ==='
+Write-Host '=== [2/5] native binaries + C toolchain (install-mzasm.ps1) ==='
 $installArgs = @{ Preset = $Preset; InstallDir = $InstallDir }
 if ($Headless) { $installArgs['Headless'] = $true }
 if ($NoPgo) { $installArgs['NoPgo'] = $true }
-& (Join-Path $ScriptDir 'install-mazm.ps1') @installArgs
+& (Join-Path $ScriptDir 'install-mzasm.ps1') @installArgs
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "build-world.ps1: stage [2/5] 'native binaries + C toolchain' failed (exit $LASTEXITCODE). See install-mazm.ps1's own error above; no later stage ran." -ErrorAction Continue
+    Write-Error "build-world.ps1: stage [2/5] 'native binaries + C toolchain' failed (exit $LASTEXITCODE). See install-mzasm.ps1's own error above; no later stage ran." -ErrorAction Continue
     exit $LASTEXITCODE
 }
 
 # --- Stages 3/5-5/5: resolve mzcc.exe (maize-291) ------------------------------------
-# Stage [2/5] (install-mazm.ps1) is what builds and installs mzcc alongside
+# Stage [2/5] (install-mzasm.ps1) is what builds and installs mzcc alongside
 # maize/maizeg/mazm/mzld/mzdis; that stage already exited 0 above (aborting the
 # whole run otherwise), so $InstallDir\mzcc.exe is expected to exist here.
 $MzccExe = Join-Path $InstallDir 'mzcc.exe'
 if (-not (Test-Path $MzccExe)) {
-    Write-Error "build-world.ps1: $MzccExe not found after stage [2/5]; install-mazm.ps1 should have installed it." -ErrorAction Continue
+    Write-Error "build-world.ps1: $MzccExe not found after stage [2/5]; install-mzasm.ps1 should have installed it." -ErrorAction Continue
     exit 2
 }
 

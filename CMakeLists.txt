@@ -142,8 +142,8 @@ set_property(TARGET mzcc PROPERTY C_STANDARD 11)
 # TU plus src/host_tty.cpp, because AC-14 drives the console input-mode mask through
 # host_tty's own init/termios_set/restore rather than through a copy of it.
 #
-# A test, not a deliverable: deliberately absent from scripts/install-mazm.ps1,
-# scripts/install-mazm.sh, the Ctrl+Shift+B task and the MAIZE_SANITIZE list below (it
+# A test, not a deliverable: deliberately absent from scripts/install-mzasm.ps1,
+# scripts/install-mzasm.sh, the Ctrl+Shift+B task and the MAIZE_SANITIZE list below (it
 # exercises Win32 console API behaviour, not VM code).
 if (WIN32)
   add_executable(console_probe_test "src/console_probe_test_win32.cpp" "src/host_tty.cpp" ${MAIZE_CONSOLE_PROBE_SOURCES})
@@ -163,8 +163,8 @@ target_link_libraries(mzcc PRIVATE Threads::Threads)
 # the unconditional join) are taken here rather than inferred from the POSIX legs. It links
 # the source TU plus src/host_tty.cpp, because a console source requires host_tty::active().
 #
-# A test, not a deliverable: deliberately absent from scripts/install-mazm.ps1,
-# scripts/install-mazm.sh, the Ctrl+Shift+B task and the MAIZE_SANITIZE list below, for the
+# A test, not a deliverable: deliberately absent from scripts/install-mzasm.ps1,
+# scripts/install-mzasm.sh, the Ctrl+Shift+B task and the MAIZE_SANITIZE list below, for the
 # same reason console_probe_test is.
 if (WIN32)
   add_executable(stdin_source_test "src/stdin_source_test_win32.cpp" "src/host_tty.cpp" ${MAIZE_STDIN_SOURCE_SOURCES})

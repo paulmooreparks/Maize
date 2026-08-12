@@ -34,7 +34,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 
 # Git Bash is required: this was the last shipped .ps1 still trampolining through WSL.
 # maize-258 repoints it to Git Bash (mzcc.cmd's already-shipped pattern,
-# install-mazm.ps1:250-292), same as build-quesos.ps1 / build-userland.ps1 /
+# install-mzasm.ps1:250-292), same as build-quesos.ps1 / build-userland.ps1 /
 # build-demos.ps1. Fail fast with a clear message rather than a raw .NET exception when
 # bash.exe cannot be found.
 $BashExe = Resolve-GitBash

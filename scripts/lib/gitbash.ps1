@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 # scripts/lib/gitbash.ps1 (maize-258 Decision 3): shared PowerShell helper, dot-sourced
-# by scripts/install-mazm.ps1, scripts/build-quesos.ps1, scripts/build-userland.ps1, and
+# by scripts/install-mzasm.ps1, scripts/build-quesos.ps1, scripts/build-userland.ps1, and
 # scripts/build-demos.ps1. This is the SOLE definition site for Resolve-GitBash; do not
 # copy the function body into another script, dot-source this file instead
 # (scripts/lib/harness-env.sh is the sh-side precedent for exactly this shape).

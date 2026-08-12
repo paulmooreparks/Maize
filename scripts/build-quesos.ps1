@@ -20,7 +20,7 @@
     no matter which host built it.
 
     Requires Git for Windows (ships Git Bash) with the Maize C cross-toolchain
-    provisioned (run scripts\install-mazm.ps1 once to set that up). If Git Bash is
+    provisioned (run scripts\install-mzasm.ps1 once to set that up). If Git Bash is
     not found the script stops with a clear message.
 
 .PARAMETER Preset
@@ -68,7 +68,7 @@ $OutPath = [System.IO.Path]::GetFullPath($OutPath)
 
 # Git Bash is required: the cproc/QBE C toolchain is POSIX-only. That reason stands on
 # its own, and it is why maize-258 repointed this forwarder from WSL to Git Bash
-# (mzcc.cmd's already-shipped pattern, install-mazm.ps1:250-292). Unlike
+# (mzcc.cmd's already-shipped pattern, install-mzasm.ps1:250-292). Unlike
 # userland/build-userland.sh and demos/build-demos.sh, os/quesos/build-quesos.sh never
 # sourced scripts/lib/harness-env.sh and never applied the WSL-native mirror maize-265
 # removed from those two, so it was never exposed to the mirror's /build exclusion:
