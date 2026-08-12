@@ -20,10 +20,10 @@ marker, not a compatibility statement, and no v1 binary runs on a v2 machine.
 
 ### The base does not revise
 
-Once base `2.0` is ratified, no change to the behavior of the base architecture is possible
+Base `2.0` is ratified, so no change to the behavior of the base architecture is possible
 within Maize v2. There is no `2.1`, there is no mechanism to produce one, and this
 specification defines no process by which the frozen text could be amended to alter a
-behavior. Every capability added to Maize v2 after ratification arrives as a named extension
+behavior. Every capability added to Maize v2 arrives as a named extension
 under the rules the extensions chapter fixes.
 
 The consequence for a program is direct. A binary that uses only base instructions and only

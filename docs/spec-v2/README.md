@@ -24,11 +24,11 @@ There is no `2.1` and no mechanism to produce one, so everything that arrives la
 as a named, independently versioned extension under the rules the extensions chapter fixes.
 
 The text can still be corrected. A passage that is ambiguous, self-contradictory, or wrong
-about what the conformance suite already pins is an erratum, which carries a third version
-component and changes no conforming machine's behavior; the versioning chapter states the
-rule and the bound on it. A reader who finds two chapters describing the same behavior
-differently has found a defect in this text rather than a choice the architecture leaves
-open, and an erratum is how it gets corrected.
+about what the reference implementation and the conformance suite already agree on is an
+erratum, which carries a third version component and changes no conforming machine's
+behavior; the versioning chapter states the rule and the bound on it. A reader who finds two
+chapters describing the same behavior differently has found a defect in this text rather
+than a choice the architecture leaves open, and an erratum is how it gets corrected.
 
 ## The authority chain
 
