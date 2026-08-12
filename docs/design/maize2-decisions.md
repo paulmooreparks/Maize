@@ -2,6 +2,8 @@
 
 **Status: COMPLETE. All thirteen decisions and the terminology ruling are ratified, operator, 2026-08-11.** This document is now the v2 decision record: Phase 2 chapter drafting proceeds against it, and any change to a ratified decision is a new dated ruling here, never a silent edit. The input contract was `maize2-design-brief.md`; two recommendations were overruled during ratification (D11 operand order and D11 decimal marking, both in the operator's direction), and every other decision was ratified as proposed.
 
+**The specification is ratified and base 2.0 is frozen. Operator, 2026-08-12.** The text in `docs/spec-v2/` is the ratified specification, and the base freezes with it: no instruction is added to the base, no encoding in the base changes meaning, and no reserved byte in the base is ever assigned. Every later capability arrives as a named, independently versioned extension, and a correction to the ratified text is an erratum under the versioning chapter's rule, which changes no conforming machine's behavior. Three addenda were ratified after the original thirteen and are recorded below in place: D11 on immediate-move width explicitness, D8 on the trap-entry scratch register and `csr_swap`, and D10 on page-less extensions.
+
 The proposed ratification order follows the dependency structure rather than the numbering: D3 first because flags-versus-flagless cascades into the select instruction, the trap model, and the assembler vocabulary; then D2 and D1, which fix the encoding's raw material; then the rest.
 
 ## Terminology ruling: the literal word

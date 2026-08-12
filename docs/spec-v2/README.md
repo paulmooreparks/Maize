@@ -13,22 +13,22 @@ Every input has a defined outcome, including every invalid one: an encoding this
 does not assign raises a named trap with a stable numeric cause, and nothing anywhere in the
 machine is left undefined or implementation-defined by omission.
 
-## Draft status
+## Status
 
-This document set is a draft of base version `2.0`. While the text is under ratification the
-version is written `2.0-draft`, and the suffix disappears at ratification with no other
-change to the number.
+This document set is base version `2.0`, ratified and frozen on 2026-08-12. The version
+carries no suffix, and no base version follows it.
 
-Draft means that the prose is not yet frozen, not that the design is open. The thirteen
-architectural decisions and the terminology ruling that shape the machine are ratified and
-closed. What remains is the work of stating them completely, consistently, and in a form a
-conformance binary can pin, and of finding the places where two chapters describe the same
-behavior differently. A reader who finds such a place has found a defect in this draft rather
-than a choice the architecture leaves open.
+Frozen means what the versioning chapter says it means. No instruction is added to the base,
+no encoding in the base changes meaning, and no reserved byte in the base is ever assigned.
+There is no `2.1` and no mechanism to produce one, so everything that arrives later arrives
+as a named, independently versioned extension under the rules the extensions chapter fixes.
 
-Once base `2.0` is ratified the base freezes, permanently. There is no `2.1` and no mechanism
-to produce one. Everything that arrives later arrives as a named, independently versioned
-extension, under the rules the extensions chapter fixes.
+The text can still be corrected. A passage that is ambiguous, self-contradictory, or wrong
+about what the conformance suite already pins is an erratum, which carries a third version
+component and changes no conforming machine's behavior; the versioning chapter states the
+rule and the bound on it. A reader who finds two chapters describing the same behavior
+differently has found a defect in this text rather than a choice the architecture leaves
+open, and an erratum is how it gets corrected.
 
 ## The authority chain
 

@@ -1,14 +1,14 @@
 # Chapter Index
 
 This index lists every file of the Maize v2 specification in reading order, with one line
-saying what each one fixes. The front page states the draft status and the authority chain,
+saying what each one fixes. The front page states the status and the authority chain,
 and the terminology chapter is the one to read first whatever else a reader skips.
 
 ## Front matter
 
 | File | Title | What it carries |
 |:-----|:------|:----------------|
-| `README.md` | The Maize v2 Instruction Set Architecture | The front page: what this document set is, its draft status, the authority chain, and the reading routes. |
+| `README.md` | The Maize v2 Instruction Set Architecture | The front page: what this document set is, its status, the authority chain, and the reading routes. |
 | `SUMMARY.md` | Chapter Index | This index. |
 
 ## Chapters

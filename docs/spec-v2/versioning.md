@@ -12,10 +12,8 @@ where the numbers are small, monotonic, and discoverable at runtime.
 
 ## The base version
 
-The base version of this specification is `2.0`. While the text is under ratification it is
-written `2.0-draft`, and the suffix disappears at ratification with no other change to the
-number. A machine implementing the ratified text implements Maize base `2.0`, and there is
-no base version after it.
+The base version of this specification is `2.0`, ratified on 2026-08-12. A machine
+implementing this text implements Maize base `2.0`, and there is no base version after it.
 
 Maize v1 remains a separate architecture with its own version line. The `2` is a lineage
 marker, not a compatibility statement, and no v1 binary runs on a v2 machine.
