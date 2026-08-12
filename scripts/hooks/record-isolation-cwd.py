@@ -43,9 +43,22 @@ That is not a quiet gap, it is a wedge: one command run from a subdirectory
 blocked every later shell call in the session, including the ones that would
 have repaired it.
 
+What changed is cwd, and only cwd: it can no longer make a script that exists
+unfindable. A script that is genuinely absent, through a deletion, a bad merge,
+a rename, or a port into another repository that copied the settings and not
+the scripts, still makes python exit 2 and still refuses the call. That case
+announces itself as a blocked tool call rather than as a gap in this log, which
+is the opposite of what the old paragraph claimed, and it is the one worth
+remembering because this file is ported between boards.
+
 A dispatch producing zero records still means no hook process wrote, and that
-signal remains passive; nothing here alerts on it. What has changed is that a
-missing script can no longer be the cause.
+signal remains passive; nothing here alerts on it. The genuinely passive cases
+are the fail-open ones. python itself absent returns 127, which the harness
+treats as a non-blocking error, so the call proceeds and nothing is recorded:
+that is maize-432 D-3's accepted gap. So do this file's own quiet paths, an
+empty or unparseable payload and an unwritable log directory swallowed by the
+blanket except in main(). Zero records means one of those, or that no tool call
+matched the hook at all. It no longer means the script could not be found.
 
 How to ask the log a question, written down here because nobody will invent it
 under pressure during a fourth occurrence:
