@@ -49,10 +49,29 @@ passage would change what a conforming machine does, the passage is not an errat
 candidate; the behavior stands as the conformance suite pins it, and the desired change is
 extension work or it does not happen.
 
-The erratum component is documentation for humans reading the specification. It appears in
-the specification's own header and in the registry, it is not reported by any control and
-status register, it does not appear in the boot-information block, and a conformance claim
-does not name it. Nothing a program can observe distinguishes `2.0.0` from `2.0.7`.
+The erratum component is documentation for readers of this specification rather than
+information for a program. It appears in two places and nowhere else.
+
+The first is the specification's header, the bold line that opens the status section of
+`README.md`. That line states the level this text carries, and it is the only place any
+document in this set states the current level. No chapter quotes it, because a quotation is a
+copy that goes stale the moment the level advances.
+
+The second is the errata log, `errata.md`. Each entry there names the level that erratum
+introduced, so the log holds the history of levels while the header holds the current one.
+
+Both destinations exist because a bare version component is useless alone. A level of `2.0.3`
+tells a reader that three corrections have issued and nothing about whether any of them
+touched the chapter in front of them. The header answers which text this is, and the log
+answers what changed.
+
+The component is reported by no control and status register, does not appear in the
+boot-information block, and is not named in a conformance claim, which names the base version
+alone. Nothing a program can observe distinguishes `2.0.0` from `2.0.7`.
+
+Issuing an erratum therefore has three parts: the corrected passage, the header incremented,
+and an entry appended to the log. A correction that changes the text without the other two is
+incomplete, because a reader has no way to tell that the text moved under them.
 
 ## Extension versions
 

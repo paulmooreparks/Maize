@@ -10,6 +10,7 @@ and the terminology chapter is the one to read first whatever else a reader skip
 |:-----|:------|:----------------|
 | `README.md` | The Maize v2 Instruction Set Architecture | The front page: what this document set is, its status, the authority chain, and the reading routes. |
 | `SUMMARY.md` | Chapter Index | This index. |
+| `errata.md` | Errata | Every correction issued against the ratified text, one entry per erratum, with the passage it corrected and the wording it replaced. |
 
 ## Chapters
 

@@ -15,8 +15,16 @@ machine is left undefined or implementation-defined by omission.
 
 ## Status
 
-This document set is base version `2.0`, ratified and frozen on 2026-08-12. The version
-carries no suffix, and no base version follows it.
+**Maize base `2.0`, erratum level `2.0.0`. Ratified and frozen on 2026-08-12.**
+
+That line is this specification's header, and the versioning chapter refers to it by that
+name. Its first two components are the base version, which is what a conformance claim names
+and what a machine reports; the third is the erratum level, which counts corrections to this
+text and which no claim and no machine ever names. A reader tracking whether they hold the
+current text watches the third component. A reader writing a conformance claim ignores it and
+writes `Maize base 2.0`.
+
+The base version carries no suffix, and no base version follows it.
 
 Frozen means what the versioning chapter says it means. No instruction is added to the base,
 no encoding in the base changes meaning, and no reserved byte in the base is ever assigned.

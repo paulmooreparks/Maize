@@ -164,6 +164,16 @@ The converse case is the one that keeps the freeze honest. Anything a conformanc
 
 The test is therefore not how small a change feels, nor whether the specification has shipped to anyone. It is whether a conformance binary could tell.
 
+## The erratum component has a home
+
+**Status: SETTLED. 2026-08-12, under the rule above.** The versioning chapter promised that an erratum's third version component "appears in the specification's own header and in the registry", and neither destination existed: no document identified a header, and the registry is defined entirely per-extension with no field for the base. Both were harmless at `2.0.0` and both would have become load-bearing at the first erratum, which is the worst moment to invent a convention.
+
+The header is now the bold line opening the status section of the front page, and the front page states plainly that the first two components are what a conformance claim names while the third is what it never names. That line is the only place any document in the set states the current level, which matters more than it first appears: an earlier draft of this same change quoted the level in three further places, so executing the very procedure it defined would have left three of them stale on the first use. The registry clause is gone, replaced by `docs/spec-v2/errata.md`, a log carrying one entry per erratum. The log exists because the component is decoration without it, since a level of `2.0.3` tells a reader that three corrections issued and nothing about whether any touched the chapter in front of them. Issuing an erratum is therefore three acts, the corrected passage, the incremented header, and the appended entry, and the versioning chapter now says so.
+
+This work consumed no version component, and the reasoning is the rule above applied to itself: where a version number is printed in a document is not observable by any conforming machine. Review confirmed the two places it might have been observable, the machine identification word at port `$0000` and the boot-information block's base-version fields, and neither carries an erratum component today. Note that this is a statement about what those structures currently define rather than about available space, since the boot block holds a reserved half-word at `$3C`. A direct edit was therefore correct, and this entry is its record.
+
+Three errata were already queued behind this and can now be issued: the trap-model silence about which of two immediates the auxiliary word carries for an invalid bitfield immediate, `block_copy`'s direction-dependent faulting data address, and the block-memory completion state that a descending fault-and-resume cannot satisfy. Two of the three are block memory and want a single considered pass rather than isolated patches.
+
 ## Interactions ledger
 
 Ratifying D3 as flagless unlocks D7's register-condition select, D8's minimal frame, and the D11 vocabulary. D2 and D1 together fix the operand byte, which D5, D6, and D7 encode against. D8 and D12 jointly define the CSR space, and D13 rides on both. D4 threads through D8 (which registers stay live across a syscall trap). D10's opcode pages depend on D1's escape structure. D11 depends on D3 for spellings and can otherwise ratify independently.
