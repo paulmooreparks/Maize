@@ -145,6 +145,106 @@ TableShape classify(const Header& header) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------------------
+// The generic table reader
+// ---------------------------------------------------------------------------------------
+
+int MarkdownTable::index_of(const std::string& name) const {
+    for (std::size_t i = 0; i < columns.size(); ++i) {
+        if (columns[i] == name) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+std::string MarkdownTable::cell(std::size_t row, const std::string& name) const {
+    const int column = index_of(name);
+    if (column < 0 || row >= rows.size() ||
+        static_cast<std::size_t>(column) >= rows[row].size()) {
+        return "";
+    }
+    return rows[row][static_cast<std::size_t>(column)];
+}
+
+bool parse_hex_number(const std::string& text, std::uint64_t& out) {
+    if (text.size() < 2 || text[0] != '$') {
+        return false;
+    }
+    std::uint64_t value = 0;
+    for (std::size_t i = 1; i < text.size(); ++i) {
+        const char c = text[i];
+        std::uint64_t digit = 0;
+        if (c >= '0' && c <= '9') digit = static_cast<std::uint64_t>(c - '0');
+        else if (c >= 'A' && c <= 'F') digit = static_cast<std::uint64_t>(c - 'A' + 10);
+        else if (c >= 'a' && c <= 'f') digit = static_cast<std::uint64_t>(c - 'a' + 10);
+        else return false;
+        value = value * 16 + digit;
+    }
+    out = value;
+    return true;
+}
+
+std::vector<MarkdownTable> read_markdown_tables(const std::string& path,
+                                                std::vector<std::string>& errors) {
+    std::vector<MarkdownTable> tables;
+
+    std::ifstream in(path);
+    if (!in) {
+        errors.push_back("cannot read " + path);
+        return tables;
+    }
+
+    std::string line;
+    bool in_table = false;
+    bool expecting_separator = false;
+
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        const std::string trimmed = trim(line);
+
+        if (trimmed.empty() || trimmed[0] != '|') {
+            in_table = false;
+            continue;
+        }
+
+        if (!in_table) {
+            MarkdownTable table;
+            for (const std::string& cell : split_row(trimmed)) {
+                table.columns.push_back(strip_ticks(cell));
+            }
+            tables.push_back(std::move(table));
+            in_table = true;
+            expecting_separator = true;
+            continue;
+        }
+
+        if (expecting_separator) {
+            expecting_separator = false;
+            if (is_separator_row(trimmed)) {
+                continue;
+            }
+            errors.push_back("a table in " + path + " has no separator row");
+            // Fall through: the row is data after all, so it is kept rather than dropped.
+        }
+
+        std::vector<std::string> cells;
+        for (const std::string& cell : split_row(trimmed)) {
+            cells.push_back(strip_ticks(cell));
+        }
+        MarkdownTable& table = tables.back();
+        if (cells.size() != table.columns.size()) {
+            errors.push_back("a row in " + path + " has " + std::to_string(cells.size()) +
+                             " cells and its header has " + std::to_string(table.columns.size()));
+        }
+        table.rows.push_back(std::move(cells));
+    }
+
+    return tables;
+}
+
 int Appendix::count(Disposition disposition) const {
     return static_cast<int>(
         std::count_if(bytes.begin(), bytes.end(),

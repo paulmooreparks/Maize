@@ -487,7 +487,13 @@ void Assembler::parse_line(const std::string& line, const SourceLoc& where, cons
         }
         std::error_code ec;
         std::filesystem::path canonical = std::filesystem::weakly_canonical(target, ec);
-        const std::string key = ec ? target.string() : canonical.string();
+        // generic_string, not string: this value is both the cycle-detection key and the file
+        // name every diagnostic from the included text prints. Taking the host's native
+        // separator here would make one diagnostic chain mix slashes, and, worse, it would make
+        // this key differ from the one assemble_file computes for the top-level file on a host
+        // whose native separator is a backslash, so a file that includes itself would not be
+        // recognized as the cycle it is. Both sites normalize the same way for that reason.
+        const std::string key = ec ? target.generic_string() : canonical.generic_string();
 
         if (include_stack_.count(key) != 0) {
             std::ostringstream cycle;
@@ -538,8 +544,13 @@ bool Assembler::assemble_file(const std::string& path) {
     const std::string dir = std::filesystem::path(path).parent_path().string();
     std::error_code ec;
     const std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
-    include_stack_.insert(ec ? path : canonical.string());
-    return assemble_text(text, path, dir);
+    // Normalized the same way the include directive normalizes, and for the two reasons stated
+    // there: one diagnostic chain reads with one separator, and a file that includes itself is
+    // recognized as a cycle rather than as two different files that happen to have the same
+    // contents.
+    const std::string key = ec ? path : canonical.generic_string();
+    include_stack_.insert(key);
+    return assemble_text(text, key, dir);
 }
 
 // ---------------------------------------------------------------------------------------

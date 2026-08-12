@@ -433,6 +433,113 @@ MZ_FIXTURE(band_summary_matches_rows) {
 }
 
 // ---------------------------------------------------------------------------------------
+// The shipped CSR declarations against the chapter that defines them
+// ---------------------------------------------------------------------------------------
+
+// asm/v2/csr.mzasm is eighteen hand-transcribed (name, number) pairs, and AC-12 exercises three
+// of them. Three of eighteen is not coverage, and a transcription nothing checks is the drift
+// class this whole card exists to eliminate; leaving it unguarded while shipping AC-14 next door
+// would be inconsistent. privileged-architecture.md's CSR table is an ordinary markdown table
+// with a Number and a Name column, so the same technique the appendix parser uses closes it,
+// and the shared reader means there is one copy of the cell handling rather than two.
+//
+// This checks BOTH directions. A register the chapter defines and the file omits is as much a
+// defect as a constant the file invents, and a one-directional check would pass a file that had
+// quietly lost half its rows.
+MZ_FIXTURE(csr_include_matches_the_privileged_architecture_table) {
+    std::vector<std::string> errors;
+    const std::vector<MarkdownTable> tables =
+        read_markdown_tables(repo_root() + "/docs/spec-v2/privileged-architecture.md", errors);
+    for (const std::string& error : errors) {
+        record_failure("privileged-architecture.md: " + error);
+    }
+
+    // The chapter states the CSR table is the complete list of control and status registers in
+    // the base, and it is the only table in the chapter carrying a Number and a Name column.
+    // Selecting it by its columns rather than by its position means a table added above it does
+    // not silently become the one we read.
+    std::map<std::string, std::uint64_t> from_chapter;
+    int matching_tables = 0;
+    for (const MarkdownTable& table : tables) {
+        if (!table.has("Number") || !table.has("Name")) {
+            continue;
+        }
+        ++matching_tables;
+        for (std::size_t row = 0; row < table.rows.size(); ++row) {
+            const std::string number_cell = table.cell(row, "Number");
+            const std::string name = table.cell(row, "Name");
+            std::uint64_t number = 0;
+            if (!parse_hex_number(number_cell, number)) {
+                record_failure("the CSR table row for '" + name + "' has number cell '" +
+                               number_cell + "', which is not a hexadecimal literal");
+                continue;
+            }
+            if (!from_chapter.emplace(name, number).second) {
+                record_failure("the CSR table names '" + name + "' twice");
+            }
+        }
+    }
+    // A selector that matched nothing would leave both sets empty and the comparison below
+    // vacuous, so the floor is asserted rather than assumed.
+    MZ_CHECK_EQ(static_cast<std::uint64_t>(matching_tables), 1u);
+    MZ_CHECK_EQ(from_chapter.size(), 18u);
+
+    // The shipped file, parsed as the assembler reads it: `constant <name> <$number>`.
+    std::string source;
+    if (!read_file_text(repo_root() + "/asm/v2/csr.mzasm", source)) {
+        record_failure("cannot read asm/v2/csr.mzasm");
+        return;
+    }
+    std::map<std::string, std::uint64_t> from_file;
+    std::istringstream lines(source);
+    std::string line;
+    while (std::getline(lines, line)) {
+        const std::size_t comment = line.find(';');
+        if (comment != std::string::npos) {
+            line = line.substr(0, comment);
+        }
+        std::istringstream fields(line);
+        std::string directive;
+        std::string name;
+        std::string value;
+        if (!(fields >> directive >> name >> value) || directive != "constant") {
+            continue;
+        }
+        std::uint64_t number = 0;
+        if (!parse_hex_number(value, number)) {
+            record_failure("csr.mzasm binds '" + name + "' to '" + value +
+                           "', which is not a hexadecimal literal");
+            continue;
+        }
+        if (!from_file.emplace(name, number).second) {
+            record_failure("csr.mzasm defines '" + name + "' twice");
+        }
+    }
+
+    for (const auto& [name, number] : from_chapter) {
+        const auto found = from_file.find(name);
+        if (found == from_file.end()) {
+            record_failure("privileged-architecture.md defines the register '" + name +
+                           "' and asm/v2/csr.mzasm does not");
+            continue;
+        }
+        if (found->second != number) {
+            std::ostringstream message;
+            message << "csr.mzasm binds '" << name << "' to $" << std::hex << std::uppercase
+                    << found->second << " and the chapter's table gives it $" << number;
+            record_failure(message.str());
+        }
+    }
+    for (const auto& [name, number] : from_file) {
+        (void)number;
+        if (from_chapter.count(name) == 0) {
+            record_failure("asm/v2/csr.mzasm defines '" + name +
+                           "', which privileged-architecture.md's CSR table does not");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
 // AC-10: the two hand-written tables against each other
 // ---------------------------------------------------------------------------------------
 

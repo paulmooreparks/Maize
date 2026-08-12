@@ -100,6 +100,7 @@ set(MAIZE_MZASM_FIXTURES
   opcode_table_matches_appendix
   band_summary_matches_rows
   mnemonic_and_opcode_tables_agree
+  csr_include_matches_the_privileged_architecture_table
   corpus_covers_every_assigned_opcode
   encoding_chapter_worked_examples
   assembler_chapter_worked_example
@@ -111,7 +112,8 @@ set(MAIZE_MZASM_FIXTURES
   include_resolves_csr_names_and_reports_a_cycle
   flat_output_takes_the_mzi_suffix
   mzvm_runs_what_mzasm_wrote
-  nothing_in_the_v2_assembler_names_the_v1_suffix)
+  nothing_in_the_v2_assembler_names_the_v1_suffix
+  the_task_scanner_stops_at_the_next_task)
 
 foreach(_fixture ${MAIZE_MZASM_FIXTURES})
   add_test(NAME "v2_mzasm_${_fixture}"

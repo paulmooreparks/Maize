@@ -17,6 +17,7 @@
 #ifndef MAIZE_V2_MZASM_H
 #define MAIZE_V2_MZASM_H
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>

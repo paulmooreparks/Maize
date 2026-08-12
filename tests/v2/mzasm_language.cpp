@@ -704,32 +704,103 @@ MZ_FIXTURE(mzvm_runs_what_mzasm_wrote) {
     }
 }
 
+namespace {
+// The files that make up the v2 assembler, DISCOVERED rather than listed. A hand-maintained
+// list would be a rule generalizing over a set whose membership nothing enforces: correct on the
+// day it is written and silently short by one the first time a source file is added. This card
+// ships the right pattern for that problem two files away, in the CMake-versus-C++ fixture
+// registry cross-check, and the same reasoning applies here.
+//
+// Discovery is by directory and name pattern rather than by a glob string, so the rule a reader
+// checks is the rule the code runs.
+std::vector<std::string> v2_assembler_sources() {
+    struct Source {
+        const char* directory;
+        bool (*matches)(const std::string& filename);
+    };
+    static const std::vector<Source> places = {
+        {"src/v2", [](const std::string& n) {
+             return n.rfind("mzasm", 0) == 0 || n == "mnemonic_v2.h";
+         }},
+        {"tests/v2", [](const std::string& n) {
+             return n.rfind("mzasm", 0) == 0 || n.rfind("appendix_a", 0) == 0;
+         }},
+        {"scripts", [](const std::string& n) { return n.rfind("install-mzasm", 0) == 0; }},
+        {"asm/v2", [](const std::string& n) {
+             return n.size() > 6 && n.compare(n.size() - 6, 6, ".mzasm") == 0;
+         }},
+    };
+
+    std::vector<std::string> found;
+    for (const Source& place : places) {
+        std::error_code ec;
+        const std::filesystem::path directory = repo_root() + "/" + place.directory;
+        for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            const std::string filename = entry.path().filename().string();
+            if (place.matches(filename)) {
+                found.push_back(std::string(place.directory) + "/" + filename);
+            }
+        }
+    }
+    std::sort(found.begin(), found.end());
+    return found;
+}
+
+// Does the VS Code task labelled `label` mention `needle`? Factored out of the fixture so the
+// window bound below can be tested against synthetic input, which is the only way to show that
+// the bound holds rather than to assert that it does.
+//
+// `found_label` distinguishes "the task exists and is clean" from "there is no such task", which
+// a bare bool would conflate into a pass.
+bool task_object_mentions(const std::string& tasks, const std::string& label,
+                          const std::string& needle, bool& found_label) {
+    const std::size_t at = tasks.find(label);
+    found_label = at != std::string::npos;
+    if (!found_label) {
+        return false;
+    }
+    // The task object runs to the next task's label or to the end of the file. Bounding it at a
+    // fixed byte count instead would read into whichever task happens to follow, which passes
+    // only for as long as that neighbour stays clean: this file holds v1 tasks that legitimately
+    // name the v1 suffix, so a fixed window turns a reordering of tasks.json into a failure
+    // about nothing.
+    const std::size_t next = tasks.find("\"label\"", at);
+    const std::size_t end = next == std::string::npos ? tasks.size() : next;
+    return tasks.find(needle, at) < end;
+}
+
+}  // namespace
+
 MZ_FIXTURE(nothing_in_the_v2_assembler_names_the_v1_suffix) {
     // AC-13's source-level half. mzasm, its tests, the install scripts and the two new VS Code
     // tasks must not name .mzb anywhere, so a reader is never told that a v2 image might take
     // v1's suffix. The v1 tasks and v1's own mazm keep .mzb and are deliberately not scanned:
     // v1 is untouched by this card.
-    static const std::vector<std::string> sources = {
-        "src/v2/mzasm.h",
-        "src/v2/mzasm_lexer.cpp",
-        "src/v2/mzasm_assemble.cpp",
-        "src/v2/mzasm_object.cpp",
-        "src/v2/mzasm_main.cpp",
-        "src/v2/mnemonic_v2.h",
-        "tests/v2/mzasm_test_support.h",
-        "tests/v2/mzasm_test_support.cpp",
-        "tests/v2/mzasm_conformance.cpp",
-        "tests/v2/mzasm_corpus.cpp",
-        // This file is deliberately not in the list. It is the one place in the suite that has
-        // to spell the v1 suffix, because spelling it is how every check above and below looks
-        // for it, and a scanner that failed on its own search term could never pass.
-        "tests/v2/appendix_a.h",
-        "tests/v2/appendix_a.cpp",
-        "scripts/install-mzasm.sh",
-        "scripts/install-mzasm.ps1",
-        "asm/v2/csr.mzasm",
-    };
+    const std::vector<std::string> sources = v2_assembler_sources();
+
+    // A discovery that matched nothing would scan nothing and pass, so the floor is asserted.
+    // The named files are the ones whose absence would mean the discovery itself broke rather
+    // than that the tree changed.
+    MZ_CHECK(sources.size() >= 15);
+    for (const char* required : {"src/v2/mzasm_assemble.cpp", "src/v2/mnemonic_v2.h",
+                                 "tests/v2/appendix_a.cpp", "scripts/install-mzasm.sh",
+                                 "asm/v2/csr.mzasm"}) {
+        if (std::find(sources.begin(), sources.end(), required) == sources.end()) {
+            record_failure(std::string("the source discovery did not find ") + required +
+                           ", so it is not scanning what it claims to scan");
+        }
+    }
+
     for (const std::string& relative : sources) {
+        // This file is the one exclusion, and it is deliberate. It has to spell the v1 suffix,
+        // because spelling it is how every check here looks for it, and a scanner that failed on
+        // its own search term could never pass.
+        if (relative == "tests/v2/mzasm_language.cpp") {
+            continue;
+        }
         std::string text;
         if (!read_file_text(repo_root() + "/" + relative, text)) {
             record_failure("cannot read " + relative);
@@ -747,19 +818,65 @@ MZ_FIXTURE(nothing_in_the_v2_assembler_names_the_v1_suffix) {
         return;
     }
     for (const char* label : {"Assemble current .mzasm", "Check current .mzasm (no output file)"}) {
-        const std::size_t at = tasks.find(label);
-        if (at == std::string::npos) {
+        bool found_label = false;
+        const bool mentions = task_object_mentions(tasks, label, ".mzb", found_label);
+        if (!found_label) {
             record_failure(std::string("tasks.json has no task labelled '") + label + "'");
             continue;
         }
-        // The task object runs to the next label or to the end; scanning the following block is
-        // enough to catch a .mzb in the command or the matcher of this task.
-        const std::size_t end = std::min(tasks.size(), at + 1200);
-        if (tasks.compare(at, end - at, tasks.substr(at, end - at)) == 0 &&
-            tasks.substr(at, end - at).find(".mzb") != std::string::npos) {
+        if (mentions) {
             record_failure(std::string("the '") + label + "' task names .mzb");
         }
     }
 }
+
+// The scanner above is only as good as its window, and a window is exactly the kind of thing
+// that looks right and is not. This drives it with synthetic input that pins both directions:
+// it must see the needle inside the task it was asked about, and it must NOT see one in the
+// task next door. The second half is the property the previous fixed-byte window failed to
+// have, and no assertion against the real tasks.json could have caught that, because the real
+// neighbours happen to be clean.
+MZ_FIXTURE(the_task_scanner_stops_at_the_next_task) {
+    const std::string tasks =
+        "{\n"
+        "  \"tasks\": [\n"
+        "    {\n"
+        "      \"label\": \"Assemble current .mzasm\",\n"
+        "      \"command\": \"mzasm\",\n"
+        "      \"args\": [\"${file}\"]\n"
+        "    },\n"
+        "    {\n"
+        "      \"label\": \"Assemble current .mazm\",\n"
+        "      \"detail\": \"the v1 task, which legitimately writes a .mzb\",\n"
+        "      \"command\": \"mazm\"\n"
+        "    }\n"
+        "  ]\n"
+        "}\n";
+
+    bool found = false;
+
+    // The v1 neighbour names the suffix and the v2 task does not, so a correctly bounded scan
+    // reports clean. A window that overran into the neighbour would report a failure here.
+    MZ_CHECK(!task_object_mentions(tasks, "Assemble current .mzasm", ".mzb", found));
+    MZ_CHECK(found);
+
+    // The same scan does find the suffix when it really is inside the task asked about.
+    MZ_CHECK(task_object_mentions(tasks, "Assemble current .mazm", ".mzb", found));
+    MZ_CHECK(found);
+
+    // A label that is not there is reported as absent rather than as clean.
+    found = true;
+    MZ_CHECK(!task_object_mentions(tasks, "No such task", ".mzb", found));
+    MZ_CHECK(!found);
+
+    // The last task in a file has no following label, so the window runs to the end rather than
+    // collapsing to nothing.
+    const std::string trailing =
+        "{\n  \"tasks\": [\n    {\n      \"label\": \"Only task\",\n"
+        "      \"command\": \"mazm foo.mzb\"\n    }\n  ]\n}\n";
+    MZ_CHECK(task_object_mentions(trailing, "Only task", ".mzb", found));
+    MZ_CHECK(found);
+}
+
 
 }  // namespace maize::v2::test

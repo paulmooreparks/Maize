@@ -87,6 +87,34 @@ struct Appendix {
 
 Appendix parse_appendix(const std::string& path);
 
+// ---------------------------------------------------------------------------------------
+// The generic table reader the appendix parse and the CSR check share
+// ---------------------------------------------------------------------------------------
+
+// One markdown table lifted out of a chapter, with its cells' back-ticks stripped. Column
+// identity comes from the table's own header row and never from position, for the same reason
+// it does in the appendix parse: a chapter is free to insert a column, and a positional reader
+// silently starts reading the wrong one when it does.
+struct MarkdownTable {
+    std::vector<std::string> columns;
+    std::vector<std::vector<std::string>> rows;
+
+    int index_of(const std::string& name) const;
+    bool has(const std::string& name) const { return index_of(name) >= 0; }
+    // The cell in `row` under the column called `name`, or "" when this table has no such
+    // column or the row is short.
+    std::string cell(std::size_t row, const std::string& name) const;
+};
+
+// Every markdown table in a chapter, in document order. A table whose rows do not all carry the
+// same number of cells as its header is reported through `errors` rather than being reshaped to
+// fit, so a malformed table fails a caller that checks errors instead of quietly losing a cell.
+std::vector<MarkdownTable> read_markdown_tables(const std::string& path,
+                                                std::vector<std::string>& errors);
+
+// A `$`-prefixed hexadecimal literal of any width, as the specification writes numbers.
+bool parse_hex_number(const std::string& text, std::uint64_t& out);
+
 }  // namespace maize::v2::test
 
 #endif  // MAIZE_V2_TESTS_APPENDIX_A_H
