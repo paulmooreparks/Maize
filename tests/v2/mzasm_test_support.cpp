@@ -71,6 +71,15 @@ void check_equal_text(const std::string& actual, const std::string& expected, co
         std::ostringstream message;
         message << file << ":" << line << ": " << what << " is '" << actual << "', expected '"
                 << expected << "'";
+        // The raw rendering alone is not enough, and the defect this assertion was written to
+        // catch is the proof: a stray carriage return makes the two strings print as two
+        // identical-looking lines, so the reader is told a comparison failed between two things
+        // that look the same. The hex line is unconditional rather than conditional on the
+        // difference being invisible, because deciding which differences a terminal renders is a
+        // guess about the reader's terminal and these strings are short.
+        message << "\n  actual   " << hex_dump(std::vector<std::uint8_t>(actual.begin(), actual.end()))
+                << "\n  expected "
+                << hex_dump(std::vector<std::uint8_t>(expected.begin(), expected.end()));
         record_failure(message.str());
     }
 }

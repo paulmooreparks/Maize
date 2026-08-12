@@ -20,13 +20,32 @@
 // OFFSETS, not the bit meanings above bit 2: each class contract names its own status bits, and
 // the console's are not the timer's.
 //
-// LATCHED VERSUS HELD STATUS BITS. The acknowledge contract reads "every status bit set in the
-// written value is cleared, and a bit the device holds true remains set", which is two kinds of
-// bit rather than one. A latched bit records that something happened and stays set until the
-// guest acknowledges it (overrun, end-of-input). A held bit reports a condition that is true
-// right now, so it reappears the instant it is read again however hard the guest acknowledges it
-// (the console's output-ready). Splitting them into `status_` and `held_status_bits()` makes the
-// acknowledge path one line that cannot get the second half wrong.
+// ACKNOWLEDGEABLE VERSUS HELD STATUS BITS. The acknowledge contract reads "every status bit set
+// in the written value is cleared, and a bit the device holds true remains set", which is two
+// kinds of bit rather than one, and the whole of the split is the question ONE ACKNOWLEDGE ASKS:
+// after the guest writes this bit, does the device still consider it true?
+//
+// An acknowledgeable bit records that something happened, and once the guest has been told, the
+// device has nothing left to report, so the write clears it for good. The console's overrun bit
+// is one: the guest now knows a byte was lost, and no further reading of the device makes that
+// event un-reported. These live in `acknowledgeable_status_`.
+//
+// A held bit reports a condition the device considers true, so it reappears on the next read
+// however hard the guest acknowledges it. These are recomputed by `held_status_bits()`.
+//
+// THE TEST IS "DOES THE DEVICE STILL CONSIDER IT TRUE", NOT "WAS IT SET BY AN EVENT", and the two
+// readings disagree on exactly one console bit. End-of-input is set by an event, which makes it
+// look acknowledgeable, and device-surface.md:217 says it "latches once the input stream is
+// exhausted and stays set thereafter, so software distinguishes a byte that is not there yet from
+// a byte that will never come". A bit an acknowledge could clear for good cannot draw that
+// distinction: the guest would acknowledge it, read zero, and be told a byte might still come
+// when the stream is over. So end-of-input is HELD, beside output-ready, behind a flag saying
+// the stream is exhausted. It was on the wrong side of this split when the card first shipped
+// (maize-451 code review), and the sentence above is the rule that put it there.
+//
+// The spec's own word for end-of-input is "latches", which is why `latched` is not the name of
+// the other category here: borrowing it would put the one bit the spec calls latched in the
+// field named after it, and the miscategorisation would read as correct forever.
 
 #ifndef MAIZE_V2_DEVICE_V2_H
 #define MAIZE_V2_DEVICE_V2_H
@@ -115,7 +134,14 @@ inline constexpr std::uint64_t kBaseSpecificationVersion = 0x0200;
 // behaviour for the whole tail without writing anything.
 class DeviceClassV2 {
   public:
-    explicit DeviceClassV2(unsigned class_code) : class_code_(class_code) {}
+    // The contract version is a constructor parameter rather than one shared constant read
+    // straight out of identification(), so a class that is given a version of its own can carry
+    // it without a base-class change. It defaults to the placeholder because OQ-1 is open and no
+    // class HAS a version of its own yet; the seam exists so that answering OQ-1 per class costs
+    // one argument at six call sites rather than a rewrite of this base.
+    explicit DeviceClassV2(unsigned class_code,
+                           std::uint64_t contract_version = kClassContractVersionPlaceholder)
+        : class_code_(class_code), contract_version_(contract_version) {}
     virtual ~DeviceClassV2() = default;
 
     DeviceClassV2(const DeviceClassV2&) = delete;
@@ -125,18 +151,37 @@ class DeviceClassV2 {
 
     // Identification: class code in the low quarter-word, class contract version in the second,
     // remaining bits zero. Nonzero by construction, which is what presence detection reads.
+    //
+    // This is not virtual and does not need to be. The LAYOUT is universal, fixed for every class
+    // by device-surface.md's skeleton table, and a class that could override the layout could
+    // break presence detection for everyone. What varies per class is the VERSION, and that comes
+    // in through the constructor.
     std::uint64_t identification() const {
-        return static_cast<std::uint64_t>(class_code_) |
-               (kClassContractVersionPlaceholder << 16);
+        return static_cast<std::uint64_t>(class_code_) | (contract_version_ << 16);
     }
 
-    // Latched bits plus whatever the class holds true at this instant.
-    std::uint64_t status() const { return status_ | held_status_bits(); }
+    // The acknowledgeable bits plus whatever the class holds true at this instant.
+    std::uint64_t status() const { return acknowledgeable_status_ | held_status_bits(); }
 
     bool interrupt_enabled() const { return interrupt_enabled_; }
 
     // A read of a port in this class's block. Not const: a class read can consume, which is the
     // console's offset 3 and the keyboard's and the entropy device's.
+    //
+    // OFFSETS 0 THROUGH 2 ARE DELIBERATELY SEALED. Neither this nor port_write is virtual, so no
+    // subclass can observe or alter the skeleton's three ports, and that is the point: the
+    // skeleton is what lets one driver probe, poll and mask any class, and a class that could
+    // redefine those three offsets could break that for every reader of it. A class extends the
+    // surface at offset 3 and above.
+    //
+    // One known case will want a seam here, and it is written down so the next author is not
+    // guessing which way this went. device-surface.md's Timer section says acknowledging
+    // expiry-pending "re-arms a periodic timer for the next expiry and leaves a one-shot timer
+    // disarmed", which is a side effect of an acknowledge rather than a redefinition of it. The
+    // shape that fits is a protected `on_acknowledge(written)` hook called AFTER the clear, not a
+    // virtual port_write. It is not here yet because no class in this build needs it, it leaks
+    // into no format or ABI, and adding one empty override ahead of its first caller buys
+    // nothing.
     std::uint64_t port_read(std::uint16_t offset) {
         switch (offset) {
             case skeleton_offset::kIdentification: return identification();
@@ -152,10 +197,10 @@ class DeviceClassV2 {
                 // Read-only. Writing a read-only port is discarded.
                 return;
             case skeleton_offset::kStatus:
-                // Acknowledge. Clearing only the latched bits is the whole of it: a held bit is
-                // not stored in status_ at all, so it reappears on the next read exactly as
-                // "a bit the device holds true remains set" requires.
-                status_ &= ~value;
+                // Acknowledge. Clearing only the acknowledgeable bits is the whole of it: a held
+                // bit is not stored in this field at all, so it reappears on the next read
+                // exactly as "a bit the device holds true remains set" requires.
+                acknowledgeable_status_ &= ~value;
                 return;
             case skeleton_offset::kInterruptControl:
                 // Bit 0 enables the class's interrupt line. Bits 1 through 63 are reserved, and
@@ -168,10 +213,10 @@ class DeviceClassV2 {
         }
     }
 
-    // Host-side, reachable from no instruction. A fixture uses this to stand a latched condition
-    // up whose real source this build does not wire, so the acknowledge contract can be tested
-    // on a bit that genuinely clears.
-    void host_latch_status_bit(unsigned bit) { status_ |= status_mask(bit); }
+    // Host-side, reachable from no instruction. A fixture uses this to stand up an acknowledgeable
+    // condition whose real source this build does not wire, so the acknowledge contract can be
+    // tested on a bit that genuinely clears.
+    void host_raise_acknowledgeable_bit(unsigned bit) { acknowledgeable_status_ |= status_mask(bit); }
 
   protected:
     // The bits this class holds true right now, recomputed on every read.
@@ -189,10 +234,13 @@ class DeviceClassV2 {
         (void)value;
     }
 
-    std::uint64_t status_ = 0;  // latched bits only
+    // Bits an acknowledge clears for good. A bit the device would still consider true afterwards
+    // does not belong here; it belongs in held_status_bits().
+    std::uint64_t acknowledgeable_status_ = 0;
 
   private:
     unsigned class_code_;
+    std::uint64_t contract_version_;
     bool interrupt_enabled_ = false;
 };
 
@@ -203,6 +251,15 @@ class DeviceClassV2 {
 // contract's own defined behaviour for a clear input-available rather than a gap in it.
 // device-surface.md never requires an input stream to reach end-of-input; it only says what
 // happens when one does. A later card that wires real stdin decides when, if ever, to assert it.
+//
+// WHERE THE BIT GOES WHEN STDIN ARRIVES, since that card will read this paragraph rather than
+// re-derive it. End-of-input is HELD, not acknowledgeable, so it belongs in held_status_bits()
+// behind `input_exhausted_` and NOT in acknowledgeable_status_. The spec's word for it is
+// "latches", and it "stays set thereafter" precisely so a guest can tell a byte that is not
+// there yet from a byte that will never come, which an acknowledge must not be able to undo.
+// The stdin card sets `input_exhausted_` when the host stream ends and never clears it. That
+// path is already exercised: host_set_input_exhausted stands the condition up today and
+// device_console_acknowledge_clears_transient_bits_only proves an acknowledge cannot clear it.
 //
 // Output goes into a buffer rather than to a real stream, so the interpreter and its in-process
 // fixtures carry no I/O dependency. mzvm_main.cpp reads the buffer after run() and is the only
@@ -221,9 +278,24 @@ class ConsoleDeviceV2 : public DeviceClassV2 {
     // here but a real terminal with backpressure will reach for real.
     void host_set_output_ready(bool ready) { output_ready_ = ready; }
 
+    // Host-side, reachable from no instruction. The stdin card sets this when the host stream
+    // ends; today it exists so a fixture can prove that end-of-input, once true, survives an
+    // acknowledge. Without it the categorisation above would be an untested claim, and it is a
+    // claim that got itself wrong once already.
+    void host_set_input_exhausted(bool exhausted) { input_exhausted_ = exhausted; }
+
   protected:
     std::uint64_t held_status_bits() const override {
-        return output_ready_ ? status_mask(console_status_bit::kOutputReady) : 0;
+        std::uint64_t held = 0;
+        if (output_ready_) {
+            held |= status_mask(console_status_bit::kOutputReady);
+        }
+        // Held rather than acknowledgeable: once the stream is exhausted the device still
+        // considers this true, forever, and no acknowledge may take it back.
+        if (input_exhausted_) {
+            held |= status_mask(console_status_bit::kEndOfInput);
+        }
+        return held;
     }
 
     std::uint64_t read_class_port(std::uint16_t offset) override {
@@ -242,8 +314,9 @@ class ConsoleDeviceV2 : public DeviceClassV2 {
         if (!output_ready_) {
             // Writing offset 3 while output-ready is clear discards the byte and sets the
             // overrun bit, so a program that paces itself on output-ready loses nothing and one
-            // that does not can see that it lost something.
-            status_ |= status_mask(console_status_bit::kOverrun);
+            // that does not can see that it lost something. Acknowledgeable: once the guest has
+            // been told a byte was lost, the device has nothing further to report.
+            acknowledgeable_status_ |= status_mask(console_status_bit::kOverrun);
             return;
         }
         output_.push_back(static_cast<std::uint8_t>(value & 0xFF));
@@ -252,6 +325,7 @@ class ConsoleDeviceV2 : public DeviceClassV2 {
   private:
     std::vector<std::uint8_t> output_;
     bool output_ready_ = true;
+    bool input_exhausted_ = false;  // D-2: nothing in this build ever sets it
 };
 
 // The whole port space of one machine: the machine block, the populated classes, and the

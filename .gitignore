@@ -57,6 +57,10 @@ CMakeUserPresets.json
 # maize-12: linker/assembler object + executable artifacts (build products)
 *.mzo
 *.mzx
+# maize-451: the v2 assembler's flat image. mzasm writes it beside its input, so assembling a
+# source that lives in the tree, which is exactly what asm/v2/hello.mzasm's own header tells a
+# reader to do, leaves one of these behind.
+*.mzi
 # The kilo demo ships its built image: a runnable editor from a fresh clone
 # with no C-toolchain setup.
 !demos/kilo/kilo.mzx

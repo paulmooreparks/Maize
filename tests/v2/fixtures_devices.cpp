@@ -134,7 +134,6 @@ V2_FIXTURE(device_console_output_accumulates_bytes) {
         ports.port_out(kConsoleData, 0xFFFFFFFFFFFFFF00ull | byte);
     }
 
-    V2_CHECK(console_text(ports) == text);
     if (console_text(ports) != text) {
         record_failure("the console buffered '" + console_text(ports) + "' rather than '" + text +
                        "'");
@@ -174,7 +173,7 @@ V2_FIXTURE(device_console_acknowledge_clears_transient_bits_only) {
     // permanently set, so the fixture stands it up on the device object directly. A real
     // terminal with backpressure will reach it for real, and the contract has to already be
     // right when it does.
-    console.host_latch_status_bit(console_status_bit::kOverrun);
+    console.host_raise_acknowledgeable_bit(console_status_bit::kOverrun);
     const std::uint64_t before = ports.port_in(kConsoleStatus);
     V2_CHECK((before & status_mask(console_status_bit::kOverrun)) != 0);
     V2_CHECK((before & status_mask(console_status_bit::kOutputReady)) != 0);
@@ -198,6 +197,26 @@ V2_FIXTURE(device_console_acknowledge_clears_transient_bits_only) {
     const std::uint64_t overrun = ports.port_in(kConsoleStatus);
     V2_CHECK((overrun & status_mask(console_status_bit::kOverrun)) != 0);
     V2_CHECK((overrun & status_mask(console_status_bit::kOutputReady)) == 0);
+
+    // END-OF-INPUT SURVIVES AN ACKNOWLEDGE, which is the half of the contract that separates it
+    // from overrun and the reason it is a held bit rather than an acknowledgeable one.
+    // device-surface.md:217: it "latches once the input stream is exhausted and stays set
+    // thereafter, so software distinguishes a byte that is not there yet from a byte that will
+    // never come". A guest that could acknowledge the bit away would be told a byte might still
+    // arrive after the stream had ended, which is the distinction the sentence exists to draw.
+    //
+    // D-2 means nothing in this build exhausts the stream, so the condition is stood up on the
+    // device object the way overrun is. That is deliberate: the categorisation was wrong when
+    // this card first shipped and no test could have caught it, because the only bit that
+    // distinguishes the two categories was one nothing could set.
+    console.host_set_input_exhausted(true);
+    const std::uint64_t ended = ports.port_in(kConsoleStatus);
+    V2_CHECK((ended & status_mask(console_status_bit::kEndOfInput)) != 0);
+
+    ports.port_out(kConsoleStatus, ~std::uint64_t{0});  // acknowledge every bit at once
+    const std::uint64_t after_ack = ports.port_in(kConsoleStatus);
+    V2_CHECK((after_ack & status_mask(console_status_bit::kEndOfInput)) != 0);
+    V2_CHECK((after_ack & status_mask(console_status_bit::kOverrun)) == 0);
 }
 
 V2_FIXTURE(device_interrupt_control_reads_back_what_it_stores) {
