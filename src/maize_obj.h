@@ -27,6 +27,15 @@ namespace obj {
 	constexpr std::uint8_t  MZO_MAGIC2 = 'O';
 	constexpr std::uint8_t  MZO_VERSION = 0x01;
 
+	/* maize-422 (decision D-3): the Maize v2 discriminator. The record layout
+	   below carries no v1 instruction knowledge (section, symbol and relocation
+	   records keyed by width), so mzasm reuses it verbatim for v2 and marks the
+	   machine in the header's version byte instead. mzld and the loaders read
+	   this byte to tell a v1 object from a v2 one rather than inferring the
+	   machine from content, which they cannot do. MZO_VERSION stays v1's value
+	   and nothing about reading a version 0x01 object changes. */
+	constexpr std::uint8_t  MZO_VERSION_V2 = 0x02;
+
 	constexpr std::size_t   MZO_HEADER_SIZE  = 48;
 	constexpr std::size_t   SECTION_HDR_SIZE = 40;
 	constexpr std::size_t   SYMBOL_SIZE      = 24;
@@ -137,7 +146,17 @@ namespace obj {
 		R_MAIZE_ABS16 = 2,
 		R_MAIZE_ABS32 = 3,
 		R_MAIZE_ABS64 = 4,
-		/* 5..15 reserved for R_MAIZE_REL* (PC-relative) and future kinds. */
+		/* maize-422 (decision D-3): the program-counter-relative 32-bit
+		   relocation the v2 branch, jump, call and pc_add targets need. The
+		   patched value is (symbol_address - relocation_site_address), where
+		   relocation_site_address is the address immediately after the 4-byte
+		   field. That matches assembler.md's rule that a displacement is
+		   measured from the address of the instruction that follows, because
+		   the 4-byte target field is the last component of every instruction
+		   that carries one. The R_MAIZE_ABS* series above already covers
+		   move.w's 64-bit absolute case, so this is the only addition.
+		   6..15 stay reserved for future kinds. */
+		R_MAIZE_REL32 = 5,
 	};
 
 	/* Bytes patched by an absolute relocation type, or 0 if not an ABS type. */

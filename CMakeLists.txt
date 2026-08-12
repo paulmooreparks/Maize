@@ -79,9 +79,13 @@ add_executable(mzdis "src/mzdis.cpp")
 # v2 is a clean break rather than a revision (docs/spec-v2/README.md), so these sources share
 # nothing with MAIZE_VM_SOURCES and nothing above is amended by them. Operator ruling on
 # maize-418: the v2 binaries take the names maize-332 proposed for a v1 rename, `mzvm` for the
-# console build and `mzvmg` for the SDL2 window build, and v1 keeps `maize` and `maizeg`. The
-# tools (mazm, mzld, mzdis) keep their names across both machines, because they are tools
-# rather than the VM.
+# console build and `mzvmg` for the SDL2 window build, and v1 keeps `maize` and `maizeg`.
+#
+# maize-422 decision D-1 corrects what this comment used to say about the tools. They do NOT
+# keep their names across both machines: mzld, mzdis and mzcc MOVE to v2 under their existing
+# names, v1's behaviour surviving on the `v1` branch and nowhere else, and the assembler is the
+# one tool that needed a new name, `mzasm`, because v1's `mazm` broke the mz* family and the two
+# assemblers must coexist while v1 is still buildable.
 #
 # `mzvmg` is a build-target twin at this stage with no functional difference from `mzvm`: it
 # exists now so the naming lands once, and it has nothing to differ over until v2 grows a
@@ -92,6 +96,19 @@ add_executable(mzvm  ${MAIZE_V2_SOURCES} "src/v2/mzvm_main.cpp")
 add_executable(mzvmg ${MAIZE_V2_SOURCES} "src/v2/mzvm_main.cpp")
 target_include_directories(mzvm  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/v2")
 target_include_directories(mzvmg PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/v2")
+
+# maize-422: mzasm, the Maize v2 assembler. A new binary beside v1's mazm rather than a mode of
+# it (D-1), sharing no source file with src/mazm.cpp: the v2 language differs from v1's in
+# almost every particular assembler.md names, so the only thing the two could have shared is the
+# program's shape, and sharing that would have bought a tangle of version branches for nothing.
+# src/maize_obj.h IS shared, because the object format carries no instruction knowledge and D-3
+# extends it in place with a v2 version byte and one new relocation type.
+set(MAIZE_MZASM_SOURCES
+  "src/v2/mzasm_lexer.cpp"
+  "src/v2/mzasm_assemble.cpp"
+  "src/v2/mzasm_object.cpp")
+add_executable(mzasm ${MAIZE_MZASM_SOURCES} "src/v2/mzasm_main.cpp")
+target_include_directories(mzasm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/v2")
 
 # maize-278: mzcc, the compiled cross-platform C guest-build driver (replaces the
 # ctest / one-shot compile path of scripts/cc-maize.sh). C (C11), not C++
@@ -163,6 +180,7 @@ if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET mzdis PROPERTY CXX_STANDARD 20)
   set_property(TARGET mzvm PROPERTY CXX_STANDARD 20)
   set_property(TARGET mzvmg PROPERTY CXX_STANDARD 20)
+  set_property(TARGET mzasm PROPERTY CXX_STANDARD 20)
 endif()
 
 # maize-81: opt-in AddressSanitizer + UndefinedBehaviorSanitizer build.
@@ -177,7 +195,7 @@ if (MAIZE_SANITIZE)
     -fsanitize=address,undefined
     -fno-sanitize-recover=all
     -fno-omit-frame-pointer)
-  foreach(_t maizeg maize mazm mzld mzdis mzcc mzvm mzvmg)
+  foreach(_t maizeg maize mazm mzld mzdis mzcc mzvm mzvmg mzasm)
     target_compile_options(${_t} PRIVATE ${_maize_san_flags})
     target_link_options(${_t}    PRIVATE -fsanitize=address,undefined)
   endforeach()
