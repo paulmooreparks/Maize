@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build the Maize toolchain (maize, maizeg, mazm, mzld, mzdis) and install stable copies into ~/bin (Linux/WSL/macOS).
+# Build the Maize toolchain (maize, maizeg, mzvm, mzvmg, mazm, mzld, mzdis) and install stable
+# copies into ~/bin (Linux/WSL/macOS).
 # Counterpart of install-mazm.ps1; wired to the default build task via
 # .vscode/tasks.json. Never prompts.
 
@@ -36,14 +37,16 @@ fi
 echo "Configuring preset '$PRESET'..."
 cmake --preset "$PRESET" "${display_args[@]}"
 
-echo "Building maize, maizeg, mazm, mzld, mzdis, mzcc ($PRESET)..."
-cmake --build "$BUILD_DIR" --target maize maizeg mazm mzld mzdis mzcc
+echo "Building maize, maizeg, mzvm, mzvmg, mazm, mzld, mzdis, mzcc ($PRESET)..."
+cmake --build "$BUILD_DIR" --target maize maizeg mzvm mzvmg mazm mzld mzdis mzcc
 
 mkdir -p "$INSTALL_DIR"
 # maize-217/230: `maize` is the console-subsystem VM (terminal I/O); `maizeg` is the graphical
 # one (SDL window). Both are installed; console programs run under maize, the screen under maizeg.
 # maize-278: mzcc is the compiled C guest-build driver (the native cc-maize.sh replacement).
-for tool in maize maizeg mazm mzld mzdis mzcc; do
+# maize-418: mzvm and mzvmg are the Maize v2 machine, a second VM beside v1's maize/maizeg; the
+# tools (mazm, mzld, mzdis) are shared across both machines and keep their names.
+for tool in maize maizeg mzvm mzvmg mazm mzld mzdis mzcc; do
     cp "$BUILD_DIR/$tool" "$INSTALL_DIR/$tool"
     # cp preserves the source artifact's mtime, so an up-to-date incremental
     # reinstall would leave an old timestamp on the installed copy and look
@@ -105,4 +108,4 @@ if [ -z "$revision" ]; then
     revision="unknown"
 fi
 
-echo "Installed maize, maizeg, mazm, mzld, mzdis, mzcc to $INSTALL_DIR (built from $revision)."
+echo "Installed maize, maizeg, mzvm, mzvmg, mazm, mzld, mzdis, mzcc to $INSTALL_DIR (built from $revision)."

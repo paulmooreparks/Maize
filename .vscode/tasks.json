@@ -79,8 +79,8 @@
             "problemMatcher": []
         },
         {
-            "label": "Install maize + maizeg + mazm + mzld + mzdis to ~/bin",
-            "detail": "Build maize (console) + maizeg (graphical/SDL) + mazm, mzld, and mzdis and copy them to the user bin directory so editors find stable copies on PATH, then refresh the C cross-toolchain (cproc/qbe + Maize target) so mzcc stays current. Fast binaries-only loop; use Build everything (build-world) for the full \"I pulled\" rebuild. On Windows this runs natively via Git Bash, no WSL involved.",
+            "label": "Install maize + maizeg + mzvm + mzvmg + mazm + mzld + mzdis to ~/bin",
+            "detail": "Build maize (console) + maizeg (graphical/SDL), the Maize v2 machine mzvm + mzvmg, and mazm, mzld, and mzdis, and copy them to the user bin directory so editors find stable copies on PATH, then refresh the C cross-toolchain (cproc/qbe + Maize target) so mzcc stays current. Fast binaries-only loop; use Build everything (build-world) for the full \"I pulled\" rebuild. On Windows this runs natively via Git Bash, no WSL involved.",
             "type": "shell",
             "group": "build",
             "windows": {

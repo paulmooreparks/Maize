@@ -1,11 +1,11 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Build the Maize toolchain (maize, maizeg, mazm, mzld, mzdis) and install stable copies into ~\bin (Windows).
+    Build the Maize toolchain (maize, maizeg, mzvm, mzvmg, mazm, mzld, mzdis) and install stable copies into ~\bin (Windows).
 
 .DESCRIPTION
-    Configures the CMake preset, builds the maize/mazm/mzld/mzdis targets as an
-    optimized Release, and copies each built .exe to the install directory
+    Configures the CMake preset, builds the maize/maizeg/mzvm/mzvmg/mazm/mzld/mzdis/mzcc
+    targets as an optimized Release, and copies each built .exe to the install directory
     (default: $HOME\bin). The maizeg VM is built with the SDL2 window backend
     (MAIZE_DISPLAY=ON) so `--display --input=keyboard` opens a real window; the
     vendored SDL2 runtime (SDL2.dll) is installed alongside maizeg.exe. Also
@@ -168,8 +168,8 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-Write-Host "Building maize, maizeg, mazm, mzld, mzdis, mzcc ($Preset)..."
-& $Cmake --build $BuildDir --target maize maizeg mazm mzld mzdis mzcc
+Write-Host "Building maize, maizeg, mzvm, mzvmg, mazm, mzld, mzdis, mzcc ($Preset)..."
+& $Cmake --build $BuildDir --target maize maizeg mzvm mzvmg mazm mzld mzdis mzcc
 if ($LASTEXITCODE -ne 0) {
     if ($pgoArgs[0] -eq '-DMAIZE_PGO=use') {
         Write-Warning "cmake build failed for preset '$Preset' with Clang PGO active (exit $LASTEXITCODE); the committed profile at $PgoProfile may be incompatible with the current toolchain pin. Reconfiguring and retrying once without PGO..."
@@ -179,7 +179,7 @@ if ($LASTEXITCODE -ne 0) {
             Write-Error "cmake reconfigure without PGO failed (exit $LASTEXITCODE)." -ErrorAction Continue
             exit 2
         }
-        & $Cmake --build $BuildDir --target maize maizeg mazm mzld mzdis mzcc
+        & $Cmake --build $BuildDir --target maize maizeg mzvm mzvmg mazm mzld mzdis mzcc
         if ($LASTEXITCODE -ne 0) {
             Write-Error "cmake build failed for preset '$Preset' (exit $LASTEXITCODE), with and without PGO; not a PGO issue." -ErrorAction Continue
             exit 2
@@ -197,7 +197,9 @@ New-Item -ItemType Directory -Force $InstallDir | Out-Null
 # maize-217/230: `maize` is the console-subsystem VM (terminal I/O); `maizeg` is the graphical
 # one (SDL window). Both are installed; console programs run under maize, the screen under maizeg.
 # maize-278: mzcc is the compiled C guest-build driver (the native cc-maize.sh replacement).
-foreach ($tool in 'maize', 'maizeg', 'mazm', 'mzld', 'mzdis', 'mzcc') {
+# maize-418: mzvm and mzvmg are the Maize v2 machine, a second VM beside v1's maize/maizeg; the
+# tools (mazm, mzld, mzdis) are shared across both machines and keep their names.
+foreach ($tool in 'maize', 'maizeg', 'mzvm', 'mzvmg', 'mazm', 'mzld', 'mzdis', 'mzcc') {
     $builtExe = Join-Path $BuildDir "$tool.exe"
     if (-not (Test-Path $builtExe)) {
         Write-Error "build reported success but $builtExe does not exist."
@@ -367,5 +369,5 @@ else {
     $Revision = 'unknown'
 }
 
-Write-Host "Installed maize, maizeg, mazm, mzld, mzdis, mzcc to $InstallDir (built from $Revision)."
+Write-Host "Installed maize, maizeg, mzvm, mzvmg, mazm, mzld, mzdis, mzcc to $InstallDir (built from $Revision)."
 exit 0

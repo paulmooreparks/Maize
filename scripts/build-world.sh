@@ -141,7 +141,7 @@ echo ""
 echo "=== build-world.sh: all stages complete ==="
 
 echo "Native tools:"
-for tool in maize maizeg mazm mzld mzdis; do
+for tool in maize maizeg mzvm mzvmg mazm mzld mzdis mzcc; do
     for cand in "${INSTALL_DIR}/${tool}" "${INSTALL_DIR}/${tool}.exe"; do
         [ -f "$cand" ] && echo "  ${cand}"
     done

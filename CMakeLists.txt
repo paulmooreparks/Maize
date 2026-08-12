@@ -74,6 +74,25 @@ add_executable(mazm "src/mazm.cpp" "src/cpu.cpp" "src/sys.cpp" "src/host_tty.cpp
 add_executable(mzld "src/mzld.cpp")
 add_executable(mzdis "src/mzdis.cpp")
 
+# maize-418: the Maize v2 virtual machine, a SECOND target set beside v1's maize/maizeg.
+#
+# v2 is a clean break rather than a revision (docs/spec-v2/README.md), so these sources share
+# nothing with MAIZE_VM_SOURCES and nothing above is amended by them. Operator ruling on
+# maize-418: the v2 binaries take the names maize-332 proposed for a v1 rename, `mzvm` for the
+# console build and `mzvmg` for the SDL2 window build, and v1 keeps `maize` and `maizeg`. The
+# tools (mazm, mzld, mzdis) keep their names across both machines, because they are tools
+# rather than the VM.
+#
+# `mzvmg` is a build-target twin at this stage with no functional difference from `mzvm`: it
+# exists now so the naming lands once, and it has nothing to differ over until v2 grows a
+# device surface. No SDL2 linkage is wired here, and none of v1's presenter machinery is
+# ported into it speculatively.
+set(MAIZE_V2_SOURCES "src/v2/decode_v2.cpp" "src/v2/interpreter_v2.cpp")
+add_executable(mzvm  ${MAIZE_V2_SOURCES} "src/v2/mzvm_main.cpp")
+add_executable(mzvmg ${MAIZE_V2_SOURCES} "src/v2/mzvm_main.cpp")
+target_include_directories(mzvm  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/v2")
+target_include_directories(mzvmg PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/v2")
+
 # maize-278: mzcc, the compiled cross-platform C guest-build driver (replaces the
 # ctest / one-shot compile path of scripts/cc-maize.sh). C (C11), not C++
 # (decision DI10: cproc compiles C only, so mzcc-in-C is the prerequisite for
@@ -142,6 +161,8 @@ if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET mazm PROPERTY CXX_STANDARD 20)
   set_property(TARGET mzld PROPERTY CXX_STANDARD 20)
   set_property(TARGET mzdis PROPERTY CXX_STANDARD 20)
+  set_property(TARGET mzvm PROPERTY CXX_STANDARD 20)
+  set_property(TARGET mzvmg PROPERTY CXX_STANDARD 20)
 endif()
 
 # maize-81: opt-in AddressSanitizer + UndefinedBehaviorSanitizer build.
@@ -156,7 +177,7 @@ if (MAIZE_SANITIZE)
     -fsanitize=address,undefined
     -fno-sanitize-recover=all
     -fno-omit-frame-pointer)
-  foreach(_t maizeg maize mazm mzld mzdis mzcc)
+  foreach(_t maizeg maize mazm mzld mzdis mzcc mzvm mzvmg)
     target_compile_options(${_t} PRIVATE ${_maize_san_flags})
     target_link_options(${_t}    PRIVATE -fsanitize=address,undefined)
   endforeach()
@@ -240,4 +261,6 @@ endif()
 if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   enable_testing()
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MaizeCTest.cmake")
+  # maize-418: the v2 interpreter's own fixtures, one CTest entry per fixture.
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MaizeV2Fixtures.cmake")
 endif()

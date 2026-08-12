@@ -169,7 +169,7 @@ Write-Host ''
 Write-Host '=== build-world.ps1: all stages complete ==='
 
 Write-Host 'Native tools + SDL2 runtime:'
-foreach ($tool in 'maize', 'maizeg', 'mazm', 'mzld', 'mzdis') {
+foreach ($tool in 'maize', 'maizeg', 'mzvm', 'mzvmg', 'mazm', 'mzld', 'mzdis', 'mzcc') {
     $exePath = Join-Path $InstallDir "$tool.exe"
     if (Test-Path $exePath) { Write-Host "  $exePath" }
 }
