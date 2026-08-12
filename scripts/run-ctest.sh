@@ -168,15 +168,12 @@ resolve_exe() {
 }
 
 # maize-114: translate a host fixture path into the form native `maize` expects for a
-# --mount grant. Under MSYS/MinGW the built maize is a native Windows exe, so a POSIX
-# /tmp/... path must become a Windows C:\... path (cygpath -w); elsewhere the path is
-# passed through unchanged. The guest side of the grant stays a *nix path.
-host_to_native() {
-    case "$UNAME" in
-        MINGW*|MSYS*|CYGWIN*) cygpath -w "$1" ;;
-        *) printf '%s' "$1" ;;
-    esac
-}
+# --mount grant. maize-442 moved the body to maize_host_to_native() in
+# scripts/lib/harness-env.sh, sourced at the top of this file, because four other
+# harness scripts needed the same conversion and one copy per script is how a
+# path-handling fix lands in some of them and not the rest. The local name is kept as a
+# delegator so this file's 66 call sites are untouched.
+host_to_native() { maize_host_to_native "$@"; }
 
 # maize-257 fix pass: the real-pty fixtures (userland94_oksh_keystrokes,
 # userland94_kilo_edit, userland94_kilo_kill) need a python3 whose stdlib pty

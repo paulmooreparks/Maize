@@ -96,7 +96,8 @@ guest_run() {
     MSYS2_ARG_CONV_EXCL='/progs'; export MSYS2_ARG_CONV_EXCL
     "feed_${_feed}" \
         | MAIZE_FAULT="$_fault" timeout "$_tmo" "$MAIZE" --no-root --show-perf \
-            --mount "${WORK}=/progs:ro" --rom "$QUESOS" "/progs/${_prog}.mzx" 2>&1 || true
+            --mount "$(maize_host_to_native "$WORK")=/progs:ro" \
+            --rom "$QUESOS" "/progs/${_prog}.mzx" 2>&1 || true
 }
 
 # Every fixture asserts the park-hook counter equality as well as its own marker. That

@@ -55,6 +55,16 @@ for v in "$QUESOS" "$BINDIR" "$RWDIR"; do
         echo "idle-cost-check: --quesos, --bin and --rw are all required" >&2; exit 2
     fi
 done
+
+# maize-442: both mount directories are converted to the host-native form ONCE, here,
+# rather than at each --mount construction below. The two sites that build a grant
+# (run_with_gap and the core-equivalents trial loop) are the only remaining uses of
+# either variable, and neither needs the POSIX form, so a single conversion is safe and
+# leaves no second place for a wrong one to hide. Converting at each call site instead
+# was verifiable at the first site and not the second: reconstructing run_with_gap is
+# cheap, while driving the trial loop needs a fifo, a background feeder and a watchdog.
+BINDIR=$(maize_host_to_native "$BINDIR")
+RWDIR=$(maize_host_to_native "$RWDIR")
 if [ ! -x "$MAIZE" ]; then echo "idle-cost-check: no VM at ${MAIZE}" >&2; exit 2; fi
 # The kernel image is checked here rather than discovered mid-run. Both measurements below
 # read counters out of a VM run, and a run that died on a missing --rom reports no counters

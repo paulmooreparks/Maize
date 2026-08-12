@@ -127,7 +127,8 @@ run_guest() {
     _maize="$1"; _quesos="$2"; _prog="$3"; _feed="$4"; _fault="${5:-}"; _tmo="${6:-40}"
     MSYS2_ARG_CONV_EXCL='/progs'; export MSYS2_ARG_CONV_EXCL
     "feed_${_feed}" | MAIZE_FAULT="$_fault" timeout "$_tmo" "$_maize" --no-root \
-        --mount "${ART}=/progs:ro" --rom "$_quesos" "/progs/${_prog}.mzx" 2>&1 || true
+        --mount "$(maize_host_to_native "$ART")=/progs:ro" \
+        --rom "$_quesos" "/progs/${_prog}.mzx" 2>&1 || true
 }
 
 feed_two_bytes() { sleep 2; printf 'AB'; sleep 1; }

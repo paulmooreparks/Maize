@@ -100,6 +100,28 @@ maize_require_file() {
     return 0
 }
 
+# maize_host_to_native <path>
+#   Echo <path> in the form the built `maize` expects on the HOST side of a --mount
+#   grant. Under MSYS/MinGW/Cygwin the built maize is a native Windows exe, so a POSIX
+#   /c/... path must become a Windows C:\... path (cygpath -w); on every other platform
+#   the path is echoed unchanged. The GUEST side of the grant is never passed through
+#   here: it stays a *nix path, and on MSYS it is protected from argv translation by
+#   MSYS2_ARG_CONV_EXCL at the call sites that need it.
+#
+#   maize-442: this body used to live only in run-ctest.sh, so the four other harness
+#   scripts that build --mount arguments had no conversion at all. Nine stdin_wake legs
+#   failed on windows-llvm-mingw-debug for that reason, and two more call sites carried
+#   the same defect dormantly. MSYS's automatic argv translation cannot cover for a
+#   missing call here: the --mount value is a compound HOST=GUEST:MODE string, and the
+#   embedded colon makes the heuristic leave the whole argument untranslated. The body
+#   lives in one place now so a fix cannot land in one copy and miss another.
+maize_host_to_native() {
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*) cygpath -w "$1" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
 # maize_nproc: echo the logical core count. nproc on Linux/WSL, sysctl on macOS,
 # empty when neither is available (the caller then falls back to a fixed default).
 maize_nproc() {
