@@ -2,6 +2,31 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "Build Maize v2 (mzvm) and run its fixtures",
+            "detail": "maize-418: build the v2 machine (mzvm, mzvmg) and its fixture binary, then run the v2 fixtures only. This is the fast v2 loop and it is what Ctrl+Shift+B runs. It assumes the preset's build directory is already configured; if it is not, run one of the install or build-world tasks once first. The v2 machine has no assembler and no device surface yet, so mzvm's output is the register dump from --registers rather than anything a program prints.",
+            "type": "shell",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "windows": {
+                "command": "cmake --build build/windows-llvm-mingw-debug --target mzvm mzvmg mzvm_v2_fixtures && ctest --test-dir build/windows-llvm-mingw-debug -L v2 --output-on-failure"
+            },
+            "linux": {
+                "command": "cmake --build build/linux-debug --target mzvm mzvmg mzvm_v2_fixtures && ctest --test-dir build/linux-debug -L v2 --output-on-failure"
+            },
+            "osx": {
+                "command": "cmake --build build/macos-debug --target mzvm mzvmg mzvm_v2_fixtures && ctest --test-dir build/macos-debug -L v2 --output-on-failure"
+            },
+            "presentation": {
+                "clear": true,
+                "reveal": "always"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
             "label": "Assemble current .mazm",
             "detail": "Run mazm on the active file; errors land in the Problems panel and are click-to-navigate.",
             "type": "shell",
@@ -56,10 +81,7 @@
             "label": "Build everything (build-world)",
             "detail": "Build the native binaries + tools, the C cross toolchain, quesOS, the wave-1 userland, and the demos, all in one call. Slower than the binaries-only install task below; run it after a fresh clone or pull. On Windows this runs natively via Git Bash, no WSL involved.",
             "type": "shell",
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
+            "group": "build",
             "windows": {
                 "command": "powershell",
                 "args": [
