@@ -33,12 +33,14 @@
 #   maize_bounded_jobs           at each real parallel-build site, to cap ninja/make
 #   maize_is_ci                  to skip the cap + niceness under CI
 #
-#   A third group sources this file for maize_require_file alone and neither throttles
-#   nor mirrors: the maize-313 evidence scripts (stdin-wake-audit.sh,
-#   stdin-wake-check.sh, idle-cost-check.sh, negctl/maize-313/run-negative-controls.sh).
-#   They are short-lived measurement and audit runs rather than builds, so re-rooting
-#   them would move the very tree they are auditing and throttling would perturb the
-#   idle-cost numbers they exist to take.
+#   A third group neither throttles nor mirrors: the maize-313 evidence scripts
+#   (stdin-wake-audit.sh, stdin-wake-check.sh, idle-cost-check.sh,
+#   negctl/maize-313/run-negative-controls.sh). They are short-lived measurement and
+#   audit runs rather than builds, so re-rooting them would move the very tree they are
+#   auditing and throttling would perturb the idle-cost numbers they exist to take. Up
+#   to maize-442 they took maize_require_file and nothing else; three of the four now
+#   take maize_host_to_native as well, stdin-wake-audit.sh being the one that makes no
+#   --mount call.
 #
 # The three problems this addresses (maize-263 diagnosis): a repo living on the
 # Windows drive makes every WSL file operation cross the 9P bridge (and get

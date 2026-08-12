@@ -65,6 +65,20 @@ done
 # cheap, while driving the trial loop needs a fifo, a background feeder and a watchdog.
 BINDIR=$(maize_host_to_native "$BINDIR")
 RWDIR=$(maize_host_to_native "$RWDIR")
+
+# The other half of the same argv contract, and it belongs next to the conversion above
+# rather than at the two invocations, for the reason the conversion does. Converting the
+# HOST side of a --mount grant is only half the job on MSYS: the GUEST paths this script
+# passes, /bin/oksh.mzx below and the /bin and /rw grant targets, are plain colon-free
+# arguments, so the argv heuristic DOES fire on them and rewrites /bin/oksh.mzx into
+# C:/Program Files/Git/usr/bin/oksh.mzx. Fixing only the host half is worse than fixing
+# neither: an unconverted mount is rejected loudly and this script's own capture swallows
+# a mangled guest path, so the run reports a green idle-cost measurement taken from a VM
+# that never loaded a shell. The value is SEMICOLON-separated (a colon makes it one
+# literal prefix that matches nothing), and matches the start of the whole argument.
+# scripts/run-ctest.sh:4334, :4412 and :4485 pair the same two halves at the same
+# /bin/oksh.mzx invocation.
+MSYS2_ARG_CONV_EXCL='/bin;/rw'; export MSYS2_ARG_CONV_EXCL
 if [ ! -x "$MAIZE" ]; then echo "idle-cost-check: no VM at ${MAIZE}" >&2; exit 2; fi
 # The kernel image is checked here rather than discovered mid-run. Both measurements below
 # read counters out of a VM run, and a run that died on a missing --rom reports no counters
