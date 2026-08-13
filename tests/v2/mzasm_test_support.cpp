@@ -2,12 +2,14 @@
 
 #include "mzasm_test_support.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <system_error>
 
 namespace maize::v2::test {
 

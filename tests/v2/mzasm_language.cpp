@@ -7,9 +7,11 @@
 // takes), and an in-process check would answer a different question.
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "../../src/maize_obj.h"
