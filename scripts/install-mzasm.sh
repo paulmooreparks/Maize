@@ -76,16 +76,23 @@ cmake --preset "$PRESET" "${display_args[@]}"
 
 # maize-418: mzvm is the console-subsystem Maize v2 machine (terminal I/O); mzvmg is the
 # graphical one (SDL window). maize-422 (D-1): mzasm is the v2 assembler.
-# --with-c-toolchain adds the v1 C pipeline; mzcc spawns mazm and mzld out of the BUILD
-# directory (mzcc.c resolves them under MAIZE_ROOT/build/<preset>), so those two are
-# built for it without being installed onto PATH.
+# --with-c-toolchain adds the v1 C pipeline, and the extra targets below are mzcc's
+# PRECONDITION LIST, not the set of tools a compile happens to spawn. mzcc.c
+# resolve_toolchain checks five tools at startup, before it does any work and whatever
+# the subcommand: toolchain/cproc/cproc-qbe and toolchain/qbe/obj/qbe (built by the
+# cross-toolchain step further down), then build/<preset>/mazm, build/<preset>/maize and
+# build/<preset>/mzld, each a hard exit 2 when missing. maize is in that list even though
+# only `mzcc -r` executes it, so leaving it out makes EVERY mzcc invocation fail. All
+# three build/ tools are built here and none is installed: mzcc resolves them by path out
+# of the build directory, so they need to exist there, not on PATH. D-1 is about PATH and
+# is untouched by this.
 install_tools=(mzvm mzvmg mzasm)
 build_targets=("${install_tools[@]}")
 copy_tools=("${install_tools[@]}")
 if [ "$WITH_C_TOOLCHAIN" -eq 1 ]; then
-    build_targets+=(mzcc mazm mzld)
+    build_targets+=(mzcc mazm maize mzld)
     # mzcc is the C pipeline's entry point, so it travels with the toolchain rather than
-    # with the v2 machine. mazm and mzld stay in the build directory, unexported.
+    # with the v2 machine. mazm, maize and mzld stay in the build directory, unexported.
     copy_tools+=(mzcc)
 fi
 

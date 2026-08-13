@@ -13,7 +13,7 @@
 
     This provides the SDL2Config / sdl2-config.cmake that CMake's
     find_package(SDL2) resolves (CMakeLists.txt, guarded by MAIZE_DISPLAY=ON) and
-    the SDL2.dll that install-mzasm.ps1 copies next to maize.exe. Without it the
+    the SDL2.dll that install-mzasm.ps1 copies next to mzvmg.exe. Without it the
     -DMAIZE_DISPLAY=ON configure hard-fails (find_package(SDL2 REQUIRED)); this is
     the counterpart to scripts/bootstrap-toolchain.ps1 (llvm-mingw), and
     install-mzasm.ps1 auto-invokes it when the SDL2 dir is missing.
@@ -124,5 +124,5 @@ Write-Host "SDL2 $Version installed at $Dest"
 Write-Host "  cmake config: $CmakeCfg"
 Write-Host "  runtime dll:  $Dll"
 Write-Host ""
-Write-Host "Next: scripts/install-mzasm.ps1  (or Ctrl+Shift+B) builds maize with --display."
+Write-Host "Next: scripts/install-mzasm.ps1  (or Ctrl+Shift+B) builds mzvmg with --display."
 exit 0

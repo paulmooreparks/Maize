@@ -87,8 +87,8 @@ fi
 
 echo "=== [2/5] native binaries + C toolchain (install-mzasm.sh) ==="
 # maize-454: install-mzasm.sh installs the v2 binaries only unless asked for the v1 C
-# pipeline, and stages [3/5]-[5/5] below are that pipeline (they run mzcc, which spawns
-# mazm and mzld), so build-world always asks for it.
+# pipeline, and stages [3/5]-[5/5] below are that pipeline (they run mzcc, whose resolver
+# requires mazm, maize and mzld in the build directory), so build-world always asks for it.
 if bash "${SCRIPT_DIR}/install-mzasm.sh" "${PRESET}" "${INSTALL_DIR}" --with-c-toolchain; then
     :
 else
@@ -144,7 +144,7 @@ echo ""
 echo "=== build-world.sh: all stages complete ==="
 
 echo "Native tools:"
-for tool in maize maizeg mzvm mzvmg mazm mzld mzdis mzcc; do
+for tool in mzvm mzvmg mzasm mzcc; do
     for cand in "${INSTALL_DIR}/${tool}" "${INSTALL_DIR}/${tool}.exe"; do
         [ -f "$cand" ] && echo "  ${cand}"
     done

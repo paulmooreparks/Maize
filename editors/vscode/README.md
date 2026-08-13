@@ -16,11 +16,24 @@ The diagnostics format is mazm's fatal line (`mazm: <file>:<line>: error: <msg>`
 
 ## Setup
 
-Point the extension at your built assembler if `mazm` is not on PATH:
+**You have to set this now.** The setting defaults to bare `mazm`, resolved from PATH, and
+since maize-454 the install scripts no longer put `mazm` there: the installed set is the
+Maize v2 machine and assembler (`mzvm`, `mzvmg`, `mzasm`). Point the extension at a built
+assembler instead:
 
 ```json
 "maize.mazm.path": "c:/path/to/Maize/build/windows-llvm-mingw-debug/mazm.exe"
 ```
+
+To get one, run `scripts/install-mzasm.ps1 -WithCToolchain` (or
+`scripts/install-mzasm.sh --with-c-toolchain`), which builds `mazm` into `build/<preset>`
+for the C pipeline without installing it, or build the target directly with
+`cmake --build build/<preset> --target mazm`.
+
+This extension serves v1 `.mazm` files, and v1 is frozen. Maize v2's `.mzasm` files have no
+language server yet; the repo's `Assemble current .mzasm` and `Check current .mzasm` tasks
+run `mzasm` with a problem matcher, so errors still reach the Problems panel. maize-429 owns
+the v2 editor tooling.
 
 Without a working `mazm`, highlighting, symbols, definition, and references still work; only diagnostics are disabled (the extension warns once).
 

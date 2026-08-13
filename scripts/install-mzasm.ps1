@@ -45,9 +45,9 @@
     Build without Clang PGO even when a committed profile exists for this preset.
 
 .PARAMETER WithCToolchain
-    Also build and install the v1 C pipeline: mzcc (plus the mazm and mzld it spawns,
-    built but not installed), the mzcc.cmd Windows forwarder, and the cproc-qbe/qbe
-    cross-toolchain. Off by default so the inner loop stays cheap; the "Install ..."
+    Also build and install the v1 C pipeline: mzcc (plus the mazm, maize and mzld its
+    resolver requires, built into the build directory but not installed), the mzcc.cmd
+    Windows forwarder, and the cproc-qbe/qbe cross-toolchain. Off by default so the inner loop stays cheap; the "Install ..."
     VS Code task and build-world.ps1 both pass it.
 #>
 [CmdletBinding()]
@@ -186,13 +186,19 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # maize-454: the installed set is v2's machine and assembler. -WithCToolchain adds the
-# v1 C pipeline; mzcc spawns mazm and mzld out of the BUILD directory (mzcc.c resolves
-# them under MAIZE_ROOT/build/<preset>), so those two are built for it without being
-# installed onto PATH.
+# v1 C pipeline, and the extra targets below are mzcc's PRECONDITION LIST, not the set
+# of tools a compile happens to spawn. mzcc.c resolve_toolchain checks five tools at
+# startup, before it does any work and whatever the subcommand: toolchain/cproc/cproc-qbe
+# and toolchain/qbe/obj/qbe (built by the cross-toolchain step further down), then
+# build/<preset>/mazm, build/<preset>/maize and build/<preset>/mzld, each a hard exit 2
+# when missing. maize is in that list even though only `mzcc -r` executes it, so leaving
+# it out makes EVERY mzcc invocation fail. All three build/ tools are built here and
+# none is installed: mzcc resolves them by path out of the build directory, so they need
+# to exist there, not on PATH. D-1 is about PATH and is untouched by this.
 $InstallTools = @('mzvm', 'mzvmg', 'mzasm')
 $BuildTargets = $InstallTools
 if ($WithCToolchain) {
-    $BuildTargets = $InstallTools + @('mzcc', 'mazm', 'mzld')
+    $BuildTargets = $InstallTools + @('mzcc', 'mazm', 'maize', 'mzld')
 }
 $TargetList = $BuildTargets -join ', '
 
@@ -229,7 +235,7 @@ New-Item -ItemType Directory -Force $InstallDir | Out-Null
 $CopyTools = $InstallTools
 if ($WithCToolchain) {
     # mzcc is the C pipeline's entry point, so it travels with the toolchain rather than
-    # with the v2 machine. mazm and mzld stay in the build directory, unexported.
+    # with the v2 machine. mazm, maize and mzld stay in the build directory, unexported.
     $CopyTools = $InstallTools + @('mzcc')
 }
 foreach ($tool in $CopyTools) {

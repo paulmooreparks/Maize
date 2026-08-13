@@ -1,7 +1,8 @@
 #!/bin/sh
 # Refresh the C cross-toolchain so `mzcc` reflects the current tree. Invoked
-# by the install-mzasm scripts (VS Code Ctrl+Shift+B) so building the native tools
-# also keeps the whole C environment current. Three steps:
+# by the install-mzasm scripts under --with-c-toolchain / -WithCToolchain (maize-454;
+# NOT the default Ctrl+Shift+B loop) so an opt-in install keeps the whole C environment
+# current. Three steps:
 #
 #   1. initialize the cproc/qbe submodules (no-op once present)
 #   2. build the linux-debug mazm + maize that mzcc drives (on Windows the

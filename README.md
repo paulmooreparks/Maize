@@ -330,6 +330,14 @@ and clangd), pick a configure preset from the CMake Tools status bar, and build.
 Everything above also works from any editor or a bare terminal; presets are the only
 interface CMake Tools uses.
 
+The workspace also carries the Maize assembly extension at
+[editors/vscode](editors/vscode), which gives `.mazm` files live diagnostics from the v1
+assembler. Set `maize.mazm.path` to an absolute path such as
+`build/windows-llvm-mingw-debug/mazm.exe` before you use it: the setting defaults to bare
+`mazm` on PATH, and the install scripts stopped putting the v1 binaries there in
+maize-454. For v2, `.mzasm` files have no language server yet, and the `Assemble current
+.mzasm` and `Check current .mzasm` tasks run `mzasm` with a problem matcher instead.
+
 ### A note on build type
 
 Each platform has both a `-debug` and a `-release` preset (for example

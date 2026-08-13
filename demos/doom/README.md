@@ -73,7 +73,8 @@ framebuffer/keyboard platform layer needs; the `-D` flags pin the frame to a
 native 320x200 (see "Geometry" below). `--preset` picks which `build/<preset>/`
 `mazm`/`mzld` to drive, so build those tools for the same preset first (e.g. via
 `cmake --preset linux-release && cmake --build --preset linux-release`, or
-`scripts/run-tests.sh`; on Windows, `scripts/install-mzasm.ps1`). The image is
+`scripts/run-tests.sh`; on Windows, `scripts/install-mzasm.ps1 -WithCToolchain`,
+since the plain install builds only the v2 binaries since maize-454). The image is
 portable across hosts (built on any platform, it runs on any platform's
 `maize.exe`), and does not need to be byte-identical between a Windows-native
 build and a WSL/Linux build (a few bytes of nondeterminism are expected; the gate

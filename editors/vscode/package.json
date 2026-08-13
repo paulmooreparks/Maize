@@ -52,7 +52,7 @@
                 "maize.mazm.path": {
                     "type": "string",
                     "default": "mazm",
-                    "description": "Path to the mazm assembler executable used for --check diagnostics. Defaults to 'mazm' on PATH; point this at your build output (e.g. build/windows-llvm-mingw-debug/mazm.exe)."
+                    "description": "Path to the mazm assembler executable used for --check diagnostics. The default, 'mazm' on PATH, no longer resolves on a stock setup: maize-454 stopped installing the v1 binaries to ~/bin, so set this to an absolute build path (e.g. build/windows-llvm-mingw-debug/mazm.exe). Build one with 'scripts/install-mzasm.ps1 -WithCToolchain' or 'scripts/install-mzasm.sh --with-c-toolchain', which builds mazm into build/<preset> without installing it."
                 }
             }
         }

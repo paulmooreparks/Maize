@@ -115,8 +115,8 @@ if ($stageCode -ne 0) {
 # "A positional parameter cannot be found that accepts argument '-InstallDir'".
 Write-Host '=== [2/5] native binaries + C toolchain (install-mzasm.ps1) ==='
 # maize-454: install-mzasm.ps1 installs the v2 binaries only unless asked for the v1 C
-# pipeline, and stages [3/5]-[5/5] below are that pipeline (they run mzcc, which spawns
-# mazm and mzld), so build-world always asks for it.
+# pipeline, and stages [3/5]-[5/5] below are that pipeline (they run mzcc, whose resolver
+# requires mazm, maize and mzld in the build directory), so build-world always asks for it.
 $installArgs = @{ Preset = $Preset; InstallDir = $InstallDir; WithCToolchain = $true }
 if ($Headless) { $installArgs['Headless'] = $true }
 if ($NoPgo) { $installArgs['NoPgo'] = $true }

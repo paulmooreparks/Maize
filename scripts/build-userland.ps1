@@ -17,7 +17,8 @@
     at /bin when you run maize without a custom root.
 
     Requires Git for Windows (ships Git Bash) with the Maize C cross-toolchain
-    provisioned (run scripts\install-mzasm.ps1 once to set that up). If Git Bash is not
+    provisioned (run scripts\install-mzasm.ps1 -WithCToolchain once to set that up; the
+    plain install builds only the v2 binaries since maize-454). If Git Bash is not
     found the script stops with a clear message.
 
 .PARAMETER Preset

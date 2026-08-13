@@ -304,11 +304,11 @@ CPROC_QBE=$(resolve_exe "${CPROC_DIR}/cproc-qbe") \
 QBE=$(resolve_exe "${QBE_DIR}/obj/qbe") \
     || die "qbe not found; run 'cc-maize.sh --build' (cproc/qbe)."
 MAZM=$(resolve_exe "${BUILD_DIR}/mazm") \
-    || die "mazm not found in ${BUILD_DIR}; run scripts/install-mzasm.sh (or run-tests.sh) first."
+    || die "mazm not found in ${BUILD_DIR}; run scripts/install-mzasm.sh --with-c-toolchain (or run-tests.sh) first."
 MAIZE=$(resolve_exe "${BUILD_DIR}/maize") \
-    || die "maize not found in ${BUILD_DIR}; run scripts/install-mzasm.sh (or run-tests.sh) first."
+    || die "maize not found in ${BUILD_DIR}; run scripts/install-mzasm.sh --with-c-toolchain (or run-tests.sh) first."
 MZLD=$(resolve_exe "${BUILD_DIR}/mzld") \
-    || die "mzld not found in ${BUILD_DIR}; run scripts/install-mzasm.sh (or run-tests.sh) first."
+    || die "mzld not found in ${BUILD_DIR}; run scripts/install-mzasm.sh --with-c-toolchain (or run-tests.sh) first."
 
 # System preprocessor for #include expansion (maize-74). cproc-qbe's own front-end
 # does not implement #include, so a source (or the errno.c runtime) that includes
