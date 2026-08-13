@@ -1,5 +1,5 @@
-// Maize assembly language client (maize-46). Starts the server in
-// server/server.js for .mazm documents; all language smarts live server-side.
+// Maize v2 assembly language client (maize-46, rewritten for v2 by maize-429). Starts the
+// server in server/server.js for .mzasm documents; all language smarts live server-side.
 
 'use strict';
 
@@ -21,11 +21,11 @@ function activate(context) {
     };
 
     const clientOptions = {
-        documentSelector: [{ scheme: 'file', language: 'mazm' }],
+        documentSelector: [{ scheme: 'file', language: 'mzasm' }],
         synchronize: { configurationSection: 'maize' },
     };
 
-    client = new LanguageClient('mazm', 'Maize Assembly', serverOptions, clientOptions);
+    client = new LanguageClient('mzasm', 'Maize', serverOptions, clientOptions);
     client.start();
 }
 

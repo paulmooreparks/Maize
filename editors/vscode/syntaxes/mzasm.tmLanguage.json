@@ -1,0 +1,151 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Maize",
+    "scopeName": "source.mzasm",
+    "patterns": [
+        {
+            "include": "#comment"
+        },
+        {
+            "include": "#string"
+        },
+        {
+            "include": "#character"
+        },
+        {
+            "include": "#label-declaration"
+        },
+        {
+            "include": "#directive"
+        },
+        {
+            "include": "#section-kind"
+        },
+        {
+            "include": "#register"
+        },
+        {
+            "include": "#mnemonic"
+        },
+        {
+            "include": "#here"
+        },
+        {
+            "include": "#hex-literal"
+        },
+        {
+            "include": "#dec-literal"
+        },
+        {
+            "include": "#bin-literal"
+        },
+        {
+            "include": "#address-operator"
+        },
+        {
+            "include": "#operator"
+        },
+        {
+            "include": "#parens"
+        }
+    ],
+    "repository": {
+        "comment": {
+            "match": ";.*$",
+            "name": "comment.line.semicolon.mzasm"
+        },
+        "string": {
+            "begin": "\"",
+            "end": "\"|$",
+            "name": "string.quoted.double.mzasm",
+            "patterns": [
+                {
+                    "match": "\\\\(?:[\\\\\"'nrt0]|x[0-9A-Fa-f]{2})",
+                    "name": "constant.character.escape.mzasm"
+                },
+                {
+                    "match": "\\\\.",
+                    "name": "invalid.illegal.escape.mzasm"
+                }
+            ]
+        },
+        "character": {
+            "begin": "'",
+            "end": "'|$",
+            "name": "string.quoted.single.mzasm",
+            "patterns": [
+                {
+                    "match": "\\\\(?:[\\\\\"'nrt0]|x[0-9A-Fa-f]{2})",
+                    "name": "constant.character.escape.mzasm"
+                },
+                {
+                    "match": "\\\\.",
+                    "name": "invalid.illegal.escape.mzasm"
+                }
+            ]
+        },
+        "label-declaration": {
+            "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)(:)",
+            "captures": {
+                "1": {
+                    "name": "entity.name.label.mzasm"
+                },
+                "2": {
+                    "name": "punctuation.separator.label.mzasm"
+                }
+            }
+        },
+        "directive": {
+            "match": "\\b(?:data_quarter_word|data_string_zero|data_half_word|data_string|data_byte|data_fill|data_word|constant|include|reserve|section|extern|global|origin|align)\\b",
+            "name": "keyword.control.directive.mzasm"
+        },
+        "section-kind": {
+            "match": "\\b(?:rodata|code|data|bss)\\b",
+            "name": "constant.language.section-kind.mzasm"
+        },
+        "register": {
+            "match": "\\b(?:r(?:0|[1-9]|1[0-9]|2[0-9]|3[01])|zero|a0|a1|a2|a3|a4|a5|a6|a7|fp|ra|s0|s1|s2|s3|s4|s5|s6|s7|s8|sp|t0|t1|t2|t3|t4|t5|t6|t7|t8|t9|tp)\\b(?:(\\.)(b[0-7]|q[0-3]|h[01])\\b)?",
+            "name": "variable.language.register.mzasm",
+            "captures": {
+                "1": {
+                    "name": "punctuation.separator.slice.mzasm"
+                },
+                "2": {
+                    "name": "variable.language.slice.mzasm"
+                }
+            }
+        },
+        "mnemonic": {
+            "match": "\\b(?:float_compare_unordered\\.h|float_multiply_subtract\\.h|shift_right_arithmetic\\.h|bitfield_extract_signed|float_compare_ordered\\.h|float_compare_unordered|float_multiply_subtract|multiply_high_unsigned|shift_right_arithmetic|tlb_invalidate_address|float_compare_ordered|shift_right_logical\\.h|float_multiply_add\\.h|multiply_high_signed|remainder_unsigned\\.h|compare_ge_unsigned|compare_gt_unsigned|compare_le_unsigned|compare_lt_unsigned|float_square_root\\.h|float_to_unsigned\\.h|shift_right_logical|unsigned_to_float\\.h|block_copy_forward|branch_ge_unsigned|branch_gt_unsigned|branch_le_unsigned|branch_lt_unsigned|float_compare_eq\\.h|float_compare_le\\.h|float_compare_lt\\.h|float_compare_ne\\.h|float_multiply_add|remainder_signed\\.h|remainder_unsigned|tlb_invalidate_all|wait_for_interrupt|compare_ge_signed|compare_gt_signed|compare_le_signed|compare_lt_signed|divide_unsigned\\.h|float_square_root|float_to_signed\\.h|float_to_unsigned|signed_to_float\\.h|unsigned_to_float|bitfield_extract|branch_ge_signed|branch_gt_signed|branch_le_signed|branch_lt_signed|float_absolute\\.h|float_compare_eq|float_compare_le|float_compare_lt|float_compare_ne|float_multiply\\.h|float_subtract\\.h|remainder_signed|bitfield_insert|divide_signed\\.h|divide_unsigned|float_maximum\\.h|float_minimum\\.h|float_to_signed|signed_to_float|subtract_borrow|byte_reverse\\.h|float_absolute|float_divide\\.h|float_multiply|float_negate\\.h|float_subtract|divide_signed|float_maximum|float_minimum|byte_reverse|float_divide|float_narrow|float_negate|shift_left\\.h|float_add\\.h|float_widen|trap_return|block_copy|breakpoint|compare_eq|compare_ne|extract\\.sb|extract\\.sh|extract\\.sq|extract\\.zb|extract\\.zh|extract\\.zq|multiply\\.h|shift_left|subtract\\.h|add_carry|block_set|branch_eq|branch_ne|csr_write|float_add|select_nz|csr_read|csr_swap|insert\\.b|insert\\.h|insert\\.q|multiply|negate\\.h|port_out|select_z|subtract|load\\.sb|load\\.sh|load\\.sq|load\\.zb|load\\.zh|load\\.zq|move\\.sb|move\\.sh|move\\.sq|move\\.zb|move\\.zh|move\\.zq|port_in|store\\.b|store\\.h|store\\.q|move\\.w|negate|pc_add|return|add\\.h|not\\.h|store|call|halt|jump|load|move|add|and|nop|not|sys|xor|or)\\b",
+            "name": "keyword.other.mnemonic.mzasm"
+        },
+        "here": {
+            "match": "\\bhere\\b",
+            "name": "constant.language.here.mzasm"
+        },
+        "hex-literal": {
+            "match": "\\$[+-]?[0-9A-Fa-f](?:[,`]?[0-9A-Fa-f])*",
+            "name": "constant.numeric.hex.mzasm"
+        },
+        "dec-literal": {
+            "match": "#[+-]?[0-9](?:[,`]?[0-9])*",
+            "name": "constant.numeric.decimal.mzasm"
+        },
+        "bin-literal": {
+            "match": "%[+-]?[01](?:[,`]?[01])*",
+            "name": "constant.numeric.binary.mzasm"
+        },
+        "address-operator": {
+            "match": "@",
+            "name": "keyword.operator.address.mzasm"
+        },
+        "operator": {
+            "match": "<<|>>|[+\\-*/&|^~]",
+            "name": "keyword.operator.arithmetic.mzasm"
+        },
+        "parens": {
+            "match": "[()]",
+            "name": "punctuation.parens.mzasm"
+        }
+    }
+}

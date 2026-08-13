@@ -1,7 +1,7 @@
 {
-    "name": "maize-mazm",
-    "displayName": "Maize Assembly",
-    "description": "Syntax highlighting and language server for Maize assembly (.mazm files).",
+    "name": "maize",
+    "displayName": "Maize",
+    "description": "Syntax highlighting and language server for Maize v2 assembly (.mzasm files).",
     "version": "0.5.0",
     "publisher": "paulmooreparks",
     "license": "Apache-2.0",
@@ -19,47 +19,55 @@
     ],
     "main": "./client/extension.js",
     "activationEvents": [
-        "onLanguage:mazm"
+        "onLanguage:mzasm"
     ],
     "contributes": {
         "languages": [
             {
-                "id": "mazm",
+                "id": "mzasm",
                 "aliases": [
-                    "Maize Assembly",
-                    "mazm"
+                    "Maize",
+                    "mzasm"
                 ],
                 "extensions": [
-                    ".mazm"
+                    ".mzasm"
                 ],
                 "configuration": "./language-configuration.json",
                 "icon": {
-                    "light": "./mazm-file-icon.png",
-                    "dark": "./mazm-file-icon.png"
+                    "light": "./mzasm-file-icon.png",
+                    "dark": "./mzasm-file-icon.png"
                 }
             }
         ],
         "grammars": [
             {
-                "language": "mazm",
-                "scopeName": "source.mazm",
-                "path": "./syntaxes/mazm.tmLanguage.json"
+                "language": "mzasm",
+                "scopeName": "source.mzasm",
+                "path": "./syntaxes/mzasm.tmLanguage.json"
             }
         ],
         "configuration": {
-            "title": "Maize Assembly",
+            "title": "Maize",
             "properties": {
-                "maize.mazm.path": {
+                "maize.mzasm.path": {
                     "type": "string",
-                    "default": "mazm",
-                    "description": "Path to the mazm assembler executable used for --check diagnostics. The default, 'mazm' on PATH, no longer resolves on a stock setup: maize-454 stopped installing the v1 binaries to ~/bin, so set this to an absolute build path (e.g. build/windows-llvm-mingw-debug/mazm.exe). Build one with 'scripts/install-mzasm.ps1 -WithCToolchain' or 'scripts/install-mzasm.sh --with-c-toolchain', which builds mazm into build/<preset> without installing it."
+                    "default": "mzasm",
+                    "description": "Path to the mzasm assembler used for --check diagnostics. The default is the bare name 'mzasm', which resolves on any setup that has run scripts/install-mzasm.ps1 or scripts/install-mzasm.sh, since both install mzasm alongside mzvm. Set an absolute path to point at a build tree instead."
                 }
             }
         }
+    },
+    "scripts": {
+        "test": "node tests/grammar.test.js && node tests/lsp.test.js",
+        "generate-grammar": "node tests/generate-grammar.js"
     },
     "dependencies": {
         "vscode-languageclient": "^9.0.1",
         "vscode-languageserver": "^9.0.1",
         "vscode-languageserver-textdocument": "^1.0.12"
+    },
+    "devDependencies": {
+        "vscode-oniguruma": "^2.0.1",
+        "vscode-textmate": "^9.3.2"
     }
 }

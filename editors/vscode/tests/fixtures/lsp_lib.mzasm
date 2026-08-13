@@ -1,0 +1,10 @@
+; LSP fixture library (maize-429): included by lsp_main.mzasm.
+;
+; Both declarations are the colon form, because v2 has no LABEL directive. The v1 fixture
+; declared lib_data with one, which is why this is a rewrite rather than a rename.
+
+lib_func:
+    return
+
+lib_data:
+    data_byte $00

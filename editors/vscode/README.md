@@ -1,54 +1,45 @@
-# Maize Assembly for VS Code
+# Maize for VS Code
 
-Syntax highlighting and a language server for Maize assembly (`.mazm`) source files, the input language of the `mazm` assembler.
+Syntax highlighting and a language server for Maize v2 assembly (`.mzasm`) source files, the input language of the `mzasm` assembler.
 
 ## Features
 
-- TextMate grammar covering the full `mazm` token surface: `;` comments, `"..."` strings with escapes, the six directives (`ADDRESS`, `LABEL`, `DATA`, `STRING`, `INCLUDE`, `CODE`), the assembler's full instruction-mnemonic set (case-insensitive, as the assembler accepts them), registers `R0`-`R9`, `RT`, `RV`, `RF`, `RB`, `RP`, `RS` and their aliases `SP`, `BP`, `PC`, `FL` with subregister suffixes (`.B0`-`.B7`, `.Q0`-`.Q3`, `.H0`, `.H1`, `.W0`, `.W`), `$`/`#`/`%` numeric literals with `` ` ``/`_`/`,` digit separators, label declarations, and `@` address operands.
-- Language configuration: toggle-comment inserts `;`, quotes auto-close, and dotted register names like `R0.B0` select as a single word.
-- Language server:
-  - **Diagnostics from the assembler itself, live as you type.** The extension pipes your buffer through `mazm --check --stdin` (debounced ~300 ms) and surfaces the assembler's error as a squiggle, unsaved edits included. There is no second parser guessing at validity; if mazm rejects it, it's an error, and if mazm accepts it, it's clean. INCLUDE targets resolve against the file's real directory (`--base-path`). With an older mazm build that lacks `--stdin`, the extension detects this at startup and falls back to checking the saved file on open/save.
-  - **Document symbols** for label declarations (`name:` and `LABEL name` forms).
-  - **Go to definition** for labels, following `INCLUDE` chains.
+- A TextMate grammar covering the v2 token surface: `;` comments, `"..."` strings and `'x'` character literals with the eight escapes the specification allows, the fifteen directives (`section`, `origin`, `align`, the four `data_*` width directives, `data_string`, `data_string_zero`, `data_fill`, `reserve`, `constant`, `global`, `extern`, `include`), the four section kinds, the full instruction-mnemonic set, registers `r0` through `r31` with all thirty-two ABI aliases and their `.b`/`.q`/`.h` slice suffixes, `$`/`#`/`%` numeric literals with back-tick and comma digit separators, label declarations, and `@` memory operands.
+- Case matters. Mnemonics, directive names and register names are lowercase in v2, so `MOVE` and `Load` highlight as the mistakes they are rather than as instructions.
+- Every numeric literal carries a base marker, and the grammar holds to that: an unmarked number such as `10` is left unstyled rather than painted as a number whose base a reader would have to guess.
+- Language configuration: toggle-comment inserts `;`, quotes and parentheses auto-close, and a register slice like `r0.b0` selects as a single word.
+- A language server providing:
+  - **Diagnostics from the assembler itself, live as you type.** The extension pipes your buffer through `mzasm --check --stdin` (debounced about 300 ms) and surfaces the assembler's errors as squiggles, unsaved edits included. There is no second parser guessing at validity. `include` targets resolve against the file's real directory. Against a build that lacks `--stdin`, the extension detects that at startup and falls back to checking the saved file on open and save.
+  - **Document symbols** for label declarations.
+  - **Go to definition** for labels, following `include` chains.
   - **Find references** for labels within the current file.
 
-The diagnostics format is mazm's fatal line (`mazm: <file>:<line>: error: <msg>`), one line per error: mazm recovers past each error and reports everything it finds in a single run (capped at 50, then a final "too many errors; stopping" line), so multiple squiggles appear at once and the count drops as you fix them. `--check` runs the full assembly pipeline with no filesystem effects, and `--stdin --base-path <dir> --source-name <path>` checks a piped buffer the same way. Missing includes stay a single fatal diagnostic rather than cascading into derived undefined-label errors.
+The diagnostic format is `mzasm`'s fatal line, `mzasm: <file>:<line>: error: <msg>`, one line per error. The assembler recovers past each error and reports everything it finds in a single run, so several squiggles appear at once and the count drops as you fix them. `--check` runs the full assembly pipeline with no filesystem effects.
 
 ## Setup
 
-**You have to set this now.** The setting defaults to bare `mazm`, resolved from PATH, and
-since maize-454 the install scripts no longer put `mazm` there: the installed set is the
-Maize v2 machine and assembler (`mzvm`, `mzvmg`, `mzasm`). Point the extension at a built
-assembler instead:
+The `maize.mzasm.path` setting names the assembler, and it defaults to the bare name `mzasm`. On any machine that has run `scripts/install-mzasm.ps1` or `scripts/install-mzasm.sh`, that default resolves with no configuration at all, because those scripts install `mzasm` alongside `mzvm`. Point it at a build tree if you want a specific binary:
 
 ```json
-"maize.mazm.path": "c:/path/to/Maize/build/windows-llvm-mingw-debug/mazm.exe"
+"maize.mzasm.path": "c:/path/to/Maize/build/windows-llvm-mingw-debug/mzasm.exe"
 ```
 
-To get one, run `scripts/install-mzasm.ps1 -WithCToolchain` (or
-`scripts/install-mzasm.sh --with-c-toolchain`), which builds `mazm` into `build/<preset>`
-for the C pipeline without installing it, or build the target directly with
-`cmake --build build/<preset> --target mazm`.
-
-This extension serves v1 `.mazm` files, and v1 is frozen. Maize v2's `.mzasm` files have no
-language server yet; the repo's `Assemble current .mzasm` and `Check current .mzasm` tasks
-run `mzasm` with a problem matcher, so errors still reach the Problems panel. maize-429 owns
-the v2 editor tooling.
-
-Without a working `mazm`, highlighting, symbols, definition, and references still work; only diagnostics are disabled (the extension warns once).
+Without a working `mzasm`, highlighting, symbols, definition and references all still work, and only diagnostics are disabled. The extension warns once when it cannot find one.
 
 ## Installing locally
 
-The extension is not published to a marketplace. Two local options:
+The extension is not published to a marketplace. There are two local options:
 
-- In VS Code, run the command "Developer: Install Extension from Location..." and select this folder (`editors/vscode`). Run `npm install` in this folder first so the language client/server dependencies are present.
-- Or package a `.vsix` with `npx @vscode/vsce package` in this folder and install it via "Extensions: Install from VSIX...".
+- In VS Code, run the command "Developer: Install Extension from Location..." and select this folder (`editors/vscode`). Run `npm install` here first so the language client and server dependencies are present.
+- Or package a `.vsix` with `npx @vscode/vsce package` in this folder and install it through "Extensions: Install from VSIX...".
 
 ## Development
 
-- The grammar lives in `syntaxes/mazm.tmLanguage.json`. Scope assertions:
-  `npx vscode-tmgrammar-test -g syntaxes/mazm.tmLanguage.json "tests/*.test.mazm"`
-- The language server lives in `server/server.js` (plain JavaScript, no build step); the client shim in `client/extension.js`. Server tests (unit + a scripted stdio LSP session):
-  `MAZM_PATH=/path/to/mazm node tests/lsp.test.js`
+Run both suites with `npm test`, or each on its own:
 
-The grammar and the server's symbol index both mirror the tokenizer in `src/mazm.cpp`; when the assembler's token surface changes, change them with it. Anything semantic belongs in mazm, reached via `--check`.
+- `node tests/grammar.test.js` checks the grammar. It re-derives the mnemonic table from `docs/spec-v2/appendix-a-opcode-map.md` and fails naming the spellings that differ, then tokenizes through `vscode-textmate` and asserts scope names.
+- `MZASM_PATH=/path/to/mzasm node tests/lsp.test.js` checks the server, as unit tests over the pure helpers plus a scripted stdio LSP session.
+
+`syntaxes/mzasm.tmLanguage.json` is generated, so edit `tests/generate-grammar.js` and run `npm run generate-grammar` rather than editing the JSON. The mnemonic list in it comes from the specification's opcode-map appendix and never from a transcription, and the test run fails if the checked-in file and the appendix disagree. That is deliberate: a hand-copied list of 150 spellings drifts silently, and this one cannot.
+
+The grammar and the server's symbol index both mirror the tokenizer in `src/v2/mzasm_lexer.cpp`, and the authority for both is `docs/spec-v2/assembler.md`. When the language changes, change them with it. Anything semantic belongs in `mzasm` itself, reached through `--check`.

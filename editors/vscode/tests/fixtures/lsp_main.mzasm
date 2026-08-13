@@ -1,0 +1,13 @@
+; LSP fixture (maize-429): symbols, in-file references, cross-include definition.
+    origin $1000
+
+    include "lsp_lib.mzasm"
+
+entry:
+    call lib_func
+    call local_helper
+    jump entry
+
+local_helper:
+    nop
+    return

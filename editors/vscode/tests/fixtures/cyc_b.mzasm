@@ -1,5 +1,5 @@
 ; Include-cycle fixture (server-side cycle-guard test only; never assembled).
-INCLUDE "cyc_a.mazm"
+    include "cyc_a.mzasm"
 
 cyc_b_label:
-    RET
+    return

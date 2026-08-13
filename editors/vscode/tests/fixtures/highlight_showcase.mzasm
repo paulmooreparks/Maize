@@ -1,0 +1,55 @@
+; highlight_showcase.mzasm (maize-429): one source carrying every token class the grammar
+; paints, so AC-3 can assert that each one actually reaches the editor.
+;
+; This file is read by the grammar test and is never assembled. It exists because the two real
+; programs in asm/v2/ do not between them use a slice, a character literal, a binary literal or
+; the reserved identifier `here`, and a highlighting claim about a token class nothing in the
+; corpus contains is a claim nobody has checked.
+
+    section rodata
+
+greeting:
+    data_string_zero "hello, maize\n"
+    data_byte 'A'
+    data_byte '\n'
+    data_byte '\x41'
+
+    section data
+
+counters:
+    data_word #1,000,000
+    data_word $FEDC`BA98`7654`3210
+    data_quarter_word %0100`0001
+    data_half_word here
+
+    section bss
+
+scratch:
+    reserve #64
+
+    section code
+
+    global entry
+    extern external_helper
+
+    constant mask_low_byte  $00FF
+    constant stride         #8
+
+entry:
+    move.w greeting a0
+    move.zb $41 t0
+    extract.zb a0.b5 t1
+    insert.b t1 a1.b0
+    load.zq @sp+#8 t2
+    store.h t2 @fp-#16
+    add a0 stride a0
+    and a0 mask_low_byte a1
+    shift_left a1 #3 a2
+    compare_eq a1 zero t3
+    branch_ne t3 zero done
+    call external_helper
+    port_out t0 t2
+    jump entry
+
+done:
+    return

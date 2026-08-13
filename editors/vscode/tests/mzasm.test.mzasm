@@ -1,0 +1,48 @@
+; SYNTAX TEST "source.mzasm" "Maize v2 assembly grammar"
+;
+; Each caret row asserts the scope of the columns directly beneath it on the source line above,
+; and `<-` asserts column zero. tests/grammar.test.js reads these annotations and runs them
+; through vscode-textmate, so they are assertions rather than documentation. The v1 form of
+; this file was never executed by anything.
+
+    section code
+;   ^^^^^^^ keyword.control.directive.mzasm
+;           ^^^^ constant.language.section-kind.mzasm
+
+entry:
+; <- entity.name.label.mzasm
+
+    move r1 r2
+;   ^^^^ keyword.other.mnemonic.mzasm
+;        ^^ variable.language.register.mzasm
+
+    move.zb $41 t0
+;   ^^^^^^^ keyword.other.mnemonic.mzasm
+;           ^^^ constant.numeric.hex.mzasm
+;               ^^ variable.language.register.mzasm
+
+    extract.zb a0.b5 t1
+;   ^^^^^^^^^^ keyword.other.mnemonic.mzasm
+;                 ^^ variable.language.slice.mzasm
+
+    data_word #1,000,000
+;   ^^^^^^^^^ keyword.control.directive.mzasm
+;             ^^^^^^^^^^ constant.numeric.decimal.mzasm
+
+    data_quarter_word %0101
+;                     ^^^^^ constant.numeric.binary.mzasm
+
+    load.zq @sp+#8 t2
+;           ^ keyword.operator.address.mzasm
+;            ^^ variable.language.register.mzasm
+
+    add a0 here a1
+;          ^^^^ constant.language.here.mzasm
+
+    data_string "hi\n"    ; a trailing comment
+;                ^^ string.quoted.double.mzasm
+;                  ^^ constant.character.escape.mzasm
+;                         ^ comment.line.semicolon.mzasm
+
+    data_byte 'A'
+;              ^ string.quoted.single.mzasm

@@ -1,13 +1,14 @@
-// Scripted verification for the Maize language server (maize-46 + maize-49).
+// Scripted verification for the Maize v2 language server (maize-46 + maize-49, ported to v2
+// by maize-429).
 //
 // Part 1: unit checks on the pure helpers (require'd, no connection started).
-// Part 2: probe contract against the real mazm binary.
+// Part 2: probe contract against the real mzasm binary.
 // Part 3: end-to-end stdio session in LIVE mode (on-type diagnostics, symbols,
 //         definition, references, cycle guard, burst settling).
-// Part 4: end-to-end stdio session against a faithful pre-maize-49 stub,
+// Part 4: end-to-end stdio session against a stub that does not support --stdin,
 //         proving the version-skew fallback to save-time diagnostics.
 //
-// Env: MAZM_PATH must point at a built mazm executable.
+// Env: MZASM_PATH must point at a built mzasm executable.
 // Run: node tests/lsp.test.js   (from editors/vscode/)
 
 'use strict';
@@ -19,6 +20,7 @@ const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 
 const ROOT = path.resolve(__dirname, '..');
+const REPO = path.resolve(ROOT, '..', '..');
 const FIXTURES = path.join(__dirname, 'fixtures');
 const server = require(path.join(ROOT, 'server', 'server.js'));
 
@@ -30,66 +32,90 @@ function ok(cond, label) {
 
 /* ---------------- Part 1: unit checks ---------------- */
 
-const parsed = server.parseMazmError(
-    'mazm: C:\\x\\broken.mazm:12: error: LD reads from a memory address');
-ok(parsed && parsed.line === 12 && parsed.file === 'C:\\x\\broken.mazm'
-    && parsed.message.startsWith('LD reads'), 'unit: parseMazmError extracts file/line/message');
-ok(server.parseMazmError('Assembling from x') === null, 'unit: parseMazmError rejects non-error output');
+const parsed = server.parseMzasmError(
+    "mzasm: C:\\x\\broken.mzasm:12: error: 'frob' is not a mnemonic or a directive");
+ok(parsed && parsed.line === 12 && parsed.file === 'C:\\x\\broken.mzasm'
+    && parsed.message.startsWith("'frob' is not"), 'unit: parseMzasmError extracts file/line/message');
+ok(server.parseMzasmError('Assembling from x') === null, 'unit: parseMzasmError rejects non-error output');
 
-ok(server.maskLine('    CP hw R0 ; hw is a label') === '    CP hw R0                ',
+// mzasm emits one `note: included from here` line per enclosing include
+// (src/v2/mzasm.h). Those are not diagnostics and must not become squiggles.
+const withNotes = server.parseMzasmErrors(
+    "mzasm: lib.mzasm:2: error: 'bogus' is not a mnemonic or a directive\n" +
+    'mzasm: main.mzasm:1: note: included from here\n' +
+    "mzasm: main.mzasm:3: error: 'other' is not a mnemonic or a directive\n");
+ok(withNotes.length === 2 && withNotes[0].file === 'lib.mzasm' && withNotes[1].line === 3,
+    'unit: parseMzasmErrors ignores note: continuation lines');
+
+// Asserted as a property rather than as a hand-counted literal: the point is that the comment
+// is gone and every column still lines up, and a miscounted run of spaces in the expectation
+// would fail a correct implementation.
+const maskedComment = server.maskLine('    move hw r0 ; hw is a label');
+ok(maskedComment.length === '    move hw r0 ; hw is a label'.length
+    && maskedComment.indexOf(';') === -1
+    && maskedComment.startsWith('    move hw r0 ')
+    && maskedComment.trimEnd() === '    move hw r0',
     'unit: maskLine blanks comments, preserves columns');
-ok(server.maskLine('    STRING "a;b\\"c" ; tail').indexOf(';') === -1,
+ok(server.maskLine('    data_string "a;b\\"c" ; tail').indexOf(';') === -1,
     'unit: maskLine blanks string bodies including escaped quotes and the comment');
+// A semicolon inside a character literal is an ordinary character, not a comment start.
+ok(server.maskLine("    data_byte ';' r0").endsWith('r0'),
+    'unit: maskLine does not treat a semicolon inside a character literal as a comment');
 
-const mainText = fs.readFileSync(path.join(FIXTURES, 'lsp_main.mazm'), 'utf8');
+const mainText = fs.readFileSync(path.join(FIXTURES, 'lsp_main.mzasm'), 'utf8');
 const idx = server.indexText(mainText);
 ok(idx.labels.map(l => l.name).join(',') === 'entry,local_helper',
     'unit: indexText finds colon labels in lsp_main');
-ok(idx.includes.length === 1 && idx.includes[0].target === 'lsp_lib.mazm',
-    'unit: indexText finds INCLUDE target');
+ok(idx.includes.length === 1 && idx.includes[0].target === 'lsp_lib.mzasm',
+    'unit: indexText finds the lowercase include target');
+// v2's include is lowercase, and the v1 spelling is not a directive in this language.
+ok(server.indexText('INCLUDE "lsp_lib.mzasm"\n').includes.length === 0,
+    'unit: indexText does not accept the uppercase v1 INCLUDE spelling');
 
-const libText = fs.readFileSync(path.join(FIXTURES, 'lsp_lib.mazm'), 'utf8');
+const libText = fs.readFileSync(path.join(FIXTURES, 'lsp_lib.mzasm'), 'utf8');
 const libIdx = server.indexText(libText);
-ok(libIdx.labels.some(l => l.name === 'lib_data' && l.kind === 'directive')
-    && libIdx.labels.some(l => l.name === 'lib_func' && l.kind === 'colon'),
-    'unit: indexText finds LABEL-directive and colon declarations in lsp_lib');
+ok(libIdx.labels.map(l => l.name).sort().join(',') === 'lib_data,lib_func',
+    'unit: indexText finds both colon declarations in lsp_lib');
+// AC-12's unit half: no label carries a directive kind, because v2 has no LABEL directive.
+ok(libIdx.labels.every(l => l.kind === undefined),
+    'unit: no label carries a directive-shaped kind');
 
 const def = server.findDefinitionAcrossIncludes(
-    path.join(FIXTURES, 'lsp_main.mazm'), mainText, 'lib_func');
-ok(def && path.basename(def.file) === 'lsp_lib.mazm', 'unit: cross-INCLUDE definition resolves');
+    path.join(FIXTURES, 'lsp_main.mzasm'), mainText, 'lib_func');
+ok(def && path.basename(def.file) === 'lsp_lib.mzasm', 'unit: cross-include definition resolves');
 
-const cycText = fs.readFileSync(path.join(FIXTURES, 'cyc_a.mazm'), 'utf8');
+const cycText = fs.readFileSync(path.join(FIXTURES, 'cyc_a.mzasm'), 'utf8');
 const noDef = server.findDefinitionAcrossIncludes(
-    path.join(FIXTURES, 'cyc_a.mazm'), cycText, 'does_not_exist');
+    path.join(FIXTURES, 'cyc_a.mzasm'), cycText, 'does_not_exist');
 ok(noDef === null, 'unit: include cycle terminates (missing symbol returns null)');
 
 const refs = server.findIdentifiers(mainText, 'local_helper');
 ok(refs.length === 2, 'unit: references finds declaration + usage of local_helper');
 
-ok(server.parseMazmErrors('').length === 0, 'unit: parseMazmErrors on empty input');
-ok(server.parseMazmErrors('mazm: a.mazm:3: error: x').length === 1, 'unit: parseMazmErrors single line');
-const multi = server.parseMazmErrors(
-    'mazm: a.mazm:3: error: one\nmazm: b.mazm:7: error: two\nnoise line\nmazm: a.mazm:9: error: three\n');
-ok(multi.length === 3 && multi[0].line === 3 && multi[1].file === 'b.mazm' && multi[2].message === 'three',
-    'unit: parseMazmErrors returns all lines in order, mixed files, noise ignored');
+ok(server.parseMzasmErrors('').length === 0, 'unit: parseMzasmErrors on empty input');
+ok(server.parseMzasmErrors('mzasm: a.mzasm:3: error: x').length === 1, 'unit: parseMzasmErrors single line');
+const multi = server.parseMzasmErrors(
+    'mzasm: a.mzasm:3: error: one\nmzasm: b.mzasm:7: error: two\nnoise line\nmzasm: a.mzasm:9: error: three\n');
+ok(multi.length === 3 && multi[0].line === 3 && multi[1].file === 'b.mzasm' && multi[2].message === 'three',
+    'unit: parseMzasmErrors returns all lines in order, mixed files, noise ignored');
 
-ok(server.classifyProbe(1, 'mazm: mazm-stdin-probe:1: error: unterminated string literal starting at line 1'),
+ok(server.classifyProbe(1, "mzasm: mzasm-stdin-probe:1: error: 'no_such_instruction' is not a mnemonic or a directive"),
     'unit: classifyProbe accepts exit 1 + marker');
 ok(!server.classifyProbe(0, ''), 'unit: classifyProbe rejects exit 0');
-ok(!server.classifyProbe(1, 'mazm: somewhere.mazm:1: error: nope'),
+ok(!server.classifyProbe(1, 'mzasm: somewhere.mzasm:1: error: nope'),
     'unit: classifyProbe rejects exit 1 without the marker');
 
 /* ---------------- shared LSP session harness ---------------- */
 
-if (!process.env.MAZM_PATH) {
-    console.log('SKIP e2e: MAZM_PATH not set');
+if (!process.env.MZASM_PATH) {
+    console.log('SKIP e2e: MZASM_PATH not set');
     process.exit(failures === 0 ? 0 : 1);
 }
 
 function startSession(env) {
     const child = spawn(process.execPath, [path.join(ROOT, 'server', 'server.js'), '--stdio'], {
         cwd: ROOT,
-        env: { ...process.env, MAZM_CHECK_TIMEOUT_MS: '5000', ...env },
+        env: { ...process.env, MZASM_CHECK_TIMEOUT_MS: '5000', ...env },
         stdio: ['pipe', 'pipe', 'inherit'],
     });
 
@@ -190,7 +216,7 @@ function startSession(env) {
         session.notify('textDocument/didOpen', {
             textDocument: {
                 uri: pathToFileURL(fsPath).toString(),
-                languageId: 'mazm',
+                languageId: 'mzasm',
                 version: 1,
                 text: text !== undefined ? text : fs.readFileSync(fsPath, 'utf8'),
             },
@@ -210,14 +236,18 @@ function startSession(env) {
 }
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-const BROKEN = 'main:\n    LD nolabel R0\n';
-const FIXED = 'main:\n    CP $00 R0\n    HALT\n';
+
+// An unrecognized mnemonic is the error these fixtures use throughout: it rests on no lexical
+// construct, so it stays an error whatever else the language settles on, and it lands on a
+// predictable line.
+const BROKEN = 'entry:\n    no_such_instruction\n';
+const FIXED = 'entry:\n    nop\n    halt\n';
 
 /* ---------------- Part 2: probe contract vs the real binary ---------------- */
 
 async function testProbeContract() {
     const result = await new Promise((resolve) => {
-        const p = spawn(process.env.MAZM_PATH,
+        const p = spawn(process.env.MZASM_PATH,
             ['--check', '--stdin', '--base-path', os.tmpdir(), '--source-name', server.PROBE_SOURCE_NAME]);
         let stderr = '';
         p.stderr.on('data', d => { stderr += d; });
@@ -227,47 +257,45 @@ async function testProbeContract() {
     });
 
     ok(result.code === 1 && server.classifyProbe(result.code, result.stderr),
-        'probe: real mazm produces exit 1 + mazm-stdin-probe marker');
+        'probe: real mzasm produces exit 1 + mzasm-stdin-probe marker');
 
-    // Regression (maize-50 Ship pushback): a buffer ending in a bare opcode
-    // (the natural mid-typing state) crashed mazm with an access violation
-    // because recovery left the partially-tokenized node for the compiler.
-    // Must be a clean exit-1 with a parseable line, never a crash exit.
+    // Regression class carried over from maize-50: a buffer in a natural
+    // mid-typing state must be a clean exit-1 with a parseable line, never a
+    // crash exit. A bare mnemonic on its own line is that state.
     const partial = await new Promise((resolve) => {
-        const p = spawn(process.env.MAZM_PATH,
-            ['--check', '--stdin', '--base-path', os.tmpdir(), '--source-name', 'partial.mazm']);
+        const p = spawn(process.env.MZASM_PATH,
+            ['--check', '--stdin', '--base-path', os.tmpdir(), '--source-name', 'partial.mzasm']);
         let stderr = '';
         p.stderr.on('data', d => { stderr += d; });
         p.on('close', code => resolve({ code, stderr }));
         p.stdin.on('error', () => {});
-        // Trailing newline matters: it dispatches the bare opcode, which is
-        // the state that crashed. (Without it, the half-typed token is
-        // silently ignored at EOF, mazm's longstanding behavior.)
-        p.stdin.end('main:\n    CP $00 R0\n    LD\n');
+        // Trailing newline matters: it dispatches the bare mnemonic, which is
+        // the state that used to crash v1's assembler.
+        p.stdin.end('entry:\n    nop\n    move\n');
     });
-    ok(partial.code === 1 && server.parseMazmErrors(partial.stderr).length > 0,
-        'probe: bare-opcode partial buffer exits 1 with a parseable diagnostic (no crash)');
+    ok(partial.code === 1 && server.parseMzasmErrors(partial.stderr).length > 0,
+        'probe: bare-mnemonic partial buffer exits 1 with a parseable diagnostic (no crash)');
 
-    // Same class, short-child variant: a 2-operand opcode truncated after one
-    // operand exercises the short-children compile path.
+    // Same class, short-operand variant: a two-operand mnemonic truncated after
+    // one operand.
     const shortOp = await new Promise((resolve) => {
-        const p = spawn(process.env.MAZM_PATH,
-            ['--check', '--stdin', '--base-path', os.tmpdir(), '--source-name', 'short.mazm']);
+        const p = spawn(process.env.MZASM_PATH,
+            ['--check', '--stdin', '--base-path', os.tmpdir(), '--source-name', 'short.mzasm']);
         let stderr = '';
         p.stderr.on('data', d => { stderr += d; });
         p.on('close', code => resolve({ code, stderr }));
         p.stdin.on('error', () => {});
-        p.stdin.end('main:\n    LD x\n');
+        p.stdin.end('entry:\n    move r1\n');
     });
-    ok(shortOp.code === 1 && server.parseMazmErrors(shortOp.stderr).length > 0,
+    ok(shortOp.code === 1 && server.parseMzasmErrors(shortOp.stderr).length > 0,
         'probe: one-of-two-operands truncation exits 1 with a parseable diagnostic (no crash)');
 }
 
 /* ---------------- Part 3: live-mode e2e ---------------- */
 
 async function testLiveMode() {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mazm-lsp-'));
-    const workFile = path.join(tmpDir, 'work.mazm');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mzasm-lsp-'));
+    const workFile = path.join(tmpDir, 'work.mzasm');
     fs.writeFileSync(workFile, FIXED);   // disk is FIXED the whole test
     const workUri = pathToFileURL(workFile).toString();
 
@@ -285,8 +313,8 @@ async function testLiveMode() {
     ok(last.diagnostics.length === 1
         && last.diagnostics[0].severity === 1
         && last.diagnostics[0].range.start.line === 1
-        && last.diagnostics[0].source === 'mazm',
-        'live: broken BUFFER over clean disk publishes the error (buffer wins)');
+        && last.diagnostics[0].source === 'mzasm',
+        'live: broken BUFFER over clean disk publishes the error at line 1, sourced mzasm');
 
     // Typing the fix clears it, no save involved.
     mark = s.countFor(workUri);
@@ -304,12 +332,12 @@ async function testLiveMode() {
     ok(last.diagnostics.length === 1 && last.diagnostics[0].range.start.line === 1,
         'live: rapid burst settles on the final state');
 
-    // Multi-error buffer (maize-50): three squiggles at once, dropping as fixed.
-    const multiFile = path.join(tmpDir, 'multi.mazm');
+    // Multi-error buffer: three squiggles at once, dropping as fixed.
+    const multiFile = path.join(tmpDir, 'multi.mzasm');
     fs.writeFileSync(multiFile, FIXED);
     const multiUri = pathToFileURL(multiFile).toString();
-    const MULTI3 = 'main:\n    LD a R0\n    LD b R1\n    CALL nowhere\n    RET\n';
-    const MULTI2 = 'main:\n    CP $01 R0\n    LD b R1\n    CALL nowhere\n    RET\n';
+    const MULTI3 = 'entry:\n    bogus_one\n    bogus_two\n    bogus_three\n    halt\n';
+    const MULTI2 = 'entry:\n    nop\n    bogus_two\n    bogus_three\n    halt\n';
 
     mark = s.countFor(multiUri);
     s.open(multiFile, MULTI3);
@@ -329,12 +357,14 @@ async function testLiveMode() {
     ok(last.diagnostics.length === 0, 'multi: fixing the rest clears all diagnostics');
 
     // Mixed buffer + include errors: anchored plus line-mapped in one publish.
-    fs.writeFileSync(path.join(tmpDir, 'bad_inc.mazm'), 'lib:\n    FROB R0\n    RET\n');
-    const mixedFile = path.join(tmpDir, 'mixed.mazm');
+    // mzasm also emits a `note: included from here` line here, which must not
+    // become a third diagnostic.
+    fs.writeFileSync(path.join(tmpDir, 'bad_inc.mzasm'), 'lib:\n    bogus_lib\n    return\n');
+    const mixedFile = path.join(tmpDir, 'mixed.mzasm');
     fs.writeFileSync(mixedFile, FIXED);
     const mixedUri = pathToFileURL(mixedFile).toString();
     mark = s.countFor(mixedUri);
-    s.open(mixedFile, 'INCLUDE "bad_inc.mazm"\nmain:\n    LD x R0\n    RET\n');
+    s.open(mixedFile, 'include "bad_inc.mzasm"\nentry:\n    bogus_here\n    halt\n');
     last = await s.settle(mixedUri, mark);
     const anchored = last.diagnostics.filter(d => d.message.startsWith('in included file'));
     const mapped = last.diagnostics.filter(d => !d.message.startsWith('in included file'));
@@ -343,8 +373,8 @@ async function testLiveMode() {
         && mapped.length === 1 && mapped[0].range.start.line === 2,
         'multi: mixed buffer+include errors split into anchored and line-mapped diagnostics');
 
-    // Symbols on hello.mazm.
-    const helloPath = path.resolve(ROOT, '..', '..', 'asm', 'hello.mazm');
+    // Symbols on the real hello.mzasm.
+    const helloPath = path.join(REPO, 'asm', 'v2', 'hello.mzasm');
     const helloUri = pathToFileURL(helloPath).toString();
     mark = s.countFor(helloUri);
     s.open(helloPath);
@@ -352,25 +382,28 @@ async function testLiveMode() {
     const symbols = await s.request('textDocument/documentSymbol', {
         textDocument: { uri: helloUri },
     });
-    ok(symbols.result.map(sym => sym.name).sort().join(',') === 'hw_string,loop_body,loop_condition,loop_exit,main,strlen',
-        'live: documentSymbol on hello.mazm returns all six labels');
+    ok(symbols.result.map(sym => sym.name).sort().join(',') === 'done,emit_byte,message,start',
+        'live: documentSymbol on hello.mzasm returns its four colon labels');
+    // AC-12: one label form means one symbol kind. SymbolKind.Function is 12.
+    ok(symbols.result.every(sym => sym.kind === 12),
+        'live: every documentSymbol is SymbolKind.Function (no directive-shaped kind)');
 
-    // Cross-INCLUDE definition + references from lsp_main.
-    const mainPath = path.join(FIXTURES, 'lsp_main.mazm');
+    // Cross-include definition + references from lsp_main.
+    const mainPath = path.join(FIXTURES, 'lsp_main.mzasm');
     const mainUri = pathToFileURL(mainPath).toString();
     mark = s.countFor(mainUri);
     s.open(mainPath);
     await s.settle(mainUri, mark);
     const lines = fs.readFileSync(mainPath, 'utf8').split(/\r?\n/);
-    const callLine = lines.findIndex(l => l.includes('CALL lib_func'));
+    const callLine = lines.findIndex(l => l.includes('call lib_func'));
     const defResp = await s.request('textDocument/definition', {
         textDocument: { uri: mainUri },
         position: { line: callLine, character: lines[callLine].indexOf('lib_func') + 2 },
     });
-    ok(defResp.result && defResp.result.uri.endsWith('lsp_lib.mazm'),
-        'live: definition of lib_func lands in lsp_lib.mazm');
+    ok(defResp.result && defResp.result.uri.endsWith('lsp_lib.mzasm'),
+        'live: definition of lib_func lands in lsp_lib.mzasm');
 
-    const helperLine = lines.findIndex(l => l.includes('CALL local_helper'));
+    const helperLine = lines.findIndex(l => l.includes('call local_helper'));
     const refResp = await s.request('textDocument/references', {
         textDocument: { uri: mainUri },
         position: { line: helperLine, character: lines[helperLine].indexOf('local_helper') + 2 },
@@ -380,7 +413,7 @@ async function testLiveMode() {
         'live: references on local_helper returns declaration + usage');
 
     // Cycle guard through the request path.
-    const cycPath = path.join(FIXTURES, 'cyc_a.mazm');
+    const cycPath = path.join(FIXTURES, 'cyc_a.mzasm');
     const cycUri = pathToFileURL(cycPath).toString();
     mark = s.countFor(cycUri);
     s.open(cycPath);
@@ -388,7 +421,7 @@ async function testLiveMode() {
     const started = Date.now();
     const missing = await s.request('textDocument/definition', {
         textDocument: { uri: cycUri },
-        position: { line: 4, character: 5 },   // on RET: no such label anywhere
+        position: { line: 4, character: 5 },   // on return: no such label anywhere
     });
     ok((missing.result === null || missing.result === undefined) && Date.now() - started < 5000,
         'live: definition across an include cycle terminates with null');
@@ -399,13 +432,13 @@ async function testLiveMode() {
 /* ---------------- Part 4: version-skew fallback e2e ---------------- */
 
 async function testFallback() {
-    const stub = path.join(FIXTURES, process.platform === 'win32' ? 'old-mazm-stub.cmd' : 'old-mazm-stub.js');
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mazm-lsp-fb-'));
-    const workFile = path.join(tmpDir, 'work.mazm');
+    const stub = path.join(FIXTURES, process.platform === 'win32' ? 'old-mzasm-stub.cmd' : 'old-mzasm-stub.js');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mzasm-lsp-fb-'));
+    const workFile = path.join(tmpDir, 'work.mzasm');
     fs.writeFileSync(workFile, BROKEN);   // disk starts BROKEN
     const workUri = pathToFileURL(workFile).toString();
 
-    const s = startSession({ MAZM_PATH: stub });
+    const s = startSession({ MZASM_PATH: stub });
     await s.request('initialize', { processId: null, rootUri: null, capabilities: {} });
     s.notify('initialized', {});
 
@@ -416,7 +449,7 @@ async function testFallback() {
     s.open(workFile);
     let last = await s.settle(workUri, mark);
     ok(last.diagnostics.length === 1 && last.diagnostics[0].range.start.line === 1,
-        'fallback: save-time diagnostics work against the old-mazm stub');
+        'fallback: save-time diagnostics work against a stub with no --stdin support');
 
     // didChange must NOT trigger any validation in fallback mode.
     const before = s.countFor(workUri);

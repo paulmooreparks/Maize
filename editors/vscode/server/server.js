@@ -1,10 +1,21 @@
-// Maize assembly language server (maize-46).
+// Maize v2 assembly language server (maize-46, rewritten for v2 by maize-429).
 //
-// Diagnostics come from the assembler itself: `mazm --check <file>` is spawned
-// against the saved file and its single fatal line (mazm: <file>:<line>:
-// error: <msg>) becomes the diagnostic. The symbol index below is a line-scan
-// projection of mazm's tokenizer, the same stance as the TextMate grammar;
-// anything semantic stays mazm's job.
+// Diagnostics come from the assembler itself: `mzasm --check <file>` is spawned
+// against the saved file and its fatal lines (mzasm: <file>:<line>: error:
+// <msg>) become the diagnostics. The symbol index below is a line-scan
+// projection of mzasm's tokenizer, the same stance as the TextMate grammar;
+// anything semantic stays mzasm's job.
+//
+// The transport and session layer here is v1's unchanged: document lifecycle,
+// the debounce and generation guard, the live/file probe, and the spawn
+// timeout encode nothing about either language. What v2 replaced is the
+// language knowledge, and the differences that mattered are these. mzasm's
+// diagnostic prefix is its own name, hardcoded in the formatter
+// (src/v2/mzasm_lexer.cpp), so it is `mzasm: ` and not the configured path.
+// v2's `include` is lowercase, because case matters everywhere in v2. And v2
+// has no LABEL directive at all, so the colon form is the only label
+// declaration there is and the directive-shaped symbol kind went with it
+// rather than being translated into something v2 does not have.
 
 'use strict';
 
@@ -14,17 +25,25 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { pathToFileURL, fileURLToPath } = require('url');
 
-const ERROR_LINE = /^mazm: (.+?):(\d+): error: (.+)$/m;
-const PROBE_SOURCE_NAME = 'mazm-stdin-probe';
-const PROBE_INPUT = 'STRING "x\n';
-const PROBE_MARKER = /^mazm: mazm-stdin-probe:1: error:/m;
+const ERROR_LINE = /^mzasm: (.+?):(\d+): error: (.+)$/m;
+const PROBE_SOURCE_NAME = 'mzasm-stdin-probe';
+
+// An unrecognized mnemonic, which fails for a reason that rests on no lexical
+// construct at all and so cannot stop failing as the language settles. This is
+// the same probe scripts/install-mzasm.ps1 and .sh already use for their own
+// installed-mzasm smoke test.
+const PROBE_INPUT = 'no_such_instruction\n';
+const PROBE_MARKER = /^mzasm: mzasm-stdin-probe:1: error:/m;
+
 const IDENT = /[A-Za-z_][A-Za-z0-9_]*/g;
 const COLON_LABEL = /^(\s*)([A-Za-z_][A-Za-z0-9_]*):/;
-const LABEL_DIRECTIVE = /^(\s*LABEL[ \t]+)([A-Za-z_][A-Za-z0-9_]*)/;
-const INCLUDE_LINE = /^\s*INCLUDE[ \t]+"([^"]+)"/;
+const INCLUDE_LINE = /^\s*include[ \t]+"([^"]+)"/;
 
-/* Parse mazm's fatal diagnostic line out of a stderr blob. */
-function parseMazmError(stderr) {
+/* Parse mzasm's first fatal diagnostic line out of a stderr blob. The `note:
+   included from here` continuation lines mzasm emits after an error inside an
+   included file are deliberately not matched: only `error:` lines carry a
+   diagnostic, and the notes repeat a location the message already names. */
+function parseMzasmError(stderr) {
     const m = ERROR_LINE.exec(stderr || '');
 
     if (!m) {
@@ -34,11 +53,11 @@ function parseMazmError(stderr) {
     return { file: m[1], line: parseInt(m[2], 10), message: m[3] };
 }
 
-/* All fatal diagnostic lines, in output order (maize-50: mazm reports every
-   error it can recover past, one line each). */
-function parseMazmErrors(stderr) {
+/* All fatal diagnostic lines, in output order (maize-50: the assembler reports
+   every error it can recover past, one line each). */
+function parseMzasmErrors(stderr) {
     const out = [];
-    const re = /^mazm: (.+?):(\d+): error: (.+)$/gm;
+    const re = /^mzasm: (.+?):(\d+): error: (.+)$/gm;
     let m;
 
     while ((m = re.exec(stderr || '')) !== null) {
@@ -48,17 +67,26 @@ function parseMazmErrors(stderr) {
     return out;
 }
 
-/* Blank out the comment tail and string bodies of a source line, preserving
-   columns, so identifier scans cannot match inside either. */
+/* Blank out the comment tail, string bodies and character-literal bodies of a
+   source line, preserving columns, so identifier scans cannot match inside any
+   of them.
+
+   The character-literal case is handled symmetrically with the string case
+   rather than left out. A v2 character literal holds one character and cannot
+   itself look like an identifier, so on its own it is low risk; the reason to
+   handle it is that a semicolon inside one is an ordinary character
+   (assembler.md, Lexical structure), so an unhandled `';'` would blank the
+   rest of a real line as though a comment had started there. */
 function maskLine(line) {
     let out = '';
     let inString = false;
+    let inChar = false;
     let escaped = false;
 
     for (let i = 0; i < line.length; i++) {
         const c = line[i];
 
-        if (inString) {
+        if (inString || inChar) {
             out += ' ';
 
             if (escaped) {
@@ -67,13 +95,20 @@ function maskLine(line) {
             else if (c === '\\') {
                 escaped = true;
             }
-            else if (c === '"') {
+            else if (inString && c === '"') {
                 inString = false;
+            }
+            else if (inChar && c === "'") {
+                inChar = false;
             }
         }
         else if (c === '"') {
             out += ' ';
             inString = true;
+        }
+        else if (c === "'") {
+            out += ' ';
+            inChar = true;
         }
         else if (c === ';') {
             out += ' '.repeat(line.length - i);
@@ -87,8 +122,13 @@ function maskLine(line) {
     return out;
 }
 
-/* Index a document: label declarations (colon-form and LABEL directives) and
-   INCLUDE targets. Line numbers are 0-based. */
+/* Index a document: label declarations and `include` targets. Line numbers are
+   0-based.
+
+   v2 declares a label one way only, as an identifier followed by a colon on a
+   line of its own (assembler.md, Symbols). v1's `LABEL <name>` directive form
+   has no v2 equivalent, so it is gone from here rather than translated, and
+   with it the second symbol kind the document-symbol handler used to carry. */
 function indexText(text) {
     const labels = [];
     const includes = [];
@@ -104,22 +144,10 @@ function indexText(text) {
                 line: i,
                 startChar: colon[1].length,
                 endChar: colon[1].length + colon[2].length,
-                kind: 'colon',
             });
         }
 
-        const directive = LABEL_DIRECTIVE.exec(masked);
-        if (directive) {
-            labels.push({
-                name: directive[2],
-                line: i,
-                startChar: directive[1].length,
-                endChar: directive[1].length + directive[2].length,
-                kind: 'directive',
-            });
-        }
-
-        // INCLUDE targets live inside the string, so scan the raw line.
+        // `include` targets live inside the string, so scan the raw line.
         const inc = INCLUDE_LINE.exec(lines[i]);
         if (inc) {
             includes.push({ target: inc[1], line: i });
@@ -164,7 +192,7 @@ function wordAt(lineText, character) {
     return null;
 }
 
-/* Breadth-first label lookup across the INCLUDE closure of `filePath`,
+/* Breadth-first label lookup across the `include` closure of `filePath`,
    with a visited set so include cycles terminate. Returns
    { file, label } or null. Reads from disk; the open document's own text
    is supplied by the caller as `rootText`. */
@@ -212,15 +240,15 @@ function findDefinitionAcrossIncludes(filePath, rootText, name) {
 }
 
 /* True iff a probe outcome proves --stdin support (maize-49): only exit 1 plus
-   the marker line counts. Any other outcome means an older mazm that ignored
+   the marker line counts. Any other outcome means an assembler that ignored
    the flags, a crash, or a timeout, and the caller must fall back. */
 function classifyProbe(exitCode, stderr) {
     return exitCode === 1 && PROBE_MARKER.test(stderr || '');
 }
 
 module.exports = {
-    parseMazmError,
-    parseMazmErrors,
+    parseMzasmError,
+    parseMzasmErrors,
     maskLine,
     indexText,
     findIdentifiers,
@@ -253,9 +281,9 @@ const connection = createConnection(ProposedFeatures.all);
 const documents = new TextDocuments(TextDocument);
 
 let hasConfiguration = false;
-let warnedNoMazm = false;
+let warnedNoMzasm = false;
 
-const CHECK_TIMEOUT_MS = parseInt(process.env.MAZM_CHECK_TIMEOUT_MS || '10000', 10);
+const CHECK_TIMEOUT_MS = parseInt(process.env.MZASM_CHECK_TIMEOUT_MS || '10000', 10);
 const DEBOUNCE_MS = 300;
 
 /* 'live' (buffer over stdin, on-type) or 'file' (saved state, maize-46
@@ -263,21 +291,21 @@ const DEBOUNCE_MS = 300;
 let modePromise = null;
 
 const generations = new Map();    // uri -> latest validation generation
-const inflight = new Map();       // uri -> running mazm child process
+const inflight = new Map();       // uri -> running mzasm child process
 const debounceTimers = new Map(); // uri -> pending didChange timer
 
-/* Spawn mazm, optionally feeding stdin, with a kill-timer. .cmd/.bat targets
+/* Spawn mzasm, optionally feeding stdin, with a kill-timer. .cmd/.bat targets
    (wrapper scripts) need shell mode on Windows. cb(err, exitCode, stderr). */
-function spawnMazm(mazmPath, args, inputText, cb) {
-    const useShell = /\.(cmd|bat)$/i.test(mazmPath);
+function spawnMzasm(mzasmPath, args, inputText, cb) {
+    const useShell = /\.(cmd|bat)$/i.test(mzasmPath);
     let child;
 
     try {
         // Shell mode (wrapper scripts) needs explicit quoting or cmd.exe
         // splits paths containing spaces.
         child = useShell
-            ? spawn(`"${mazmPath}"`, args.map(a => `"${a}"`), { shell: true, windowsHide: true })
-            : spawn(mazmPath, args, { windowsHide: true });
+            ? spawn(`"${mzasmPath}"`, args.map(a => `"${a}"`), { shell: true, windowsHide: true })
+            : spawn(mzasmPath, args, { windowsHide: true });
     }
     catch (e) {
         cb(e, -1, '');
@@ -304,21 +332,21 @@ function spawnMazm(mazmPath, args, inputText, cb) {
     return child;
 }
 
-function ensureMode(mazmPath) {
+function ensureMode(mzasmPath) {
     if (!modePromise) {
         modePromise = new Promise((resolve) => {
             const args = ['--check', '--stdin', '--base-path', os.tmpdir(), '--source-name', PROBE_SOURCE_NAME];
 
-            spawnMazm(mazmPath, args, PROBE_INPUT, (err, code, stderr) => {
+            spawnMzasm(mzasmPath, args, PROBE_INPUT, (err, code, stderr) => {
                 if (!err && classifyProbe(code, stderr)) {
                     resolve('live');
                     return;
                 }
 
                 connection.console.log(
-                    `mazm --stdin probe failed (${err ? err.code : 'exit ' + code}); falling back to save-time diagnostics`);
+                    `mzasm --stdin probe failed (${err ? err.code : 'exit ' + code}); falling back to save-time diagnostics`);
                 connection.window.showInformationMessage(
-                    'This mazm build does not support --stdin; diagnostics update on save only. Rebuild mazm for on-type checking.');
+                    'This mzasm build does not support --stdin; diagnostics update on save only. Rebuild mzasm for on-type checking.');
                 resolve('file');
             });
         });
@@ -344,10 +372,10 @@ connection.onInitialize((params) => {
     };
 });
 
-async function getMazmPath() {
+async function getMzasmPath() {
     if (hasConfiguration) {
         try {
-            const configured = await connection.workspace.getConfiguration({ section: 'maize.mazm.path' });
+            const configured = await connection.workspace.getConfiguration({ section: 'maize.mzasm.path' });
 
             if (typeof configured === 'string' && configured.length > 0) {
                 return configured;
@@ -358,7 +386,7 @@ async function getMazmPath() {
         }
     }
 
-    return process.env.MAZM_PATH || 'mazm';
+    return process.env.MZASM_PATH || 'mzasm';
 }
 
 function samePath(a, b) {
@@ -376,8 +404,8 @@ async function validate(doc, isChange) {
     }
 
     const fsPath = fileURLToPath(doc.uri);
-    const mazmPath = await getMazmPath();
-    const mode = await ensureMode(mazmPath);
+    const mzasmPath = await getMzasmPath();
+    const mode = await ensureMode(mzasmPath);
 
     if (mode === 'file' && isChange) {
         // Fallback mode checks saved state only; a dirty buffer has nothing
@@ -398,7 +426,7 @@ async function validate(doc, isChange) {
         : ['--check', fsPath];
     const input = mode === 'live' ? doc.getText() : null;
 
-    const child = spawnMazm(mazmPath, args, input, (err, code, stderr) => {
+    const child = spawnMzasm(mzasmPath, args, input, (err, code, stderr) => {
         if (generations.get(doc.uri) !== gen) {
             // A newer validation superseded this one (typically we killed it).
             return;
@@ -407,10 +435,10 @@ async function validate(doc, isChange) {
         inflight.delete(doc.uri);
 
         if (err && (err.code === 'ENOENT' || err.code === 'EACCES')) {
-            if (!warnedNoMazm) {
-                warnedNoMazm = true;
+            if (!warnedNoMzasm) {
+                warnedNoMzasm = true;
                 connection.window.showWarningMessage(
-                    `mazm not found at "${mazmPath}". Set maize.mazm.path to your built assembler; ` +
+                    `mzasm not found at "${mzasmPath}". Set maize.mzasm.path to your built assembler; ` +
                     'diagnostics are disabled until then.');
             }
             return;
@@ -421,12 +449,12 @@ async function validate(doc, isChange) {
             return;
         }
 
-        const parsed = parseMazmErrors(stderr);
+        const parsed = parseMzasmErrors(stderr);
 
         if (parsed.length === 0) {
             // Killed by timeout, crashed, or unrecognized output: nothing to map.
             connection.sendDiagnostics({ uri: doc.uri, diagnostics: [] });
-            connection.console.log(`mazm --check produced no parseable diagnostic for ${fsPath}`);
+            connection.console.log(`mzasm --check produced no parseable diagnostic for ${fsPath}`);
             return;
         }
 
@@ -445,7 +473,7 @@ async function validate(doc, isChange) {
                         end: { line, character: Math.max(1, lineText.replace(/\r?\n$/, '').length) },
                     },
                     message: p.message,
-                    source: 'mazm',
+                    source: 'mzasm',
                 };
             }
 
@@ -455,7 +483,7 @@ async function validate(doc, isChange) {
                 severity: DiagnosticSeverity.Error,
                 range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
                 message: `in included file ${p.file}:${p.line}: ${p.message}`,
-                source: 'mazm',
+                source: 'mzasm',
             };
         });
 
@@ -511,9 +539,13 @@ connection.onDocumentSymbol((params) => {
         return null;
     }
 
+    // One label kind, so one symbol kind. v1 chose between Function and
+    // Constant here because it had two declaration forms; v2 has only the
+    // colon form, and a branch with one reachable arm would be describing a
+    // language this one is not.
     return indexText(doc.getText()).labels.map(l => ({
         name: l.name,
-        kind: l.kind === 'directive' ? SymbolKind.Constant : SymbolKind.Function,
+        kind: SymbolKind.Function,
         location: {
             uri: params.textDocument.uri,
             range: {
