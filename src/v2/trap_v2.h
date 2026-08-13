@@ -40,7 +40,12 @@ inline constexpr std::uint8_t kPhysicalMemoryFault = 11;
 namespace subcode {
 inline constexpr std::uint8_t kOperandForm = 0;         // cause 1: undefined operand form field
 inline constexpr std::uint8_t kInvalidImmediate = 1;    // cause 1: an immediate the entry rejects
+inline constexpr std::uint8_t kReservedRoundingMode = 2;  // cause 1: a reserved frm encoding
+inline constexpr std::uint8_t kUnimplementedCsr = 3;    // cause 1: a well-formed number with no register
+inline constexpr std::uint8_t kReadOnlyCsr = 4;         // cause 1: a write to a read-only number
 inline constexpr std::uint8_t kBlockMemoryOperands = 5;  // cause 1: aliased slot or r0 in one
+inline constexpr std::uint8_t kInvalidCsrValue = 6;     // cause 1: a value the register rejects
+inline constexpr std::uint8_t kReservedCsrPrivilege = 7;  // cause 1: a reserved privilege field
 inline constexpr std::uint8_t kDivideByZero = 0;        // cause 2
 inline constexpr std::uint8_t kQuotientOverflow = 1;    // cause 2
 }  // namespace subcode

@@ -254,16 +254,21 @@ V2_FIXTURE(out_of_scope_opcodes_are_a_host_diagnostic) {
     };
 
     const Case cases[] = {
-        {"csr_read", op::kCsrRead, {op::kCsrRead, 0x04, 0x00, 0x00}},
+        {"sys rs", op::kSysReg, {op::kSysReg, 0x04}},
         {"sys #imm", op::kSysImm, {op::kSysImm, 0x2A}},
         {"trap_return", op::kTrapReturn, {op::kTrapReturn}},
         {"nop", op::kNop, {op::kNop}},
         // port_in and port_out USED to sit here and no longer do: maize-451 implements both, and
         // the case they vacated is filled by another member of the same band rather than
-        // dropped, so the band's coverage does not thin out as it is implemented.
+        // dropped, so the band's coverage does not thin out as it is implemented. csr_read and
+        // csr_swap left the same way on maize-463 and were replaced the same way. The three
+        // survivors below are privileged instructions whose bodies are still another card's:
+        // they reach this diagnostic at SUPERVISOR level, which is where the fixture runs them,
+        // and raise the privileged-operation fault at user level instead, which is where
+        // privileged_instructions_are_privileged_at_user_level runs them.
         {"wait_for_interrupt", op::kWaitForInterrupt, {op::kWaitForInterrupt}},
         {"tlb_invalidate_address", op::kTlbInvalidateAddress, {op::kTlbInvalidateAddress, 0x04}},
-        {"csr_swap", op::kCsrSwap, {op::kCsrSwap, 0x04, 0x05, 0x00, 0x00}},
+        {"tlb_invalidate_all", op::kTlbInvalidateAll, {op::kTlbInvalidateAll}},
         {"float_add", 0xC8, {0xC8, 0x01, 0x02, 0x03}},
         {"unsigned_to_float.h", 0xF3, {0xF3, 0x01, 0x02}},
         {"breakpoint", op::kBreakpoint, {op::kBreakpoint}},

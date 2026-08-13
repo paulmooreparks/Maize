@@ -19,7 +19,8 @@ add_executable(mzvm_v2_fixtures
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_integer.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_control.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_memory.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_devices.cpp")
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_devices.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_privilege.cpp")
 target_include_directories(mzvm_v2_fixtures PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src/v2"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2")
@@ -66,7 +67,16 @@ set(MAIZE_V2_FIXTURES
   device_console_acknowledge_clears_transient_bits_only
   device_interrupt_control_reads_back_what_it_stores
   port_instructions_reach_the_port_space
-  port_in_port_out_privileged)
+  port_in_port_out_privileged
+  csr_access_rules_apply_in_the_chapters_order
+  csr_unimplemented_numbers_trap_rather_than_reading_zero
+  csr_read_has_no_side_effect
+  csr_swap_exchanges_atomically
+  csr_swap_traps_exactly_as_csr_write
+  csr_value_validation_is_per_register
+  csr_reset_state
+  scratch_register_contract
+  privileged_instructions_are_privileged_at_user_level)
 
 foreach(_fixture ${MAIZE_V2_FIXTURES})
   add_test(NAME "v2_${_fixture}" COMMAND mzvm_v2_fixtures "${_fixture}")

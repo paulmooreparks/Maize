@@ -312,6 +312,47 @@ StepResult InterpreterV2::execute_block(const DecodedV2& decoded) {
     return advance(decoded);
 }
 
+// csr_read, csr_write and csr_swap (maize-463). One function for all three, because
+// privileged-architecture.md gives all three the same access rules and instruction-reference-
+// control.md says a csr_swap is checked exactly as a csr_write to the same number with the
+// same value. Splitting them would be three copies of one rule set, and three copies is how
+// two of them come to disagree.
+//
+// The operand order differs between them and the encoded order is what the decoder hands back:
+// csr_read $csr rd puts rd in the only operand slot, csr_write rs $csr puts rs there, and
+// csr_swap rs $csr rd puts rs first and rd second. The 2-byte immediate carries the unsigned
+// register number in every case.
+//
+// TRAP-WRITES-NOTHING holds here the way it holds everywhere else in this file. The access
+// rules and the target register's value validation both run before any state moves, so on a
+// trap no control and status register changed, no destination register changed, and no side
+// effect fired.
+StepResult InterpreterV2::execute_csr(const DecodedV2& decoded) {
+    const std::uint8_t opcode = decoded.opcode;
+    const bool is_write = opcode != op::kCsrRead;
+    const std::uint16_t number = static_cast<std::uint16_t>(decoded.immediate[0]);
+
+    // The source register for a write, read through the register file so r0 delivers zero and
+    // a csr_write r0 $csr writes zero rather than being special-cased away.
+    const std::uint64_t value = is_write ? registers_.read(decoded.reg[0]) : 0u;
+
+    const CsrOutcome outcome = csr_.access(number, privilege(), is_write, value);
+    if (!outcome.ok) {
+        return raise(decoded, outcome.cause, outcome.subcode, outcome.aux);
+    }
+
+    // The old value goes to rd for a read and for a swap, and nowhere for a plain write. A swap
+    // naming the same register for rs and rd exchanges it with the named register, which is the
+    // instruction's reason for existing, and it falls out of having read `value` before the
+    // access rather than being arranged for.
+    if (opcode == op::kCsrRead) {
+        registers_.write(decoded.reg[0], outcome.prior);
+    } else if (opcode == op::kCsrSwap) {
+        registers_.write(decoded.reg[1], outcome.prior);
+    }
+    return advance(decoded);
+}
+
 StepResult InterpreterV2::execute(const DecodedV2& decoded) {
     const std::uint8_t opcode = decoded.opcode;
 
@@ -836,12 +877,36 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
         return execute_block(decoded);
     }
 
+    // csr_read $B8, csr_write $B9 and csr_swap $C4 (maize-463). None of the three is itself
+    // privileged; the register number carries the access rules, and csr_v2.h applies them.
+    if (opcode == op::kCsrRead || opcode == op::kCsrWrite || opcode == op::kCsrSwap) {
+        return execute_csr(decoded);
+    }
+
+    // The privileged instructions this build does not otherwise execute: trap_return $BC
+    // (maize-464), wait_for_interrupt $BE (maize-466), and the two translation-cache
+    // maintenance instructions $C0 and $C1 (maize-465). What each one DOES is another card's,
+    // but that each is privileged is this chapter's, so the guard is here and the body is not.
+    // At supervisor level they fall through to the host diagnostic below, which is honest: the
+    // access was permitted and the machine still cannot perform it.
+    //
+    // sys and breakpoint are deliberately absent from this list. The privileged-instruction
+    // list is closed at seven, and the chapter says why both are outside it: sys is the
+    // intended way for user code to enter the kernel, and a debugger has to be able to plant a
+    // breakpoint in user code.
+    if (opcode == op::kTrapReturn || opcode == op::kWaitForInterrupt ||
+        opcode == op::kTlbInvalidateAll || opcode == op::kTlbInvalidateAddress) {
+        if (privilege() != Privilege::Supervisor) {
+            return raise(decoded, cause::kPrivilegedOperation, 0, opcode);
+        }
+    }
+
     // halt, $BD. The sole member of the system band this build executes (D-2). The
-    // privileged-operation check is written out because the instruction has one, and it can
-    // never fire here: reset is supervisor and the only path to user level is trap_return,
-    // which is maize-420.
+    // privileged-operation check is written out because the instruction has one, and since
+    // maize-463 it can fire: the status register's privilege field is reachable from a
+    // csr_write, and a host fixture can set it directly.
     if (opcode == op::kHalt) {
-        if (privilege_ != Privilege::Supervisor) {
+        if (privilege() != Privilege::Supervisor) {
             return raise(decoded, cause::kPrivilegedOperation, 0, opcode);
         }
         pc_ = decoded.next_pc;
@@ -856,13 +921,11 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
     // port_in and port_out, $C2 and $C3 (maize-451). The port space is disjoint from memory and
     // these two instructions are the only way to reach it.
     //
-    // Both are privileged, and the check is written out for the same reason kHalt's is: the
-    // instruction has one, and it cannot fire in this build, because reset is supervisor and the
-    // only path to user level is trap_return, which is maize-420. The auxiliary word of cause 4
-    // is the offending opcode byte rather than a register number, since neither instruction
-    // names a CSR.
+    // Both are privileged, and the check is written out for the same reason kHalt's is. The
+    // auxiliary word of cause 4 is the offending opcode byte rather than a register number,
+    // since neither instruction names a CSR.
     if (opcode == op::kPortIn || opcode == op::kPortOut) {
-        if (privilege_ != Privilege::Supervisor) {
+        if (privilege() != Privilege::Supervisor) {
             return raise(decoded, cause::kPrivilegedOperation, 0, opcode);
         }
         if (opcode == op::kPortIn) {
@@ -883,7 +946,8 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
     }
 
     // Everything left is a real assigned opcode whose family this build does not implement:
-    // $B8..$C7 other than halt, port_in and port_out (maize-420), $C8..$F7 (maize-419), and $FF
+    // $B8..$C7 other than the three control-and-status-register instructions, halt, port_in and
+    // port_out (maize-464 through maize-466), $C8..$F7 (maize-419), and $FF
     // breakpoint. The two
     // guard bytes of Appendix A.14 reach "does not execute" by two different and both explicit
     // routes: $00 because it is reserved and the decoder stops on it, $FF because it is

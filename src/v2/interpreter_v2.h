@@ -28,6 +28,7 @@
 
 #include <cstdint>
 
+#include "csr_v2.h"
 #include "decode_v2.h"
 #include "device_v2.h"
 #include "memory_v2.h"
@@ -41,7 +42,8 @@ enum class StepStatus : std::uint8_t {
     Trapped,   // a guest-visible trap condition; see StepResult::trap
     Halted,    // halt executed; the machine is stopped and its state is final
     // A real assigned opcode whose family this build does not implement (D-2): the floating
-    // point band, the system/CSR/TLB/port band other than halt and the two port instructions,
+    // point band, the system/TLB band other than halt, the three control-and-status-register
+    // instructions and the two port instructions,
     // and breakpoint. This is a HOST
     // diagnostic about a scaffold gap, never a guest-visible trap. Inventing a trap cause for
     // "not implemented yet" would misrepresent the gap as conformant illegal-instruction
@@ -55,12 +57,6 @@ struct StepResult {
     std::uint8_t opcode = 0;       // the opcode byte this cycle decoded, when it decoded one
     std::uint64_t pc = 0;          // address of the instruction this cycle ran
 };
-
-// boot.md: the machine begins in supervisor privilege with paging off. Nothing this build
-// implements can leave supervisor, because the only path to user level is trap_return
-// (maize-420), so this field is a placeholder that maize-420 replaces wholesale rather than a
-// privilege mechanism.
-enum class Privilege : std::uint8_t { Supervisor = 0, User = 1 };
 
 class InterpreterV2 {
   public:
@@ -85,18 +81,29 @@ class InterpreterV2 {
     DeviceSurfaceV2& device_surface() { return devices_; }
     const DeviceSurfaceV2& device_surface() const { return devices_; }
 
+    // The control-and-status-register space (maize-463), owned the way the register file is
+    // owned so a machine's architectural state is in its reset state before the first
+    // instruction executes.
+    CsrFileV2& csr() { return csr_; }
+    const CsrFileV2& csr() const { return csr_; }
+
     std::uint64_t pc() const { return pc_; }
     void set_pc(std::uint64_t value) { pc_ = value; }
     bool halted() const { return halted_; }
     std::uint64_t steps_taken() const { return steps_taken_; }
-    Privilege privilege() const { return privilege_; }
+
+    // The live privilege level is the status register's privilege field (maize-463). There is
+    // no separate copy of it, so a csr_write to status IS a privilege change and cannot be
+    // implemented correctly in one place and forgotten in another.
+    Privilege privilege() const { return csr_.privilege(); }
 
     // Host-side, reachable from no instruction, and named the way MemoryV2::host_set_size is
     // named and for the same reason: it stands up a machine state this build has no guest-visible
-    // path into. The only path to user level is trap_return, which is maize-420, so without this
-    // the privileged-operation guards on halt, port_in and port_out would be code that is written
-    // and never once executed, which is a guard nobody can distinguish from a missing one.
-    void host_set_privilege(Privilege level) { privilege_ = level; }
+    // path into. The only path from supervisor down to user is trap_return, which is maize-464,
+    // so without this the privileged-operation guards on the privileged instructions and on a
+    // supervisor control-and-status-register number would be code that is written and never once
+    // executed, which is a guard nobody can distinguish from a missing one.
+    void host_set_privilege(Privilege level) { csr_.host_set_privilege(level); }
 
   private:
     StepResult execute(const DecodedV2& decoded);
@@ -111,14 +118,15 @@ class InterpreterV2 {
                             bool displaced);
     StepResult execute_store(const DecodedV2& decoded, unsigned width_bytes, bool displaced);
     StepResult execute_block(const DecodedV2& decoded);
+    StepResult execute_csr(const DecodedV2& decoded);
 
     MemoryV2& memory_;
     RegistersV2 registers_{};
     DeviceSurfaceV2 devices_{};
+    CsrFileV2 csr_{};
     std::uint64_t pc_ = 0;
     std::uint64_t steps_taken_ = 0;
     bool halted_ = false;
-    Privilege privilege_ = Privilege::Supervisor;
 };
 
 // The ten predicates, in the order the compare band, the immediate compare band and the branch
