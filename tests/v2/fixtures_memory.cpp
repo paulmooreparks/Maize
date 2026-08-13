@@ -698,8 +698,14 @@ V2_FIXTURE(block_memory_restart_invariant) {
 
         // The kernel services the fault and the instruction re-executes from the register state
         // it left behind. No byte is transferred twice and none is skipped.
+        //
+        // The host resumes the machine rather than a handler doing it, because this machine has
+        // no vector table installed, so the fault it just took had nowhere to be delivered and
+        // stopped the machine (trap-model.md, "No handler installed"). A fixture that wants the
+        // guest-visible route through trap_return has one since maize-464, and
+        // block_memory_fault_restart_through_a_real_handler in fixtures_traps.cpp is it.
         machine.memory().host_set_size(0x400);
-        machine.interpreter().set_pc(kBase);
+        machine.interpreter().host_resume_at(kBase);
         expect_halted(machine.run(), "block_copy_forward re-executed after the fault");
         V2_CHECK_EQ(machine.get(6), 0u);
         V2_CHECK_EQ(machine.get(4), kSource + kCount);
@@ -726,7 +732,7 @@ V2_FIXTURE(block_memory_restart_invariant) {
         V2_CHECK_EQ(machine.get(3), 0xAAu);  // the value register is never written
 
         machine.memory().host_set_size(0x400);
-        machine.interpreter().set_pc(kBase);
+        machine.interpreter().host_resume_at(kBase);
         expect_halted(machine.run(), "block_set re-executed after the fault");
         V2_CHECK_EQ(machine.get(6), 0u);
         V2_CHECK_EQ(machine.get(5), kDestination + kCount);

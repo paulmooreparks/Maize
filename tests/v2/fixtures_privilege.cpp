@@ -191,25 +191,32 @@ V2_FIXTURE(csr_access_rules_apply_in_the_chapters_order) {
                });
 
     // The read-only rule leaves the register's value alone, and the check is the guest's own
-    // read rather than a host accessor. halt_cause is preloaded with a value no reset produces,
+    // read rather than a host accessor. boot_info is preloaded with a value no reset produces,
     // so a machine that stored the write and a machine that zeroed the register both fail.
+    //
+    // The register under test used to be halt_cause and cannot be since maize-464. The rejected
+    // write raises a trap, the trap finds no handler installed, and the machine records why it
+    // stopped in halt_cause, so that register can no longer carry a sentinel across a trap. Any
+    // other read-only register proves the same rule and boot_info is the plainest of them.
     {
         constexpr std::uint64_t kPreloaded = 0xFEEDFACECAFEBEEFull;
         Machine machine;
         Encoder program(kBase);
-        program.op_r_i2(op::kCsrWrite, reg(kSourceRegister), csr::kHaltCause);
-        program.op_r_i2(op::kCsrRead, reg(5), csr::kHaltCause);
+        program.op_r_i2(op::kCsrWrite, reg(kSourceRegister), csr::kBootInfo);
+        program.op_r_i2(op::kCsrRead, reg(5), csr::kBootInfo);
         program.halt();
         machine.load(program);
         machine.set(kSourceRegister, 0x1111111111111111ull);
-        machine.interpreter().csr().host_set_halt_cause(kPreloaded);
+        machine.interpreter().csr().host_set_boot_info(kPreloaded);
 
         const StepResult trapped = machine.step();
-        expect_trap(trapped, cause::kIllegalOperand, subcode::kReadOnlyCsr, csr::kHaltCause,
-                    kBase, "a write to halt_cause");
-        // Resume at the instruction after the faulting one, which is what trap_return will do
-        // once maize-464 exists.
-        machine.interpreter().set_pc(kBase + 4);
+        expect_trap(trapped, cause::kIllegalOperand, subcode::kReadOnlyCsr, csr::kBootInfo,
+                    kBase, "a write to boot_info");
+        // Resume at the instruction after the faulting one. No vector table is installed here,
+        // so the fault stopped the machine, and the host stands in for the kernel that would
+        // have serviced it. The guest-visible route through trap_return has fixtures of its own
+        // in fixtures_traps.cpp since maize-464.
+        machine.interpreter().host_resume_at(kBase + 4);
         expect_halted(machine.run(), "the read that follows a rejected write");
         V2_CHECK_EQ(machine.get(5), kPreloaded);
     }
@@ -532,7 +539,7 @@ V2_FIXTURE(csr_value_validation_is_per_register) {
         expect_trap(trapped, cause::kIllegalOperand, subcode::kInvalidCsrValue, one.rejected,
                     kBase + 4, one.what);
 
-        machine.interpreter().set_pc(kBase + 8);
+        machine.interpreter().host_resume_at(kBase + 8);
         expect_halted(machine.run(), one.what);
         V2_CHECK_EQ(machine.get(5), one.accepted);
     }
@@ -567,7 +574,13 @@ V2_FIXTURE(csr_value_validation_is_per_register) {
         V2_CHECK(machine.interpreter().privilege() == Privilege::User);
         expect_trap(machine.step(), cause::kPrivilegedOperation, 0, op::kHalt, kBase + 4,
                     "halt after dropping to user level");
-        V2_CHECK(!machine.interpreter().halted());
+        // The machine did stop, and the DISTINCTION is the point: it stopped because cause 4 had
+        // no handler installed, which is halt kind 1 with the cause recorded, and not because
+        // the halt instruction executed, which would be kind 0 with a zero cause. A machine that
+        // let a user-level halt through would leave kind 0 here (trap-model.md, "No handler
+        // installed").
+        expect_halt_cause(machine, halt_cause::kKindNoHandler, cause::kPrivilegedOperation, 0,
+                          "halt at user level");
     }
 
     // The paging-root seam. This card owns the register and the fact that a write asks for
@@ -696,6 +709,61 @@ V2_FIXTURE(scratch_register_contract) {
                              csr::kScratch, false, "scratch from user level");
 }
 
+V2_FIXTURE(user_level_reads_its_own_floating_point_flags) {
+    // Rule 2 from the side nobody was checking. Every other user-level fixture in this suite
+    // expects a trap, so a machine that wrongly REFUSED a user program its own floating-point
+    // control and status register would pass all of them: refusing everything satisfies every
+    // test that only ever asks whether something was refused.
+    //
+    // privileged-architecture.md, "The number layout", rule 2: an access is permitted when the
+    // current level is at least the level the number's privilege field names. fcsr is $0000,
+    // whose privilege field is %00, so it is the one register in the base table a user program
+    // can reach, and it is reachable by all three instructions.
+    const std::uint64_t pattern = 0x00000000000000E5ull;  // frm and the sticky flags, in range
+
+    // csr_write then csr_read, both at user level, on a machine that never returns to supervisor.
+    {
+        Machine machine;
+        Encoder program(kBase);
+        program.op_r_i2(op::kCsrWrite, reg(1), csr::kFcsr);
+        program.op_r_i2(op::kCsrRead, reg(5), csr::kFcsr);
+        program.op_r_r_i2(op::kCsrSwap, reg(2), reg(6), csr::kFcsr);
+        program.op_r_i2(op::kCsrRead, reg(7), csr::kFcsr);
+        program.raw_byte(op::kBreakpoint);  // a stop a user program is allowed to reach
+        machine.load(program);
+        machine.set(1, pattern);
+        machine.set(2, 0x0000000000000012ull);
+        machine.interpreter().host_set_privilege(Privilege::User);
+
+        for (unsigned i = 0; i < 4; ++i) {
+            const StepResult result = machine.step();
+            if (result.status != StepStatus::Advanced) {
+                record_failure("a user-level fcsr access was refused, and it must not be");
+                break;
+            }
+        }
+        V2_CHECK_EQ(machine.get(5), pattern);                     // the write took
+        V2_CHECK_EQ(machine.get(6), pattern);                     // the swap banked the old value
+        V2_CHECK_EQ(machine.get(7), 0x0000000000000012ull);       // and installed the new one
+        V2_CHECK(machine.interpreter().privilege() == Privilege::User);
+    }
+
+    // The same three accesses at supervisor level reach the same register, because a number
+    // naming user level is reachable from ABOVE it as well; rule 2 is a floor rather than an
+    // equality.
+    {
+        Machine machine;
+        Encoder program(kBase);
+        program.op_r_i2(op::kCsrWrite, reg(1), csr::kFcsr);
+        program.op_r_i2(op::kCsrRead, reg(5), csr::kFcsr);
+        program.halt();
+        machine.load(program);
+        machine.set(1, pattern);
+        expect_halted(machine.run(), "a supervisor-level fcsr round trip");
+        V2_CHECK_EQ(machine.get(5), pattern);
+    }
+}
+
 V2_FIXTURE(privileged_instructions_are_privileged_at_user_level) {
     // "Seven instructions are privileged, and executing any of them at user level raises the
     // privileged-operation fault. They are trap_return, halt, wait_for_interrupt,
@@ -731,41 +799,55 @@ V2_FIXTURE(privileged_instructions_are_privileged_at_user_level) {
 
         const StepResult result = machine.step();
         expect_trap(result, cause::kPrivilegedOperation, 0, one.opcode, kBase, one.what);
-        // No other effect: the machine did not stop, no destination register moved, and no
-        // byte reached a device.
-        V2_CHECK(!machine.interpreter().halted());
+        // No other effect: no destination register moved and no byte reached a device. The
+        // machine did stop, because no vector table is installed here and cause 4 therefore had
+        // nowhere to go, and the halt-cause register says WHICH stop that was: kind 1 carrying
+        // cause 4, where a `halt` that wrongly executed at user level would leave kind 0.
+        expect_halt_cause(machine, halt_cause::kKindNoHandler, cause::kPrivilegedOperation, 0,
+                          one.what);
         V2_CHECK_EQ(machine.get(5), kSentinel);
         V2_CHECK(machine.interpreter().device_surface().console_output().empty());
     }
 
     // The list is CLOSED at seven. sys is the intended way for user code to enter the kernel
-    // and breakpoint has to be plantable in user code, so neither is privileged. Both are still
-    // unimplemented in this build (maize-464), and the point here is that what comes back is
-    // the host's scaffold diagnostic rather than cause 4.
-    const Case not_privileged[] = {
-        {"sys #imm", op::kSysImm, {op::kSysImm, 0x2A}},
-        {"sys rs", op::kSysReg, {op::kSysReg, 0x04}},
-        {"breakpoint", op::kBreakpoint, {op::kBreakpoint}},
+    // and breakpoint has to be plantable in user code, so neither is privileged. Since
+    // maize-464 both execute, so the check is no longer "not cause 4, whatever else it is": each
+    // raises its OWN cause from user level, which is a stronger statement and the one a kernel
+    // depends on. Both are trap-class, so each captures the address of the instruction after
+    // itself rather than its own.
+    struct NotPrivileged {
+        const char* what;
+        std::vector<std::uint8_t> bytes;
+        std::uint8_t cause;
+        std::uint64_t aux;
+        std::uint64_t captured_pc;
     };
 
-    for (const Case& one : not_privileged) {
+    const NotPrivileged not_privileged[] = {
+        {"sys #imm", {op::kSysImm, 0x2A}, cause::kSyscall, 0x2A, kBase + 2},
+        {"sys rs", {op::kSysReg, 0x04}, cause::kSyscall, 0x33, kBase + 2},
+        {"breakpoint", {op::kBreakpoint}, cause::kBreakpoint, 0, kBase + 1},
+    };
+
+    for (const NotPrivileged& one : not_privileged) {
         Machine machine;
         Encoder program(kBase);
         for (std::uint8_t byte : one.bytes) {
             program.raw_byte(byte);
         }
         machine.load(program);
+        machine.set(4, 0x33);  // the syscall number the register form reads the low byte of
         machine.interpreter().host_set_privilege(Privilege::User);
 
         const StepResult result = machine.step();
-        expect_unimplemented(result, one.opcode, one.what);
-        V2_CHECK(result.status != StepStatus::Trapped);
+        expect_trap(result, one.cause, 0, one.aux, one.captured_pc, one.what);
     }
 
     // The same seven at supervisor level do not raise cause 4, so the fixture tests the
-    // privilege check rather than seven instructions that fault unconditionally. halt halts,
-    // the two port instructions run, and the other four reach the host diagnostic because their
-    // bodies belong to maize-464 through maize-466.
+    // privilege check rather than seven instructions that fault unconditionally. halt halts, the
+    // two port instructions run, trap_return pops the zero-filled frame at the reset trap-stack
+    // register and resumes on it, and the remaining three reach the host diagnostic because
+    // their bodies belong to maize-465 and maize-466.
     for (const Case& one : privileged) {
         Machine machine;
         Encoder program(kBase);

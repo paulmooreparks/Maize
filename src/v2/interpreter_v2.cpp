@@ -111,17 +111,173 @@ StepResult InterpreterV2::branch_to(const DecodedV2& decoded, std::uint64_t targ
 
 StepResult InterpreterV2::raise(const DecodedV2& decoded, std::uint8_t cause_number,
                                 std::uint8_t subcode_number, std::uint64_t aux) {
-    // The program counter does NOT move. A fault-class trap is restartable, and a handler that
-    // fixes the cause and resumes at the faulting address gets a clean re-execution.
+    // A FAULT captures the faulting instruction's own address, so a handler that fixes the
+    // condition and returns gets a clean re-execution of the same bytes.
+    TrapV2 trap;
+    trap.cause = cause_number;
+    trap.subcode = subcode_number;
+    trap.aux = aux;
+    trap.pc = decoded.pc;
+    return deliver(trap, decoded.opcode, decoded.pc);
+}
+
+StepResult InterpreterV2::raise_trap_class(const DecodedV2& decoded, std::uint8_t cause_number,
+                                           std::uint8_t subcode_number, std::uint64_t aux) {
+    // A TRAP in the narrow sense captures the address of the FOLLOWING instruction, because the
+    // instruction asked for the entry and there is nothing to retry. next_pc was fixed at decode
+    // time, before any operand was read, so it is the encoded length past the opcode byte
+    // whatever the instruction went on to do (execution-model.md, "The program counter").
+    TrapV2 trap;
+    trap.cause = cause_number;
+    trap.subcode = subcode_number;
+    trap.aux = aux;
+    trap.pc = decoded.next_pc;
+    return deliver(trap, decoded.opcode, decoded.pc);
+}
+
+StepResult InterpreterV2::halt_without_delivering(const TrapV2& trap, std::uint8_t opcode,
+                                                  std::uint64_t instruction_pc,
+                                                  TrapDisposition disposition,
+                                                  unsigned halt_kind) {
+    // Both halts record the ORIGINAL cause and subcode, which for a double fault means the cause
+    // that was being delivered rather than the page or physical-memory fault the frame push then
+    // met. A handler debugging a machine that stopped this way wants to know what it was trying
+    // to service, not that its trap stack was unwritable, which the kind field already says.
+    csr_.machine_record_halt(halt_kind, trap.cause, trap.subcode);
+    halted_ = true;
+
     StepResult result;
     result.status = StepStatus::Trapped;
-    result.opcode = decoded.opcode;
-    result.pc = decoded.pc;
-    result.trap.cause = cause_number;
-    result.trap.subcode = subcode_number;
-    result.trap.aux = aux;
-    result.trap.pc = decoded.pc;
+    result.opcode = opcode;
+    result.pc = instruction_pc;
+    result.trap = trap;
+    result.disposition = disposition;
     return result;
+}
+
+// trap-model.md, "Vectored dispatch". Delivery proceeds in a fixed order and every step is
+// observable, so this function is that order written out rather than the same effects reached
+// conveniently. Two orderings in particular are load-bearing:
+//
+//   - THE VECTOR FETCH PRECEDES THE FRAME PUSH, so an uninstalled handler is a clean halt with
+//     the machine's state untouched rather than a halt with a half-built frame in memory.
+//   - THE FRAME IS PUSHED BEFORE THE PRIVILEGE CHANGE, so the status word on the frame is the
+//     interrupted context's, which is the word trap_return restores and therefore the whole of
+//     how a machine gets back to user level.
+//
+// Address translation stays on across the sequence and the paging root does not change, so the
+// handler runs in the interrupted context's address space. This build runs bare mode, where the
+// vector read and the four frame stores reach physical memory directly and only cause 11 can
+// fail them; maize-465 brings the translation that can also raise causes 8, 9 and 10 here, and
+// the double-fault rule below already covers both.
+StepResult InterpreterV2::deliver(const TrapV2& trap, std::uint8_t opcode,
+                                  std::uint64_t instruction_pc) {
+    // Step 1, the cause number, the subcode and the auxiliary value, is the caller's: the trap
+    // record arrives determined.
+
+    // Step 2. Read the handler address from the vector table, as a supervisor-privilege load
+    // translated under the current paging root.
+    const std::uint64_t entry = vector_table::entry_address(csr_.host_read(csr::kTrapVectorBase),
+                                                            trap.cause);
+    std::uint64_t inaccessible = 0;
+    if (!memory_.check_range(entry, vector_table::kEntryBytes, inaccessible)) {
+        return halt_without_delivering(trap, opcode, instruction_pc,
+                                       TrapDisposition::HaltedDoubleFault,
+                                       halt_cause::kKindDoubleFault);
+    }
+    const std::uint64_t handler = memory_.read_little_endian(entry, vector_table::kEntryBytes);
+
+    // Step 3. A zero entry means no handler is installed, and the machine halts having pushed
+    // no frame and changed no register other than the halt-cause register.
+    if (handler == 0) {
+        return halt_without_delivering(trap, opcode, instruction_pc,
+                                       TrapDisposition::HaltedNoHandler,
+                                       halt_cause::kKindNoHandler);
+    }
+
+    // Step 4. Push the four-word frame. The trap stack is full-descending: subtract 32, write the
+    // four words at ascending addresses from the new value, leave the new value in the register.
+    //
+    // The whole 32 bytes are judged before any of them is written, which is the same
+    // check-then-write discipline every other store in this file follows. The chapter leaves
+    // open whether words an earlier store committed survive a later one's fault, since the
+    // machine halts and no defined execution ever reads that memory again; checking first
+    // resolves that silence toward writing nothing, which is the answer a reader of the halt
+    // state is least likely to be misled by.
+    const std::uint64_t frame = csr_.host_read(csr::kTrapStack) - trap_frame::kBytes;
+    if (!memory_.check_range(frame, trap_frame::kBytes, inaccessible)) {
+        return halt_without_delivering(trap, opcode, instruction_pc,
+                                       TrapDisposition::HaltedDoubleFault,
+                                       halt_cause::kKindDoubleFault);
+    }
+    memory_.write_little_endian(frame + trap_frame::kPcOffset, 8, trap.pc);
+    memory_.write_little_endian(frame + trap_frame::kStatusOffset, 8,
+                                csr_.host_read(csr::kStatus));
+    memory_.write_little_endian(frame + trap_frame::kCauseOffset, 8,
+                                encode_cause_word(trap.cause, trap.subcode));
+    memory_.write_little_endian(frame + trap_frame::kAuxOffset, 8, trap.aux);
+    csr_.machine_set_trap_stack(frame);
+
+    // Step 5. Supervisor level, interrupts off, every other status bit as it was. The frame
+    // already holds the snapshot taken before this line.
+    csr_.machine_enter_supervisor();
+
+    // Step 6. Continue at the handler.
+    pc_ = handler;
+
+    StepResult result;
+    result.status = StepStatus::Trapped;
+    result.opcode = opcode;
+    result.pc = instruction_pc;
+    result.trap = trap;
+    result.disposition = TrapDisposition::Delivered;
+    result.handler = handler;
+    return result;
+}
+
+// trap_return, $BC (trap-model.md, "Returning from a trap"). The instruction reads the four
+// words at the trap-stack register, validates the status word, then commits, and the order of
+// those three is the specified behaviour rather than an implementation convenience.
+//
+// Validation is TOTAL: a frame whose status word names a reserved privilege encoding or sets a
+// reserved bit raises the illegal-operand trap with subcode 6 and changes nothing at all,
+// including the trap-stack register. A frame the machine itself wrote always passes, so only a
+// frame software has edited can fail.
+//
+// Neither of the two faults this instruction can raise is a double fault, because both occur at
+// trap_return rather than at trap entry. That distinction is why the frame read below does not
+// go anywhere near deliver()'s double-fault path.
+StepResult InterpreterV2::execute_trap_return(const DecodedV2& decoded) {
+    const std::uint64_t frame = csr_.host_read(csr::kTrapStack);
+
+    // A fault while popping abandons the pop and leaves the trap-stack register unchanged, so
+    // the instruction re-executes cleanly once the fault is serviced. Judging the whole frame
+    // before reading any of it is what makes that true whichever word is unreachable.
+    std::uint64_t inaccessible = 0;
+    if (!memory_.check_range(frame, trap_frame::kBytes, inaccessible)) {
+        return raise(decoded, cause::kPhysicalMemoryFault, 0, inaccessible);
+    }
+
+    const std::uint64_t pc_word = memory_.read_little_endian(frame + trap_frame::kPcOffset, 8);
+    const std::uint64_t status_word_value =
+        memory_.read_little_endian(frame + trap_frame::kStatusOffset, 8);
+    // The cause and auxiliary words are read as part of the pop and go nowhere. They are the
+    // handler's to consume, and nothing reads them back into the machine.
+
+    if (!CsrFileV2::status_value_is_acceptable(status_word_value)) {
+        // Cause 1 is fault-class, so the captured program counter is this instruction's own
+        // address (the general class rule in "Fault, trap, and interrupt" applied to this raise
+        // site; the chapter does not restate it at the trap_return passage, which is OQ-1).
+        return raise(decoded, cause::kIllegalOperand, subcode::kInvalidCsrValue,
+                     status_word_value);
+    }
+
+    // Commit. Restoring the status word is what returns the machine to user mode and what
+    // re-enables interrupts, since both live in that word, and no general register is written
+    // because the machine saved none on the way in.
+    csr_.machine_write_status(status_word_value);
+    csr_.machine_set_trap_stack(frame + trap_frame::kBytes);
+    return branch_to(decoded, pc_word);
 }
 
 StepResult InterpreterV2::step() {
@@ -134,11 +290,11 @@ StepResult InterpreterV2::step() {
 
     const DecodeResult decoded = decode_v2(memory_, pc_);
     if (decoded.status == DecodeStatus::Trap) {
-        StepResult result;
-        result.status = StepStatus::Trapped;
-        result.trap = decoded.trap;
-        result.pc = decoded.trap.pc;
-        return result;
+        // An illegal instruction or an illegal operand is a fault like any other and is
+        // delivered through the same sequence. The decoder already captured the instruction's
+        // own first byte as the faulting address, and no opcode is reported because the byte the
+        // decoder objected to is in the auxiliary word.
+        return deliver(decoded.trap, 0, decoded.trap.pc);
     }
 
     ++steps_taken_;
@@ -883,12 +1039,12 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
         return execute_csr(decoded);
     }
 
-    // The privileged instructions this build does not otherwise execute: trap_return $BC
-    // (maize-464), wait_for_interrupt $BE (maize-466), and the two translation-cache
-    // maintenance instructions $C0 and $C1 (maize-465). What each one DOES is another card's,
-    // but that each is privileged is this chapter's, so the guard is here and the body is not.
-    // At supervisor level they fall through to the host diagnostic below, which is honest: the
-    // access was permitted and the machine still cannot perform it.
+    // The privileged instructions in this band: trap_return $BC (maize-464, implemented just
+    // below), wait_for_interrupt $BE (maize-466), and the two translation-cache maintenance
+    // instructions $C0 and $C1 (maize-465). What the last three DO is another card's, but that
+    // each is privileged is this chapter's, so the guard is here and the body is not. At
+    // supervisor level those three fall through to the host diagnostic below, which is honest:
+    // the access was permitted and the machine still cannot perform it.
     //
     // sys and breakpoint are deliberately absent from this list. The privileged-instruction
     // list is closed at seven, and the chapter says why both are outside it: sys is the
@@ -901,6 +1057,37 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
         }
     }
 
+    if (opcode == op::kTrapReturn) {
+        return execute_trap_return(decoded);
+    }
+
+    // sys $BA and $BB (trap-model.md, "The syscall boundary"). The deliberate entry from user
+    // code into the kernel, and not privileged. Trap-class, so the captured program counter is
+    // the address of the instruction AFTER the sys and a trap_return resumes past it.
+    //
+    // The syscall number reaches the kernel two ways at once: it is the instruction's own
+    // operand, and the machine copies it into the auxiliary word so a dispatcher reads it off
+    // the frame without decoding the instruction that made the call. The register form takes the
+    // low byte and ignores the upper 56 bits rather than rejecting them.
+    //
+    // No general register is touched here, which is the whole of the argument-passing contract:
+    // r2 through r9 carry the arguments in and are still holding them at the handler's first
+    // instruction, and the result the handler leaves in r2 is still there when the interrupted
+    // program resumes, because trap_return restores nothing either.
+    if (opcode == op::kSysImm || opcode == op::kSysReg) {
+        const std::uint64_t number = opcode == op::kSysImm
+                                         ? (decoded.immediate[0] & 0xFFu)
+                                         : (registers_.read(decoded.reg[0]) & 0xFFu);
+        return raise_trap_class(decoded, cause::kSyscall, 0, number);
+    }
+
+    // breakpoint $FF. Trap-class like sys, at any privilege level, and its auxiliary word is
+    // zero. The opcode is pinned at $FF because that is the value that fills erased storage, so
+    // a run of erased memory reached as code stops with a named cause at its first byte.
+    if (opcode == op::kBreakpoint) {
+        return raise_trap_class(decoded, cause::kBreakpoint, 0, 0);
+    }
+
     // halt, $BD. The sole member of the system band this build executes (D-2). The
     // privileged-operation check is written out because the instruction has one, and since
     // maize-463 it can fire: the status register's privilege field is reachable from a
@@ -911,6 +1098,10 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
         }
         pc_ = decoded.next_pc;
         halted_ = true;
+        // Halt kind 0, with the cause and subcode fields zero because the halt instruction has
+        // neither. Two machines therefore cannot differ in what they leave in the halt-cause
+        // register after an ordinary program ends (trap-model.md, "No handler installed").
+        csr_.machine_record_halt(halt_cause::kKindHaltInstruction, 0, 0);
         StepResult result;
         result.status = StepStatus::Halted;
         result.opcode = opcode;
@@ -946,12 +1137,14 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
     }
 
     // Everything left is a real assigned opcode whose family this build does not implement:
-    // $B8..$C7 other than the three control-and-status-register instructions, halt, port_in and
-    // port_out (maize-464 through maize-466), $C8..$F7 (maize-419), and $FF
-    // breakpoint. The two
-    // guard bytes of Appendix A.14 reach "does not execute" by two different and both explicit
-    // routes: $00 because it is reserved and the decoder stops on it, $FF because it is
-    // assigned and lands here.
+    // nop $BF, wait_for_interrupt $BE (maize-466), the two translation-cache maintenance
+    // instructions $C0 and $C1 (maize-465), and the floating-point band $C8..$F7 (maize-419).
+    //
+    // $FF is no longer among them. Appendix A.14's two guard bytes still reach their outcomes by
+    // two different and both explicit routes, and since maize-464 both routes are traps rather
+    // than one trap and one host diagnostic: $00 is reserved and the decoder stops on it with
+    // the illegal-instruction fault, and $FF is assigned to breakpoint and raises the
+    // breakpoint trap above.
     StepResult result;
     result.status = StepStatus::Unimplemented;
     result.opcode = opcode;

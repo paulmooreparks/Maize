@@ -20,7 +20,8 @@ add_executable(mzvm_v2_fixtures
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_control.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_memory.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_devices.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_privilege.cpp")
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_privilege.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_traps.cpp")
 target_include_directories(mzvm_v2_fixtures PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src/v2"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2")
@@ -76,7 +77,28 @@ set(MAIZE_V2_FIXTURES
   csr_value_validation_is_per_register
   csr_reset_state
   scratch_register_contract
-  privileged_instructions_are_privileged_at_user_level)
+  privileged_instructions_are_privileged_at_user_level
+  user_level_reads_its_own_floating_point_flags
+  trap_cause_enumeration_delivers_exact_values
+  trap_subcodes_are_the_documented_ones
+  page_fault_causes_deliver_through_the_same_mechanism
+  physical_memory_fault_reports_the_offending_physical_address
+  trap_frame_layout_and_trap_stack_discipline
+  frame_status_word_is_the_interrupted_context
+  cause_word_packs_cause_and_subcode
+  auxiliary_word_is_zero_where_the_table_says_zero
+  vectored_dispatch_follows_the_chapters_order
+  no_handler_installed_halts_with_kind_one
+  double_fault_halts_with_the_original_cause
+  nested_trap_lands_beneath_the_outer_frame
+  trap_return_is_privileged_and_validates_before_committing
+  trap_return_restores_and_resumes
+  trap_return_fault_while_popping_is_an_ordinary_fault
+  registers_survive_a_trap_untouched
+  syscall_boundary_carries_number_and_arguments
+  fault_restart_leaves_no_partial_effect
+  block_memory_fault_restart_through_a_real_handler
+  reserved_cause_is_never_delivered)
 
 foreach(_fixture ${MAIZE_V2_FIXTURES})
   add_test(NAME "v2_${_fixture}" COMMAND mzvm_v2_fixtures "${_fixture}")

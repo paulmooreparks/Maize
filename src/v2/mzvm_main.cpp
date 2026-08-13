@@ -229,7 +229,19 @@ int main(int argc, char** argv) {
     }
 
     maize::v2::InterpreterV2 machine(memory, start_given ? start_address : load_address);
-    const maize::v2::StepResult result = machine.run(max_steps);
+    maize::v2::StepResult result = machine.run(max_steps);
+
+    // A DELIVERED trap is a stopping point for this host and not for the machine (maize-464):
+    // run() hands control back at the delivery so a caller can see it, and the machine's program
+    // counter is already on the handler. Keep going until something actually stops it, which is
+    // a halt, the step budget, or a trap that could not be delivered.
+    while (result.status == maize::v2::StepStatus::Trapped &&
+           result.disposition == maize::v2::TrapDisposition::Delivered) {
+        if (max_steps != 0 && machine.steps_taken() >= max_steps) {
+            break;
+        }
+        result = machine.run(max_steps == 0 ? 0 : max_steps - machine.steps_taken());
+    }
 
     // The guest's console output, whatever the machine's stopping reason: bytes the guest emitted
     // before a trap or a step limit genuinely left the console, and swallowing them would hide
@@ -244,11 +256,20 @@ int main(int argc, char** argv) {
                          result.pc, machine.steps_taken());
             break;
         case maize::v2::StepStatus::Trapped:
+            // Reaching here means the trap was NOT delivered, since the loop above runs on past
+            // every one that was. Which of the two undeliverable outcomes it is decides what a
+            // reader should go and look at: a zero vector-table entry is a missing handler, and
+            // a double fault is a trap stack or vector table the machine could not reach.
             std::fprintf(stderr,
                          "mzvm: trap %u (%s) subcode %u, aux $%016" PRIX64
                          ", at $%016" PRIX64 "\n",
                          result.trap.cause, cause_name(result.trap.cause), result.trap.subcode,
                          result.trap.aux, result.trap.pc);
+            std::fprintf(stderr, "mzvm: %s\n",
+                         result.disposition == maize::v2::TrapDisposition::HaltedDoubleFault
+                             ? "double fault: the vector read or the frame push could not be "
+                               "performed, and the machine halted"
+                             : "no handler installed for that cause, and the machine halted");
             exit_code = 1;
             break;
         case maize::v2::StepStatus::Unimplemented:

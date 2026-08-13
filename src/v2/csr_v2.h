@@ -105,6 +105,29 @@ inline constexpr std::uint64_t kDefinedMask = 0x7u;
 inline constexpr std::uint64_t kResetValue = 0x1u;
 }  // namespace status_word
 
+// The halt-cause layout, trap-model.md "No handler installed":
+//
+//     bits  7:0   cause     the cause number of the condition that halted the machine
+//     bits 15:8   subcode   that condition's subcode
+//     bits 17:16  kind      0 = the halt instruction executed, 1 = no handler installed,
+//                           2 = double fault
+//     bits 63:18  reserved, read as zero
+//
+// Kind 0 records the `halt` instruction, which has no cause and no subcode, so both fields read
+// zero there and two machines cannot differ in what they leave behind.
+namespace halt_cause {
+inline constexpr unsigned kKindHaltInstruction = 0;
+inline constexpr unsigned kKindNoHandler = 1;
+inline constexpr unsigned kKindDoubleFault = 2;
+
+constexpr std::uint64_t encode(unsigned kind, std::uint8_t cause_number,
+                               std::uint8_t subcode_number) {
+    return static_cast<std::uint64_t>(cause_number) |
+           (static_cast<std::uint64_t>(subcode_number) << 8) |
+           (static_cast<std::uint64_t>(kind) << 16);
+}
+}  // namespace halt_cause
+
 // The paging-root layout, privileged-architecture.md "The paging-root register". This card owns
 // the register and the validity of a value written to it; maize-465 owns what the machine then
 // does with it.
@@ -237,6 +260,21 @@ class CsrFileV2 {
         return outcome;
     }
 
+    // Is this a value the status register accepts? trap-model.md, "The status word": a value
+    // naming a reserved privilege encoding, or setting any reserved bit, raises the
+    // illegal-operand trap with subcode 6 and changes nothing.
+    //
+    // Public and static because `trap_return` asks the same question of the status word it finds
+    // on the frame, and the chapter says outright that subcode 6 "covers the status word a
+    // trap_return frame supplies as well, since that word is written into the status register".
+    // One rule, one implementation, so a csr_write and a trap_return cannot come to disagree
+    // about which words are legal.
+    static constexpr bool status_value_is_acceptable(std::uint64_t value) {
+        return (value & ~status_word::kDefinedMask) == 0u &&
+               (value & status_word::kPrivilegeMask) <=
+                   static_cast<std::uint64_t>(Privilege::Supervisor);
+    }
+
     // The live privilege level, which is the status register's privilege field and nothing
     // else. There is no second copy of it to keep in step.
     Privilege privilege() const {
@@ -251,6 +289,39 @@ class CsrFileV2 {
     // There is no cache in this build; maize-465 brings one and consumes the request. The
     // counter exists so this card's half of the seam is observable rather than merely written.
     std::uint64_t translation_flushes() const { return translation_flushes_; }
+
+    // What the MACHINE does to these registers on its own account (maize-464), as opposed to
+    // what an instruction asks of them through access() and what a host sets up through the
+    // host_ accessors below. Trap delivery, `trap_return` and a halt all write registers without
+    // an instruction naming a register number, so none of them can go through access(): the
+    // halt-cause register is read-only to software and would fail rule 3, and delivery's status
+    // change is not a
+    // write of a whole value but a change to two fields with the rest left alone.
+    //
+    // Each one is named for the sequence step it performs rather than for the register it
+    // touches, so a reader of interpreter_v2.cpp's delivery sequence sees the chapter's steps.
+    void machine_set_trap_stack(std::uint64_t value) { trap_stack_ = value; }
+
+    // trap-model.md, "Vectored dispatch", step 5: the privilege level goes to supervisor and the
+    // interrupt-enable bit is cleared, "leaving every other status bit unchanged". Written as a
+    // field update rather than as an assignment of $1 so that a status bit a later extension
+    // defines survives a trap without this line being revisited.
+    void machine_enter_supervisor() {
+        status_ = (status_ & ~(status_word::kPrivilegeMask | status_word::kInterruptEnableBit)) |
+                  static_cast<std::uint64_t>(Privilege::Supervisor);
+    }
+
+    // trap-model.md, "Returning from a trap": the frame's status word goes into the status
+    // register whole, which is what returns the machine to user mode and what re-enables
+    // interrupts. The caller validates first, because validation is total and comes first.
+    void machine_write_status(std::uint64_t value) { status_ = value; }
+
+    // trap-model.md, "No handler installed": why the machine stopped. Read-only to software, so
+    // this is the only writer.
+    void machine_record_halt(unsigned kind, std::uint8_t cause_number,
+                             std::uint8_t subcode_number) {
+        halt_cause_ = halt_cause::encode(kind, cause_number, subcode_number);
+    }
 
     // Host-side, reachable from no instruction, named the way MemoryV2::host_set_size and
     // InterpreterV2::host_set_privilege are named and for the same reason: each stands up a
@@ -292,11 +363,7 @@ class CsrFileV2 {
                 // operation is what traps.
                 return (value & ~std::uint64_t{0xFF}) == 0u;
             case csr::kStatus:
-                // trap-model.md, "The status word": a value naming a reserved privilege
-                // encoding, or setting any reserved bit, raises the trap and changes nothing.
-                return (value & ~status_word::kDefinedMask) == 0u &&
-                       (value & status_word::kPrivilegeMask) <=
-                           static_cast<std::uint64_t>(Privilege::Supervisor);
+                return status_value_is_acceptable(value);
             case csr::kTrapStack:
                 // The trap stack is full-descending and the frame is four words, so the
                 // register requires 16-byte alignment.

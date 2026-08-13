@@ -1,16 +1,16 @@
-// trap_v2.h (maize-418): the trap record this build surfaces to its host.
+// trap_v2.h (maize-418, delivery on maize-464): the trap record and the shapes trap-model.md
+// fixes around it.
 //
-// SCAFFOLD BOUNDARY, and it must never be mistaken for conformant trap delivery. The real
-// v2 trap machinery (the four-word frame, the vector table, the trap-stack and status control
-// and status registers, trap_return) is maize-420 and none of it exists here. What exists is a
-// value: step() either advances, or hands back the cause, subcode, auxiliary word and faulting
-// instruction address that trap-model.md's cause table fixes for the condition, and the
-// machine stops advancing. Nothing is pushed and nothing is vectored, so the only consumer of
-// a trap in this build is the host that called step().
+// The record is what a condition produces: a cause, a subcode, an auxiliary word, and the
+// captured program counter. Delivery is what the machine then does with it, and since maize-464
+// that is the real thing rather than a report to the host: the vector fetch, the four-word
+// frame, the privilege change, the jump to the handler, and the two halts that replace delivery
+// when the machine cannot reach a handler. interpreter_v2.cpp owns that sequence.
 //
-// The cause numbers, the subcode numbers and the auxiliary-word contents ARE the specified
-// ones, because those are what maize-420 will deliver through the real frame and what a
-// conformance binary reads. Only the delivery is scaffolding.
+// The captured program counter in this record is already class-resolved. A fault carries the
+// faulting instruction's own address and a trap in the narrow sense carries the address of the
+// following instruction, so nothing downstream of the raise site has to know which class the
+// cause belongs to (trap-model.md, "Fault, trap, and interrupt").
 
 #ifndef MAIZE_V2_TRAP_V2_H
 #define MAIZE_V2_TRAP_V2_H
@@ -22,7 +22,16 @@ namespace maize::v2 {
 // trap-model.md, "The cause enumeration". Only the causes this build can raise are named.
 // Causes 8, 9 and 10 (the page faults) are unreachable here: this interpreter runs bare mode,
 // where translation is not performed at all, so an access outside populated physical memory
-// raises cause 11 and nothing raises a page fault (boot.md, D-3).
+// raises cause 11 and nothing raises a page fault (boot.md, D-3). They are still named, because
+// delivery is cause-generic and maize-465 supplies the conditions that raise them.
+//
+// FOUR NUMBERS ARE NOT HERE ON PURPOSE, and the gaps are the point rather than an omission.
+// Causes 5 and 6 are held dark so that a handler table carried over from Maize v1, which spent
+// those numbers on a segment-bounds violation and a stack fault, cannot silently alias an old
+// cause onto a new one (trap-model.md, "The cause enumeration"). Causes 12 through 31 carry the
+// same guarantee for future synchronous causes. Nothing in this machine constructs any of them,
+// and reserved_cause_is_never_delivered in fixtures_traps.cpp is what makes that a tested claim
+// rather than a described one.
 namespace cause {
 inline constexpr std::uint8_t kIllegalInstruction = 0;
 inline constexpr std::uint8_t kIllegalOperand = 1;
@@ -49,6 +58,40 @@ inline constexpr std::uint8_t kReservedCsrPrivilege = 7;  // cause 1: a reserved
 inline constexpr std::uint8_t kDivideByZero = 0;        // cause 2
 inline constexpr std::uint8_t kQuotientOverflow = 1;    // cause 2
 }  // namespace subcode
+
+// trap-model.md, "The frame". Four words, in this order, and NO general-purpose register. Maize
+// v1 pushed thirteen registers into every handler whether the handler wanted them or not; v2
+// pushes none and has no instruction that saves a fixed register set, so a handler that needs a
+// register saves it itself. The frame is the entire hardware-visible cost of entering a handler.
+namespace trap_frame {
+inline constexpr std::uint64_t kBytes = 32;
+inline constexpr std::uint64_t kPcOffset = 0;
+inline constexpr std::uint64_t kStatusOffset = 8;
+inline constexpr std::uint64_t kCauseOffset = 16;
+inline constexpr std::uint64_t kAuxOffset = 24;
+}  // namespace trap_frame
+
+// trap-model.md, "The cause word": the cause number in bits 7:0, the subcode in bits 15:8, and
+// bits 63:16 written as zero by every conforming machine, so a handler that tests the whole word
+// against a constant behaves the same everywhere.
+constexpr std::uint64_t encode_cause_word(std::uint8_t cause_number, std::uint8_t subcode_number) {
+    return static_cast<std::uint64_t>(cause_number) |
+           (static_cast<std::uint64_t>(subcode_number) << 8);
+}
+
+// trap-model.md, "Vectored dispatch": 256 entries of 8 bytes each, 2 KiB in all, with entry `c`
+// at the base plus `c` times 8. The base is a control and status register rather than v1's fixed
+// $1000, and its low 11 bits are required to be zero so the table never straddles more pages
+// than it has to.
+namespace vector_table {
+inline constexpr std::uint64_t kEntryBytes = 8;
+inline constexpr std::uint64_t kEntryCount = 256;
+inline constexpr std::uint64_t kBytes = kEntryBytes * kEntryCount;
+
+constexpr std::uint64_t entry_address(std::uint64_t base, std::uint8_t cause_number) {
+    return base + static_cast<std::uint64_t>(cause_number) * kEntryBytes;
+}
+}  // namespace vector_table
 
 struct TrapV2 {
     std::uint8_t cause = 0;

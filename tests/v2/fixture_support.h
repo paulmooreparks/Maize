@@ -81,10 +81,22 @@ class Machine {
 };
 
 // Assertions on a StepResult, spelled once so every fixture reports the same way.
+//
+// expect_trap asserts the trap RECORD, which is the cause, the subcode, the auxiliary word and
+// the captured program counter. What the machine then did with that record is a separate
+// question that expect_disposition and expect_halt_cause below ask, because a machine can get
+// the enumeration exactly right and still deliver it to the wrong place.
 void expect_trap(const StepResult& result, std::uint8_t cause_number, std::uint8_t subcode_number,
                  std::uint64_t aux, std::uint64_t pc, const char* what);
 void expect_halted(const StepResult& result, const char* what);
 void expect_unimplemented(const StepResult& result, std::uint8_t opcode, const char* what);
+void expect_disposition(const StepResult& result, TrapDisposition disposition, const char* what);
+
+// The halt-cause register, read through the host rather than through csr_read, because the
+// machine it describes has stopped and cannot execute a csr_read to report on itself
+// (trap-model.md, "No handler installed").
+void expect_halt_cause(Machine& machine, unsigned kind, std::uint8_t cause_number,
+                       std::uint8_t subcode_number, const char* what);
 
 }  // namespace maize::v2::test
 

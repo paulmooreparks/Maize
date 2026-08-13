@@ -217,7 +217,7 @@ inline constexpr std::uint8_t kBlockCopy = 0xB0;
 inline constexpr std::uint8_t kBlockCopyForward = 0xB1;
 inline constexpr std::uint8_t kBlockSet = 0xB2;
 
-// A.11 System, control registers, TLB, and ports, $B8..$C7. Only halt executes here.
+// A.11 System, control registers, TLB, and ports, $B8..$C7.
 inline constexpr std::uint8_t kCsrRead = 0xB8;
 inline constexpr std::uint8_t kCsrWrite = 0xB9;
 inline constexpr std::uint8_t kSysImm = 0xBA;

@@ -82,6 +82,36 @@ void expect_halted(const StepResult& result, const char* what) {
     }
 }
 
+void expect_disposition(const StepResult& result, TrapDisposition disposition, const char* what) {
+    if (result.status != StepStatus::Trapped) {
+        record_failure(std::string(what) + ": expected a trap, got status " +
+                       std::to_string(static_cast<int>(result.status)));
+        return;
+    }
+    if (result.disposition != disposition) {
+        record_failure(std::string(what) + ": trap disposition is " +
+                       std::to_string(static_cast<int>(result.disposition)) + ", expected " +
+                       std::to_string(static_cast<int>(disposition)));
+    }
+}
+
+void expect_halt_cause(Machine& machine, unsigned kind, std::uint8_t cause_number,
+                       std::uint8_t subcode_number, const char* what) {
+    const std::uint64_t expected = halt_cause::encode(kind, cause_number, subcode_number);
+    const std::uint64_t actual = machine.interpreter().csr().host_read(csr::kHaltCause);
+    if (actual != expected) {
+        char buffer[512];
+        std::snprintf(buffer, sizeof(buffer),
+                      "%s: halt_cause is $%016" PRIX64 ", expected $%016" PRIX64
+                      " (kind %u, cause %u, subcode %u)",
+                      what, actual, expected, kind, cause_number, subcode_number);
+        record_failure(buffer);
+    }
+    if (!machine.interpreter().halted()) {
+        record_failure(std::string(what) + ": the machine is still running");
+    }
+}
+
 void expect_unimplemented(const StepResult& result, std::uint8_t opcode, const char* what) {
     if (result.status != StepStatus::Unimplemented) {
         record_failure(std::string(what) +

@@ -14,6 +14,14 @@
 // writing any byte. An implementation that computes first and checks second passes every test
 // that does not probe the ordering and fails exactly the ones that do.
 //
+// THE FRAME SAVES NO GENERAL REGISTER (maize-464). Trap delivery pushes exactly four words, the
+// captured program counter, the status word, the cause word and the auxiliary word, and touches
+// r0 through r31 not at all. Maize v1 pushed thirteen registers into every handler and
+// trap_return popped them back; v2 has no equivalent and no instruction that saves a fixed
+// register set, so a port that carries v1's prologue forward traps correctly and corrupts the
+// interrupted program. Every general register holds, at the handler's first instruction, exactly
+// what it held when the trap fired.
+//
 // THE BLOCK-MEMORY RESTART INVARIANT, WHICH IS DIRECTION-NEUTRAL. At every point the machine
 // could stop mid-transfer, the count register holds the bytes NOT YET transferred and each
 // pointer register holds the LOWEST address in its region not yet transferred. That is a
@@ -39,7 +47,13 @@ namespace maize::v2 {
 
 enum class StepStatus : std::uint8_t {
     Advanced,  // the instruction completed and the program counter moved
-    Trapped,   // a guest-visible trap condition; see StepResult::trap
+    // A guest-visible trap condition arose this cycle; see StepResult::trap for what it was and
+    // StepResult::disposition for what the machine then did with it. Since maize-464 a trap is
+    // DELIVERED rather than merely reported, so this status is a stopping point for the host
+    // rather than a stopping point for the machine: unless the disposition says the machine
+    // halted, the program counter now holds a handler address and run() called again continues
+    // in the handler.
+    Trapped,
     Halted,    // halt executed; the machine is stopped and its state is final
     // A real assigned opcode whose family this build does not implement (D-2): the floating
     // point band, the system/TLB band other than halt, the three control-and-status-register
@@ -51,11 +65,26 @@ enum class StepStatus : std::uint8_t {
     Unimplemented,
 };
 
+// What the machine did with a trap it raised (trap-model.md, "Vectored dispatch", "No handler
+// installed", "Nested traps and double faults"). Three outcomes and no fourth: either the
+// machine found a handler and entered it, or it could not and stopped, by one of the two routes
+// the chapter names. Both halts are terminal and both write the halt-cause register.
+enum class TrapDisposition : std::uint8_t {
+    None,                // no trap this cycle
+    Delivered,           // the frame is pushed and the program counter holds the handler address
+    HaltedNoHandler,     // the vector-table entry was zero: halt kind 1, and no frame was written
+    HaltedDoubleFault,   // the vector read or a frame store faulted: halt kind 2, original cause
+};
+
 struct StepResult {
     StepStatus status = StepStatus::Advanced;
     TrapV2 trap{};                 // meaningful when status is Trapped
     std::uint8_t opcode = 0;       // the opcode byte this cycle decoded, when it decoded one
     std::uint64_t pc = 0;          // address of the instruction this cycle ran
+    // Meaningful when status is Trapped. The trap RECORD says what condition arose; this says
+    // what became of it, which is a separate question with its own observable consequences.
+    TrapDisposition disposition = TrapDisposition::None;
+    std::uint64_t handler = 0;     // the handler address, when the disposition is Delivered
 };
 
 class InterpreterV2 {
@@ -105,14 +134,51 @@ class InterpreterV2 {
     // executed, which is a guard nobody can distinguish from a missing one.
     void host_set_privilege(Privilege level) { csr_.host_set_privilege(level); }
 
+    // Resume a halted machine at a chosen address. Host-side and reachable from no instruction,
+    // in the same family as MemoryV2::host_set_size and for the same reason: a machine that
+    // halted because no handler was installed has no guest-visible way back, and a fixture that
+    // wants to check "the condition was repaired and the instruction re-executed cleanly" is
+    // standing in for the kernel that a real machine would have had. Where a fixture DOES
+    // install a handler, the guest-visible path is trap_return and this is not used.
+    void host_resume_at(std::uint64_t address) {
+        halted_ = false;
+        pc_ = address;
+    }
+
+    // Run one trap through the delivery sequence without an instruction having raised it
+    // (maize-464). Host-side, reachable from no instruction, and it exists because delivery is
+    // cause-generic while this build's conditions are not: bare mode performs no translation, so
+    // causes 8, 9 and 10 cannot be raised here at all and maize-465 brings the conditions that
+    // raise them. Without this seam the page-fault causes would travel a delivery path no test
+    // had ever run, and the first thing to run it would be maize-465's own new code.
+    StepResult host_deliver_trap(const TrapV2& trap) { return deliver(trap, 0, trap.pc); }
+
   private:
     StepResult execute(const DecodedV2& decoded);
 
     // Result constructors, so no execute path assembles a StepResult by hand.
     StepResult advance(const DecodedV2& decoded);
     StepResult branch_to(const DecodedV2& decoded, std::uint64_t target);
+
+    // Raise a FAULT-class condition: the captured program counter is the faulting instruction's
+    // own first byte, so a handler that repairs the condition returns and the instruction runs
+    // again (trap-model.md, "Fault, trap, and interrupt").
     StepResult raise(const DecodedV2& decoded, std::uint8_t cause_number,
                      std::uint8_t subcode_number, std::uint64_t aux);
+
+    // Raise a TRAP-class condition, which the instruction asked for: the captured program
+    // counter is the address of the FOLLOWING instruction, because there is nothing to retry.
+    // `sys` and `breakpoint` are the two members of the class in the base.
+    StepResult raise_trap_class(const DecodedV2& decoded, std::uint8_t cause_number,
+                                std::uint8_t subcode_number, std::uint64_t aux);
+
+    // The delivery sequence itself, in the chapter's fixed order.
+    StepResult deliver(const TrapV2& trap, std::uint8_t opcode, std::uint64_t instruction_pc);
+    StepResult halt_without_delivering(const TrapV2& trap, std::uint8_t opcode,
+                                       std::uint64_t instruction_pc, TrapDisposition disposition,
+                                       unsigned halt_kind);
+
+    StepResult execute_trap_return(const DecodedV2& decoded);
 
     StepResult execute_load(const DecodedV2& decoded, unsigned width_bytes, bool sign_extended,
                             bool displaced);
