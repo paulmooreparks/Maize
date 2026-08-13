@@ -46,12 +46,16 @@ V2_FIXTURE(device_machine_block_identification_and_presence) {
     V2_CHECK_EQ(ports.port_in(kMachinePresence), 0x0000000000000002ull);
 
     // The console's identification carries its class code in the low quarter-word and is
-    // nonzero, which is all presence detection needs. The second quarter-word, the class
-    // contract version, is NOT asserted here and must not be: OQ-1 is open, the value the build
-    // ships is a placeholder nobody chose, and a fixture pinning it would turn a guess into a
-    // ruling that a later card would have to argue with a test to change.
+    // nonzero, which is all presence detection needs. The second quarter-word is the class
+    // contract version, and it is asserted here because erratum 2.0.2 settled what it holds:
+    // every class this specification defines reads 1 there permanently, which device-surface.md
+    // now lists among the directly-testable conformance properties. An earlier revision of this
+    // fixture deliberately left the field unasserted, on the grounds that the value the build
+    // shipped was a placeholder nobody had chosen and a test pinning it would have turned a
+    // guess into a ruling. That reason expired with the ruling.
     const std::uint64_t console_id = ports.port_in(kConsoleId);
     V2_CHECK_EQ(console_id & 0xFFFFu, 1u);
+    V2_CHECK_EQ((console_id >> 16) & 0xFFFFu, 1u);
     V2_CHECK(console_id != 0);
 
     // device-surface.md's own cross-check: the set bits of the bitmap are exactly the classes
@@ -200,7 +204,7 @@ V2_FIXTURE(device_console_acknowledge_clears_transient_bits_only) {
 
     // END-OF-INPUT SURVIVES AN ACKNOWLEDGE, which is the half of the contract that separates it
     // from overrun and the reason it is a held bit rather than an acknowledgeable one.
-    // device-surface.md:217: it "latches once the input stream is exhausted and stays set
+    // device-surface.md:248: it "latches once the input stream is exhausted and stays set
     // thereafter, so software distinguishes a byte that is not there yet from a byte that will
     // never come". A guest that could acknowledge the bit away would be told a byte might still
     // arrive after the stream had ended, which is the distinction the sentence exists to draw.

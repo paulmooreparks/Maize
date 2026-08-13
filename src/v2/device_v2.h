@@ -35,7 +35,7 @@
 //
 // THE TEST IS "DOES THE DEVICE STILL CONSIDER IT TRUE", NOT "WAS IT SET BY AN EVENT", and the two
 // readings disagree on exactly one console bit. End-of-input is set by an event, which makes it
-// look acknowledgeable, and device-surface.md:217 says it "latches once the input stream is
+// look acknowledgeable, and device-surface.md:248 says it "latches once the input stream is
 // exhausted and stays set thereafter, so software distinguishes a byte that is not there yet from
 // a byte that will never come". A bit an acknowledge could clear for good cannot draw that
 // distinction: the guest would acknowledge it, read zero, and be told a byte might still come
@@ -108,22 +108,17 @@ inline constexpr unsigned kOverrun = 5;
 
 constexpr std::uint64_t status_mask(unsigned bit) { return std::uint64_t{1} << bit; }
 
-// OQ-1, UNANSWERED, OWNED BY THE OPERATOR. Every class identification word carries a "class
-// contract version" in its second quarter-word (device-surface.md:172), and NO CHAPTER OF THE
-// SPECIFICATION DEFINES A NUMBERING SCHEME FOR IT. It is not the base version, which
-// versioning.md fixes at 2.0 forever, and a device class is not an extension either, since
-// versioning.md's extension-versioning rules are written for CSR-numbered extensions.
-//
-// THIS VALUE IS A PLACEHOLDER NOBODY CHOSE. It is $0100 because that is the shape an extension's
-// version would take (major 1, minor 0), which is a guess at the answer and not the answer. No
-// fixture asserts it, deliberately, so that shipping it cannot turn it into a de-facto ruling by
-// way of a test that would have to be edited to change it. maize-421 builds the other six
-// classes and needs the real rule before it can give them a version that means anything.
-inline constexpr std::uint64_t kClassContractVersionPlaceholder = 0x0100;
+// Every class identification word carries a "class contract version" in its second
+// quarter-word (device-surface.md, "The common class skeleton", "The class contract version").
+// Erratum 2.0.2 settled OQ-1: the version is a single 16-bit counter, assigned per class, that
+// starts at 1 and increments for an additive change to that class's contract; an incompatible
+// change takes a new class code and starts again at 1 instead of incrementing. No class this
+// specification defines revises its contract, so every class's counter reads 1 permanently.
+inline constexpr std::uint64_t kClassContractVersionInitial = 0x0001;
 
 // The machine block's identification word (device-surface.md, "The class table"): the literal
 // $4D32 in the low quarter-word, the BASE specification version in the second, major in bits 31
-// through 24 and minor in bits 23 through 16. Base 2.0 puts $0200 there. The 2.0.1 erratum level
+// through 24 and minor in bits 23 through 16. Base 2.0 puts $0200 there. The 2.0.2 erratum level
 // this build is written against does not appear: versioning.md's Errata section says an erratum
 // level is not named in a conformance claim, which names the base version.
 inline constexpr std::uint64_t kMachineMagic = 0x4D32;
@@ -135,12 +130,13 @@ inline constexpr std::uint64_t kBaseSpecificationVersion = 0x0200;
 class DeviceClassV2 {
   public:
     // The contract version is a constructor parameter rather than one shared constant read
-    // straight out of identification(), so a class that is given a version of its own can carry
-    // it without a base-class change. It defaults to the placeholder because OQ-1 is open and no
-    // class HAS a version of its own yet; the seam exists so that answering OQ-1 per class costs
-    // one argument at six call sites rather than a rewrite of this base.
+    // straight out of identification(), so a class that ever needs a version of its own can
+    // carry it without a base-class change. It defaults to kClassContractVersionInitial because
+    // erratum 2.0.2 fixes every class's counter at 1 for as long as base 2.0 does not revise and
+    // no extension may assign or alter a device class; the seam remains so that a class assigned
+    // by later specification work is not blocked on a base-class change to get its own counter.
     explicit DeviceClassV2(unsigned class_code,
-                           std::uint64_t contract_version = kClassContractVersionPlaceholder)
+                           std::uint64_t contract_version = kClassContractVersionInitial)
         : class_code_(class_code), contract_version_(contract_version) {}
     virtual ~DeviceClassV2() = default;
 

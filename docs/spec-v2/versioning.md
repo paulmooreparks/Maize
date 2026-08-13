@@ -50,6 +50,16 @@ passage would change what a conforming machine does, the passage is not an errat
 candidate; the behavior stands as the conformance suite pins it, and the desired change is
 extension work or it does not happen.
 
+That bound presupposes a behavior the earlier text constrained. A passage that is silent
+constrains nothing, so every value a machine could report conformed under it, and a correction
+filling the silence narrows the set of conforming machines instead of moving an answer this
+specification had already given. An erratum may do that much, and it may oblige an
+implementation to change what a guest observes, where the earlier text bore on the behavior
+not at all. What must be shown is the silence itself. The absence of a conformance test does
+not establish it, and a behavior this specification constrains but no binary happens to assert
+stands as written. Erratum `2.0.2` is the first correction to reach this case, and its entry
+in `errata.md` records both the silence it filled and the narrowing it cost.
+
 The erratum component is documentation for readers of this specification rather than
 information for a program. It appears in two places and nowhere else.
 

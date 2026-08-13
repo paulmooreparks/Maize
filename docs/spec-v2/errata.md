@@ -144,3 +144,112 @@ Provenance: this requirement was supplied by an operator ruling on a silence, re
 maize-431. It does not restate anything the frozen text already compelled, because neither
 reading contradicted anything the frozen text said. No conformance test's expected result moves,
 since no conformance binary could assert on this field while the answer did not exist.
+
+### `2.0.2`, 2026-08-13. The class contract version has no numbering scheme
+
+Chapter and section: `device-surface.md`, "The common class skeleton" and "Conformance notes".
+
+Before, in "The common class skeleton":
+
+> Offsets 3 through 15 are class-specific, and the sections below give them. An offset a class
+> does not define is reserved within a populated block.
+>
+> Writing a reserved bit of a defined port is discarded rather than trapped, and reading a
+> reserved bit yields zero. Discarding rather than trapping is the deliberate choice for
+> device-register bits, because a device is not the instruction stream: a driver that writes a
+> bit the machine does not implement then degrades to the behavior of a machine without that
+> bit, instead of faulting.
+>
+> ## Reset state
+
+No text anywhere in the chapter said what values the class contract version named at offset 0
+of the common class skeleton takes, how it increments, what a guest does with a version it
+does not recognize, or whether the number is per-class or machine-wide.
+
+Now, in "The common class skeleton", the same passage with a new subsection inserted between
+the two paragraphs quoted above and the "Reset state" heading:
+
+> ### The class contract version
+>
+> The class contract version at offset 0 is a single 16-bit counter, assigned separately for
+> each class rather than shared across them. It starts at 1 for a class's first ratified
+> contract and increases by one for each additive change made to that class's contract
+> afterward. A number once issued for a class is never reused or withdrawn.
+>
+> An additive change is the only kind of change that increments the counter. A change is
+> additive when it defines something the class's contract left undefined, such as an offset the
+> class reserved or a status bit it left unnamed, and leaves everything the contract already
+> defined meaning what it meant before. A change to a class's contract that is not additive,
+> such as one that would alter the meaning of an existing port or remove one, does not
+> increment the counter at all: it retires the class code and assigns a new one, and the new
+> class's counter starts again at 1. This mirrors the rule the versioning chapter fixes for an
+> incompatible extension, where the successor takes a new name and a fresh `1.0` rather than a
+> new major number on the old name.
+>
+> A guest that reads a contract version higher than the one it was written against proceeds
+> rather than refuses. A higher number can only mean added capability behind ports the guest
+> already understands, since an incompatible change never reaches this field at all: it
+> arrives, if it ever does, as a class code the guest does not recognize, and an unrecognized
+> class code is absent as far as that guest is concerned. There is no case in which this field
+> entitles a guest to reject a class it does recognize.
+>
+> The increment rule also answers a contract version lower than the one a guest was written
+> against. A lower number means the ports a later version of the contract added are not
+> present, while every port the lower version does define means what it has always meant. A
+> guest that uses only what the lower version defines runs unchanged, and a guest that needs a
+> port added later reads the version before it uses that port.
+>
+> The version is advisory to software. The machine populates the field and behaves identically
+> whether the guest inspects it, acts on it, or ignores it entirely.
+>
+> Every class this specification defines holds its counter at 1 permanently. Base 2.0 does not
+> revise, and no extension can reach a device class either. What an extension carries is fixed
+> at ratification, and the extensions chapter's list of those items includes no port
+> allocation. An extension that assigned or altered a class anyway would be reaching into the
+> range this chapter reserves for the classes later specification work assigns, or into the
+> offsets a class leaves reserved, and this chapter fixes both as reading zero on a base
+> machine, so they would read zero without the extension and read otherwise with it. That is
+> base behavior made conditional on whether an extension is present, which the extensions
+> chapter forbids outright. The implementation range above `$7FFF` is different in kind and
+> leaves this argument intact, since this chapter fixes nothing about what a machine puts
+> there and no portable program reads it, so a machine that populates it makes no base
+> behavior conditional on anything.
+> Nothing in this architecture as specified can therefore increment the field for any of the
+> seven classes above. The counter is provision for a class that later specification work might
+> assign; where such work would be recorded and by what process it would happen is not fixed by
+> this chapter.
+
+Before, in "Conformance notes":
+
+> - The identification port of every present class reads its class code in the low quarter-word,
+>   and the identification port of every absent class reads zero.
+
+Now, in "Conformance notes":
+
+> - The identification port of every present class reads its class code in the low quarter-word
+>   and its class contract version, which is 1 for every class this specification defines, in
+>   the second quarter-word, and the identification port of every absent class reads zero.
+
+Requirement: an implementation gives every device class it carries a contract version of 1, in
+the second quarter-word of the identification word that class's port at offset 0 reads, since no
+class this specification defines is permitted to hold any other value; and a guest that reads a
+contract version higher than the one it expects for a class it recognizes proceeds rather than
+refuses.
+
+Provenance: this requirement was supplied by an operator ruling on a silence, recorded on card
+maize-452, D-1. It does not restate anything the frozen text already compelled, because the
+frozen text named the field and said nothing about what values it could carry. No conformance
+test's expected result moves: no conformance binary could assert a value for this field while
+the specification defined none, so filling the silence changes no test that existed before it.
+The property the conformance notes gain is new for the same reason, and it narrows what
+conforms, since a machine that chose some other value was conforming under the earlier text and
+is not conforming under this one. An operator ruling on the erratum bound, recorded on card
+maize-452, D-6, permits that narrowing where the earlier text constrained the behavior not at
+all, and accepts its cost here because no such machine exists and because the alternative is a
+named field left undefined for the life of the architecture.
+
+The same ruling changes the class contract version constant in `src/v2/device_v2.h` from `$0100`
+to `$0001` and renames it from `kClassContractVersionPlaceholder` to
+`kClassContractVersionInitial`, since the old name recorded that the value was an unchosen
+placeholder rather than an answer, which is also why no fixture asserted it. A fixture asserts
+it now.

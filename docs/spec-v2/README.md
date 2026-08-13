@@ -15,7 +15,7 @@ machine is left undefined or implementation-defined by omission.
 
 ## Status
 
-**Maize base `2.0`, erratum level `2.0.1`. Ratified and frozen on 2026-08-12.**
+**Maize base `2.0`, erratum level `2.0.2`. Ratified and frozen on 2026-08-12.**
 
 That line is this specification's header, and the versioning chapter refers to it by that
 name. Its first two components are the base version, which is what a conformance claim names
