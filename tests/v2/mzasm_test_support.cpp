@@ -9,7 +9,17 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <string>
 #include <system_error>
+
+// The process id is what makes a scratch path unique between concurrent ctest processes
+// (maize-444). The split mirrors mzcc_pid() in src/mzcc_proc_posix.c and
+// src/mzcc_proc_win32.c, which answer the same question the same way.
+#ifdef _WIN32
+#  include <process.h>
+#else
+#  include <unistd.h>
+#endif
 
 namespace maize::v2::test {
 
@@ -37,6 +47,27 @@ std::string quote(const std::string& text) {
     }
     out.push_back('"');
     return out;
+}
+
+// Every scratch path this file builds carries this, because ctest runs each fixture as its own
+// process and every one of them resolves the same machine-wide temp directory (maize-444). A
+// counter or a fixture tag distinguishes paths only WITHIN a process, so two fixtures running
+// concurrently under `ctest -j` produced the same name and one clobbered the other's bytes; the
+// loser then read back a file it did not write and failed an output assertion. Two live
+// processes cannot share a pid, which is the property that makes this sufficient, and it is the
+// same discriminator mzcc_make_temp_dir uses in src/mzcc_proc_win32.c.
+//
+// Serialising the fixtures would also have worked and was rejected deliberately: it trades a
+// correctness problem for a slow one, and the v2 suite grows sharply at M2.
+const std::string& process_tag() {
+    static const std::string instance = [] {
+#ifdef _WIN32
+        return std::to_string(static_cast<long long>(_getpid()));
+#else
+        return std::to_string(static_cast<long long>(::getpid()));
+#endif
+    }();
+    return instance;
 }
 
 }  // namespace
@@ -102,7 +133,13 @@ void set_paths(std::string mzasm, std::string root) {
 
 ScratchDir::ScratchDir(const std::string& tag) {
     std::error_code ec;
-    const std::filesystem::path base = std::filesystem::temp_directory_path(ec) / ("mzasm-" + tag);
+    // The pid is here for the same reason it is in run_binary, and it is hardening rather than
+    // the observed cause: the tags in use today happen to be distinct, so no two fixtures
+    // collided here. That safety rested entirely on a hand-maintained convention, and the
+    // constructor opens with remove_all, so the day two fixtures did share a tag one would
+    // delete the other's inputs mid-run. Carrying the pid retires the convention.
+    const std::filesystem::path base =
+        std::filesystem::temp_directory_path(ec) / ("mzasm-" + tag + "-" + process_tag());
     std::filesystem::remove_all(base, ec);
     std::filesystem::create_directories(base, ec);
     path_ = base.string();
@@ -144,12 +181,14 @@ RunResult run_binary(const std::string& binary, const std::vector<std::string>& 
     // fixture asserting a guest program's exact standard output cannot separate the streams
     // after the fact. `output` is then rebuilt by concatenation, so every fixture written
     // against the combined field keeps working unchanged.
+    // The pid comes first and the counter second: the counter alone restarts at zero in every
+    // process, which is what made two concurrent fixtures write the same file (maize-444).
     const std::filesystem::path capture_out =
         std::filesystem::temp_directory_path(ec) /
-        ("mzasm-run-output-" + std::to_string(serial) + ".txt");
+        ("mzasm-run-output-" + process_tag() + "-" + std::to_string(serial) + ".txt");
     const std::filesystem::path capture_err =
         std::filesystem::temp_directory_path(ec) /
-        ("mzasm-run-error-" + std::to_string(serial) + ".txt");
+        ("mzasm-run-error-" + process_tag() + "-" + std::to_string(serial) + ".txt");
 
     std::ostringstream command;
     command << quote(binary);

@@ -948,9 +948,9 @@ MZ_FIXTURE(mzvm_prints_hello_world) {
     // hand-assembled and nothing is driven in process, because what is being tested is that the
     // three artifacts a person would actually use agree with each other.
     //
-    // The scratch tag is "hello" rather than "run" deliberately. ScratchDir builds its path as
-    // "mzasm-<tag>" verbatim, so two fixtures sharing a tag share a directory and delete each
-    // other's files under `ctest -j` (maize-444, which cost nine v2 fixtures).
+    // The scratch tag is "hello" rather than "run" so the two fixtures read as separate things.
+    // It no longer has to be distinct for correctness: ScratchDir carries the pid as of
+    // maize-444, so two fixtures sharing a tag no longer share a directory under `ctest -j`.
     ScratchDir scratch("hello");
 
     // The shipped sources, copied into the scratch directory rather than assembled where they
