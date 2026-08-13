@@ -264,12 +264,18 @@ V2_FIXTURE(out_of_scope_opcodes_are_a_host_diagnostic) {
         // maize-465, where fixtures_paging.cpp took them over. Each departure is replaced from
         // the floating-point band, which is the one band with members to spare until maize-419.
         //
-        // The one survivor below is a privileged instruction whose body is still another card's:
-        // it reaches this diagnostic at SUPERVISOR level, which is where the fixture runs it,
-        // and raises the privileged-operation fault at user level instead, which is where
-        // privileged_instructions_are_privileged_at_user_level runs it.
-        {"wait_for_interrupt", op::kWaitForInterrupt, {op::kWaitForInterrupt}},
+        // wait_for_interrupt left on maize-466, and it is worth saying what it became, because
+        // "not a host diagnostic" is not the same claim as "advanced". A wait with nothing armed
+        // suspends, which is the specified behaviour rather than a gap, and the machine reports
+        // StepStatus::Suspended so a fixture is told rather than hung. fixtures_interrupts.cpp
+        // pins the whole instruction.
+        //
+        // No privileged survivor is left in this list. Every privileged opcode this build
+        // decodes now has a body, so the user-level half of the pair lives entirely in
+        // privileged_instructions_are_privileged_at_user_level and nothing reaches the
+        // unimplemented diagnostic from that band any more.
         {"float_add", 0xC8, {0xC8, 0x01, 0x02, 0x03}},
+        {"float_subtract.h", 0xCB, {0xCB, 0x01, 0x02, 0x03}},
         {"float_add.h", 0xC9, {0xC9, 0x01, 0x02, 0x03}},
         {"float_subtract", 0xCA, {0xCA, 0x01, 0x02, 0x03}},
         {"float_square_root", 0xD0, {0xD0, 0x01, 0x02}},

@@ -50,6 +50,7 @@
 #ifndef MAIZE_V2_DEVICE_V2_H
 #define MAIZE_V2_DEVICE_V2_H
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -106,6 +107,40 @@ inline constexpr unsigned kOverrun = 5;
 
 }  // namespace console_status_bit
 
+namespace skeleton_status_bit {
+
+// device-surface.md, "The common class skeleton": bit 0 is the class's primary ready or pending
+// condition, bit 1 is busy, and bit 2 is invalid-request. Those three mean the same thing in
+// every class, which is why they are here rather than repeated per class.
+inline constexpr unsigned kPrimaryCondition = 0;
+inline constexpr unsigned kBusy = 1;
+inline constexpr unsigned kInvalidRequest = 2;
+
+}  // namespace skeleton_status_bit
+
+namespace timer_status_bit {
+
+// device-surface.md's Timer section names bit 0, expiry-pending, and it is the interrupt
+// condition. Bit 2, invalid-request, is the skeleton's and the timer is the one class in this
+// build that can actually set it: a period of zero with counting enabled is an invalid request.
+inline constexpr unsigned kExpiryPending = skeleton_status_bit::kPrimaryCondition;
+inline constexpr unsigned kInvalidRequest = skeleton_status_bit::kInvalidRequest;
+
+}  // namespace timer_status_bit
+
+namespace timer_offset {
+
+inline constexpr std::uint16_t kPeriod = 3;          // read and write, nanoseconds
+inline constexpr std::uint16_t kMode = 4;            // read and write
+inline constexpr std::uint16_t kMonotonicCount = 5;  // read only, nanoseconds since power-on
+
+// The mode word: bit 0 enables counting and bit 1 selects periodic rather than one-shot.
+inline constexpr std::uint64_t kModeCountingEnabled = 0x1;
+inline constexpr std::uint64_t kModePeriodic = 0x2;
+inline constexpr std::uint64_t kModeDefinedMask = 0x3;
+
+}  // namespace timer_offset
+
 constexpr std::uint64_t status_mask(unsigned bit) { return std::uint64_t{1} << bit; }
 
 // Every class identification word carries a "class contract version" in its second
@@ -161,6 +196,18 @@ class DeviceClassV2 {
 
     bool interrupt_enabled() const { return interrupt_enabled_; }
 
+    // Whether this class is asserting its interrupt line right now (maize-466). device-surface.md,
+    // "Device interrupts": "A device asserts its line when the condition named in its class
+    // contract becomes true and its interrupt-enable port bit is set."
+    //
+    // THE TWO ENABLES ARE DIFFERENT ENABLES AND THIS ONE IS THE DEVICE'S. The port bit below
+    // gates whether the device asserts at all; the interrupt-enable register in the control and
+    // status space gates whether the machine DELIVERS an asserted cause. A machine that confuses
+    // them leaves a masked condition unrecorded, which the same section forbids outright: "A
+    // device whose interrupt-enable bit is clear still records the condition in its status port,
+    // so every class is fully usable by polling."
+    bool interrupt_asserted() const { return interrupt_enabled_ && interrupt_condition(); }
+
     // A read of a port in this class's block. Not const: a class read can consume, which is the
     // console's offset 3 and the keyboard's and the entropy device's.
     //
@@ -170,14 +217,10 @@ class DeviceClassV2 {
     // redefine those three offsets could break that for every reader of it. A class extends the
     // surface at offset 3 and above.
     //
-    // One known case will want a seam here, and it is written down so the next author is not
-    // guessing which way this went. device-surface.md's Timer section says acknowledging
-    // expiry-pending "re-arms a periodic timer for the next expiry and leaves a one-shot timer
-    // disarmed", which is a side effect of an acknowledge rather than a redefinition of it. The
-    // shape that fits is a protected `on_acknowledge(written)` hook called AFTER the clear, not a
-    // virtual port_write. It is not here yet because no class in this build needs it, it leaks
-    // into no format or ABI, and adding one empty override ahead of its first caller buys
-    // nothing.
+    // The one seam beneath them is `on_acknowledge`, added on maize-466 when the timer became
+    // the first class to need it and shaped exactly as the note that stood here predicted: a
+    // protected hook called AFTER the clear, rather than a virtual port_write that would let a
+    // class redefine the acknowledge itself.
     std::uint64_t port_read(std::uint16_t offset) {
         switch (offset) {
             case skeleton_offset::kIdentification: return identification();
@@ -197,6 +240,13 @@ class DeviceClassV2 {
                 // bit is not stored in this field at all, so it reappears on the next read
                 // exactly as "a bit the device holds true remains set" requires.
                 acknowledgeable_status_ &= ~value;
+                // The side effect an acknowledge can carry, called AFTER the clear (maize-466).
+                // The seam is here because the timer needs it: device-surface.md's Timer section
+                // says acknowledging expiry-pending "re-arms a periodic timer for the next expiry
+                // and leaves a one-shot timer disarmed", which is a consequence of the
+                // acknowledge rather than a redefinition of what an acknowledge means, so the
+                // three skeleton offsets stay sealed and the hook runs beneath them.
+                on_acknowledge(value);
                 return;
             case skeleton_offset::kInterruptControl:
                 // Bit 0 enables the class's interrupt line. Bits 1 through 63 are reserved, and
@@ -217,6 +267,15 @@ class DeviceClassV2 {
   protected:
     // The bits this class holds true right now, recomputed on every read.
     virtual std::uint64_t held_status_bits() const { return 0; }
+
+    // Is the condition this class's contract names as its interrupt condition true right now
+    // (maize-466)? Independent of the port-level enable bit, which interrupt_asserted() applies
+    // on top, and independent of whether the machine would deliver the cause at all.
+    virtual bool interrupt_condition() const { return false; }
+
+    // What an acknowledge does beyond clearing bits. `written` is the value the guest wrote, so
+    // an override sees which bits it acknowledged and not merely that it acknowledged something.
+    virtual void on_acknowledge(std::uint64_t written) { (void)written; }
 
     // Offsets 3 through 15. The default is reserved-in-a-populated-block, which reads zero and
     // discards writes, observably identical to an unpopulated port and required to be.
@@ -242,11 +301,14 @@ class DeviceClassV2 {
 
 // The console: a byte-at-a-time input stream and a byte-at-a-time output stream at offset 3.
 //
-// D-2: NO HOST INPUT SOURCE IS WIRED IN THIS BUILD. Input-available stays clear and end-of-input
-// is never asserted, so a read of offset 3 always yields zero and consumes nothing, which is the
-// contract's own defined behaviour for a clear input-available rather than a gap in it.
-// device-surface.md never requires an input stream to reach end-of-input; it only says what
-// happens when one does. A later card that wires real stdin decides when, if ever, to assert it.
+// NO HOST INPUT SOURCE IS WIRED IN THIS BUILD, and a queue a fixture fills is not one. maize-451
+// filed that as D-2 when a console with no way at all to receive a byte was the whole story;
+// maize-466 needs the interrupt condition the console owns, so the queue below exists and
+// host_push_input is the only thing that fills it. Nothing reachable from a guest instruction
+// puts a byte in it, so a program run under mzvm still sees input-available permanently clear,
+// which is the contract's own defined behaviour for an input stream that has nothing waiting
+// rather than a gap in it. A later card wires real stdin into host_push_input and changes
+// nothing else here.
 //
 // WHERE THE BIT GOES WHEN STDIN ARRIVES, since that card will read this paragraph rather than
 // re-derive it. End-of-input is HELD, not acknowledgeable, so it belongs in held_status_bits()
@@ -256,6 +318,14 @@ class DeviceClassV2 {
 // The stdin card sets `input_exhausted_` when the host stream ends and never clears it. That
 // path is already exercised: host_set_input_exhausted stands the condition up today and
 // device_console_acknowledge_clears_transient_bits_only proves an acknowledge cannot clear it.
+//
+// INPUT-AVAILABLE IS HELD TOO, and for a different reason: it is true exactly while a byte is
+// waiting, so consuming the last byte makes it false again. device-surface.md's Console section
+// says so directly, "Reading offset 3 consumes the byte and clears the condition when no further
+// byte is waiting", which is what makes the console's interrupt line level-sensitive: a guest
+// that takes the interrupt and does not read the byte sees the same cause pending again at the
+// next boundary, and that is the re-raise the trap-model chapter describes rather than a
+// double delivery.
 //
 // Output goes into a buffer rather than to a real stream, so the interpreter and its in-process
 // fixtures carry no I/O dependency. mzvm_main.cpp reads the buffer after run() and is the only
@@ -280,9 +350,22 @@ class ConsoleDeviceV2 : public DeviceClassV2 {
     // claim that got itself wrong once already.
     void host_set_input_exhausted(bool exhausted) { input_exhausted_ = exhausted; }
 
+    // Host-side, reachable from no instruction (maize-466). Deliver one byte to the input stream,
+    // which is what a real console does when a key reaches it. This is the ordinary console-input
+    // injection the interrupt fixtures use, and it is the only thing in the tree that makes
+    // input-available true.
+    void host_push_input(std::uint8_t byte) { input_.push_back(byte); }
+
+    // How many delivered bytes the guest has not consumed yet. Host-side and for assertions; a
+    // guest sees this only as the input-available status bit.
+    std::size_t host_pending_input() const { return input_.size() - input_read_; }
+
   protected:
     std::uint64_t held_status_bits() const override {
         std::uint64_t held = 0;
+        if (input_available()) {
+            held |= status_mask(console_status_bit::kInputAvailable);
+        }
         if (output_ready_) {
             held |= status_mask(console_status_bit::kOutputReady);
         }
@@ -294,11 +377,19 @@ class ConsoleDeviceV2 : public DeviceClassV2 {
         return held;
     }
 
+    // device-surface.md, Console: "The interrupt condition is input-available."
+    bool interrupt_condition() const override { return input_available(); }
+
     std::uint64_t read_class_port(std::uint16_t offset) override {
         if (offset == kDataOffset) {
-            // Input-available is permanently clear (D-2), so this yields zero and consumes
-            // nothing. That is the contract, not a stub.
-            return 0;
+            if (!input_available()) {
+                // "Reading offset 3 when input-available is clear yields zero and consumes
+                // nothing." That is the contract, not a stub.
+                return 0;
+            }
+            // Zero-extended, and consumed. Consuming the last byte clears input-available, which
+            // drops the interrupt line with it.
+            return input_[input_read_++];
         }
         return 0;  // reserved within a populated block
     }
@@ -319,9 +410,191 @@ class ConsoleDeviceV2 : public DeviceClassV2 {
     }
 
   private:
+    bool input_available() const { return input_read_ < input_.size(); }
+
     std::vector<std::uint8_t> output_;
+    // Delivered bytes and how far the guest has read. A read index rather than an erase keeps
+    // every delivered byte for a fixture to look back at, and the queue is small by construction.
+    std::vector<std::uint8_t> input_;
+    std::size_t input_read_ = 0;
     bool output_ready_ = true;
-    bool input_exhausted_ = false;  // D-2: nothing in this build ever sets it
+    bool input_exhausted_ = false;  // nothing in this build ever sets it
+};
+
+// The timer, class 3 (maize-466). device-surface.md says outright that it "is the device the
+// conformance suite uses to exercise interrupt delivery end to end", which is why the class lands
+// with the interrupt card rather than waiting for the rest of the device surface: without a
+// device that can assert a line, every interrupt fixture would have to reach past the guest and
+// set a pending bit by hand, and a delivery path tested only that way is a path no device has
+// ever driven.
+//
+// TIME IS COUNTED IN RETIRED INSTRUCTIONS, WHICH IS BOTH CONFORMING AND THE ONLY DETERMINISTIC
+// CHOICE. The chapter states the period and the monotonic count in nanoseconds, then says "The
+// resolution a machine actually delivers is an implementation property, and the monotonic count
+// advances in whatever increment that resolution produces. Nothing in this contract requires a
+// tick to arrive on time, only that expiry, status, and the monotonic count agree with each
+// other." A machine that read a host clock would satisfy the letter of that and violate
+// execution-model.md's determinism guarantee and conformance.md's ban on a test that depends on
+// how long anything takes, because the same image would expire the timer at a different
+// instruction on a faster host. Counting the machine's own retired instructions makes expiry a
+// function of architectural state, so a conformance binary that arms the timer and counts
+// instructions gets the same answer on every machine that makes the same choice, and gets an
+// answer that is at least reproducible on any machine at all.
+inline constexpr std::uint64_t kNanosecondsPerInstruction = 1000;
+
+class TimerDeviceV2 : public DeviceClassV2 {
+  public:
+    TimerDeviceV2() : DeviceClassV2(device_class::kTimer) {}
+
+    std::uint64_t monotonic_nanoseconds() const { return monotonic_ns_; }
+
+    // Advance the machine's own sense of time and expire the timer if the interval elapsed. The
+    // interpreter calls this once per retired instruction; nothing a guest executes calls it.
+    void advance_time(std::uint64_t nanoseconds) {
+        monotonic_ns_ += nanoseconds;
+        if (armed_ && monotonic_ns_ >= next_expiry_ns_) {
+            // Expiry-pending is ACKNOWLEDGEABLE rather than held, and the split matters here more
+            // than anywhere else in the file: the whole of the timer's re-arm contract is that
+            // the guest's acknowledge is what clears the condition, so a bit the device
+            // recomputed on every read would drop the expiry the instant the interval passed and
+            // an interrupt would be lost between the expiry and the handler's first instruction.
+            acknowledgeable_status_ |= status_mask(timer_status_bit::kExpiryPending);
+            // An expiry disarms. A periodic timer is re-armed by the acknowledge, not by the
+            // expiry, which is what keeps a periodic timer from queueing expiries behind a
+            // handler that has not run yet.
+            armed_ = false;
+        }
+    }
+
+    // How many nanoseconds until this device could next make its condition true, or none when
+    // nothing is scheduled. wait_for_interrupt is the caller: a suspended machine retires no
+    // instruction, so without something to advance time to, the wait could never end.
+    bool nanoseconds_until_expiry(std::uint64_t& out) const {
+        if (!armed_) {
+            return false;
+        }
+        out = next_expiry_ns_ > monotonic_ns_ ? next_expiry_ns_ - monotonic_ns_ : 0;
+        return true;
+    }
+
+  protected:
+    // device-surface.md, Timer: "Status bit 0 is expiry-pending, and it is the interrupt
+    // condition." Read off the acknowledgeable field rather than recomputed, for the reason
+    // advance_time states.
+    bool interrupt_condition() const override {
+        return (acknowledgeable_status_ & status_mask(timer_status_bit::kExpiryPending)) != 0;
+    }
+
+    // "Writing the acknowledge port clears it, which re-arms a periodic timer for the next expiry
+    // and leaves a one-shot timer disarmed."
+    void on_acknowledge(std::uint64_t written) override {
+        if ((written & status_mask(timer_status_bit::kExpiryPending)) == 0) {
+            return;  // the guest acknowledged something else
+        }
+        // No period_ != 0 guard here, because counting being enabled already means the period is
+        // nonzero: the mode port refuses to enable counting against a zero period, and the period
+        // port disables counting when a zero is written into it, so the two writers between them
+        // hold the invariant and a third check here would be a guard nothing can reach.
+        if (counting_enabled() && periodic()) {
+            arm();
+        }
+    }
+
+    std::uint64_t read_class_port(std::uint16_t offset) override {
+        switch (offset) {
+            case timer_offset::kPeriod: return period_;
+            case timer_offset::kMode: return mode_;
+            case timer_offset::kMonotonicCount: return monotonic_ns_;
+            default: return 0;  // reserved within a populated block
+        }
+    }
+
+    void write_class_port(std::uint16_t offset, std::uint64_t value) override {
+        switch (offset) {
+            case timer_offset::kPeriod:
+                // "Writing the period while counting is enabled takes effect at the next expiry
+                // rather than immediately, so a running periodic timer is reprogrammed without
+                // losing a tick." The register reads back what was written either way; what is
+                // deferred is the interval in flight, which arm() re-reads when it next runs.
+                period_ = value;
+                if (!counting_enabled()) {
+                    armed_ = false;
+                    return;
+                }
+                if (value == 0) {
+                    // "A period of zero with counting enabled is an invalid request: the device
+                    // sets the invalid-request status bit, leaves counting disabled, and raises no
+                    // trap." THE RULE IS A CONDITION ON STATE, NOT ON ONE PORT (maize-466 cycle 2).
+                    // The mode port is one route into that state and this is the other, so the
+                    // response has to be identical on both or a guest reaches an invalid state by
+                    // the unguarded route and the device reports nothing wrong. The deferral rule
+                    // in the paragraph above does not soften it: deferring the refusal to the next
+                    // expiry would leave the register reading a counting timer that the device has
+                    // already decided to refuse, and the guest with nothing to read that says so.
+                    refuse_counting_with_a_zero_period();
+                }
+                return;
+            case timer_offset::kMode: {
+                // Reserved bits above bit 1 are discarded rather than trapped, which is the
+                // skeleton's rule for every device register.
+                const std::uint64_t requested = value & timer_offset::kModeDefinedMask;
+                if ((requested & timer_offset::kModeCountingEnabled) != 0 && period_ == 0) {
+                    // The mode-port route into a zero period with counting enabled. Counting is
+                    // left disabled, so the counting bit does not reach the mode register and a
+                    // guest that reads the register back sees the refusal. The periodic bit the
+                    // guest asked for is kept, because the contract refuses the combination rather
+                    // than the whole write.
+                    mode_ = requested;
+                    refuse_counting_with_a_zero_period();
+                    return;
+                }
+                mode_ = requested;
+                if (counting_enabled()) {
+                    // A write to the MODE port is an explicit programming action, so it starts a
+                    // fresh interval whatever the register held before. The deferral the chapter
+                    // states belongs to the PERIOD port, "Writing the period while counting is
+                    // enabled takes effect at the next expiry rather than immediately", and
+                    // deferring a mode write too would leave a guest that re-programmed a
+                    // one-shot after its expiry with a timer that never fires again.
+                    arm();
+                } else {
+                    armed_ = false;
+                }
+                return;
+            }
+            default:
+                return;  // the monotonic count is read-only, and the rest is reserved
+        }
+    }
+
+  private:
+    bool counting_enabled() const {
+        return (mode_ & timer_offset::kModeCountingEnabled) != 0;
+    }
+    bool periodic() const { return (mode_ & timer_offset::kModePeriodic) != 0; }
+
+    // The single response the contract states for a period of zero with counting enabled, applied
+    // by both routes that can reach that state. Sets the invalid-request status bit, leaves
+    // counting disabled, raises no trap. Every caller has already stored whatever the guest wrote
+    // to its own register, so a read-back shows both what was asked for and what was refused.
+    void refuse_counting_with_a_zero_period() {
+        acknowledgeable_status_ |= status_mask(timer_status_bit::kInvalidRequest);
+        mode_ &= ~timer_offset::kModeCountingEnabled;
+        armed_ = false;
+    }
+
+    // Start an interval from now. The period is read HERE rather than latched at the write, which
+    // is what makes a period written mid-interval take effect at the next expiry.
+    void arm() {
+        next_expiry_ns_ = monotonic_ns_ + period_;
+        armed_ = true;
+    }
+
+    std::uint64_t period_ = 0;
+    std::uint64_t mode_ = 0;
+    std::uint64_t monotonic_ns_ = 0;
+    std::uint64_t next_expiry_ns_ = 0;
+    bool armed_ = false;
 };
 
 // The whole port space of one machine: the machine block, the populated classes, and the
@@ -370,8 +643,37 @@ class DeviceSurfaceV2 {
 
     ConsoleDeviceV2& console() { return console_; }
     const ConsoleDeviceV2& console() const { return console_; }
+    TimerDeviceV2& timer() { return timer_; }
+    const TimerDeviceV2& timer() const { return timer_; }
 
     const std::vector<std::uint8_t>& console_output() const { return console_.output(); }
+
+    // Which class codes are asserting their interrupt lines right now, as a bitmask indexed by
+    // class code (maize-466). device-surface.md: "Each device class owns exactly one interrupt
+    // line, and the line index equals the class code in the class table." The machine turns a
+    // line index into a cause number; this function knows nothing about cause numbers, which is
+    // what keeps that mapping in the one place trap-model.md assigns it to.
+    std::uint64_t asserted_interrupt_lines() const {
+        std::uint64_t lines = 0;
+        for (unsigned code = 1; code <= device_class::kHighestClassCode; ++code) {
+            const DeviceClassV2* device = device_for(code);
+            if (device != nullptr && device->interrupt_asserted()) {
+                lines |= std::uint64_t{1} << code;
+            }
+        }
+        return lines;
+    }
+
+    // Move every device's sense of time forward. Only the timer has one today.
+    void advance_time(std::uint64_t nanoseconds) { timer_.advance_time(nanoseconds); }
+
+    // The shortest wait after which some device could assert a line it is not asserting now, or
+    // false when no device has anything scheduled. A machine suspended in wait_for_interrupt with
+    // this returning false can never wake, which is a state the interpreter reports rather than
+    // spins in.
+    bool nanoseconds_until_next_device_event(std::uint64_t& out) const {
+        return timer_.nanoseconds_until_expiry(out);
+    }
 
   private:
     // The one place that says which classes this machine carries. A class code the base assigns
@@ -381,6 +683,15 @@ class DeviceSurfaceV2 {
     DeviceClassV2* device_for(unsigned class_code) {
         switch (class_code) {
             case device_class::kConsole: return &console_;
+            case device_class::kTimer: return &timer_;
+            default: return nullptr;
+        }
+    }
+
+    const DeviceClassV2* device_for(unsigned class_code) const {
+        switch (class_code) {
+            case device_class::kConsole: return &console_;
+            case device_class::kTimer: return &timer_;
             default: return nullptr;
         }
     }
@@ -394,6 +705,7 @@ class DeviceSurfaceV2 {
     }
 
     ConsoleDeviceV2 console_;
+    TimerDeviceV2 timer_;
 };
 
 }  // namespace maize::v2

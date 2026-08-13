@@ -283,6 +283,19 @@ int main(int argc, char** argv) {
                          result.opcode, result.pc);
             exit_code = 3;
             break;
+        case maize::v2::StepStatus::Suspended:
+            // wait_for_interrupt with no cause that could ever become pending and enabled. The
+            // machine is doing exactly what the chapter requires and the specification does not
+            // bound how long a wait takes, so this is a host diagnostic in the same family as the
+            // unimplemented-opcode report rather than a guest-visible trap. Saying so beats
+            // spinning until a person kills the process or an outer timeout does.
+            std::fprintf(stderr,
+                         "mzvm: wait_for_interrupt at $%016" PRIX64
+                         " can never complete, because no enabled cause is pending and no device "
+                         "has anything scheduled\n",
+                         result.pc);
+            exit_code = 1;
+            break;
         case maize::v2::StepStatus::Advanced:
             std::fprintf(stderr, "mzvm: step limit reached at $%016" PRIX64 "\n", machine.pc());
             exit_code = 1;

@@ -43,7 +43,11 @@ V2_FIXTURE(device_machine_block_identification_and_presence) {
     DeviceSurfaceV2& ports = machine.interpreter().device_surface();
 
     V2_CHECK_EQ(ports.port_in(kMachineId), 0x0000000002004D32ull);
-    V2_CHECK_EQ(ports.port_in(kMachinePresence), 0x0000000000000002ull);
+    // Bit 1 is the console and bit 3 is the timer, which are the two classes device-surface.md's
+    // class table marks required and the two this build carries (maize-466 brought the timer).
+    // The literal is here rather than a mask assembled from the class-code constants, so a build
+    // that renumbered a class has to break this line rather than move with it.
+    V2_CHECK_EQ(ports.port_in(kMachinePresence), 0x000000000000000Aull);
 
     // The console's identification carries its class code in the low quarter-word and is
     // nonzero, which is all presence detection needs. The second quarter-word is the class
@@ -85,7 +89,7 @@ V2_FIXTURE(device_unpopulated_ports_read_zero_and_discard_write) {
         0x0002, 0x000F,  // reserved within the populated machine block
         0x0014, 0x001F,  // reserved within the populated console block
         0x0020, 0x0025,  // keyboard: assigned by the base, absent here
-        0x0030, 0x003F,  // timer: assigned by the base, absent here (D-1)
+        0x0036, 0x003F,  // reserved within the populated timer block (maize-466)
         0x0040, 0x0050, 0x0060, 0x0070,  // the remaining optional classes, all absent
         0x0080, 0x7FFF,  // reserved for later specification work
         0x8000, 0xFFFF,  // the implementation range
@@ -97,9 +101,12 @@ V2_FIXTURE(device_unpopulated_ports_read_zero_and_discard_write) {
         V2_CHECK_EQ(ports.port_in(port), 0u);
     }
 
-    // No write above reached the one device that is present. A console that had accepted a byte
-    // from a reserved offset of its own block would pass every read check above.
+    // No write above reached either device that is present. A console that had accepted a byte
+    // from a reserved offset of its own block would pass every read check above, and so would a
+    // timer that had taken a period or a mode from one of its own.
     V2_CHECK(ports.console_output().empty());
+    V2_CHECK_EQ(ports.port_in(0x0033), 0u);  // the timer's period, still at its reset value
+    V2_CHECK_EQ(ports.port_in(0x0034), 0u);  // and its mode
 }
 
 V2_FIXTURE(device_console_reset_state) {
@@ -149,11 +156,17 @@ V2_FIXTURE(device_console_output_accumulates_bytes) {
 }
 
 V2_FIXTURE(device_console_input_is_permanently_absent) {
-    // D-2: no host input source is wired to the console in this build, so input-available stays
-    // clear and end-of-input is never asserted. Reading offset 3 with input-available clear
-    // yields zero and consumes nothing, which is the contract's own defined behaviour rather
-    // than a gap in it. This fixture is what pins the decision: a later build that starts
-    // claiming end-of-input has to come back and change a test that says it never does.
+    // No host input source is wired to the console in this build, so a machine nobody hands a
+    // byte to holds input-available clear and never asserts end-of-input. Reading offset 3 with
+    // input-available clear yields zero and consumes nothing, which is the contract's own
+    // defined behaviour rather than a gap in it. This fixture is what pins the decision: a later
+    // build that starts claiming end-of-input has to come back and change a test that says it
+    // never does.
+    //
+    // maize-466 added host_push_input, which is the only thing in the tree that can make
+    // input-available true, and this fixture deliberately does not call it. The claim under test
+    // is about a machine left alone, and the claim about a machine handed a byte is
+    // fixtures_interrupts.cpp's.
     Machine machine;
     DeviceSurfaceV2& ports = machine.interpreter().device_surface();
 

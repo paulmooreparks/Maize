@@ -22,7 +22,8 @@ add_executable(mzvm_v2_fixtures
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_devices.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_privilege.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_paging.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_traps.cpp")
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_traps.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_interrupts.cpp")
 target_include_directories(mzvm_v2_fixtures PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src/v2"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2")
@@ -114,7 +115,26 @@ set(MAIZE_V2_FIXTURES
   tlb_invalidate_discards_the_translations_it_names
   tlb_maintenance_is_privileged_and_faults_at_nothing
   a_cached_translation_is_rechecked_on_every_use
-  the_translation_cache_neither_over_flushes_nor_under_flushes)
+  the_translation_cache_neither_over_flushes_nor_under_flushes
+  a_fetch_page_fault_beats_an_interrupt_deliverable_at_the_same_boundary
+  a_block_interrupt_and_the_page_fault_after_it_compose_and_lose_nothing
+  interrupt_cause_numbers_and_register_layout_are_the_specified_ones
+  interrupt_enable_zero_rejects_the_non_maskable_synchronous_causes
+  pending_is_set_while_the_cause_is_masked_at_the_cpu
+  lowest_numbered_deliverable_cause_wins
+  interrupt_lands_between_instructions_never_inside_one
+  interrupt_during_block_copy_restarts_and_copies_every_byte_once
+  one_expiry_is_delivered_exactly_once_and_acknowledged_before_return
+  wait_for_interrupt_retires_before_it_delivers
+  masked_completion_of_a_wait_is_not_a_delivery
+  a_pending_but_disabled_cause_never_wakes_the_machine
+  wait_for_interrupt_at_user_level_faults_without_suspending
+  an_interrupt_handler_preserves_every_general_register
+  timer_contract_arms_expires_and_rearms_as_the_class_says
+  timer_refuses_a_zero_period_written_while_counting_is_already_enabled
+  timer_period_written_mid_interval_takes_effect_at_the_next_expiry
+  console_asserts_its_line_only_while_a_byte_is_waiting
+  a_wait_with_nothing_armed_suspends_rather_than_spinning)
 
 foreach(_fixture ${MAIZE_V2_FIXTURES})
   add_test(NAME "v2_${_fixture}" COMMAND mzvm_v2_fixtures "${_fixture}")

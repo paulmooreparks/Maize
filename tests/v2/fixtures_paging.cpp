@@ -184,6 +184,18 @@ class Paged {
 
     void emit_enter_user() { emit_csr_write(csr::kStatus, 0x0); }
 
+    // A port write emitted as part of the setup, which the two maize-466 seam fixtures at the
+    // end of this file need to arm the timer. Three instructions and the LAST of them is the
+    // port_out itself, so a fixture that arms the timer immediately before the instruction it is
+    // asserting on gets the boundary it asked for and nothing may be appended here.
+    void emit_port_out(std::uint16_t port, std::uint64_t value, unsigned via_value = 20,
+                       unsigned via_port = 21) {
+        emit_move(via_value, value);
+        emit_move(via_port, port);
+        program_.op_r_r(op::kPortOut, reg(via_value), reg(via_port));
+        ++setup_steps_;
+    }
+
     // A load emitted as part of the setup, for a fixture whose setup has to touch memory before
     // the instruction it is actually asserting on.
     void emit_load(unsigned base, unsigned destination) {
@@ -1367,6 +1379,290 @@ V2_FIXTURE(the_translation_cache_neither_over_flushes_nor_under_flushes) {
     mark = paged.translator().walks();
     V2_CHECK(paged.step().status == StepStatus::Advanced);
     V2_CHECK_EQ(paged.translator().walks() - mark, 2u);
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE SEAM BETWEEN TRANSLATION AND INTERRUPT DELIVERY (maize-466 over maize-465).
+//
+// The two fixtures below belong to neither chapter alone. maize-465 gave the machine translation
+// and the faults it raises; maize-466 gave it interrupts and the boundaries they land on. Where
+// the two meet, one question decides the machine's behaviour, and execution-model.md answers it
+// in the "Interrupts and the instruction boundary" section:
+//
+//   "A fault or a trap raised by an instruction belongs to that instruction and is delivered
+//    when the instruction raises it, which is before the boundary at which a pending interrupt
+//    could be taken; the interrupt remains pending and is taken at the next boundary at which it
+//    is deliverable."
+//
+// So a fault wins over an interrupt that is deliverable at the same moment, and the interrupt is
+// not lost by losing: it keeps its pending bit and reaches its handler at the first boundary
+// after the kernel has repaired whatever faulted. Both halves of that sentence are asserted
+// below, because a machine that delivered the fault and dropped the interrupt would satisfy the
+// first half alone and would lose a timer tick every time a page was missing.
+//
+// These live in this file rather than in fixtures_interrupts.cpp because the page tables are the
+// heavier of the two setups and Paged already builds them. The interrupt machinery they need is
+// the timer, the console and two vector entries, which is what emit_port_out above adds.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+// device-surface.md's class table, spelled as literals for the reason fixtures_interrupts.cpp
+// spells them as literals: a machine that moved a class block would move a composed constant
+// along with it and pass.
+constexpr std::uint16_t kConsoleControl = 0x0012;
+constexpr std::uint16_t kTimerStatus = 0x0031;
+constexpr std::uint16_t kTimerControl = 0x0032;
+constexpr std::uint16_t kTimerPeriod = 0x0033;
+constexpr std::uint16_t kTimerMode = 0x0034;
+
+// Supervisor with the status word's interrupt-enable bit set, which is bit 2.
+constexpr std::uint64_t kSupervisorInterruptsOn = 0x5;
+
+// Arming the timer with two instruction-times immediately before an instruction puts its expiry
+// at the boundary after that instruction. The block fixture leans on the same arithmetic holding
+// inside a block instruction, whose mid-operation checks advance the clock for the same reason
+// and by the same amount.
+constexpr std::uint64_t kExpireAfterNextInstruction = 2 * kNanosecondsPerInstruction;
+
+// Where the two fixtures record what a handler saw. Identity-mapped, writable, and clear of the
+// program, the vector table, the trap stack and the page tables.
+constexpr std::uint64_t kSeamMark0 = 0x3000;
+constexpr std::uint64_t kSeamMark1 = 0x3008;
+constexpr std::uint64_t kSeamMark2 = 0x3010;
+
+// A second handler address, so a fixture can tell which vector entry the machine dispatched
+// through rather than inferring it from the cause word alone.
+constexpr std::uint64_t kSecondHandlerBase = 0x0700;
+
+// Store one register into an absolute address, through a scratch register the handler owns.
+void emit_handler_store(Encoder& handler, unsigned source, std::uint64_t address,
+                        unsigned via = 13) {
+    handler.op_r_i8(op::kMoveW, reg(via), address);
+    handler.op_r_r(op::kStore, reg(source), reg(via));
+}
+
+}  // namespace
+
+V2_FIXTURE(a_fetch_page_fault_beats_an_interrupt_deliverable_at_the_same_boundary) {
+    // The precedence sentence, tested at the one boundary where both candidates are ready at
+    // once. The jump retires and leaves the program counter on a page nothing maps, and the timer
+    // is armed so that its expiry falls due at that very boundary. Exactly one of the two can be
+    // delivered first, and the chapter says which.
+    //
+    // THE WRONG MACHINE THIS CATCHES is the obvious one, and it is the shape this build actually
+    // had before the two cards were merged: check for a deliverable interrupt above the fetch,
+    // deliver it, and let the fetch fault next time round. That machine reports cause 35 here
+    // with the same captured program counter, so a fixture that only checked "a trap was
+    // delivered at kFarVirtual" cannot tell it from a correct one. The cause number is the whole
+    // discriminator, which is why it is asserted in plain digits below rather than through the
+    // constant that would follow a renumbering.
+    Paged paged;
+    paged.identity_map();
+    paged.install_handler(8, kHandlerBase);    // page fault on fetch
+    paged.install_handler(35, kSecondHandlerBase);  // the timer, if a wrong machine gets here
+
+    // The fault handler records the timer's pending bit AT ITS FIRST INSTRUCTION, which is where
+    // trap-model.md says a delivered cause reads zero. Cause 8 is not the delivered cause here,
+    // so 35 must read one: the interrupt lost the race and kept its claim.
+    Encoder fault_handler(kHandlerBase);
+    fault_handler.op_r_i2(op::kCsrRead, reg(12), csr::kInterruptPending0);
+    emit_handler_store(fault_handler, 12, kSeamMark0);
+    fault_handler.halt();
+    paged.load_image(fault_handler);
+
+    // A wrong machine dispatching the timer first lands here and says so, rather than halting
+    // somewhere that looks like the right answer.
+    Encoder timer_handler(kSecondHandlerBase);
+    timer_handler.op_r_i8(op::kMoveW, reg(12), 1);
+    emit_handler_store(timer_handler, 12, kSeamMark1);
+    timer_handler.halt();
+    paged.load_image(timer_handler);
+
+    paged.emit_kernel_preamble();
+    paged.emit_port_out(kTimerControl, 1);
+    paged.emit_csr_write(csr::kInterruptEnable0, std::uint64_t{1} << 35);
+    paged.emit_csr_write(csr::kStatus, kSupervisorInterruptsOn);
+    paged.emit_enable();
+    paged.emit_move(2, kFarVirtual);
+    paged.emit_port_out(kTimerPeriod, kExpireAfterNextInstruction);
+    paged.emit_port_out(kTimerMode, 1);  // one-shot, and the last setup instruction
+    paged.program().op_r(op::kJumpReg, reg(2));
+    paged.program().halt();
+    paged.start();
+    paged.run_setup();
+
+    // The jump itself is fine: instruction-reference-control.md puts the fault of a transfer to
+    // an unmapped page "on the fetch of the target instruction rather than on the transfer".
+    V2_CHECK(paged.step().status == StepStatus::Advanced);
+    V2_CHECK_EQ(paged.machine().interpreter().pc(), kFarVirtual);
+
+    // The boundary where both are ready. Cause 8, subcode 0, both in digits, with the faulting
+    // virtual address in the auxiliary word and the same address as the captured program counter,
+    // because the instruction that faulted is the one that was never fetched.
+    const StepResult result = paged.step();
+    expect_trap(result, 8, 0, kFarVirtual, kFarVirtual,
+                "a fetch page fault with a timer interrupt deliverable at the same boundary");
+    expect_disposition(result, TrapDisposition::Delivered, "the fetch page fault");
+    V2_CHECK_EQ(paged.machine().interpreter().pc(), kHandlerBase);
+
+    // "The interrupt remains pending and is taken at the next boundary at which it is
+    // deliverable." Not delivered, not discarded, and still claiming its cause.
+    V2_CHECK(paged.csr().pending(35));
+
+    expect_halted(paged.machine().run(), "the fault handler");
+    V2_CHECK_EQ(paged.machine().memory().read_little_endian(kSeamMark0, 8) &
+                    (std::uint64_t{1} << 35),
+                std::uint64_t{1} << 35);
+    // And the timer's vector entry was never dispatched through.
+    V2_CHECK_EQ(paged.machine().memory().read_little_endian(kSeamMark1, 8), 0u);
+}
+
+V2_FIXTURE(a_block_interrupt_and_the_page_fault_after_it_compose_and_lose_nothing) {
+    // The block-memory family is the one place where an interrupt and a fault can both land
+    // inside a single instruction, and this fixture drives both through one block_set: the timer
+    // interrupts the transfer part-way, and the resumed instruction then walks off the end of the
+    // page it was filling and takes a store page fault.
+    //
+    // The two mechanisms are the same mechanism, which execution-model.md says outright: an
+    // interrupt taken during a block instruction "records the address of the block instruction
+    // itself, leaves the three named registers holding the remaining-work description, and the
+    // interrupted instruction resumes by re-executing on trap_return", and that "is the same
+    // mechanism restartability defines for a fault, used for a different reason". A machine whose
+    // interrupt path and fault path wrote different restart state would pass each card's fixtures
+    // alone and fail here, which is the reason this fixture exists at all.
+    //
+    // THE CROSS-CHECK THAT TIES THEM TOGETHER. instruction-reference-memory.md fixes the faulting
+    // data address as "the byte the resumed execution touches first". The interrupt's handler
+    // reads the pointer register, the fault's auxiliary word reports an address, and the page
+    // boundary is between them, so the two readings have to agree about where the transfer got
+    // to. They are asserted against each other below rather than each against a constant.
+    //
+    // A THIRD CAUSE IS PENDING THROUGHOUT AND IS NEVER DELIVERED. The console has a byte waiting
+    // and its device-level enable set, so its line asserts for the whole run, but its bit in
+    // interrupt_enable0 is clear. It is there to prove that neither delivery disturbs a cause
+    // that is merely pending: a machine that cleared the pending array on a fault, or on entry to
+    // any handler, would lose it here and nowhere else in the suite.
+    constexpr std::uint64_t kFillOffset = 192;  // bytes of the mapped page the fill starts before
+    constexpr std::uint64_t kCount = 320;       // so the fill runs 128 bytes past the page end
+    const std::uint64_t destination = kTestVirtual + sv48::page_bytes(0) - kFillOffset;
+
+    Paged paged;
+    paged.identity_map();
+    // One page mapped and the next one deliberately absent, which is what puts a page boundary in
+    // the middle of the transfer.
+    paged.tables().map(kTestVirtual, kDataPage, kLeafRWX);
+    paged.install_handler(35, kHandlerBase);         // the timer
+    paged.install_handler(10, kSecondHandlerBase);   // page fault on store
+
+    // The timer's handler reads the remaining-work description exactly as it found it, before
+    // acknowledging the device and returning. Registers 10 through 13 are its own; the block
+    // instruction's three registers are 5, 6 and 7 and it does not touch them.
+    Encoder timer_handler(kHandlerBase);
+    emit_handler_store(timer_handler, 6, kSeamMark0);  // the destination pointer
+    emit_handler_store(timer_handler, 7, kSeamMark1);  // the count of bytes not yet transferred
+    timer_handler.op_r_i2(op::kCsrRead, reg(12), csr::kInterruptPending0);
+    emit_handler_store(timer_handler, 12, kSeamMark2);
+    timer_handler.op_r_i8(op::kMoveW, reg(10), 1);
+    timer_handler.op_r_i8(op::kMoveW, reg(11), kTimerStatus);
+    timer_handler.op_r_r(op::kPortOut, reg(10), reg(11));  // acknowledge, clearing the latch
+    timer_handler.op(op::kTrapReturn);
+    paged.load_image(timer_handler);
+
+    Encoder fault_handler(kSecondHandlerBase);
+    fault_handler.halt();
+    paged.load_image(fault_handler);
+
+    paged.emit_kernel_preamble();
+    paged.emit_port_out(kConsoleControl, 1);
+    paged.emit_port_out(kTimerControl, 1);
+    // The timer's bit, and NOT the console's. That one line is what keeps the console pending for
+    // the whole run.
+    paged.emit_csr_write(csr::kInterruptEnable0, std::uint64_t{1} << 35);
+    paged.emit_csr_write(csr::kStatus, kSupervisorInterruptsOn);
+    paged.emit_enable();
+    paged.emit_move(5, 0xC7);  // the fill byte, chosen so a zeroed page cannot look filled
+    paged.emit_move(6, destination);
+    paged.emit_move(7, kCount);
+    paged.emit_port_out(kTimerPeriod, kExpireAfterNextInstruction);
+    paged.emit_port_out(kTimerMode, 1);
+    const std::uint64_t block_pc = paged.here();
+    paged.program().op_r_r_r(op::kBlockSet, reg(5), reg(6), reg(7));
+    paged.program().halt();
+    paged.start();
+    paged.machine().interpreter().device_surface().console().host_push_input('Q');
+    paged.run_setup();
+
+    // First: the interrupt, part-way through the transfer, reporting the block instruction's OWN
+    // address so that trap_return resumes the transfer rather than skipping it.
+    const StepResult interrupted = paged.step();
+    expect_trap(interrupted, 35, 0, 0, block_pc, "the timer interrupting the fill");
+    expect_disposition(interrupted, TrapDisposition::Delivered, "the timer interrupting the fill");
+
+    const std::uint64_t frame = kTrapStackTop - trap_frame::kBytes;
+    V2_CHECK_EQ(paged.machine().memory().read_little_endian(frame + trap_frame::kPcOffset, 8),
+                block_pc);
+    V2_CHECK_EQ(paged.machine().interpreter().pc(), kHandlerBase);
+
+    // Second: the handler runs, records what it found, acknowledges the timer and returns; the
+    // block instruction re-executes from the remaining-work description, fills the rest of the
+    // mapped page and faults on the first byte of the page that is not there. Cause 10, subcode
+    // 0, both in digits. Nothing the handler wrote can be read before this run, because delivery
+    // only moved the program counter to the handler's first instruction.
+    const StepResult faulted = paged.machine().run();
+    expect_trap(faulted, 10, 0, kSecondVirtual, block_pc,
+                "the resumed fill walking off the end of its page");
+    expect_disposition(faulted, TrapDisposition::Delivered, "the resumed fill");
+    V2_CHECK_EQ(paged.machine().interpreter().pc(), kSecondHandlerBase);
+
+    // The machine chooses its own granularity, so the fixture asserts the invariant rather than a
+    // byte count: the count is the bytes not yet transferred and the pointer is the lowest
+    // address not yet transferred, and the two agree with each other.
+    const std::uint64_t pointer_at_entry =
+        paged.machine().memory().read_little_endian(kSeamMark0, 8);
+    const std::uint64_t remaining = paged.machine().memory().read_little_endian(kSeamMark1, 8);
+    V2_CHECK(remaining > 0 && remaining < kCount);
+    V2_CHECK_EQ(pointer_at_entry, destination + (kCount - remaining));
+    // And the interrupt landed BEFORE the page boundary, which is what makes the fault above a
+    // consequence of the resumed instruction rather than of the original one.
+    V2_CHECK(pointer_at_entry < kTestVirtual + sv48::page_bytes(0));
+    // The console was pending at the timer handler's first instruction. Nothing is asserted here
+    // about the TIMER's own bit at that instruction, and the omission is deliberate: this build's
+    // pending bits track their device line as a level rather than latching, so a cause whose
+    // device is still asserting reads one again at the handler's first boundary even though
+    // delivery cleared it before the vector fetch. The timer has not been acknowledged yet at
+    // that point, so its bit reads one, and the conformance note that says otherwise is what OQ-3
+    // on this card puts in front of the operator. fixtures_interrupts.cpp owns that behaviour.
+    const std::uint64_t pending_at_timer =
+        paged.machine().memory().read_little_endian(kSeamMark2, 8);
+    V2_CHECK_EQ(pending_at_timer & (std::uint64_t{1} << 33), std::uint64_t{1} << 33);
+
+    // The two readings agree. Every byte from the pointer the timer's handler saw up to the page
+    // boundary was transferred by the resumed instruction, and the byte it stopped on is the one
+    // the auxiliary word names.
+    const std::uint64_t transferred_after_resume = kSecondVirtual - pointer_at_entry;
+    V2_CHECK_EQ(paged.machine().get(6), kSecondVirtual);
+    V2_CHECK_EQ(paged.machine().get(7), remaining - transferred_after_resume);
+
+    // Bytes already written stay written, "which is why the register state has to be truthful
+    // before the fault is delivered". Every byte of the mapped page from the fill's start to the
+    // page boundary carries the fill value.
+    for (std::uint64_t offset = 0; offset < kFillOffset; ++offset) {
+        if (paged.machine().memory().read_byte(kDataPage + sv48::page_bytes(0) - kFillOffset +
+                                               offset) != 0xC7) {
+            char buffer[128];
+            std::snprintf(buffer, sizeof(buffer), "filled byte %llu of the mapped page",
+                          static_cast<unsigned long long>(offset));
+            record_failure(buffer);
+            break;
+        }
+    }
+
+    // And the cause that was only ever pending is still pending, after two deliveries neither of
+    // which was its own.
+    V2_CHECK(paged.csr().pending(33));
+    V2_CHECK(!paged.csr().enabled(33));
+    V2_CHECK_EQ(paged.machine().interpreter().device_surface().console().host_pending_input(), 1);
 }
 
 }  // namespace maize::v2::test

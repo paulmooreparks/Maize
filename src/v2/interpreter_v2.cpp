@@ -372,6 +372,126 @@ StepResult InterpreterV2::execute_trap_return(const DecodedV2& decoded) {
     return branch_to(decoded, pc_word);
 }
 
+// External interrupts (maize-466), trap-model.md "External interrupts" and execution-model.md
+// "Interrupts and the instruction boundary".
+//
+// A DEVICE'S PENDING BIT FOLLOWS ITS LINE, AND THE LINE IS A LEVEL. This is the one design
+// decision in the file with a wrong alternative that looks right, so it is written down rather
+// than left to be re-derived.
+//
+// device-surface.md fixes the device side as a level and says so twice: "A device asserts its
+// line when the condition named in its class contract becomes true and its interrupt-enable port
+// bit is set. The device KEEPS THE LINE ASSERTED UNTIL the guest clears the condition." So the
+// line rises when the condition becomes true and falls when the guest clears it, and it has no
+// other transitions. The pending bit is the machine's view of that line, sampled at every
+// boundary, and it therefore CLEARS as well as sets.
+//
+// The alternative, a pure latch that only ever gets set here, passes every test that arms one
+// interrupt and takes it, and breaks the moment a handler acknowledges its device: the line falls
+// at the acknowledge, the latch does not, and `trap_return` re-enables interrupts into a pending
+// bit that describes nothing. The guest takes a second interrupt for one expiry, which is exactly
+// the double delivery trap-model.md's "so the same interrupt is not delivered twice for one
+// assertion" forbids. The re-raise that chapter DOES describe, "A device that latches a condition
+// of its own re-raises the cause until the handler clears that latch", is this same level holding
+// high across the handler, and it costs no extra delivery because the status register's
+// interrupt-enable bit is clear for the whole handler.
+//
+// Delivery's own clear is still load-bearing and is not made redundant by this. It is what makes
+// the delivered cause read zero at the handler's first instruction for any source that has
+// stopped asserting, and it is the only writer of the pending bits of causes no device in this
+// machine owns.
+void InterpreterV2::sample_device_interrupts() {
+    const std::uint64_t lines = devices_.asserted_interrupt_lines();
+    for (unsigned line = 0; line <= device_class::kHighestClassCode; ++line) {
+        // "The cause number of a device interrupt is 32 plus the device's interrupt line index."
+        // This is the only place in the machine that turns a line into a cause.
+        const unsigned cause_number = cause::kFirstExternalInterrupt + line;
+        if ((lines & (std::uint64_t{1} << line)) != 0u) {
+            csr_.machine_raise_pending(cause_number);
+        } else {
+            csr_.machine_clear_pending(cause_number);
+        }
+    }
+}
+
+unsigned InterpreterV2::deliverable_interrupt() const {
+    // "An interrupt is delivered only when its pending bit is set, its enable bit is set, and the
+    // status register's interrupt-enable bit is set." The first two are the CSR file's answer and
+    // the third is the global gate on top of it.
+    if (!csr_.interrupts_enabled()) {
+        return CsrFileV2::kNoCause;
+    }
+    return csr_.lowest_pending_and_enabled();
+}
+
+StepResult InterpreterV2::deliver_interrupt(unsigned cause_number, std::uint64_t resume_pc) {
+    // "On delivery the machine clears that cause's pending bit FIRST, so the same interrupt is not
+    // delivered twice for one assertion, then follows the ordinary delivery sequence." The order
+    // is observable: a handler reading its own cause's pending bit at its first instruction reads
+    // zero, and reads one only if the device is still asserting.
+    csr_.machine_clear_pending(cause_number);
+
+    TrapV2 trap;
+    trap.cause = static_cast<std::uint8_t>(cause_number);
+    // "Zero, unless the source defines a subcode word" (trap-model.md's cause table, row 32..255).
+    // No source in this build defines one, so both are zero rather than left to the raise site.
+    trap.subcode = 0;
+    trap.aux = 0;
+    // An interrupt belongs to no instruction, so it is neither fault-class nor trap-class and
+    // captures neither an instruction's own address by that rule nor the following instruction's.
+    // It captures the address of the instruction the machine has not yet run, which the caller
+    // supplies because that address is the boundary's rather than any instruction's.
+    trap.pc = resume_pc;
+
+    // The opcode field of the result reports the instruction this cycle decoded, and an interrupt
+    // taken at a boundary decoded none.
+    return deliver(trap, 0, resume_pc);
+}
+
+// wait_for_interrupt, $BE (trap-model.md, "Waiting"). The instruction "suspends the machine until
+// some cause has both its pending bit and its enable bit set, then continues at the following
+// instruction."
+//
+// THE WAKE CONDITION IS NOT THE DELIVERY CONDITION, and reading them as one is the single easiest
+// way to get this instruction wrong. The wake condition is pending AND enable; the status
+// register's interrupt-enable bit is not part of it, because "The instruction's completion does
+// not depend on the status register's interrupt-enable bit, and this matters. A kernel that runs
+// its idle loop with interrupts masked wakes on the pending bit, polls the pending registers, and
+// services the source itself."
+//
+// IT RETIRES BEFORE ANYTHING IS DELIVERED. This function only ever advances the program counter
+// past the wait; it never delivers. When the status register's interrupt-enable bit is set, the
+// wake cause is delivered by step()'s ordinary boundary check on the NEXT cycle, so the captured
+// program counter is the address of the instruction after the wait and trap_return resumes there.
+// A machine that folded delivery into the wait would capture the wait's own address instead and
+// re-execute it on return, which is a different and observably wrong machine.
+StepResult InterpreterV2::execute_wait_for_interrupt(const DecodedV2& decoded) {
+    for (;;) {
+        sample_device_interrupts();
+        if (csr_.lowest_pending_and_enabled() != CsrFileV2::kNoCause) {
+            // "When some cause is already pending and enabled at the moment the instruction
+            // executes, the instruction completes immediately, so no interrupt is lost by racing
+            // to sleep." The first pass through this loop is that case, and it needs no separate
+            // code path because the loop tests before it ever waits.
+            return advance(decoded);
+        }
+
+        // A suspended machine retires no instruction, so nothing else moves its clock. The wait
+        // is what advances time here, straight to the next moment a device could assert, which is
+        // both deterministic and the reason a fixture can tell a machine that genuinely suspends
+        // from one that spins: the spinning machine reaches the instructions after the wait first.
+        std::uint64_t delay = 0;
+        if (!devices_.nanoseconds_until_next_device_event(delay)) {
+            StepResult result;
+            result.status = StepStatus::Suspended;
+            result.opcode = decoded.opcode;
+            result.pc = decoded.pc;
+            return result;
+        }
+        devices_.advance_time(delay);
+    }
+}
+
 StepResult InterpreterV2::step() {
     if (halted_) {
         StepResult result;
@@ -379,6 +499,13 @@ StepResult InterpreterV2::step() {
         result.pc = pc_;
         return result;
     }
+
+    // THE BOUNDARY. "The machine completes the instruction it is executing, commits its effects,
+    // and then, before it fetches the next instruction, checks whether an interrupt is pending
+    // and deliverable." Sampling the device lines is that check's first half and it sits above
+    // the decode rather than inside execute(), precisely so that no instruction can be part-way
+    // through when it runs.
+    sample_device_interrupts();
 
     // The fetch is translated under the current paging root at the current privilege level
     // (maize-465), so an instruction on an unmapped or non-executable page raises cause 8 before
@@ -388,15 +515,42 @@ StepResult InterpreterV2::step() {
                                privilege());
     const DecodeResult decoded = decode_v2(source, pc_);
     if (decoded.status == DecodeStatus::Trap) {
-        // An illegal instruction or an illegal operand is a fault like any other and is
-        // delivered through the same sequence. The decoder already captured the instruction's
-        // own first byte as the faulting address, and no opcode is reported because the byte the
-        // decoder objected to is in the auxiliary word.
+        // An illegal instruction, an illegal operand, or a page fault on the fetch itself is a
+        // fault like any other and is delivered through the same sequence. The decoder already
+        // captured the instruction's own first byte as the faulting address, and no opcode is
+        // reported because the byte the decoder objected to is in the auxiliary word.
+        //
+        // THIS ARM RUNS BEFORE THE INTERRUPT ARM BELOW, AND THAT ORDER IS THE CHAPTER'S. "A
+        // fault or a trap raised by an instruction belongs to that instruction and is delivered
+        // when the instruction raises it, which is before the boundary at which a pending
+        // interrupt could be taken; the interrupt remains pending and is taken at the next
+        // boundary at which it is deliverable." A page fault on the fetch belongs to the
+        // instruction being fetched, so it wins here and the interrupt keeps its pending bit,
+        // reaching the handler at the first boundary after the kernel has mapped the page. The
+        // decode itself commits nothing, so running it ahead of the interrupt test is free:
+        // an interrupt taken below is taken at exactly the state a machine that had not yet
+        // fetched would have.
         return deliver(decoded.trap, 0, decoded.trap.pc);
     }
 
+    const unsigned interrupt = deliverable_interrupt();
+    if (interrupt != CsrFileV2::kNoCause) {
+        // "with the program counter naming the instruction it has not yet fetched, so the
+        // interrupted program resumes on trap_return exactly where it stopped, having neither
+        // repeated nor skipped an instruction." The instruction decoded just above is that
+        // not-yet-fetched instruction: nothing of it has run, and pc_ still names its first byte.
+        return deliver_interrupt(interrupt, pc_);
+    }
+
     ++steps_taken_;
-    return execute(decoded.instruction);
+    const StepResult result = execute(decoded.instruction);
+    // The machine's own sense of time moves with the instruction it just retired (maize-466), so
+    // the timer's monotonic count is a function of architectural state rather than of the host's
+    // clock. device_v2.h's kNanosecondsPerInstruction says why that is the conforming choice.
+    // This runs after execute() and before the next boundary's sample, so an expiry that this
+    // instruction's own time made due is delivered at the boundary after it and never inside it.
+    devices_.advance_time(kNanosecondsPerInstruction);
+    return result;
 }
 
 StepResult InterpreterV2::run(std::uint64_t max_steps) {
@@ -460,6 +614,31 @@ StepResult InterpreterV2::execute_store(const DecodedV2& decoded, unsigned width
     return advance(decoded);
 }
 
+// The granularity at which a block-memory instruction can be interrupted (maize-466).
+// instruction-reference-memory.md, "The restartability contract": "The machine may be interrupted
+// between byte transfers, and it CHOOSES THE GRANULARITY at which that is possible." This machine
+// transfers one byte at a time and checks every 64 of them, which is a choice about when it
+// looks rather than about how it copies, so it is safe for all three instructions including
+// block_copy_forward over overlapping regions, whose ascending byte-by-byte result is
+// architectural and which a chunked TRANSFER would break.
+//
+// The clock advances at the same boundaries and for the same reason it advances per instruction:
+// a copy of a megabyte takes longer than a copy of a byte, and it is exactly that fact which
+// makes the family interruptible at all. "That is what keeps a long copy from delaying an
+// interrupt for an unbounded time" (execution-model.md).
+namespace {
+inline constexpr std::uint64_t kBlockInterruptCheckBytes = 64;
+}  // namespace
+
+unsigned InterpreterV2::block_mid_operation_interrupt(std::uint64_t transferred) {
+    if (transferred == 0 || transferred % kBlockInterruptCheckBytes != 0) {
+        return CsrFileV2::kNoCause;
+    }
+    devices_.advance_time(kNanosecondsPerInstruction);
+    sample_device_interrupts();
+    return deliverable_interrupt();
+}
+
 StepResult InterpreterV2::execute_block(const DecodedV2& decoded) {
     const bool is_set = decoded.opcode == op::kBlockSet;
     const unsigned slot0 = decoded.reg[0];  // source pointer, or the fill value for block_set
@@ -511,6 +690,24 @@ StepResult InterpreterV2::execute_block(const DecodedV2& decoded) {
                 return raise(decoded, access_trap.cause, access_trap.subcode, access_trap.aux);
             }
             memory_.write_byte(physical, fill);
+            // Translation is planned before this point and the interrupt is tested after it, and
+            // that order is the chapter's rather than a convenience. "A fault or a trap raised by
+            // an instruction belongs to that instruction and is delivered when the instruction
+            // raises it, which is before the boundary at which a pending interrupt could be
+            // taken; the interrupt remains pending and is taken at the next boundary at which it
+            // is deliverable." So a byte that cannot be translated reports its page fault through
+            // the plan_byte arm above and the interrupt waits, rather than the interrupt
+            // pre-empting a fault the machine has already decided to raise.
+            const unsigned interrupt = block_mid_operation_interrupt(i + 1);
+            if (interrupt != CsrFileV2::kNoCause) {
+                // The same remaining-work description the fault path above writes, because an
+                // interrupt taken here and a fault taken here leave the machine in the same
+                // restartable state. The captured program counter is the block instruction's OWN
+                // address, so trap_return re-executes it and finishes the transfer.
+                registers_.write(slot1, address + 1);
+                registers_.write(slot2, count - (i + 1));
+                return deliver_interrupt(interrupt, decoded.pc);
+            }
         }
         registers_.write(slot1, destination + count);
         registers_.write(slot2, 0);
@@ -549,6 +746,17 @@ StepResult InterpreterV2::execute_block(const DecodedV2& decoded) {
                 return raise(decoded, access_trap.cause, access_trap.subcode, access_trap.aux);
             }
             memory_.write_byte(to_physical, memory_.read_byte(from_physical));
+            // Both plan_byte calls run before this test, for the precedence reason block_set's
+            // loop states at length: a fault belongs to the byte the instruction is on and is
+            // raised there, and a pending interrupt waits for the next boundary at which it is
+            // deliverable.
+            const unsigned interrupt = block_mid_operation_interrupt(i + 1);
+            if (interrupt != CsrFileV2::kNoCause) {
+                registers_.write(slot0, from + 1);
+                registers_.write(slot1, to + 1);
+                registers_.write(slot2, count - (i + 1));
+                return deliver_interrupt(interrupt, decoded.pc);
+            }
         }
     } else {
         for (std::uint64_t i = count; i-- > 0;) {
@@ -566,6 +774,14 @@ StepResult InterpreterV2::execute_block(const DecodedV2& decoded) {
                 return raise(decoded, access_trap.cause, access_trap.subcode, access_trap.aux);
             }
             memory_.write_byte(to_physical, memory_.read_byte(from_physical));
+            const unsigned interrupt = block_mid_operation_interrupt(count - i);
+            if (interrupt != CsrFileV2::kNoCause) {
+                // High to low shows its progress by decrementing the count alone, for the reason
+                // the fault path just above states: the bytes not yet transferred are still the
+                // LOW ones, so both pointers already name them and neither moves.
+                registers_.write(slot2, i);
+                return deliver_interrupt(interrupt, decoded.pc);
+            }
         }
     }
 
@@ -1159,10 +1375,12 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
 
     // The privileged instructions in this band: trap_return $BC (maize-464), wait_for_interrupt
     // $BE (maize-466), and the two translation-cache maintenance instructions $C0 and $C1
-    // (maize-465, implemented just below). What wait_for_interrupt DOES is another card's, but
-    // that it is privileged is this chapter's, so its guard is here and its body is not. At
-    // supervisor level it falls through to the host diagnostic below, which is honest: the
-    // access was permitted and the machine still cannot perform it.
+    // (maize-465). All four now have bodies just below, so none of them falls through to the
+    // host diagnostic at supervisor level any more.
+    //
+    // ONE GUARD FOR ALL FOUR, checked before any body runs, which is what AC-10 is about: a
+    // wait_for_interrupt at user level raises cause 4 with the offending opcode byte in the
+    // auxiliary word and never suspends, because it never reaches the body at all.
     //
     // sys and breakpoint are deliberately absent from this list. The privileged-instruction
     // list is closed at seven, and the chapter says why both are outside it: sys is the
@@ -1177,6 +1395,10 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
 
     if (opcode == op::kTrapReturn) {
         return execute_trap_return(decoded);
+    }
+
+    if (opcode == op::kWaitForInterrupt) {
+        return execute_wait_for_interrupt(decoded);
     }
 
     // tlb_invalidate_all $C0 and tlb_invalidate_address $C1 (maize-465), invalidating events 2
@@ -1271,8 +1493,8 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
     }
 
     // Everything left is a real assigned opcode whose family this build does not implement:
-    // nop $BF, wait_for_interrupt $BE (maize-466), and the floating-point band $C8..$F7
-    // (maize-419).
+    // nop $BF and the floating-point band $C8..$F7 (maize-419). Nothing privileged is left in
+    // this set: maize-465 gave $C0 and $C1 bodies and maize-466 gave $BE one.
     //
     // $FF is no longer among them. Appendix A.14's two guard bytes still reach their outcomes by
     // two different and both explicit routes, and since maize-464 both routes are traps rather

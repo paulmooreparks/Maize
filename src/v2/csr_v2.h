@@ -285,6 +285,67 @@ class CsrFileV2 {
         return (status_ & status_word::kInterruptEnableBit) != 0u;
     }
 
+    // The interrupt pending and enable arrays (maize-466). trap-model.md, "Pending and enable
+    // state": four registers per array, "Register `n` of an array holds causes `64n` through
+    // `64n + 63`, with the cause's number modulo 64 selecting the bit."
+    static constexpr unsigned kCauseCount = 256;
+    static constexpr unsigned kNoCause = kCauseCount;  // "no cause", outside the 0..255 range
+
+    // A device raises its cause. This is the machine acting on the world's behalf, not an
+    // instruction, which is why it does not go through access(): the pending registers are
+    // read-only to software and would fail rule 3.
+    void machine_raise_pending(unsigned cause_number) {
+        interrupt_pending_[cause_number / 64] |= cause_bit(cause_number);
+    }
+
+    // "the machine clears the bit when it delivers that cause", and the delivery sequence does it
+    // BEFORE the vector fetch (trap-model.md, "Delivery"), which is what keeps one assertion from
+    // being delivered twice.
+    void machine_clear_pending(unsigned cause_number) {
+        interrupt_pending_[cause_number / 64] &= ~cause_bit(cause_number);
+    }
+
+    bool pending(unsigned cause_number) const {
+        return (interrupt_pending_[cause_number / 64] & cause_bit(cause_number)) != 0u;
+    }
+
+    // The enable bit as SOFTWARE READS IT, which for causes 0 through 31 is zero whatever the
+    // stored word holds. Going through read_raw rather than the array is the whole point: those
+    // bits read as zero by an independent rule, so a cause that got into the array by some route
+    // the write rule did not police still cannot be enabled, and the non-maskable-synchronous-
+    // causes rule holds for delivery as well as for the read.
+    bool enabled(unsigned cause_number) const {
+        const std::uint16_t number =
+            static_cast<std::uint16_t>(csr::kInterruptEnable0 + cause_number / 64);
+        return (read_raw(number) & cause_bit(cause_number)) != 0u;
+    }
+
+    // The lowest-numbered cause that is both pending and enabled, or kNoCause. trap-model.md:
+    // "When more than one cause is deliverable, the machine takes the lowest-numbered one, which
+    // makes the choice deterministic and therefore testable."
+    //
+    // THE STATUS REGISTER'S INTERRUPT-ENABLE BIT IS NOT CONSULTED HERE, and that omission is the
+    // specification rather than an oversight. Two callers ask two different questions of this one
+    // answer: delivery adds the global gate on top, and `wait_for_interrupt` does not, because
+    // "The instruction's completion does not depend on the status register's interrupt-enable
+    // bit". Folding the gate in here would make a masked kernel's idle loop unwakeable.
+    unsigned lowest_pending_and_enabled() const {
+        for (unsigned array = 0; array < 4; ++array) {
+            const std::uint16_t number =
+                static_cast<std::uint16_t>(csr::kInterruptEnable0 + array);
+            const std::uint64_t deliverable = interrupt_pending_[array] & read_raw(number);
+            if (deliverable == 0u) {
+                continue;
+            }
+            for (unsigned bit = 0; bit < 64; ++bit) {
+                if ((deliverable & (std::uint64_t{1} << bit)) != 0u) {
+                    return array * 64 + bit;
+                }
+            }
+        }
+        return kNoCause;
+    }
+
     // How many times a write to the paging root asked for the translation cache to be flushed.
     // There is no cache in this build; maize-465 brings one and consumes the request. The
     // counter exists so this card's half of the seam is observable rather than merely written.
@@ -339,6 +400,11 @@ class CsrFileV2 {
     std::uint64_t host_read(std::uint16_t number) const { return read_raw(number); }
 
   private:
+    // "with the cause's number modulo 64 selecting the bit".
+    static constexpr std::uint64_t cause_bit(unsigned cause_number) {
+        return std::uint64_t{1} << (cause_number % 64);
+    }
+
     static CsrOutcome trap(std::uint8_t cause_number, std::uint8_t subcode_number,
                            std::uint64_t aux) {
         CsrOutcome outcome;

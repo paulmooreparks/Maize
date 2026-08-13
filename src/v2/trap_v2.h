@@ -43,6 +43,15 @@ inline constexpr std::uint8_t kPageFaultFetch = 8;
 inline constexpr std::uint8_t kPageFaultLoad = 9;
 inline constexpr std::uint8_t kPageFaultStore = 10;
 inline constexpr std::uint8_t kPhysicalMemoryFault = 11;
+
+// "Causes 0 through 31 are synchronous, causes 32 through 255 are external interrupts, and the
+// device-surface chapter assigns interrupt causes to sources." The two constants below are the
+// whole of the line-to-cause mapping trap-model.md's "External interrupts" section fixes for all
+// time: the cause number of a device interrupt is 32 plus the device's interrupt line index, and
+// the line index equals the device class code (maize-466).
+inline constexpr std::uint8_t kFirstExternalInterrupt = 32;
+inline constexpr std::uint8_t kConsoleInterrupt = kFirstExternalInterrupt + 1;  // class 1
+inline constexpr std::uint8_t kTimerInterrupt = kFirstExternalInterrupt + 3;    // class 3
 }  // namespace cause
 
 // trap-model.md, "Subcodes". Every cause not listed there writes a subcode of zero.

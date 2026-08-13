@@ -98,6 +98,18 @@ enum class StepStatus : std::uint8_t {
     // "not implemented yet" would misrepresent the gap as conformant illegal-instruction
     // behaviour, and it would be wrong the moment maize-419 and maize-420 close it.
     Unimplemented,
+    // wait_for_interrupt suspended the machine and no device has anything scheduled, so no
+    // cause can ever become pending and the wait can never end (maize-466). The program counter
+    // still names the wait_for_interrupt, so a host that arranges a device event and steps again
+    // resumes the wait exactly where it stopped.
+    //
+    // This is a HOST diagnostic, like Unimplemented and unlike a trap. The machine is behaving
+    // exactly as trap-model.md's "Waiting" section requires, which is to suspend until some cause
+    // has both its pending bit and its enable bit set; the specification simply does not bound
+    // how long that takes, and a kernel that waits with nothing armed has genuinely stopped.
+    // Reporting it beats spinning, because a fixture that made this mistake would otherwise hang
+    // until its timeout rather than name what it did wrong.
+    Suspended,
 };
 
 // What the machine did with a trap it raised (trap-model.md, "Vectored dispatch", "No handler
@@ -196,6 +208,11 @@ class InterpreterV2 {
     // had ever run, and the first thing to run it would be maize-465's own new code.
     StepResult host_deliver_trap(const TrapV2& trap) { return deliver(trap, 0, trap.pc); }
 
+    // Sample every device's interrupt line into the pending registers (maize-466). The machine
+    // does this at each instruction boundary on its own account; a fixture calls it to observe
+    // the pending state a device has asserted without having to retire an instruction first.
+    void host_sample_device_interrupts() { sample_device_interrupts(); }
+
   private:
     StepResult execute(const DecodedV2& decoded);
 
@@ -236,6 +253,26 @@ class InterpreterV2 {
 
     // The delivery sequence itself, in the chapter's fixed order.
     StepResult deliver(const TrapV2& trap, std::uint8_t opcode, std::uint64_t instruction_pc);
+
+    // External interrupts (maize-466).
+    //
+    // Every device line asserted right now becomes a pending bit. Called at each instruction
+    // boundary and at each block-memory mid-operation boundary, which is where the machine is
+    // allowed to notice the world.
+    void sample_device_interrupts();
+    // The cause the machine would take at a boundary right now, or CsrFileV2::kNoCause. This is
+    // the one place the status register's interrupt-enable bit joins the pending and enable
+    // bits, because it is the one question that needs all three.
+    unsigned deliverable_interrupt() const;
+    // Clear the pending bit, then run the ordinary delivery sequence. `resume_pc` is the address
+    // the interrupted program resumes at, which is the following instruction's at an ordinary
+    // boundary and the block instruction's own at a mid-operation one.
+    StepResult deliver_interrupt(unsigned cause_number, std::uint64_t resume_pc);
+    StepResult execute_wait_for_interrupt(const DecodedV2& decoded);
+    // A block-memory mid-operation boundary: advance the clock, sample, and report the cause the
+    // machine would take, or CsrFileV2::kNoCause. `transferred` is the byte count completed so
+    // far, which is what selects the boundaries.
+    unsigned block_mid_operation_interrupt(std::uint64_t transferred);
     StepResult halt_without_delivering(const TrapV2& trap, std::uint8_t opcode,
                                        std::uint64_t instruction_pc, TrapDisposition disposition,
                                        unsigned halt_kind);
