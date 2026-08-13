@@ -17,6 +17,7 @@
 #define MAIZE_V2_OPCODE_V2_H
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace maize::v2 {

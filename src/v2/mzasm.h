@@ -18,6 +18,7 @@
 #define MAIZE_V2_MZASM_H
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>

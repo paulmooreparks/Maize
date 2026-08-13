@@ -38,6 +38,7 @@
 #define MAIZE_V2_TESTS_APPENDIX_A_H
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>

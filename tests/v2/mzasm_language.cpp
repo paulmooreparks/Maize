@@ -418,9 +418,138 @@ MZ_FIXTURE(field_fit_is_dual_reading_at_every_boundary) {
     // 64-bit range are checked here instead, to show the rule holds rather than that a check was
     // skipped.
     expect_accepted(scratch, "fit64", "    move.w $FFFFFFFFFFFFFFFF r4\n");
-    expect_accepted(scratch, "fit64", "    move.w $-8000000000000000 r4\n");
     expect_accepted(scratch, "fit64", "    data_word $FFFFFFFFFFFFFFFF\n");
-    expect_accepted(scratch, "fit64", "    data_word $-8000000000000000\n");
+
+    // maize-460: the negative edge of that 64-bit range, asserted as bytes rather than as bare
+    // acceptance, and written in each of the three bases the language mandates. The literal
+    // scanner ends in a single negation that every base reaches, so a defect there shows up at
+    // one input in all three spellings at once, and acceptance alone would not see it.
+    //
+    // Every expected value below comes from the chapters. assembler.md's "Numeric literals"
+    // names the three base markers and places the sign after the marker. Its "Expressions"
+    // section makes expression arithmetic 64-bit two's complement that wraps on overflow, so
+    // -(2^63) is $8000000000000000, -(2^63 - 1) is $8000000000000001, and -(2^63 + 1) wraps to
+    // $7FFFFFFFFFFFFFFF. instruction-encoding.md's "A 64-bit constant" gives move.w as opcode
+    // $02, one operand byte naming the destination, then eight little-endian immediate bytes,
+    // and assembler.md's "Data emission" makes data_word those same eight bytes on their own.
+    struct WideLiteral {
+        const char* what;
+        std::string decimal;
+        std::string hexadecimal;
+        std::string binary;
+        std::vector<std::uint8_t> word;  // the eight little-endian bytes the value encodes to
+    };
+    const std::vector<WideLiteral> wide = {
+        {"2^63, negated", "#-9223372036854775808", "$-8000000000000000",
+         "%-1" + std::string(63, '0'),
+         {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80}},
+        {"2^63 minus one, negated", "#-9223372036854775807", "$-7FFFFFFFFFFFFFFF",
+         "%-" + std::string(63, '1'),
+         {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80}},
+        {"2^63 plus one, negated", "#-9223372036854775809", "$-8000000000000001",
+         "%-1" + std::string(62, '0') + "1",
+         {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F}},
+    };
+
+    for (const WideLiteral& literal : wide) {
+        for (const std::string& spelling : {literal.decimal, literal.hexadecimal, literal.binary}) {
+            std::vector<std::uint8_t> expected_move = {op::kMoveW, 0x04};
+            expected_move.insert(expected_move.end(), literal.word.begin(), literal.word.end());
+
+            std::vector<std::uint8_t> image;
+            if (assemble_flat(scratch, "wide_move", "    move.w " + spelling + " r4\n", image) &&
+                image != expected_move) {
+                record_failure(std::string(literal.what) + " as 'move.w " + spelling +
+                               " r4' assembled to " + hex_dump(image) + ", and the chapters give " +
+                               hex_dump(expected_move));
+            }
+
+            image.clear();
+            if (assemble_flat(scratch, "wide_data", "    data_word " + spelling + "\n", image) &&
+                image != literal.word) {
+                record_failure(std::string(literal.what) + " as 'data_word " + spelling +
+                               "' assembled to " + hex_dump(image) + ", and the chapters give " +
+                               hex_dump(literal.word));
+            }
+        }
+    }
+
+    // maize-460 cycle 2: the same three magnitudes reached through the unary minus operator
+    // instead of through a signed literal. assembler.md's "Expressions" operator table lists `-`
+    // as a unary operator, so `-$8000000000000000` and `$-8000000000000000` are two spellings of
+    // one value that travel two different paths through the assembler, and each spelling above
+    // has a unary twin here. The expected bytes are the same eight, because the chapter gives
+    // one value for both spellings; only the path differs.
+    for (const WideLiteral& literal : wide) {
+        for (const std::string& spelling : {literal.decimal, literal.hexadecimal, literal.binary}) {
+            // Each spelling above is a base marker, then the sign, then the digits. Moving the
+            // sign in front of the marker turns the signed literal into unary minus applied to an
+            // unsigned one, which is the whole difference under test.
+            const std::string unary = "-" + spelling.substr(0, 1) + spelling.substr(2);
+
+            std::vector<std::uint8_t> expected_move = {op::kMoveW, 0x04};
+            expected_move.insert(expected_move.end(), literal.word.begin(), literal.word.end());
+
+            std::vector<std::uint8_t> image;
+            if (assemble_flat(scratch, "unary_move", "    move.w " + unary + " r4\n", image) &&
+                image != expected_move) {
+                record_failure(std::string(literal.what) + " as 'move.w " + unary +
+                               " r4' assembled to " + hex_dump(image) + ", and the chapters give " +
+                               hex_dump(expected_move));
+            }
+
+            image.clear();
+            if (assemble_flat(scratch, "unary_data", "    data_word " + unary + "\n", image) &&
+                image != literal.word) {
+                record_failure(std::string(literal.what) + " as 'data_word " + unary +
+                               "' assembled to " + hex_dump(image) + ", and the chapters give " +
+                               hex_dump(literal.word));
+            }
+        }
+    }
+
+    // maize-460 cycle 2: truncating signed division at its own boundary. The operator table in
+    // assembler.md's "Expressions" gives `/` as truncating signed division, and the same section
+    // makes expression arithmetic 64-bit two's complement that wraps on overflow. -2^63 divided
+    // by -1 is the one quotient that division cannot represent, so it wraps back to -2^63 rather
+    // than being a diagnostic or a fault. The two rows either side of it divide at the same
+    // magnitude without overflowing, so a fix that reached only the overflow case would show up
+    // here too.
+    struct DivisionCase {
+        const char* what;
+        const char* expression;
+        std::vector<std::uint8_t> word;
+    };
+    const std::vector<DivisionCase> divisions = {
+        {"-2^63 divided by -1, which overflows and wraps back to -2^63", "$-8000000000000000/$-1",
+         {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80}},
+        {"-(2^63 - 1) divided by -1, which is 2^63 - 1", "$-7FFFFFFFFFFFFFFF/$-1",
+         {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F}},
+        {"-2^63 divided by 2, which is -2^62", "$-8000000000000000/#2",
+         {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0}},
+    };
+    for (const DivisionCase& division : divisions) {
+        std::vector<std::uint8_t> expected_move = {op::kMoveW, 0x04};
+        expected_move.insert(expected_move.end(), division.word.begin(), division.word.end());
+
+        std::vector<std::uint8_t> image;
+        if (assemble_flat(scratch, "div_move",
+                          std::string("    move.w ") + division.expression + " r4\n", image) &&
+            image != expected_move) {
+            record_failure(std::string(division.what) + " as 'move.w " + division.expression +
+                           " r4' assembled to " + hex_dump(image) + ", and the chapters give " +
+                           hex_dump(expected_move));
+        }
+
+        image.clear();
+        if (assemble_flat(scratch, "div_data",
+                          std::string("    data_word ") + division.expression + "\n", image) &&
+            image != division.word) {
+            record_failure(std::string(division.what) + " as 'data_word " + division.expression +
+                           "' assembled to " + hex_dump(image) + ", and the chapters give " +
+                           hex_dump(division.word));
+        }
+    }
 
     // The three worked dual-reading examples the chapter states in prose, each assembling to the
     // exact bytes it gives.

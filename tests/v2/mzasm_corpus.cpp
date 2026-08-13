@@ -17,6 +17,7 @@
 //   code. It cannot prove opcode identity on its own, because a same-shaped wrong opcode
 //   decodes just as cleanly, which is exactly why the appendix lookup above exists.
 
+#include <cstddef>
 #include <map>
 #include <sstream>
 #include <string>

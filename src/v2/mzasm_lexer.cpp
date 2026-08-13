@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstddef>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -337,8 +338,19 @@ class ExprParser {
                     fail("division by zero in expression");
                     return false;
                 }
-                out.constant = static_cast<std::uint64_t>(static_cast<std::int64_t>(out.constant) /
-                                                          static_cast<std::int64_t>(rhs.constant));
+                const std::uint64_t signed_min = std::uint64_t{1} << 63;
+                if (out.constant == signed_min && rhs.constant == ~std::uint64_t{0}) {
+                    // -2^63 / -1 is the one quotient truncating signed division cannot
+                    // represent. Expression arithmetic is 64-bit two's complement and wraps on
+                    // overflow (assembler.md, "Expressions"), so the value wraps back to -2^63.
+                    // Computing it in the signed domain is undefined instead, and on common
+                    // hardware it faults rather than wrapping.
+                    out.constant = signed_min;
+                } else {
+                    out.constant =
+                        static_cast<std::uint64_t>(static_cast<std::int64_t>(out.constant) /
+                                                   static_cast<std::int64_t>(rhs.constant));
+                }
             } else {
                 out.constant *= rhs.constant;
             }
@@ -351,7 +363,11 @@ class ExprParser {
             ++position_;
             if (!parse_unary(out)) return false;
             if (!require_constant(out, "unary -")) return false;
-            out.constant = static_cast<std::uint64_t>(-static_cast<std::int64_t>(out.constant));
+            // Unary negation stays in the unsigned domain for the reason the literal scanner's
+            // own negation does: routing the value through std::int64_t is undefined behaviour at
+            // exactly 2^63, and `-$8000000000000000` reaches this line where
+            // `$-8000000000000000` reaches that one.
+            out.constant = std::uint64_t{0} - out.constant;
             return true;
         }
         if (!at_end() && peek() == '~') {
@@ -534,7 +550,12 @@ bool ExprParser::parse_number(ExprValue& out) {
         // wider than 64 bits wraps here exactly as arithmetic would.
         value = value * static_cast<std::uint64_t>(base) + static_cast<std::uint64_t>(digit_value);
     }
-    out.constant = negative ? static_cast<std::uint64_t>(-static_cast<std::int64_t>(value)) : value;
+    // The negation stays in the unsigned domain for the same reason the accumulation above does.
+    // Negating in std::uint64_t yields the two's-complement bit pattern for every input and is
+    // defined for all of them, where routing the value through std::int64_t first is undefined
+    // behaviour at exactly 2^63, which is the one literal naming the most negative word the
+    // machine's own registers hold.
+    out.constant = negative ? std::uint64_t{0} - value : value;
     return true;
 }
 
