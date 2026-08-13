@@ -2,21 +2,21 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build Maize v2 (mzvm, mzasm) and run its fixtures",
-            "detail": "Build the v2 machine (mzvm, mzvmg), the v2 assembler (mzasm), and both fixture binaries, then run the v2 fixtures only. This is the fast v2 loop and it is what Ctrl+Shift+B runs. It assumes the preset's build directory is already configured; if it is not, run one of the install or build-world tasks once first. Every target the v2 ctest label needs must be named here: the ctest step invokes the fixture binaries by path, so a fixture whose target is missing reports Not Run rather than failing to build (maize-435). mzvm has no device surface yet, so its output is the register dump from --registers rather than anything a program prints.",
+            "label": "Build Maize v2 (mzvm, mzasm), install it to ~/bin, and run its fixtures",
+            "detail": "Build the v2 machine (mzvm, mzvmg), the v2 assembler (mzasm), and both fixture binaries, copy mzvm, mzvmg, mzasm and SDL2.dll to ~/bin so they are runnable from any directory, then run the v2 fixtures. This is the fast v2 loop and it is what Ctrl+Shift+B runs. The install step is what this task was missing until maize-454: the build went green and mzasm was still not on PATH. It does NOT touch the C cross-toolchain (cproc/qbe) and builds no v1 binary; the toolchain refresh lives in the Install task below. It assumes the preset's build directory is already configured; if it is not, run one of the install or build-world tasks once first. Every target the v2 ctest label needs must be named here: the ctest step invokes the fixture binaries by path, so a fixture whose target is missing reports Not Run rather than failing to build (maize-435). Fixtures run last so their result is the last thing on screen, and a red fixture still leaves you the binaries you just built. mzvm has no device surface yet, so its output is the register dump from --registers rather than anything a program prints.",
             "type": "shell",
             "group": {
                 "kind": "build",
                 "isDefault": true
             },
             "windows": {
-                "command": "cmake --build build/windows-llvm-mingw-debug --target mzvm mzvmg mzasm mzvm_v2_fixtures mzasm_tests && ctest --test-dir build/windows-llvm-mingw-debug -L v2 --output-on-failure"
+                "command": "cmake --build build/windows-llvm-mingw-debug --target mzvm mzvmg mzasm mzvm_v2_fixtures mzasm_tests && powershell -NoProfile -ExecutionPolicy Bypass -File ${workspaceFolder}/scripts/install-mzasm.ps1 -Preset windows-llvm-mingw-debug && ctest --test-dir build/windows-llvm-mingw-debug -L v2 --output-on-failure"
             },
             "linux": {
-                "command": "cmake --build build/linux-debug --target mzvm mzvmg mzasm mzvm_v2_fixtures mzasm_tests && ctest --test-dir build/linux-debug -L v2 --output-on-failure"
+                "command": "cmake --build build/linux-debug --target mzvm mzvmg mzasm mzvm_v2_fixtures mzasm_tests && ${workspaceFolder}/scripts/install-mzasm.sh linux-debug && ctest --test-dir build/linux-debug -L v2 --output-on-failure"
             },
             "osx": {
-                "command": "cmake --build build/macos-debug --target mzvm mzvmg mzasm mzvm_v2_fixtures mzasm_tests && ctest --test-dir build/macos-debug -L v2 --output-on-failure"
+                "command": "cmake --build build/macos-debug --target mzvm mzvmg mzasm mzvm_v2_fixtures mzasm_tests && ${workspaceFolder}/scripts/install-mzasm.sh macos-debug && ctest --test-dir build/macos-debug -L v2 --output-on-failure"
             },
             "presentation": {
                 "clear": true,
@@ -152,8 +152,8 @@
             "problemMatcher": []
         },
         {
-            "label": "Install maize + maizeg + mzvm + mzvmg + mazm + mzasm + mzld + mzdis to ~/bin",
-            "detail": "Build maize (console) + maizeg (graphical/SDL), the Maize v2 machine mzvm + mzvmg, and mazm (v1 assembler), mzasm (v2 assembler), mzld, and mzdis, and copy them to the user bin directory so editors find stable copies on PATH, then refresh the C cross-toolchain (cproc/qbe + Maize target) so mzcc stays current. Fast binaries-only loop; use Build everything (build-world) for the full \"I pulled\" rebuild. On Windows this runs natively via Git Bash, no WSL involved.",
+            "label": "Install mzvm + mzvmg + mzasm + the C cross-toolchain to ~/bin",
+            "detail": "Build an optimized release of the Maize v2 machine (mzvm console, mzvmg graphical/SDL) and the v2 assembler (mzasm), copy them plus SDL2.dll to the user bin directory, and refresh the C cross-toolchain (cproc/qbe + Maize target) plus mzcc, which the default Ctrl+Shift+B task deliberately does not do. Run this after pulling, or whenever mzcc needs to be current; use Build everything (build-world) for the full \"I pulled\" rebuild. The frozen v1 binaries (maize, maizeg, mazm) are no longer built or installed (maize-454), and mzld/mzdis wait for their v2 ports. On Windows this runs natively via Git Bash, no WSL involved.",
             "type": "shell",
             "group": "build",
             "windows": {
@@ -163,14 +163,15 @@
                     "-ExecutionPolicy",
                     "Bypass",
                     "-File",
-                    "${workspaceFolder}/scripts/install-mzasm.ps1"
+                    "${workspaceFolder}/scripts/install-mzasm.ps1",
+                    "-WithCToolchain"
                 ]
             },
             "linux": {
-                "command": "${workspaceFolder}/scripts/install-mzasm.sh"
+                "command": "${workspaceFolder}/scripts/install-mzasm.sh --with-c-toolchain"
             },
             "osx": {
-                "command": "${workspaceFolder}/scripts/install-mzasm.sh"
+                "command": "${workspaceFolder}/scripts/install-mzasm.sh --with-c-toolchain"
             },
             "problemMatcher": []
         }

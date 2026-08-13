@@ -86,7 +86,10 @@ else
 fi
 
 echo "=== [2/5] native binaries + C toolchain (install-mzasm.sh) ==="
-if bash "${SCRIPT_DIR}/install-mzasm.sh" "${PRESET}" "${INSTALL_DIR}"; then
+# maize-454: install-mzasm.sh installs the v2 binaries only unless asked for the v1 C
+# pipeline, and stages [3/5]-[5/5] below are that pipeline (they run mzcc, which spawns
+# mazm and mzld), so build-world always asks for it.
+if bash "${SCRIPT_DIR}/install-mzasm.sh" "${PRESET}" "${INSTALL_DIR}" --with-c-toolchain; then
     :
 else
     rc=$?

@@ -1,20 +1,26 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Build the Maize toolchain (maize, maizeg, mzvm, mzvmg, mazm, mzasm, mzld, mzdis) and install stable copies into ~\bin (Windows).
+    Build the Maize v2 binaries (mzvm, mzvmg, mzasm) and install stable copies into ~\bin (Windows).
 
 .DESCRIPTION
-    Configures the CMake preset, builds the maize/maizeg/mzvm/mzvmg/mazm/mzasm/mzld/mzdis/mzcc
-    targets as an optimized Release, and copies each built .exe to the install directory
-    (default: $HOME\bin). The maizeg VM is built with the SDL2 window backend
-    (MAIZE_DISPLAY=ON) so `--display --input=keyboard` opens a real window; the
-    vendored SDL2 runtime (SDL2.dll) is installed alongside maizeg.exe. Also
-    refreshes the mzcc.cmd Windows forwarder (the C-toolchain entry point) from a
-    repo template; maize-257: mzcc now runs the whole C pipeline natively via Git
-    Bash and the vendored llvm-mingw toolchain, with no WSL involved. If the
-    install directory is not on the user PATH it is appended, so editors and
-    shells find the tools without per-workspace configuration. Wired to the
-    default build task (Ctrl+Shift+B) via .vscode/tasks.json.
+    Configures the CMake preset, builds the mzvm/mzvmg/mzasm targets, and copies each
+    built .exe to the install directory (default: $HOME\bin). The mzvmg VM is built
+    with the SDL2 window backend (MAIZE_DISPLAY=ON) so `--display` opens a real
+    window; the vendored SDL2 runtime (SDL2.dll) is installed alongside mzvmg.exe.
+    If the install directory is not on the user PATH it is appended, so editors and
+    shells find the tools without per-workspace configuration. Wired to the default
+    build task (Ctrl+Shift+B) via .vscode/tasks.json, which runs this script on every
+    press so the binaries it just built are the ones on PATH (maize-454).
+
+    maize-454: the installed set is the v2 machine and the v2 assembler only. The
+    frozen v1 binaries (maize, maizeg, mazm) are no longer built or copied. mzld,
+    mzdis and mzcc keep their names under maize-422 D-1 but have not been ported yet
+    (maize-423/424/425/426), so installing today's v1 builds of them would put tools
+    on PATH that cannot read a v2 object; each comes back here as its parity card
+    lands. The v1 C pipeline (mzcc plus the cproc-qbe/qbe cross-toolchain) is behind
+    -WithCToolchain, opt-in, because it is sometimes a real wait and has no business
+    in a loop pressed dozens of times a day.
 
     Never prompts; safe for non-interactive use.
 
@@ -37,13 +43,20 @@
 
 .PARAMETER NoPgo
     Build without Clang PGO even when a committed profile exists for this preset.
+
+.PARAMETER WithCToolchain
+    Also build and install the v1 C pipeline: mzcc (plus the mazm and mzld it spawns,
+    built but not installed), the mzcc.cmd Windows forwarder, and the cproc-qbe/qbe
+    cross-toolchain. Off by default so the inner loop stays cheap; the "Install ..."
+    VS Code task and build-world.ps1 both pass it.
 #>
 [CmdletBinding()]
 param(
     [string]$Preset = 'windows-llvm-mingw-release',
     [string]$InstallDir = (Join-Path $HOME 'bin'),
     [switch]$Headless,
-    [switch]$NoPgo
+    [switch]$NoPgo,
+    [switch]$WithCToolchain
 )
 
 $ErrorActionPreference = 'Stop'
@@ -123,7 +136,11 @@ elseif (Test-Path $PgoProfile) {
     $pgoArgs = @('-DMAIZE_PGO=use', "-DMAIZE_PGO_DIR=$(($PgoProfileDir) -replace '\\','/')")
 }
 else {
-    Write-Warning "No committed PGO profile for preset '$Preset' at $PgoProfile; building without PGO. Run scripts/build-pgo.ps1 to produce one (see scripts/pgo-profiles/README.md)."
+    # Informational, not a warning: since maize-454 the default build task runs this
+    # script on every press against a debug preset, which has no committed profile by
+    # design, and a yellow warning on every Ctrl+Shift+B would train the operator to
+    # ignore the warning stream.
+    Write-Host "No committed PGO profile for preset '$Preset' at $PgoProfile; building without PGO. Run scripts/build-pgo.ps1 to produce one (see scripts/pgo-profiles/README.md)."
     $pgoArgs = @('-DMAIZE_PGO=')
 }
 
@@ -168,8 +185,19 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-Write-Host "Building maize, maizeg, mzvm, mzvmg, mazm, mzasm, mzld, mzdis, mzcc ($Preset)..."
-& $Cmake --build $BuildDir --target maize maizeg mzvm mzvmg mazm mzasm mzld mzdis mzcc
+# maize-454: the installed set is v2's machine and assembler. -WithCToolchain adds the
+# v1 C pipeline; mzcc spawns mazm and mzld out of the BUILD directory (mzcc.c resolves
+# them under MAIZE_ROOT/build/<preset>), so those two are built for it without being
+# installed onto PATH.
+$InstallTools = @('mzvm', 'mzvmg', 'mzasm')
+$BuildTargets = $InstallTools
+if ($WithCToolchain) {
+    $BuildTargets = $InstallTools + @('mzcc', 'mazm', 'mzld')
+}
+$TargetList = $BuildTargets -join ', '
+
+Write-Host "Building $TargetList ($Preset)..."
+& $Cmake --build $BuildDir --target @BuildTargets
 if ($LASTEXITCODE -ne 0) {
     if ($pgoArgs[0] -eq '-DMAIZE_PGO=use') {
         Write-Warning "cmake build failed for preset '$Preset' with Clang PGO active (exit $LASTEXITCODE); the committed profile at $PgoProfile may be incompatible with the current toolchain pin. Reconfiguring and retrying once without PGO..."
@@ -179,7 +207,7 @@ if ($LASTEXITCODE -ne 0) {
             Write-Error "cmake reconfigure without PGO failed (exit $LASTEXITCODE)." -ErrorAction Continue
             exit 2
         }
-        & $Cmake --build $BuildDir --target maize maizeg mzvm mzvmg mazm mzasm mzld mzdis mzcc
+        & $Cmake --build $BuildDir --target @BuildTargets
         if ($LASTEXITCODE -ne 0) {
             Write-Error "cmake build failed for preset '$Preset' (exit $LASTEXITCODE), with and without PGO; not a PGO issue." -ErrorAction Continue
             exit 2
@@ -194,14 +222,17 @@ if ($LASTEXITCODE -ne 0) {
 
 # --- Install ----------------------------------------------------------------------
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
-# maize-217/230: `maize` is the console-subsystem VM (terminal I/O); `maizeg` is the graphical
-# one (SDL window). Both are installed; console programs run under maize, the screen under maizeg.
-# maize-278: mzcc is the compiled C guest-build driver (the native cc-maize.sh replacement).
-# maize-418: mzvm and mzvmg are the Maize v2 machine, a second VM beside v1's maize/maizeg.
-# maize-422 (D-1): mzasm is the v2 assembler, a new binary beside v1's mazm rather than a rename
-# of it, so both machines stay assemblable while v1 is still buildable; mzld and mzdis carry
-# their names forward to v2.
-foreach ($tool in 'maize', 'maizeg', 'mzvm', 'mzvmg', 'mazm', 'mzasm', 'mzld', 'mzdis', 'mzcc') {
+# maize-418: mzvm is the console-subsystem Maize v2 machine (terminal I/O); mzvmg is the
+# graphical one (SDL window). maize-422 (D-1): mzasm is the v2 assembler.
+# maize-454: the frozen v1 machine (maize, maizeg, mazm) is no longer installed, and neither
+# are mzld, mzdis and mzcc, whose v2 ports have not landed yet.
+$CopyTools = $InstallTools
+if ($WithCToolchain) {
+    # mzcc is the C pipeline's entry point, so it travels with the toolchain rather than
+    # with the v2 machine. mazm and mzld stay in the build directory, unexported.
+    $CopyTools = $InstallTools + @('mzcc')
+}
+foreach ($tool in $CopyTools) {
     $builtExe = Join-Path $BuildDir "$tool.exe"
     if (-not (Test-Path $builtExe)) {
         Write-Error "build reported success but $builtExe does not exist."
@@ -215,7 +246,7 @@ foreach ($tool in 'maize', 'maizeg', 'mzvm', 'mzvmg', 'mazm', 'mzasm', 'mzld', '
     Write-Host "Installed $builtExe -> $(Join-Path $InstallDir "$tool.exe")"
 }
 
-# maizeg.exe (graphical) links SDL2 dynamically; install the runtime DLL alongside it so it
+# mzvmg.exe (graphical) links SDL2 dynamically; install the runtime DLL alongside it so it
 # starts from anywhere on PATH ($InstallDir is on PATH, so a co-located DLL resolves).
 if ($displayOn) {
     if (Test-Path $Sdl2Dll) {
@@ -225,9 +256,58 @@ if ($displayOn) {
         Write-Host "Installed $Sdl2Dll -> $(Join-Path $InstallDir 'SDL2.dll')"
     }
     else {
-        Write-Warning "MAIZE_DISPLAY is ON but $Sdl2Dll is missing; maizeg.exe will fail to start until SDL2.dll is on PATH."
+        Write-Warning "MAIZE_DISPLAY is ON but $Sdl2Dll is missing; mzvmg.exe will fail to start until SDL2.dll is on PATH."
     }
 }
+
+# --- Ensure the install dir is on the user PATH -----------------------------------
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$onPath = ($userPath -split ';') | Where-Object { $_ -eq $InstallDir }
+
+if (-not $onPath) {
+    [Environment]::SetEnvironmentVariable('Path', "$userPath;$InstallDir", 'User')
+    Write-Host "Added $InstallDir to the user PATH."
+    Write-Host 'Restart VS Code (and any shells) so they pick up the new PATH.'
+}
+
+# --- Smoke check -------------------------------------------------------------------
+# Deliberately-broken stdin probe: proves the installed mzasm supports the editor's
+# --stdin diagnostics path (exit 1 + marker line), independent of whether any repo
+# .mzasm file currently assembles.
+#
+# The probe WRITES TO STDERR ON PURPOSE. Under Windows PowerShell 5.1,
+# ErrorActionPreference=Stop turns redirected native stderr into a terminating
+# NativeCommandError, so relax it for exactly this pipeline (pwsh 7 is
+# unaffected either way).
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$probeOut = ('no_such_instruction' | & (Join-Path $InstallDir 'mzasm.exe') --check --stdin --base-path $env:TEMP --source-name mzasm-install-probe 2>&1 | Out-String)
+$probeExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+
+if ($probeExit -ne 1 -or $probeOut -notmatch 'mzasm-install-probe:1: error:') {
+    Write-Error "installed mzasm failed the --stdin probe smoke test (exit $probeExit)."
+    exit 1
+}
+
+# mzvm smoke: no image argument prints the usage line to stderr and exits 2. Same
+# stderr-under-5.1 caveat as above, so the same relaxed-EAP pipeline.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$vmOut = (& (Join-Path $InstallDir 'mzvm.exe') 2>&1 | Out-String)
+$vmExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+
+if ($vmExit -ne 2 -or $vmOut -notmatch 'usage: mzvm') {
+    Write-Error "installed mzvm failed the usage smoke test (exit $vmExit)."
+    exit 1
+}
+
+# --- v1 C pipeline (opt-in, -WithCToolchain) --------------------------------------
+# maize-454: everything below is the v1 C pipeline. It is off by default because it is
+# a cache hit most of the time and a real wait when it is not, and Ctrl+Shift+B now runs
+# this script on every press.
+if ($WithCToolchain) {
 
 # --- Resolve Git Bash (maize-257): the native mzcc forwarder and the C cross- -----
 # toolchain build below both need bash.exe, not WSL. Resolve-GitBash lives in
@@ -279,55 +359,12 @@ if (Test-Path $legacyCmd) {
     Write-Host "Removed legacy $legacyCmd (renamed to mzcc.cmd)."
 }
 
-# --- Ensure the install dir is on the user PATH -----------------------------------
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-$onPath = ($userPath -split ';') | Where-Object { $_ -eq $InstallDir }
-
-if (-not $onPath) {
-    [Environment]::SetEnvironmentVariable('Path', "$userPath;$InstallDir", 'User')
-    Write-Host "Added $InstallDir to the user PATH."
-    Write-Host 'Restart VS Code (and any shells) so they pick up the new PATH.'
-}
-
-# --- Smoke check -------------------------------------------------------------------
-# Deliberately-broken stdin probe: proves the installed binary supports the
-# editor's --stdin diagnostics path (exit 1 + marker line), independent of
-# whether any repo .mazm file currently assembles.
-#
-# The probe WRITES TO STDERR ON PURPOSE. Under Windows PowerShell 5.1,
-# ErrorActionPreference=Stop turns redirected native stderr into a terminating
-# NativeCommandError, so relax it for exactly this pipeline (pwsh 7 is
-# unaffected either way).
-$prevEap = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-$probeOut = ('STRING "x' | & (Join-Path $InstallDir 'mazm.exe') --check --stdin --base-path $env:TEMP --source-name mazm-install-probe 2>&1 | Out-String)
-$probeExit = $LASTEXITCODE
-$ErrorActionPreference = $prevEap
-
-if ($probeExit -ne 1 -or $probeOut -notmatch 'mazm-install-probe:1: error:') {
-    Write-Error "installed mazm failed the --stdin probe smoke test (exit $probeExit)."
-    exit 1
-}
-
-# mzld smoke: no inputs prints the usage line to stderr and exits 1. Same
-# stderr-under-5.1 caveat as above, so the same relaxed-EAP pipeline.
-$prevEap = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-$ldOut = (& (Join-Path $InstallDir 'mzld.exe') 2>&1 | Out-String)
-$ldExit = $LASTEXITCODE
-$ErrorActionPreference = $prevEap
-
-if ($ldExit -ne 1 -or $ldOut -notmatch 'usage: mzld') {
-    Write-Error "installed mzld failed the usage smoke test (exit $ldExit)."
-    exit 1
-}
-
 # --- C cross-toolchain build (cproc-qbe + qbe, native via Git Bash) ---------------
 # maize-257: scripts/build-toolchain.sh now builds cproc-qbe.exe + qbe.exe natively
 # on Windows (Git Bash + the vendored llvm-mingw clang; no WSL, no MSYS2, no
-# driver.c). Non-fatal: the native maize/maizeg/mazm/mzld/mzdis tools above are
-# already installed and smoke-checked, so a missing Git Bash or a toolchain hiccup
-# only warns; mzcc then falls back to whatever toolchain build already exists.
+# driver.c). Non-fatal: the v2 tools above are already installed and smoke-checked, so
+# a missing Git Bash or a toolchain hiccup only warns; mzcc then falls back to whatever
+# toolchain build already exists.
 # Build output goes to stderr; under Windows PowerShell 5.1 with
 # ErrorActionPreference=Stop that would become a terminating NativeCommandError, so
 # relax it for exactly this call (pwsh 7 is unaffected).
@@ -350,6 +387,8 @@ else {
     }
 }
 
+} # end -WithCToolchain
+
 # Resolve the git revision the tree was built from, for a visible provenance
 # stamp in the summary line. git describe --always --dirty yields the nearest
 # tag (or abbreviated hash) plus a -dirty suffix when the tree has uncommitted
@@ -371,5 +410,5 @@ else {
     $Revision = 'unknown'
 }
 
-Write-Host "Installed maize, maizeg, mzvm, mzvmg, mazm, mzasm, mzld, mzdis, mzcc to $InstallDir (built from $Revision)."
+Write-Host "Installed $($CopyTools -join ', ') to $InstallDir (built from $Revision)."
 exit 0

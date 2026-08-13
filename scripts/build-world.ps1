@@ -25,7 +25,7 @@
     windows-llvm-mingw-release.
 
 .PARAMETER InstallDir
-    Where the native tools (maize, maizeg, mazm, mzld, mzdis) and SDL2.dll install.
+    Where the native tools (mzvm, mzvmg, mzasm, mzcc) and SDL2.dll install.
     Defaults to $HOME\bin.
 
 .PARAMETER UserlandOut
@@ -114,7 +114,10 @@ if ($stageCode -ne 0) {
 # script mis-bound '-InstallDir' positionally and failed with
 # "A positional parameter cannot be found that accepts argument '-InstallDir'".
 Write-Host '=== [2/5] native binaries + C toolchain (install-mzasm.ps1) ==='
-$installArgs = @{ Preset = $Preset; InstallDir = $InstallDir }
+# maize-454: install-mzasm.ps1 installs the v2 binaries only unless asked for the v1 C
+# pipeline, and stages [3/5]-[5/5] below are that pipeline (they run mzcc, which spawns
+# mazm and mzld), so build-world always asks for it.
+$installArgs = @{ Preset = $Preset; InstallDir = $InstallDir; WithCToolchain = $true }
 if ($Headless) { $installArgs['Headless'] = $true }
 if ($NoPgo) { $installArgs['NoPgo'] = $true }
 & (Join-Path $ScriptDir 'install-mzasm.ps1') @installArgs
@@ -124,9 +127,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # --- Stages 3/5-5/5: resolve mzcc.exe (maize-291) ------------------------------------
-# Stage [2/5] (install-mzasm.ps1) is what builds and installs mzcc alongside
-# maize/maizeg/mazm/mzld/mzdis; that stage already exited 0 above (aborting the
-# whole run otherwise), so $InstallDir\mzcc.exe is expected to exist here.
+# Stage [2/5] (install-mzasm.ps1, called with -WithCToolchain) is what builds and
+# installs mzcc alongside the v2 binaries; that stage already exited 0 above (aborting
+# the whole run otherwise), so $InstallDir\mzcc.exe is expected to exist here.
 $MzccExe = Join-Path $InstallDir 'mzcc.exe'
 if (-not (Test-Path $MzccExe)) {
     Write-Error "build-world.ps1: $MzccExe not found after stage [2/5]; install-mzasm.ps1 should have installed it." -ErrorAction Continue
@@ -169,7 +172,7 @@ Write-Host ''
 Write-Host '=== build-world.ps1: all stages complete ==='
 
 Write-Host 'Native tools + SDL2 runtime:'
-foreach ($tool in 'maize', 'maizeg', 'mzvm', 'mzvmg', 'mazm', 'mzld', 'mzdis', 'mzcc') {
+foreach ($tool in 'mzvm', 'mzvmg', 'mzasm', 'mzcc') {
     $exePath = Join-Path $InstallDir "$tool.exe"
     if (Test-Path $exePath) { Write-Host "  $exePath" }
 }
