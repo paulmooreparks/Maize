@@ -21,6 +21,7 @@ add_executable(mzvm_v2_fixtures
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_memory.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_devices.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_privilege.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_paging.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2/fixtures_traps.cpp")
 target_include_directories(mzvm_v2_fixtures PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src/v2"
@@ -98,7 +99,22 @@ set(MAIZE_V2_FIXTURES
   syscall_boundary_carries_number_and_arguments
   fault_restart_leaves_no_partial_effect
   block_memory_fault_restart_through_a_real_handler
-  reserved_cause_is_never_delivered)
+  reserved_cause_is_never_delivered
+  sv48_geometry_and_entry_bits_are_the_chapters_numbers
+  bare_mode_translates_every_address_to_itself
+  sv48_walk_reads_the_indices_the_chapter_names
+  sv48_translation_carries_a_program_and_its_data
+  superpages_map_their_whole_range_at_every_level
+  translation_rejects_an_invalid_entry_with_subcode_zero
+  translation_rejects_a_permission_violation_with_subcode_one
+  the_machine_reads_only_the_bits_the_chapter_names
+  a_page_table_read_outside_memory_is_a_physical_memory_fault
+  a_page_fault_is_delivered_and_the_instruction_runs_again
+  writing_the_paging_root_flushes_every_cached_translation
+  tlb_invalidate_discards_the_translations_it_names
+  tlb_maintenance_is_privileged_and_faults_at_nothing
+  a_cached_translation_is_rechecked_on_every_use
+  the_translation_cache_neither_over_flushes_nor_under_flushes)
 
 foreach(_fixture ${MAIZE_V2_FIXTURES})
   add_test(NAME "v2_${_fixture}" COMMAND mzvm_v2_fixtures "${_fixture}")

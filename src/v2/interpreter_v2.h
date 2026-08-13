@@ -30,10 +30,18 @@
 // while a high-to-low pass shows it by decrementing the count alone. block_copy here uses both
 // directions, choosing per overlap the way memmove does, and both converge on the same
 // completion state: count zero, each pointer at its original value plus the original count.
+//
+// EVERY GUEST ACCESS GOES THROUGH ONE TRANSLATION PATH (maize-465). The fetch, a load, a store,
+// each byte of a block-memory transfer, the vector read and the four frame stores of trap
+// delivery all reach memory through plan_access below, which translates first and judges
+// physical reachability second. There is no second road to memory, which is the only reason a
+// fetch from a non-executable page and a store to a read-only page cannot come to disagree
+// about what translation means.
 
 #ifndef MAIZE_V2_INTERPRETER_V2_H
 #define MAIZE_V2_INTERPRETER_V2_H
 
+#include <array>
 #include <cstdint>
 
 #include "csr_v2.h"
@@ -41,9 +49,37 @@
 #include "device_v2.h"
 #include "memory_v2.h"
 #include "registers_v2.h"
+#include "translate_v2.h"
 #include "trap_v2.h"
 
 namespace maize::v2 {
+
+// One access, translated byte by byte and judged whole before any of it happens (maize-465).
+//
+// The plan holds a physical address per byte rather than one base address, because an access
+// that straddles a page boundary is contiguous in virtual addresses and need not be contiguous
+// in physical ones. Judging every byte before touching any is the same trap-writes-nothing
+// discipline this file already applied to the physical range check, extended to translation:
+// a load whose second page is unmapped writes no destination register, and a store whose second
+// page is read-only writes no byte at all.
+//
+// The largest access the machine makes is the four-word trap frame, so the capacity is 32. The
+// assertions below state that in a form the compiler checks, rather than leaving it to a comment
+// that goes stale the first time one of those accesses grows.
+struct AccessPlanV2 {
+    static constexpr unsigned kMaxBytes = 32;
+    // The widest single load or store the instruction set has, which is one 64-bit word.
+    static constexpr unsigned kMaxDataBytes = 8;
+    std::array<std::uint64_t, kMaxBytes> physical{};
+    unsigned count = 0;
+};
+
+static_assert(trap_frame::kBytes <= AccessPlanV2::kMaxBytes,
+              "a trap frame is planned as one access, so the plan must hold all of it");
+static_assert(vector_table::kEntryBytes <= AccessPlanV2::kMaxBytes,
+              "a vector-table entry is planned as one access");
+static_assert(AccessPlanV2::kMaxDataBytes <= AccessPlanV2::kMaxBytes,
+              "the widest load or store is planned as one access");
 
 enum class StepStatus : std::uint8_t {
     Advanced,  // the instruction completed and the program counter moved
@@ -56,9 +92,8 @@ enum class StepStatus : std::uint8_t {
     Trapped,
     Halted,    // halt executed; the machine is stopped and its state is final
     // A real assigned opcode whose family this build does not implement (D-2): the floating
-    // point band, the system/TLB band other than halt, the three control-and-status-register
-    // instructions and the two port instructions,
-    // and breakpoint. This is a HOST
+    // point band, and wait_for_interrupt, which is the last member of the system band still
+    // waiting on its own card. This is a HOST
     // diagnostic about a scaffold gap, never a guest-visible trap. Inventing a trap cause for
     // "not implemented yet" would misrepresent the gap as conformant illegal-instruction
     // behaviour, and it would be wrong the moment maize-419 and maize-420 close it.
@@ -116,6 +151,14 @@ class InterpreterV2 {
     CsrFileV2& csr() { return csr_; }
     const CsrFileV2& csr() const { return csr_; }
 
+    // The translation cache (maize-465), owned the way the register file is owned. It is
+    // architecturally invisible, so nothing a guest can execute observes it; this accessor
+    // exists for a host inspecting the machine and for the fixtures that check THIS
+    // implementation neither over-flushes nor under-flushes, which is a question the chapter's
+    // own rules cannot settle.
+    TranslatorV2& translator() { return translator_; }
+    const TranslatorV2& translator() const { return translator_; }
+
     std::uint64_t pc() const { return pc_; }
     void set_pc(std::uint64_t value) { pc_ = value; }
     bool halted() const { return halted_; }
@@ -156,6 +199,25 @@ class InterpreterV2 {
   private:
     StepResult execute(const DecodedV2& decoded);
 
+    // Translate every byte of one access and judge its physical reachability, before any of the
+    // access happens (maize-465). Returns false with `trap`'s cause, subcode and auxiliary word
+    // set and its captured program counter left to the raise site.
+    //
+    // `level` is a parameter rather than being read off the status register, because the machine
+    // makes accesses on its own account that are not the running program's: the vector read and
+    // the four frame stores of trap delivery are supervisor-privilege accesses whatever level
+    // the interrupted program was at (trap-model.md, "Vectored dispatch" step 2 and "The
+    // frame").
+    bool plan_access(std::uint64_t address, unsigned length, AccessKind kind, Privilege level,
+                     AccessPlanV2& plan, TrapV2& trap);
+    // The one-byte form, for the block-memory instructions, whose restart contract judges each
+    // byte on its own rather than the transfer as a whole.
+    bool plan_byte(std::uint64_t address, AccessKind kind, std::uint64_t& physical, TrapV2& trap);
+
+    std::uint64_t read_planned(const AccessPlanV2& plan, unsigned offset, unsigned width) const;
+    void write_planned(const AccessPlanV2& plan, unsigned offset, unsigned width,
+                       std::uint64_t value);
+
     // Result constructors, so no execute path assembles a StepResult by hand.
     StepResult advance(const DecodedV2& decoded);
     StepResult branch_to(const DecodedV2& decoded, std::uint64_t target);
@@ -190,6 +252,7 @@ class InterpreterV2 {
     RegistersV2 registers_{};
     DeviceSurfaceV2 devices_{};
     CsrFileV2 csr_{};
+    TranslatorV2 translator_{};
     std::uint64_t pc_ = 0;
     std::uint64_t steps_taken_ = 0;
     bool halted_ = false;

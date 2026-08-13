@@ -18,14 +18,17 @@ DecodeResult trapped(std::uint8_t cause_number, std::uint8_t subcode_number, std
 
 }  // namespace
 
-DecodeResult decode_v2(const MemoryV2& memory, std::uint64_t pc) {
-    // Step 1. The fetch is itself a physical access in bare mode, so an opcode byte outside
-    // populated memory raises cause 11 rather than being read as some default byte.
-    if (!memory.accessible(pc)) {
-        return trapped(cause::kPhysicalMemoryFault, 0, pc, pc);
+DecodeResult decode_v2(const FetchSourceV2& source, std::uint64_t pc) {
+    // Step 1. The fetch is an access like any other and is translated like any other
+    // (maize-465), so an opcode byte the walk cannot map raises cause 8 and one whose physical
+    // address is outside populated memory raises cause 11, rather than either being read as
+    // some default byte. In bare mode the source translates nothing and both roads lead to
+    // cause 11, exactly as they did before Sv48 existed.
+    TrapV2 fetch_trap;
+    std::uint8_t opcode_byte = 0;
+    if (!source.byte(pc, opcode_byte, fetch_trap)) {
+        return trapped(fetch_trap.cause, fetch_trap.subcode, fetch_trap.aux, pc);
     }
-
-    const std::uint8_t opcode_byte = memory.read_byte(pc);
     const OpcodeInfo& info = kOpcodeTable[opcode_byte];
 
     // A reserved byte and an escape byte reach the same trap by two different routes, and both
@@ -51,10 +54,10 @@ DecodeResult decode_v2(const MemoryV2& memory, std::uint64_t pc) {
     // Step 3. Operand bytes, in order, each checked against its declared slot class.
     std::uint64_t cursor = pc + 1;
     for (unsigned i = 0; i < shape.operands; ++i) {
-        if (!memory.accessible(cursor)) {
-            return trapped(cause::kPhysicalMemoryFault, 0, cursor, pc);
+        std::uint8_t operand_byte = 0;
+        if (!source.byte(cursor, operand_byte, fetch_trap)) {
+            return trapped(fetch_trap.cause, fetch_trap.subcode, fetch_trap.aux, pc);
         }
-        const std::uint8_t operand_byte = memory.read_byte(cursor);
         const std::uint8_t form = operand_form(operand_byte);
         if (!form_is_legal(info.slots[i], form)) {
             // The offending BYTE accompanies the trap, not the form field alone, per
@@ -72,10 +75,11 @@ DecodeResult decode_v2(const MemoryV2& memory, std::uint64_t pc) {
         const unsigned width = shape.immediate_bytes[i];
         std::uint64_t value = 0;
         for (unsigned b = 0; b < width; ++b) {
-            if (!memory.accessible(cursor)) {
-                return trapped(cause::kPhysicalMemoryFault, 0, cursor, pc);
+            std::uint8_t immediate_byte = 0;
+            if (!source.byte(cursor, immediate_byte, fetch_trap)) {
+                return trapped(fetch_trap.cause, fetch_trap.subcode, fetch_trap.aux, pc);
             }
-            value |= static_cast<std::uint64_t>(memory.read_byte(cursor)) << (b * 8);
+            value |= static_cast<std::uint64_t>(immediate_byte) << (b * 8);
             ++cursor;
         }
         decoded.immediate[i] = value;

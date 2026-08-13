@@ -13,6 +13,16 @@
 *.c    text eol=lf
 *.h    text eol=lf
 
+# C++ sources (the VM and its tests). These were unpinned until maize-465, so a
+# Windows editor that rewrote a whole file on save stored it with CRLF and the
+# commit read as a whole-file rewrite instead of the handful of lines that
+# actually changed. Pinning them keeps a diff readable and keeps two cards
+# editing the same file from conflicting on every line.
+*.cpp  text eol=lf
+*.hpp  text eol=lf
+*.cc   text eol=lf
+*.hh   text eol=lf
+
 # Assembler / toolchain text inputs and IL.
 *.mazm text eol=lf
 *.ssa  text eol=lf

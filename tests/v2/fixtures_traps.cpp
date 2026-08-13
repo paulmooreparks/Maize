@@ -824,7 +824,11 @@ V2_FIXTURE(vectored_dispatch_follows_the_chapters_order) {
         handler.halt();
         kernel.load_at(handler);
 
-        emit_csr_load(kernel.program(), csr::kPagingRoot, 0x0000000000003001ull, 4);  // Sv48
+        // Bare mode with a root recorded. What this step of the fixture asserts is that
+        // delivery does not CHANGE the paging root, which a nonzero value proves without
+        // turning translation on; since maize-465 mode 1 would translate the handler's own
+        // fetches, and fixtures_paging.cpp is where a delivery under Sv48 belongs.
+        emit_csr_load(kernel.program(), csr::kPagingRoot, 0x0000000000003000ull, 4);
         emit_csr_load(kernel.program(), csr::kStatus, 0x5, 4);  // supervisor, interrupts ON
         const std::uint64_t faulting = kernel.here();
         kernel.program().op_i1(op::kSysImm, 0x11);

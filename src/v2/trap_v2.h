@@ -20,10 +20,10 @@
 namespace maize::v2 {
 
 // trap-model.md, "The cause enumeration". Only the causes this build can raise are named.
-// Causes 8, 9 and 10 (the page faults) are unreachable here: this interpreter runs bare mode,
-// where translation is not performed at all, so an access outside populated physical memory
-// raises cause 11 and nothing raises a page fault (boot.md, D-3). They are still named, because
-// delivery is cause-generic and maize-465 supplies the conditions that raise them.
+// Causes 8, 9 and 10 (the page faults) became reachable on maize-465, which brought the Sv48
+// translation whose six rejections raise them; in bare mode they remain unreachable by
+// construction, since translation is not performed at all and an access outside populated
+// physical memory raises cause 11 instead.
 //
 // FOUR NUMBERS ARE NOT HERE ON PURPOSE, and the gaps are the point rather than an omission.
 // Causes 5 and 6 are held dark so that a handler table carried over from Maize v1, which spent

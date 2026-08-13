@@ -1,12 +1,15 @@
-// memory_v2.h (maize-418): bare-mode physical memory.
+// memory_v2.h (maize-418): physical memory.
 //
-// This build implements BARE MODE ONLY (D-3). Sv48 translation is maize-420, and bare mode is
-// not a stand-in for it: memory-model.md makes bare mode a real, permanently available mode in
-// which an address a load, a store or a block-memory instruction computes IS a physical
-// address and the physical memory bounds decide accessibility. Because translation is not
-// performed at all, no page table is consulted and no page fault is possible, so causes 8, 9
-// and 10 are unreachable in this build and an access outside populated memory raises the
-// physical-memory fault, cause 11, with the offending physical address in the auxiliary word.
+// EVERY ADDRESS THIS FILE SEES IS A PHYSICAL ADDRESS. Since maize-465 the machine also
+// translates, and translate_v2.h is where a virtual address becomes one of these; nothing here
+// knows about page tables, and a page-table read reaches this file the same way any other
+// physical access does, which is what "page-table reads are physical accesses that are never
+// translated" means in code.
+//
+// In bare mode the address a load, a store or a block-memory instruction computes IS a physical
+// address and the bounds below decide accessibility on their own. In either mode an access
+// outside populated memory raises the physical-memory fault, cause 11, with the offending
+// physical address in the auxiliary word.
 //
 // Populated memory is one contiguous region [0, size). The boot-information block that defines
 // the real address map is maize-421; until it lands, whoever constructs the machine says how

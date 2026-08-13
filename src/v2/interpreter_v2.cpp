@@ -91,6 +91,90 @@ std::uint64_t multiply_high_signed_value(std::uint64_t a, std::uint64_t b) {
     return high;
 }
 
+// maize-465. Every guest access reaches memory through here, and the order of the two judgements
+// is the chapter's: translation first, then physical reachability of what translation produced.
+// A page fault therefore beats a physical-memory fault for the same byte, and a page-table read
+// that names unpopulated memory raises cause 11 from inside the walk rather than a page fault,
+// because a page-table read is a physical access that is never itself translated.
+//
+// WHICH ADDRESS THE PAGE FAULT REPORTS, for an access that straddles a page boundary, is fixed
+// by the specification and is not an implementation choice. instruction-reference-memory.md
+// lines 115 through 118: "An access that crosses a page boundary is one access for fault
+// purposes rather than two. When more than one byte of the access is inaccessible, the fault
+// reports the lowest inaccessible address the access covers, which makes the reported address a
+// function of the access alone and not of the order in which an implementation touches bytes."
+// That chapter lists it as a directly testable conformance property at lines 907 through 909.
+//
+// This build complies. The loop below scans the access in ascending virtual order and returns
+// at the first byte whose translation failed, which is the lowest inaccessible address the
+// access covers. Do not change the scan order or report the instruction's base address here:
+// both would break a stated conformance property, and the fixture
+// tests/v2/fixtures_paging.cpp:sv48_translation_carries_a_program_and_its_data pins the reported
+// address in plain digits so either change goes red.
+bool InterpreterV2::plan_access(std::uint64_t address, unsigned length, AccessKind kind,
+                                Privilege level, AccessPlanV2& plan, TrapV2& trap) {
+    const std::uint64_t root = csr_.host_read(csr::kPagingRoot);
+    plan.count = length;
+    for (unsigned i = 0; i < length; ++i) {
+        const TranslationResult translated =
+            translator_.translate(memory_, root, level, kind, address + i);
+        if (!translated.ok) {
+            trap = translated.trap;
+            return false;
+        }
+        plan.physical[i] = translated.physical;
+    }
+
+    // Physical reachability, judged over the whole access and reporting the LOWEST inaccessible
+    // physical address, which is the property MemoryV2::check_range already fixes for the
+    // untranslated case and which this keeps once the addresses are no longer contiguous.
+    bool found = false;
+    std::uint64_t lowest = 0;
+    for (unsigned i = 0; i < length; ++i) {
+        if (!memory_.accessible(plan.physical[i]) && (!found || plan.physical[i] < lowest)) {
+            lowest = plan.physical[i];
+            found = true;
+        }
+    }
+    if (found) {
+        trap.cause = cause::kPhysicalMemoryFault;
+        trap.subcode = 0;
+        trap.aux = lowest;
+        return false;
+    }
+    return true;
+}
+
+bool InterpreterV2::plan_byte(std::uint64_t address, AccessKind kind, std::uint64_t& physical,
+                              TrapV2& trap) {
+    AccessPlanV2 plan;
+    if (!plan_access(address, 1, kind, privilege(), plan, trap)) {
+        return false;
+    }
+    physical = plan.physical[0];
+    return true;
+}
+
+// Little-endian at every width, over a plan whose bytes may live in two different physical
+// pages, so the lowest VIRTUAL address of the access holds the least significant byte whatever
+// the translation did with it.
+std::uint64_t InterpreterV2::read_planned(const AccessPlanV2& plan, unsigned offset,
+                                          unsigned width) const {
+    std::uint64_t value = 0;
+    for (unsigned i = 0; i < width; ++i) {
+        value |= static_cast<std::uint64_t>(memory_.read_byte(plan.physical[offset + i]))
+                 << (i * 8);
+    }
+    return value;
+}
+
+void InterpreterV2::write_planned(const AccessPlanV2& plan, unsigned offset, unsigned width,
+                                  std::uint64_t value) {
+    for (unsigned i = 0; i < width; ++i) {
+        memory_.write_byte(plan.physical[offset + i], static_cast<std::uint8_t>(value >> (i * 8)));
+    }
+}
+
 StepResult InterpreterV2::advance(const DecodedV2& decoded) {
     pc_ = decoded.next_pc;
     StepResult result;
@@ -179,13 +263,16 @@ StepResult InterpreterV2::deliver(const TrapV2& trap, std::uint8_t opcode,
     // translated under the current paging root.
     const std::uint64_t entry = vector_table::entry_address(csr_.host_read(csr::kTrapVectorBase),
                                                             trap.cause);
-    std::uint64_t inaccessible = 0;
-    if (!memory_.check_range(entry, vector_table::kEntryBytes, inaccessible)) {
+    TrapV2 access_trap;
+    AccessPlanV2 vector_plan;
+    if (!plan_access(entry, static_cast<unsigned>(vector_table::kEntryBytes), AccessKind::Load,
+                     Privilege::Supervisor, vector_plan, access_trap)) {
         return halt_without_delivering(trap, opcode, instruction_pc,
                                        TrapDisposition::HaltedDoubleFault,
                                        halt_cause::kKindDoubleFault);
     }
-    const std::uint64_t handler = memory_.read_little_endian(entry, vector_table::kEntryBytes);
+    const std::uint64_t handler =
+        read_planned(vector_plan, 0, static_cast<unsigned>(vector_table::kEntryBytes));
 
     // Step 3. A zero entry means no handler is installed, and the machine halts having pushed
     // no frame and changed no register other than the halt-cause register.
@@ -205,17 +292,19 @@ StepResult InterpreterV2::deliver(const TrapV2& trap, std::uint8_t opcode,
     // resolves that silence toward writing nothing, which is the answer a reader of the halt
     // state is least likely to be misled by.
     const std::uint64_t frame = csr_.host_read(csr::kTrapStack) - trap_frame::kBytes;
-    if (!memory_.check_range(frame, trap_frame::kBytes, inaccessible)) {
+    AccessPlanV2 frame_plan;
+    if (!plan_access(frame, static_cast<unsigned>(trap_frame::kBytes), AccessKind::Store,
+                     Privilege::Supervisor, frame_plan, access_trap)) {
         return halt_without_delivering(trap, opcode, instruction_pc,
                                        TrapDisposition::HaltedDoubleFault,
                                        halt_cause::kKindDoubleFault);
     }
-    memory_.write_little_endian(frame + trap_frame::kPcOffset, 8, trap.pc);
-    memory_.write_little_endian(frame + trap_frame::kStatusOffset, 8,
-                                csr_.host_read(csr::kStatus));
-    memory_.write_little_endian(frame + trap_frame::kCauseOffset, 8,
-                                encode_cause_word(trap.cause, trap.subcode));
-    memory_.write_little_endian(frame + trap_frame::kAuxOffset, 8, trap.aux);
+    write_planned(frame_plan, static_cast<unsigned>(trap_frame::kPcOffset), 8, trap.pc);
+    write_planned(frame_plan, static_cast<unsigned>(trap_frame::kStatusOffset), 8,
+                  csr_.host_read(csr::kStatus));
+    write_planned(frame_plan, static_cast<unsigned>(trap_frame::kCauseOffset), 8,
+                  encode_cause_word(trap.cause, trap.subcode));
+    write_planned(frame_plan, static_cast<unsigned>(trap_frame::kAuxOffset), 8, trap.aux);
     csr_.machine_set_trap_stack(frame);
 
     // Step 5. Supervisor level, interrupts off, every other status bit as it was. The frame
@@ -253,14 +342,17 @@ StepResult InterpreterV2::execute_trap_return(const DecodedV2& decoded) {
     // A fault while popping abandons the pop and leaves the trap-stack register unchanged, so
     // the instruction re-executes cleanly once the fault is serviced. Judging the whole frame
     // before reading any of it is what makes that true whichever word is unreachable.
-    std::uint64_t inaccessible = 0;
-    if (!memory_.check_range(frame, trap_frame::kBytes, inaccessible)) {
-        return raise(decoded, cause::kPhysicalMemoryFault, 0, inaccessible);
+    TrapV2 access_trap;
+    AccessPlanV2 plan;
+    if (!plan_access(frame, static_cast<unsigned>(trap_frame::kBytes), AccessKind::Load,
+                     privilege(), plan, access_trap)) {
+        return raise(decoded, access_trap.cause, access_trap.subcode, access_trap.aux);
     }
 
-    const std::uint64_t pc_word = memory_.read_little_endian(frame + trap_frame::kPcOffset, 8);
+    const std::uint64_t pc_word =
+        read_planned(plan, static_cast<unsigned>(trap_frame::kPcOffset), 8);
     const std::uint64_t status_word_value =
-        memory_.read_little_endian(frame + trap_frame::kStatusOffset, 8);
+        read_planned(plan, static_cast<unsigned>(trap_frame::kStatusOffset), 8);
     // The cause and auxiliary words are read as part of the pop and go nowhere. They are the
     // handler's to consume, and nothing reads them back into the machine.
 
@@ -288,7 +380,13 @@ StepResult InterpreterV2::step() {
         return result;
     }
 
-    const DecodeResult decoded = decode_v2(memory_, pc_);
+    // The fetch is translated under the current paging root at the current privilege level
+    // (maize-465), so an instruction on an unmapped or non-executable page raises cause 8 before
+    // the opcode byte means anything. In bare mode the source translates nothing and the decode
+    // sequence sees physical memory directly, exactly as it did before Sv48 existed.
+    const FetchSourceV2 source(memory_, translator_, csr_.host_read(csr::kPagingRoot),
+                               privilege());
+    const DecodeResult decoded = decode_v2(source, pc_);
     if (decoded.status == DecodeStatus::Trap) {
         // An illegal instruction or an illegal operand is a fault like any other and is
         // delivered through the same sequence. The decoder already captured the instruction's
@@ -327,12 +425,13 @@ StepResult InterpreterV2::execute_load(const DecodedV2& decoded, unsigned width_
     // Validate the WHOLE access before writing the destination. A load that would write its
     // destination on success must not have written it when the second half of a two-region
     // access is inaccessible, which is what makes the instruction restartable.
-    std::uint64_t lowest_inaccessible = 0;
-    if (!memory_.check_range(address, width_bytes, lowest_inaccessible)) {
-        return raise(decoded, cause::kPhysicalMemoryFault, 0, lowest_inaccessible);
+    TrapV2 access_trap;
+    AccessPlanV2 plan;
+    if (!plan_access(address, width_bytes, AccessKind::Load, privilege(), plan, access_trap)) {
+        return raise(decoded, access_trap.cause, access_trap.subcode, access_trap.aux);
     }
 
-    const std::uint64_t raw = memory_.read_little_endian(address, width_bytes);
+    const std::uint64_t raw = read_planned(plan, 0, width_bytes);
     const unsigned bits = width_bytes * 8;
     const std::uint64_t value =
         sign_extended ? sign_extend(raw, bits) : (bits >= 64 ? raw : zero_extend(raw, bits));
@@ -351,12 +450,13 @@ StepResult InterpreterV2::execute_store(const DecodedV2& decoded, unsigned width
     // Same ordering as the load, from the other side: no byte of memory changes when any byte
     // of the access is inaccessible, including the case where the first part of the access is
     // fine and the second is not.
-    std::uint64_t lowest_inaccessible = 0;
-    if (!memory_.check_range(address, width_bytes, lowest_inaccessible)) {
-        return raise(decoded, cause::kPhysicalMemoryFault, 0, lowest_inaccessible);
+    TrapV2 access_trap;
+    AccessPlanV2 plan;
+    if (!plan_access(address, width_bytes, AccessKind::Store, privilege(), plan, access_trap)) {
+        return raise(decoded, access_trap.cause, access_trap.subcode, access_trap.aux);
     }
 
-    memory_.write_little_endian(address, width_bytes, registers_.read(source));
+    write_planned(plan, 0, width_bytes, registers_.read(source));
     return advance(decoded);
 }
 
@@ -402,13 +502,15 @@ StepResult InterpreterV2::execute_block(const DecodedV2& decoded) {
         const std::uint64_t destination = registers_.read(slot1);
         for (std::uint64_t i = 0; i < count; ++i) {
             const std::uint64_t address = destination + i;
-            if (!memory_.accessible(address)) {
+            std::uint64_t physical = 0;
+            TrapV2 access_trap;
+            if (!plan_byte(address, AccessKind::Store, physical, access_trap)) {
                 // Restart state: the untransferred bytes are the ones from here up.
                 registers_.write(slot1, address);
                 registers_.write(slot2, count - i);
-                return raise(decoded, cause::kPhysicalMemoryFault, 0, address);
+                return raise(decoded, access_trap.cause, access_trap.subcode, access_trap.aux);
             }
-            memory_.write_byte(address, fill);
+            memory_.write_byte(physical, fill);
         }
         registers_.write(slot1, destination + count);
         registers_.write(slot2, 0);
@@ -432,30 +534,38 @@ StepResult InterpreterV2::execute_block(const DecodedV2& decoded) {
         for (std::uint64_t i = 0; i < count; ++i) {
             const std::uint64_t from = source + i;
             const std::uint64_t to = destination + i;
-            if (!memory_.accessible(from) || !memory_.accessible(to)) {
-                const std::uint64_t faulting = !memory_.accessible(from) ? from : to;
+            // The read is judged before the write, so a byte that cannot be read reports the
+            // source side and never the destination, whichever of the two is also unreachable.
+            std::uint64_t from_physical = 0;
+            std::uint64_t to_physical = 0;
+            TrapV2 access_trap;
+            if (!plan_byte(from, AccessKind::Load, from_physical, access_trap) ||
+                !plan_byte(to, AccessKind::Store, to_physical, access_trap)) {
                 // Low to high shows its progress by advancing both pointers and decrementing
                 // the count together.
                 registers_.write(slot0, from);
                 registers_.write(slot1, to);
                 registers_.write(slot2, count - i);
-                return raise(decoded, cause::kPhysicalMemoryFault, 0, faulting);
+                return raise(decoded, access_trap.cause, access_trap.subcode, access_trap.aux);
             }
-            memory_.write_byte(to, memory_.read_byte(from));
+            memory_.write_byte(to_physical, memory_.read_byte(from_physical));
         }
     } else {
         for (std::uint64_t i = count; i-- > 0;) {
             const std::uint64_t from = source + i;
             const std::uint64_t to = destination + i;
-            if (!memory_.accessible(from) || !memory_.accessible(to)) {
-                const std::uint64_t faulting = !memory_.accessible(from) ? from : to;
+            std::uint64_t from_physical = 0;
+            std::uint64_t to_physical = 0;
+            TrapV2 access_trap;
+            if (!plan_byte(from, AccessKind::Load, from_physical, access_trap) ||
+                !plan_byte(to, AccessKind::Store, to_physical, access_trap)) {
                 // High to low shows its progress by decrementing the count alone: the bytes not
                 // yet transferred are still the LOW ones, so both pointers already name them
                 // and neither moves.
                 registers_.write(slot2, i + 1);
-                return raise(decoded, cause::kPhysicalMemoryFault, 0, faulting);
+                return raise(decoded, access_trap.cause, access_trap.subcode, access_trap.aux);
             }
-            memory_.write_byte(to, memory_.read_byte(from));
+            memory_.write_byte(to_physical, memory_.read_byte(from_physical));
         }
     }
 
@@ -495,6 +605,14 @@ StepResult InterpreterV2::execute_csr(const DecodedV2& decoded) {
     const CsrOutcome outcome = csr_.access(number, privilege(), is_write, value);
     if (!outcome.ok) {
         return raise(decoded, outcome.cause, outcome.subcode, outcome.aux);
+    }
+
+    // Invalidating event 1 (maize-465): every write to the paging root discards every cached
+    // translation, whether or not the write changed the stored value. maize-463 owns the fact
+    // that the flush was ASKED FOR, which is what this flag is; the cache that answers it is
+    // here. A kernel switching address spaces therefore needs no invalidation instruction.
+    if (outcome.flushed_translations) {
+        translator_.invalidate_all();
     }
 
     // The old value goes to rd for a read and for a swap, and nowhere for a plain write. A swap
@@ -1039,12 +1157,12 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
         return execute_csr(decoded);
     }
 
-    // The privileged instructions in this band: trap_return $BC (maize-464, implemented just
-    // below), wait_for_interrupt $BE (maize-466), and the two translation-cache maintenance
-    // instructions $C0 and $C1 (maize-465). What the last three DO is another card's, but that
-    // each is privileged is this chapter's, so the guard is here and the body is not. At
-    // supervisor level those three fall through to the host diagnostic below, which is honest:
-    // the access was permitted and the machine still cannot perform it.
+    // The privileged instructions in this band: trap_return $BC (maize-464), wait_for_interrupt
+    // $BE (maize-466), and the two translation-cache maintenance instructions $C0 and $C1
+    // (maize-465, implemented just below). What wait_for_interrupt DOES is another card's, but
+    // that it is privileged is this chapter's, so its guard is here and its body is not. At
+    // supervisor level it falls through to the host diagnostic below, which is honest: the
+    // access was permitted and the machine still cannot perform it.
     //
     // sys and breakpoint are deliberately absent from this list. The privileged-instruction
     // list is closed at seven, and the chapter says why both are outside it: sys is the
@@ -1059,6 +1177,22 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
 
     if (opcode == op::kTrapReturn) {
         return execute_trap_return(decoded);
+    }
+
+    // tlb_invalidate_all $C0 and tlb_invalidate_address $C1 (maize-465), invalidating events 2
+    // and 3. Neither raises a fault for an address with no cached translation, for an address
+    // that is not mapped at all, or while the machine is in bare mode, so neither consults the
+    // paging root and neither translates the address it is given: the operand names a page to
+    // FORGET, not a byte to reach. A machine that caches nothing satisfies both by doing nothing
+    // at all and is fully conforming, which is why nothing observable to a guest is asserted of
+    // either instruction beyond that it completed.
+    if (opcode == op::kTlbInvalidateAll) {
+        translator_.invalidate_all();
+        return advance(decoded);
+    }
+    if (opcode == op::kTlbInvalidateAddress) {
+        translator_.invalidate_address(registers_.read(decoded.reg[0]));
+        return advance(decoded);
     }
 
     // sys $BA and $BB (trap-model.md, "The syscall boundary"). The deliberate entry from user
@@ -1137,8 +1271,8 @@ StepResult InterpreterV2::execute(const DecodedV2& decoded) {
     }
 
     // Everything left is a real assigned opcode whose family this build does not implement:
-    // nop $BF, wait_for_interrupt $BE (maize-466), the two translation-cache maintenance
-    // instructions $C0 and $C1 (maize-465), and the floating-point band $C8..$F7 (maize-419).
+    // nop $BF, wait_for_interrupt $BE (maize-466), and the floating-point band $C8..$F7
+    // (maize-419).
     //
     // $FF is no longer among them. Appendix A.14's two guard bytes still reach their outcomes by
     // two different and both explicit routes, and since maize-464 both routes are traps rather

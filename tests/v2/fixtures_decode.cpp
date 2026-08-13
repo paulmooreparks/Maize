@@ -260,20 +260,21 @@ V2_FIXTURE(out_of_scope_opcodes_are_a_host_diagnostic) {
         // dropped, so the band's coverage does not thin out as it is implemented. csr_read and
         // csr_swap left the same way on maize-463, and sys, trap_return and breakpoint left the
         // same way on maize-464, where all three became real behaviour that fixtures_traps.cpp
-        // now pins. Each departure is replaced from the floating-point band, which is the one
-        // band with members to spare until maize-419.
+        // now pins, and tlb_invalidate_all and tlb_invalidate_address left the same way on
+        // maize-465, where fixtures_paging.cpp took them over. Each departure is replaced from
+        // the floating-point band, which is the one band with members to spare until maize-419.
         //
-        // The two survivors below are privileged instructions whose bodies are still another
-        // card's: they reach this diagnostic at SUPERVISOR level, which is where the fixture
-        // runs them, and raise the privileged-operation fault at user level instead, which is
-        // where privileged_instructions_are_privileged_at_user_level runs them.
+        // The one survivor below is a privileged instruction whose body is still another card's:
+        // it reaches this diagnostic at SUPERVISOR level, which is where the fixture runs it,
+        // and raises the privileged-operation fault at user level instead, which is where
+        // privileged_instructions_are_privileged_at_user_level runs it.
         {"wait_for_interrupt", op::kWaitForInterrupt, {op::kWaitForInterrupt}},
-        {"tlb_invalidate_address", op::kTlbInvalidateAddress, {op::kTlbInvalidateAddress, 0x04}},
-        {"tlb_invalidate_all", op::kTlbInvalidateAll, {op::kTlbInvalidateAll}},
         {"float_add", 0xC8, {0xC8, 0x01, 0x02, 0x03}},
         {"float_add.h", 0xC9, {0xC9, 0x01, 0x02, 0x03}},
         {"float_subtract", 0xCA, {0xCA, 0x01, 0x02, 0x03}},
         {"float_square_root", 0xD0, {0xD0, 0x01, 0x02}},
+        {"float_multiply", 0xCC, {0xCC, 0x01, 0x02, 0x03}},
+        {"float_divide", 0xCE, {0xCE, 0x01, 0x02, 0x03}},
         {"unsigned_to_float.h", 0xF3, {0xF3, 0x01, 0x02}},
     };
 

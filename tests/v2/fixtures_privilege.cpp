@@ -511,10 +511,13 @@ V2_FIXTURE(csr_value_validation_is_per_register) {
         // chapter is explicit that the write succeeds and the next rounding operation traps.
         {"an fcsr reserved bit", csr::kFcsr, 0x00000000000000FFull, 0x0000000000000100ull},
         // "The paging-root register": mode 2 through 15 are reserved, and bits 11:4 are written
-        // as zero.
-        {"a reserved paging mode", csr::kPagingRoot, 0x0000000000002001ull,
+        // as zero. The accepted value names bare mode with a root recorded, because since
+        // maize-465 a write of mode 1 turns Sv48 translation ON and the next instruction this
+        // fixture fetches would be translated through a page table it never built. That the
+        // register accepts mode 1 is proved by fixtures_paging.cpp, which builds one.
+        {"a reserved paging mode", csr::kPagingRoot, 0x0000000000002000ull,
          0x0000000000002002ull},
-        {"a paging root with reserved bits set", csr::kPagingRoot, 0x0000000000002001ull,
+        {"a paging root with reserved bits set", csr::kPagingRoot, 0x0000000000002000ull,
          0x0000000000002011ull},
     };
 
@@ -595,12 +598,15 @@ V2_FIXTURE(csr_value_validation_is_per_register) {
         program.op_r_i2(op::kCsrRead, reg(5), csr::kPagingRoot);
         program.halt();
         machine.load(program);
-        machine.set(1, 0x0000000000003001ull);  // Sv48, root at physical $3000
+        // Bare mode with a root recorded, for the reason the value-validation cases above give:
+        // this fixture owns the flush REQUEST and not the cache, and turning translation on
+        // would make the next fetch depend on a page table it has no business building.
+        machine.set(1, 0x0000000000003000ull);
 
         V2_CHECK_EQ(machine.interpreter().csr().translation_flushes(), 0u);
         expect_halted(machine.run(), "the paging-root flush seam");
         V2_CHECK_EQ(machine.interpreter().csr().translation_flushes(), 2u);
-        V2_CHECK_EQ(machine.get(5), 0x0000000000003001ull);
+        V2_CHECK_EQ(machine.get(5), 0x0000000000003000ull);
     }
 }
 
