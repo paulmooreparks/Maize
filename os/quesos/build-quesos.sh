@@ -20,6 +20,15 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)
+# maize-439: the vendored-clang CPP fallback below resolves through the shared order
+# (MAIZE_TOOLCHAIN_ROOT, then the per-user default, then the in-repo .toolchains/)
+# rather than through a path spelled out here. The lib lives under scripts/, two
+# levels up from this script rather than one, which is exactly why it wants the
+# directory named rather than derived.
+MAIZE_TOOLCHAIN_LIB_DIR="${REPO_ROOT}/scripts/lib"
+# shellcheck source=../../scripts/lib/toolchain-root.sh
+. "${REPO_ROOT}/scripts/lib/toolchain-root.sh"
+
 RT_DIR="${REPO_ROOT}/toolchain/rt"
 QBE_DIR="${REPO_ROOT}/toolchain/qbe"
 CPROC_DIR="${REPO_ROOT}/toolchain/cproc"
@@ -95,9 +104,11 @@ if [ -z "$CPP" ]; then
         # maize-257: Git Bash ships neither cc nor gcc. Fall back to the vendored
         # llvm-mingw clang (the same compiler build-toolchain.sh's native branch
         # builds cproc-qbe/qbe with) for the -E preprocess step only.
-        _vendored_clang="${REPO_ROOT}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe"
-        if [ -f "$_vendored_clang" ]; then
-            CPP="$_vendored_clang"
+        # maize-439: resolved rather than spelled out, so a worktree with no in-repo
+        # .toolchains/ finds the same compiler the presets do. Mirrors cc-maize.sh's
+        # own line, which is what Entries 16 and 17 ask of this block.
+        if _vendored_dir=$(maize_resolve_toolchain_dir llvm-mingw bin/x86_64-w64-mingw32-clang.exe); then
+            CPP="${_vendored_dir}/bin/x86_64-w64-mingw32-clang.exe"
         fi
     fi
 fi

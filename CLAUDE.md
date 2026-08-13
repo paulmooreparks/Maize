@@ -61,6 +61,49 @@ directory of every shell call so a lapse is measurable rather than found
 by accident. Neither is a substitute for passing isolation correctly;
 they exist because passing it correctly keeps failing.
 
+## The toolchain lives outside the repository, and a worktree needs no link to it
+
+**Never create a junction, a symbolic link, or a directory copy named
+`.toolchains` inside a worktree.** Several worktrees carried a junction
+pointing at the main checkout's `.toolchains`, and on 2026-08-12 a
+recursive delete of one of those worktrees followed the junction and
+emptied the operator's compiler (maize-446 records the incident, maize-439
+the fix). Every hour spent on that came from a link nobody needed. An
+agent recreated one two cards later, so this is written down rather than
+assumed.
+
+The link is unnecessary because the pinned llvm-mingw compiler and SDL2
+no longer live in the repository at all. They install to a per-user,
+version-keyed location, `%LOCALAPPDATA%\Maize\toolchains\<tool>\<pinned-version>`
+on Windows and `${XDG_CACHE_HOME:-~/.cache}/maize/toolchains/...`
+elsewhere, and every consumer resolves them there: the CMake presets
+through `cmake/ToolchainRoot.cmake`, the PowerShell scripts through
+`scripts/lib/ToolchainRoot.ps1`, the shell scripts through
+`scripts/lib/toolchain-root.sh`, and `mzcc` through its own copy of the
+same order. A worktree resolves that location exactly as the main
+checkout does, because the location is a property of the machine rather
+than of the checkout. An in-repo `.toolchains/` still works as a last-resort
+fallback, so a checkout predating the move keeps building untouched.
+
+If you need to build and the compiler is not installed on this machine
+yet, run `scripts/bootstrap-toolchain.ps1` (and `scripts/bootstrap-sdl2.ps1`
+for the display build). Both verify a pinned SHA256 and write nothing
+inside the repository. A configure that cannot find the compiler now fails
+at configure time naming both directories it checked and the bootstrap
+command to run, rather than surfacing later as `CreateProcess failed` from
+ninja.
+
+**Set `MAIZE_TOOLCHAIN_ROOT` when you need a different toolchain
+location, and do not pass `-DCMAKE_C_COMPILER=`.** The toolchain file
+resolves the compiler itself and overrides a hand-passed value, saying
+loudly in the configure output that it did so. Pointing
+`MAIZE_TOOLCHAIN_ROOT` at a directory laid out as
+`<root>/llvm-mingw/<pinned-version>/` is the supported way to choose a
+different compiler; both bootstrap scripts honour it as the install
+target too. The pinned version and checksum live in
+`scripts/toolchain-pins/*.pin`, one file per tool, and a bump installs
+alongside its predecessor rather than over it.
+
 ## Conventions
 
 - **You never push a branch other than your own card branch.** Card work

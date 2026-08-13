@@ -112,10 +112,37 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    # maize-439: the toolchain now installs outside the repository, at a per-user
+    # version-keyed location, with MAIZE_TOOLCHAIN_ROOT overriding where that is. CI
+    # sets the override to a workspace-relative directory rather than using the
+    # runner's real %LOCALAPPDATA% so the cache path is explicit and stays the same
+    # across runner images. Every step in this job inherits it, which is what keeps
+    # the bootstrap, the CMake presets, build-toolchain.sh and mzcc agreeing on one
+    # directory.
+    env:
+      MAIZE_TOOLCHAIN_ROOT: ${{ github.workspace }}\.ci-toolchains
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      # maize-439: the one thing that holds the three toolchain resolvers to a single
+      # answer. PowerShell, POSIX sh and CMake each implement the resolution order
+      # because they cannot source each other's code, and divergence between them is
+      # the whole risk of that shape; this fixture populates several candidate
+      # locations at once with distinguishable probe bytes and asserts all three pick
+      # the same correctly-higher-precedence winner, across seven scenarios.
+      #
+      # It runs HERE because this is the only job with both of its prerequisites,
+      # PowerShell and cmake, and it exits 2 rather than passing when either is
+      # missing, so a Linux leg would report a failure rather than a hollow pass.
+      # It runs FIRST because it needs neither the toolchain nor a build, so a
+      # divergence fails the job in seconds instead of after a bootstrap and two
+      # full builds. Do not move it below the bootstrap; it deliberately does not
+      # depend on one.
+      - name: Toolchain resolver agreement (three implementations, one order)
+        shell: bash
+        run: scripts/test-toolchain-resolution.sh
 
       # maize-257: the C toolchain (cproc-qbe + qbe) now builds natively via Git
       # Bash (windows-latest ships it, `shell: bash`) + the vendored llvm-mingw
@@ -123,11 +150,14 @@ jobs:
       # to only gate the VM's own CMake build, further down). No MSYS2 setup at
       # all: the msys2/setup-msys2 action and its gcc/make/patch/diffutils install
       # are gone, replaced by the same native path a Windows operator runs.
+      # Keyed on the pin file rather than on the bootstrap script (maize-439): the pin
+      # is what decides which archive is fetched, so a script edit that changes no
+      # version no longer throws the cache away, and a version bump still does.
       - name: Cache llvm-mingw toolchain
         uses: actions/cache@v4
         with:
-          path: .toolchains/llvm-mingw
-          key: llvm-mingw-${{ hashFiles('scripts/bootstrap-toolchain.ps1') }}
+          path: ${{ github.workspace }}\.ci-toolchains
+          key: llvm-mingw-${{ hashFiles('scripts/toolchain-pins/llvm-mingw.pin') }}
 
       - name: Bootstrap llvm-mingw toolchain
         run: scripts/bootstrap-toolchain.ps1

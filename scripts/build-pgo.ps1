@@ -70,12 +70,18 @@ if ($cmakeCmd) { $Cmake = $cmakeCmd.Source }
 elseif (Test-Path 'C:\Program Files\CMake\bin\cmake.exe') { $Cmake = 'C:\Program Files\CMake\bin\cmake.exe' }
 else { Write-Error 'cmake not found on PATH or at C:\Program Files\CMake\bin\cmake.exe.' -ErrorAction Continue; exit 2 }
 
-$ToolchainDir = Join-Path $RepoRoot '.toolchains/llvm-mingw'
-$LlvmProfdata = Join-Path $ToolchainDir 'bin/llvm-profdata.exe'
-if (-not (Test-Path $LlvmProfdata)) {
-    Write-Error "llvm-profdata not found at $LlvmProfdata; run scripts/bootstrap-toolchain.ps1 first." -ErrorAction Continue
+# llvm-profdata ships inside the pinned llvm-mingw tree, so it is resolved through the
+# same per-user-then-in-repo order the compiler is (maize-439). Probe on
+# llvm-profdata.exe itself rather than on the compiler: this script needs THAT tool,
+# and a tree carrying one but not the other should fail naming the one it wanted.
+. (Join-Path $ScriptDir 'lib/ToolchainRoot.ps1')
+$ToolchainDir = Resolve-MaizeToolchainDir -Tool 'llvm-mingw' -ProbeRelativePath 'bin/llvm-profdata.exe'
+if (-not $ToolchainDir) {
+    $checked = (Get-MaizeToolchainCandidateDirs -Tool 'llvm-mingw') -join ', '
+    Write-Error "llvm-profdata not found (checked $checked); run scripts/bootstrap-toolchain.ps1 first." -ErrorAction Continue
     exit 2
 }
+$LlvmProfdata = Join-Path $ToolchainDir 'bin/llvm-profdata.exe'
 
 # cmake cache vars land on a compiler command line verbatim (MAIZE_PGO_DIR feeds
 # clang's -fprofile-generate=/-fprofile-use=); normalize to forward slashes the

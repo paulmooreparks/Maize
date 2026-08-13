@@ -58,6 +58,14 @@ fi
 #     inherited MAIZE_NATIVE_MIRROR_ACTIVE=1 makes this a no-op (runs in-place). ----
 . "${SCRIPT_DIR}/lib/harness-env.sh"
 maize_apply_throttle
+
+# maize-439: the native-Windows compiler pick below resolves through the shared order
+# (MAIZE_TOOLCHAIN_ROOT, then the per-user default, then the in-repo .toolchains/)
+# rather than through a path spelled out here.
+MAIZE_TOOLCHAIN_LIB_DIR="${SCRIPT_DIR}/lib"
+# shellcheck source=lib/toolchain-root.sh
+. "${SCRIPT_DIR}/lib/toolchain-root.sh"
+
 # Precompute submodule SHAs on the SOURCE side (git works here) BEFORE re-exec, so the
 # git-less mirror (D14) reads them from MAIZE_KEY_* env instead of running git against a
 # broken in-mirror gitlink.
@@ -87,10 +95,21 @@ esac
 
 if [ "$NATIVE_WINDOWS" -eq 1 ]; then
     # Vendored llvm-mingw clang (bootstrap-toolchain.ps1), the same compiler the
-    # windows-llvm-mingw-* CMake presets use for the VM itself.
-    : "${CC:=${REPO_ROOT}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe}"
+    # windows-llvm-mingw-* CMake presets use for the VM itself, found the same way
+    # (maize-439): MAIZE_TOOLCHAIN_ROOT, then the per-user default, then the in-repo
+    # .toolchains/ fallback. An explicit $CC still wins over all three.
+    if [ -z "${CC:-}" ]; then
+        if _tc_dir=$(maize_resolve_toolchain_dir llvm-mingw bin/x86_64-w64-mingw32-clang.exe); then
+            CC="${_tc_dir}/bin/x86_64-w64-mingw32-clang.exe"
+        else
+            echo "build-toolchain.sh: vendored llvm-mingw clang not found. Checked:" >&2
+            maize_toolchain_candidate_dirs llvm-mingw | sed 's/^/  /' >&2
+            echo "  run: scripts/bootstrap-toolchain.ps1" >&2
+            exit 2
+        fi
+    fi
     if [ ! -f "$CC" ]; then
-        echo "build-toolchain.sh: vendored llvm-mingw clang not found at ${CC}." >&2
+        echo "build-toolchain.sh: C compiler not found at ${CC}." >&2
         echo "  run: scripts/bootstrap-toolchain.ps1" >&2
         exit 2
     fi

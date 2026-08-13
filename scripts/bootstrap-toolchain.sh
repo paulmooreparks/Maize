@@ -6,18 +6,18 @@
 # Git-Bash / MSYS shell it performs the same fetch-verify-extract as the PowerShell
 # script.
 #
-# No admin rights, no PATH mutation, no installer: the script only writes inside the
-# repo's own .toolchains/ directory. Idempotent; pass --force to re-fetch.
+# No admin rights, no PATH mutation, no installer, and nothing is ever written inside
+# the repository (maize-439): the install lands at
+# $LOCALAPPDATA/Maize/toolchains/llvm-mingw/<pinned-version>, or under
+# $MAIZE_TOOLCHAIN_ROOT when that is set. Idempotent; pass --force to re-fetch.
+#
+# Keying the install path on the version means a pin bump installs ALONGSIDE its
+# predecessor rather than over it, so a rollback is free and two branches on different
+# pins coexist without re-downloading.
 #
 # This toolchain has no Microsoft Visual C++ Redistributable runtime dependency.
 
 set -eu
-
-# --- Pinned constants (see resolved open question 5943 on card maize-32) ---------
-VERSION='20260616'
-ASSET='llvm-mingw-20260616-ucrt-x86_64.zip'
-URL="https://github.com/mstorsjo/llvm-mingw/releases/download/${VERSION}/${ASSET}"
-SHA256='b9b68a4d276e16fa25802aaba458e4638f64b3884c290aaccdc2d87083b6ca35'
 
 FORCE=0
 for arg in "$@"; do
@@ -42,20 +42,37 @@ esac
 # Paths resolved relative to THIS script, not the caller's CWD.
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
-DEST="${REPO_ROOT}/.toolchains/llvm-mingw"
-STAMP="${DEST}/.bootstrap-version"
+
+MAIZE_TOOLCHAIN_LIB_DIR="${SCRIPT_DIR}/lib"
+# shellcheck source=lib/toolchain-root.sh
+. "${SCRIPT_DIR}/lib/toolchain-root.sh"
+
+# --- Pinned constants, read from the shared pin file -----------------------------
+# The pin lives at scripts/toolchain-pins/llvm-mingw.pin because CMakePresets.json
+# cannot source a shell library and needs the same version this script installs
+# (decision D-2). The provenance comment that used to sit here moved there with the
+# values. The asset name is derived from the version rather than pinned separately,
+# so a bump stays a one-file, two-line edit.
+VERSION=$(maize_pinned_version llvm-mingw)
+SHA256=$(maize_pinned_sha256 llvm-mingw)
+ASSET="llvm-mingw-${VERSION}-ucrt-x86_64.zip"
+URL="https://github.com/mstorsjo/llvm-mingw/releases/download/${VERSION}/${ASSET}"
+
+DEST=$(maize_toolchain_install_dir llvm-mingw)
+# The marker is written LAST, after the probe files are in place, so a run interrupted
+# mid-extraction leaves a versioned directory that does not claim to be complete. The
+# version itself is now part of $DEST, so the marker no longer needs to carry it and
+# two versions can never collide in one directory.
+MARKER="${DEST}/.bootstrap-complete"
 CLANGXX="${DEST}/bin/x86_64-w64-mingw32-clang++.exe"
 CLANGC="${DEST}/bin/x86_64-w64-mingw32-clang.exe"
 
 # --- Idempotency check -----------------------------------------------------------
-if [ "$FORCE" -eq 0 ] && [ -f "$STAMP" ] && [ -f "$CLANGXX" ]; then
-    existing=$(tr -d ' \t\r\n' < "$STAMP")
-    if [ "$existing" = "$VERSION" ]; then
-        echo "llvm-mingw ${VERSION} already up to date at ${DEST}"
-        echo "  C compiler:   ${CLANGC}"
-        echo "  C++ compiler: ${CLANGXX}"
-        exit 0
-    fi
+if [ "$FORCE" -eq 0 ] && [ -f "$MARKER" ] && [ -f "$CLANGXX" ]; then
+    echo "llvm-mingw ${VERSION} already up to date at ${DEST}"
+    echo "  C compiler:   ${CLANGC}"
+    echo "  C++ compiler: ${CLANGXX}"
+    exit 0
 fi
 
 # --- Remove any stale/partial destination ----------------------------------------
@@ -134,13 +151,13 @@ mv "$inner" "$DEST"
 rm -rf "$TMPEXTRACT"
 rm -f "$TMPZIP"
 
-# --- Stamp the version -----------------------------------------------------------
-printf '%s' "$VERSION" > "$STAMP"
-
 if [ ! -f "$CLANGXX" ]; then
     echo "Extraction completed but ${CLANGXX} is missing; the archive layout may have changed." >&2
     exit 1
 fi
+
+# --- Mark the install complete, last ----------------------------------------------
+printf '%s' "$VERSION" > "$MARKER"
 
 echo ""
 echo "llvm-mingw ${VERSION} installed at ${DEST}"

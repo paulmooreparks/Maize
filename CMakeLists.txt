@@ -1,6 +1,53 @@
 cmake_minimum_required(VERSION 3.21)
 project(Maize)
 
+# maize-439: refuse to configure when this project's own toolchain file was named for
+# this build directory and did not run in it.
+#
+# cmake/ToolchainRoot.cmake stamps MAIZE_RESOLVED_TOOLCHAIN_DIR into the cache every
+# time it runs, so the stamp's absence while the file is named is a contradiction: the
+# resolver was asked for and did not answer, and nothing here resolved the compiler.
+# The known cause is a build directory first configured under the OLD presets, which
+# hardcoded the compiler into cacheVariables. CMake writes the include() of a toolchain
+# file into CMakeFiles/<ver>/CMakeSystem.cmake at first configure and a directory
+# without that line never gains one, so naming a toolchain file later is accepted,
+# cached, and never acted on. Such a directory goes on building with the old in-repo
+# compiler path, and fails with a bare "cannot find the file specified" the day that
+# path goes away, which is the exact failure this card exists to remove.
+#
+# The condition tests the contradiction and the message states it. It does not narrate
+# the cause, and that is deliberate (Convention counterexamples: a diagnostic that names
+# a specific cause its own condition cannot distinguish, promoted from this card's own
+# cycle-1 review). The earlier form fired on "WIN32 and a mingw-clang compiler and no
+# stamp", which is equally true of a brand-new directory configured by hand with
+# -DCMAKE_C_COMPILER=<the pinned clang> and no preset, and told that caller its correct
+# compiler path "is whatever the old preset hardcoded". Keying on CMAKE_TOOLCHAIN_FILE
+# instead excludes that caller by construction rather than by wording: a hand-rolled
+# configure that names no toolchain file has asked for none, gets none, and is left
+# alone. A hand-passed compiler that goes THROUGH a preset still reaches the toolchain
+# file, where D-8's non-fatal WARNING handles it, so the two paths now agree about the
+# same input instead of one warning and the other refusing.
+#
+# The name test keeps this off somebody else's toolchain file: a cross-compile file
+# from outside this project would never write our stamp, and refusing it on every
+# configure would be a guard firing on work it knows nothing about.
+if(DEFINED CACHE{CMAKE_TOOLCHAIN_FILE}
+   AND CMAKE_TOOLCHAIN_FILE MATCHES "ToolchainRoot\\.cmake$"
+   AND NOT DEFINED CACHE{MAIZE_RESOLVED_TOOLCHAIN_DIR})
+  message(FATAL_ERROR
+    "cmake/ToolchainRoot.cmake is this build directory's toolchain file but did not "
+    "run in it, so the compiler\n"
+    "  ${CMAKE_C_COMPILER}\n"
+    "was not resolved by the pinned-toolchain logic and this build would use whatever "
+    "the cache already held. CMake only re-includes a toolchain file in a build "
+    "directory that was FIRST configured with one, so this cannot be repaired in "
+    "place. Either repair is equivalent and both cost one full reconfigure:\n"
+    "  delete this build directory, then configure again:\n"
+    "    ${CMAKE_BINARY_DIR}\n"
+    "  or add --fresh to the same configure command (needs CMake 3.24 or newer; "
+    "this project's floor is 3.21).")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 
 # maize-114: the freestanding-C99 hostfs core plus both host backends. src/sys.cpp

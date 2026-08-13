@@ -1,0 +1,17 @@
+# Pinned SDL2 mingw development libraries for the maizeg --display window
+# backend (maize-439).
+#
+# Format, and every reader honours it: lines whose first character is '#' are
+# comments and blank lines are ignored. Of what remains, line 1 is the version
+# and line 2 is the SHA256 of the release asset. Nothing else is parsed, so a
+# third value needs a new file rather than a third line.
+#
+# SDL2 2.32.x is the final SDL2 (2.x) series. Bump both lines together;
+# recompute the hash with Get-FileHash on the downloaded asset.
+#
+# The asset name is derived, not stored: SDL2-devel-<version>-mingw.zip, from
+# github.com/libsdl-org/SDL/releases/download/release-<version>/<asset>.
+#
+# SDL2 is zlib-licensed (permissive, compatible with this repo's Apache-2.0).
+2.32.8
+2f0a74c2eb3f7ffb26aeefce733ce75f5a57881adf3fab92b2430805ff7249e2

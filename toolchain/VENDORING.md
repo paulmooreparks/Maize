@@ -79,22 +79,35 @@ needs a newer qbe.
 The maize VM's opt-in `--display` window backend (`MAIZE_DISPLAY=ON`, `src/devices.cpp`)
 links SDL2. On Linux/macOS SDL2 comes from the system package manager
 (`libsdl2-dev` / `sdl2-config`). On Windows it is a pinned, downloaded dependency,
-NOT a submodule and NOT committed, fetched into the gitignored `.toolchains/SDL2/`
-by `scripts/bootstrap-sdl2.ps1` (the SDL2 counterpart of
-`scripts/bootstrap-toolchain.ps1` for llvm-mingw).
+NOT a submodule and NOT committed, fetched by `scripts/bootstrap-sdl2.ps1` (the SDL2
+counterpart of `scripts/bootstrap-toolchain.ps1` for llvm-mingw) into a per-user,
+version-keyed directory outside the repository.
 
-| Dep  | Path (Windows)                          | Source                                   | Pinned version | SHA256 (asset) | License |
-|------|-----------------------------------------|------------------------------------------|----------------|----------------|---------|
-| SDL2 | `.toolchains/SDL2/x86_64-w64-mingw32/`  | github.com/libsdl-org/SDL (mingw devel)  | `2.32.8`       | `2f0a74c2…7249e2` (`SDL2-devel-2.32.8-mingw.zip`) | zlib |
+| Dep  | Path (Windows)                                                    | Source                                   | Pinned version | SHA256 (asset) | License |
+|------|-------------------------------------------------------------------|------------------------------------------|----------------|----------------|---------|
+| SDL2 | `%LOCALAPPDATA%\Maize\toolchains\sdl2\<version>\x86_64-w64-mingw32\` | github.com/libsdl-org/SDL (mingw devel)  | `2.32.8`       | `2f0a74c2…7249e2` (`SDL2-devel-2.32.8-mingw.zip`) | zlib |
+
+Both tools resolve the same way (maize-439): `MAIZE_TOOLCHAIN_ROOT` when it is set,
+otherwise `%LOCALAPPDATA%\Maize\toolchains` on Windows and
+`${XDG_CACHE_HOME:-~/.cache}/maize/toolchains` elsewhere, and finally an in-repo
+`.toolchains/<tool>/` when a checkout predating the move still carries one. Living
+outside the repository is what makes the toolchain visible from a worktree, which
+removes the reason worktrees used to carry a `.toolchains` junction; one such junction
+was followed by a recursive delete and emptied the operator's compiler on 2026-08-12.
+The resolution order is implemented three times, in `scripts/lib/ToolchainRoot.ps1`,
+`scripts/lib/toolchain-root.sh` and `cmake/ToolchainRoot.cmake`, plus a fourth copy
+inside `src/mzcc.c`, and `scripts/test-toolchain-resolution.sh` holds all of them to
+one answer.
 
 `scripts/install-mzasm.ps1` auto-invokes `bootstrap-sdl2.ps1` when the SDL2 dir is
 missing and refuses to silently degrade to a headless maize (pass `-Headless` to opt
 out). This closes the recurring "install suddenly breaks" trap: previously SDL2 was a
 manually-placed, unpinned, undocumented directory with no fetch script, so when it
 was cleaned or lost, `find_package(SDL2 REQUIRED)` hard-failed the configure and the
-whole tool install died. To bump the pin: change `$Version` + `$Sha256` in
-`bootstrap-sdl2.ps1` together (recompute the hash with `Get-FileHash` on the asset).
-2.32.x is the final SDL2 (2.x) series.
+whole tool install died. To bump the pin: edit the two value lines of
+`scripts/toolchain-pins/sdl2.pin` together (recompute the hash with `Get-FileHash` on
+the asset). Every reader takes the version and checksum from that one file, so nothing
+else changes on a bump. 2.32.x is the final SDL2 (2.x) series.
 
 ## Fresh-clone / build
 
@@ -116,7 +129,8 @@ asm/ PASS/FAIL harness (`scripts/run-tests.{sh,ps1}`).
   real hardware).
 - Windows, native (Git Bash): `scripts/build-toolchain.sh` detects a
   MINGW*/MSYS* `uname` with no `make` on PATH and compiles qbe.exe + cproc-qbe.exe
-  directly with the vendored llvm-mingw clang (`.toolchains/llvm-mingw`), mirroring
+  directly with the vendored llvm-mingw clang (resolved through
+  `scripts/lib/toolchain-root.sh`), mirroring
   each tool's own Makefile SRC/SRCALL list instead of running that Makefile. This
   works because the POSIX-only constraint is scoped to the cproc **driver**
   (`driver.c`: `<spawn.h>`/`posix_spawn`/`<sys/wait.h>`/`<unistd.h>`, and a

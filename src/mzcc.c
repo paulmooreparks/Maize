@@ -1963,6 +1963,143 @@ void ensure_repo_root(void) {
     RT_DIR = joinstr(REPO_ROOT, "/toolchain/rt", NULL, NULL);
 }
 
+/* --- Vendored llvm-mingw resolution (maize-439) ---------------------------------
+   The fourth implementation of one resolution order, and the only one this card's
+   spec did not name. It is here because mzcc's CPP fallback below is a copy of
+   cc-maize.sh's, and a fix applied to the shell copies alone is precisely the
+   defect Convention counterexamples Entries 14, 16 and 17 record against this
+   repository three times over. Leaving it out would mean mzcc, run from a worktree
+   with no in-repo .toolchains/, still cannot find a preprocessor while every other
+   consumer can.
+
+   The order matches scripts/lib/ToolchainRoot.ps1, scripts/lib/toolchain-root.sh
+   and cmake/ToolchainRoot.cmake, and the pin comes from the same
+   scripts/toolchain-pins/llvm-mingw.pin they read:
+
+     1. MAIZE_TOOLCHAIN_ROOT, when set and non-empty.
+     2. Otherwise %LOCALAPPDATA%/Maize/toolchains on Windows,
+        ${XDG_CACHE_HOME:-$HOME/.cache}/maize/toolchains elsewhere.
+     3. <root>/llvm-mingw/<pinned-version>/, when it holds the compiler.
+     4. Otherwise <repo-root>/.toolchains/llvm-mingw/, when IT does.
+
+   Two divergences from the other three are deliberate and are stated here because
+   this copy is the one no fixture drives (scripts/test-toolchain-resolution.sh drives
+   the other three; making it drive this one needs either a diagnostic flag on mzcc or
+   a separately compiled unit, which is filed as a follow-up rather than forced in).
+
+   First, a missing or unreadable pin file. The other three fail loudly on it:
+   ToolchainRoot.cmake raises FATAL_ERROR, Get-MaizePinField throws, and
+   maize_pin_field writes to stderr and returns 1. mzcc cannot abort here, because
+   this is a fallback consulted only when no cc or gcc was found and the in-repo
+   fallback may still answer, so it warns once on stderr and carries on to step 4
+   rather than failing the compile over a file it may not need.
+
+   Second, the probe file. This resolver probes bin/x86_64-w64-mingw32-clang++.exe,
+   the same file the other three probe, and composes the C driver's path from the
+   directory that answers, exactly as ToolchainRoot.cmake composes _maize_cc from
+   _maize_dir. mzcc wants the C driver and an earlier revision probed it directly,
+   which was harmless (a real install carries both) and was still one more way this
+   copy differed from the three under test.
+
+   Returns a malloc'd path to the C compiler, or NULL. Callers own the result. */
+
+/* Line 1 of the pin file, comments and blank lines skipped: the pin format's one
+   rule, kept identical in all four readers. Returns malloc'd, or NULL when the file
+   is unreadable or holds no value line. */
+static char *maize_pinned_llvm_version(void) {
+    char *pin_path = joinstr(REPO_ROOT, "/scripts/toolchain-pins/llvm-mingw.pin", NULL, NULL);
+    ByteBuf b;
+    int rc = read_file(pin_path, &b);
+    free(pin_path);
+    if (rc != 0) { byte_buf_free(&b); return NULL; }
+
+    char *result = NULL;
+    size_t i = 0;
+    while (i < b.len) {
+        size_t start = i;
+        while (i < b.len && b.data[i] != '\n') { i++; }
+        size_t end = i;
+        if (i < b.len) { i++; }                                   /* step over the \n */
+        while (end > start && (b.data[end - 1] == '\r' ||
+                               b.data[end - 1] == ' ' ||
+                               b.data[end - 1] == '\t')) { end--; }
+        size_t lead = start;
+        while (lead < end && (b.data[lead] == ' ' || b.data[lead] == '\t')) { lead++; }
+        if (lead == end) { continue; }                            /* blank */
+        if (b.data[lead] == '#') { continue; }                    /* comment */
+        size_t n = end - lead;
+        result = (char *)xmalloc(n + 1);
+        memcpy(result, b.data + lead, n);
+        result[n] = '\0';
+        break;
+    }
+    byte_buf_free(&b);
+    return result;
+}
+
+/* Steps 1 and 2: the toolchains root. Returns malloc'd, or NULL when no
+   environment variable names one (a Windows session with no LOCALAPPDATA, or a
+   POSIX one with neither XDG_CACHE_HOME nor HOME). */
+static char *maize_toolchain_root(void) {
+    const char *override = getenv("MAIZE_TOOLCHAIN_ROOT");
+    if (override && override[0]) {
+        char *r = xstrdup(override);
+        to_slashes(r);
+        return r;
+    }
+    if (IS_WINDOWS) {
+        const char *lad = getenv("LOCALAPPDATA");
+        if (lad && lad[0]) {
+            char *r = joinstr(lad, "/Maize/toolchains", NULL, NULL);
+            to_slashes(r);
+            return r;
+        }
+        return NULL;
+    }
+    const char *xdg = getenv("XDG_CACHE_HOME");
+    if (xdg && xdg[0]) { return joinstr(xdg, "/maize/toolchains", NULL, NULL); }
+    const char *home = getenv("HOME");
+    if (home && home[0]) { return joinstr(home, "/.cache/maize/toolchains", NULL, NULL); }
+    return NULL;
+}
+
+static char *maize_resolve_vendored_clang(void) {
+    /* PROBE is the C++ driver, matching the other three resolvers; CC_REL is what a
+       resolved directory yields. See the divergence note above. */
+    static const char *const PROBE  = "/bin/x86_64-w64-mingw32-clang++.exe";
+    static const char *const CC_REL = "/bin/x86_64-w64-mingw32-clang.exe";
+
+    char *root = maize_toolchain_root();
+    if (root) {
+        char *version = maize_pinned_llvm_version();
+        if (version) {
+            char *probe = joinstr(root, "/llvm-mingw/", version, PROBE);
+            int   found = path_exists(probe);
+            free(probe);
+            if (found) {
+                char *cc = joinstr(root, "/llvm-mingw/", version, CC_REL);
+                free(version);
+                free(root);
+                return cc;
+            }
+            free(version);
+        } else {
+            /* Warn rather than abort: the in-repo fallback below may still answer,
+               and this whole resolver runs only when no cc or gcc was found. */
+            fprintf(stderr, "mzcc: warning: cannot read scripts/toolchain-pins/llvm-mingw.pin under %s;\n"
+                            "       skipping the per-user toolchain location and trying the in-repo fallback.\n",
+                    REPO_ROOT ? REPO_ROOT : "(unknown repo root)");
+        }
+        free(root);
+    }
+
+    char *probe = joinstr(REPO_ROOT, "/.toolchains/llvm-mingw", PROBE, NULL);
+    int   found = path_exists(probe);
+    free(probe);
+    if (found) { return joinstr(REPO_ROOT, "/.toolchains/llvm-mingw", CC_REL, NULL); }
+    return NULL;
+}
+
 /* Resolve every toolchain binary + the preprocessor for `preset`, exactly as
    main()'s tool-discovery block does. Prints the same actionable messages and
    returns 2 on the first tool-not-found; 0 on success. Idempotent: re-resolving
@@ -2017,11 +2154,10 @@ int resolve_toolchain(const char *preset) {
     } else if (which_exists("gcc")) {
         CPP = xstrdup("gcc");
     } else {
-        char *vc = joinstr(REPO_ROOT, "/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe", NULL, NULL);
-        if (IS_WINDOWS && path_exists(vc)) {
+        char *vc = IS_WINDOWS ? maize_resolve_vendored_clang() : NULL;
+        if (vc) {
             CPP = vc;
         } else {
-            free(vc);
             fprintf(stderr, "mzcc: no C preprocessor (cc/gcc) found for #include expansion. On Windows,\n"
                             "       run scripts/bootstrap-toolchain.ps1 to fetch the vendored llvm-mingw clang.\n");
             return 2;

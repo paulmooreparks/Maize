@@ -48,8 +48,9 @@ terms. qbe is a build/host tool; it is not part of the Maize VM.
 
 The Windows Maize binaries are built with llvm-mingw
 (https://github.com/mstorsjo/llvm-mingw), a downloaded build tool that is NOT committed
-to this repo (fetched by `scripts/bootstrap-toolchain.ps1` into the gitignored
-`.toolchains/`). The shipped Windows binaries statically link its runtime: the
+to this repo (fetched by `scripts/bootstrap-toolchain.ps1` into a per-user directory
+outside the repository, `%LOCALAPPDATA%\Maize\toolchains\`). The shipped Windows
+binaries statically link its runtime: the
 mingw-w64 runtime (public domain / permissive per its own COPYING notices) and the LLVM
 C++ runtime and builtins (libc++, libc++abi, compiler-rt), which are licensed under
 Apache-2.0 with the LLVM exception. No attribution shipping obligation beyond preserving

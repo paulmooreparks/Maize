@@ -67,38 +67,41 @@ $RepoRoot  = Resolve-Path (Join-Path $ScriptDir '..')
 $BuildDir  = Join-Path $RepoRoot "build/$Preset"
 
 # --- llvm-mingw compiler toolchain -------------------------------------------------
-# windows-llvm-mingw-release hardcodes CMAKE_C/CXX_COMPILER to
-# ${sourceDir}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang(++).exe. On a fresh
-# checkout .toolchains/ is empty (gitignored), so auto-fetch the pinned toolchain via
+# windows-llvm-mingw-release resolves CMAKE_C/CXX_COMPILER through
+# cmake/ToolchainRoot.cmake (maize-439), which looks in the per-user, version-keyed
+# location first and the in-repo .toolchains/ fallback second. Ask the same resolver
+# here, and when nothing answers, auto-fetch the pinned toolchain via
 # bootstrap-toolchain.ps1 (SHA256-verified, the counterpart of bootstrap-sdl2.ps1) the
 # same way the SDL2 block below does. Runs regardless of -Headless: a compiler is
 # needed for every build, unlike the display backend.
-$ToolchainDir = Join-Path $RepoRoot '.toolchains/llvm-mingw'
-$ClangC       = Join-Path $ToolchainDir 'bin/x86_64-w64-mingw32-clang.exe'
-$ClangCxx     = Join-Path $ToolchainDir 'bin/x86_64-w64-mingw32-clang++.exe'
+. (Join-Path $ScriptDir 'lib/ToolchainRoot.ps1')
 
-if (-not (Test-Path $ClangC) -or -not (Test-Path $ClangCxx)) {
-    Write-Host "Vendored llvm-mingw compiler not found at $ToolchainDir; fetching it via bootstrap-toolchain.ps1 ..."
+$ToolchainDir = Resolve-MaizeToolchainDir -Tool 'llvm-mingw' -ProbeRelativePath 'bin/x86_64-w64-mingw32-clang++.exe'
+if (-not $ToolchainDir) {
+    $checked = (Get-MaizeToolchainCandidateDirs -Tool 'llvm-mingw') -join ', '
+    Write-Host "Vendored llvm-mingw compiler not found (checked $checked); fetching it via bootstrap-toolchain.ps1 ..."
     & (Join-Path $ScriptDir 'bootstrap-toolchain.ps1')
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ClangC) -or -not (Test-Path $ClangCxx)) {
-        Write-Error "llvm-mingw provisioning failed (bootstrap-toolchain.ps1 exit $LASTEXITCODE). The '$Preset' preset requires the vendored compiler at $ToolchainDir; run 'scripts/bootstrap-toolchain.ps1' to diagnose."
+    $ToolchainDir = Resolve-MaizeToolchainDir -Tool 'llvm-mingw' -ProbeRelativePath 'bin/x86_64-w64-mingw32-clang++.exe'
+    if ($LASTEXITCODE -ne 0 -or -not $ToolchainDir) {
+        Write-Error "llvm-mingw provisioning failed (bootstrap-toolchain.ps1 exit $LASTEXITCODE). The '$Preset' preset requires the vendored compiler; run 'scripts/bootstrap-toolchain.ps1' to diagnose." -ErrorAction Continue
         exit 2
     }
 }
+Write-Host "Using llvm-mingw at $ToolchainDir"
 
 # --- SDL2 window backend (MAIZE_DISPLAY) ------------------------------------------
-# maize's --display window backend needs the vendored mingw SDL2 (dev config + DLL)
-# under .toolchains/SDL2. This install is display-supporting BY DEFAULT: when the SDL2
-# libs are missing (fresh checkout, a clean, .toolchains wiped) they are auto-fetched
+# maize's --display window backend needs the vendored mingw SDL2 (dev config + DLL),
+# resolved through the same per-user-then-in-repo order as the compiler above
+# (maize-439). This install is display-supporting BY DEFAULT: when the SDL2
+# libs are missing (fresh checkout, a clean, the toolchain wiped) they are auto-fetched
 # via bootstrap-sdl2.ps1 (pinned + SHA256-verified, the counterpart of
 # bootstrap-toolchain.ps1) rather than silently degrading to a headless maize. Pass
 # -Headless to opt out (e.g. a headless server). Both branches pass MAIZE_DISPLAY
 # EXPLICITLY: a bare configure would inherit a stale MAIZE_DISPLAY=ON from a prior
 # CMakeCache and then hard-fail find_package(SDL2 REQUIRED) once SDL2 went missing,
 # which was the recurring "install suddenly breaks" trap.
-$Sdl2Root     = Join-Path $RepoRoot '.toolchains/SDL2/x86_64-w64-mingw32'
-$Sdl2CmakeDir = Join-Path $Sdl2Root 'lib/cmake/SDL2'
-$Sdl2Dll      = Join-Path $Sdl2Root 'bin/SDL2.dll'
+$Sdl2Probe = 'lib/cmake/SDL2/sdl2-config.cmake'
+$Sdl2Root  = Resolve-MaizeToolchainDir -Tool 'sdl2' -ProbeRelativePath $Sdl2Probe
 
 if ($Headless) {
     Write-Warning "-Headless: building maizeg WITHOUT the --display window backend."
@@ -106,16 +109,23 @@ if ($Headless) {
     $displayArgs = @('-DMAIZE_DISPLAY=OFF')
 }
 else {
-    if (-not (Test-Path $Sdl2CmakeDir)) {
-        Write-Host "Vendored SDL2 not found at $Sdl2CmakeDir; fetching it via bootstrap-sdl2.ps1 ..."
+    if (-not $Sdl2Root) {
+        $checked = (Get-MaizeToolchainCandidateDirs -Tool 'sdl2') -join ', '
+        Write-Host "Vendored SDL2 not found (checked $checked); fetching it via bootstrap-sdl2.ps1 ..."
         & (Join-Path $ScriptDir 'bootstrap-sdl2.ps1')
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $Sdl2CmakeDir)) {
-            Write-Error "SDL2 provisioning failed (bootstrap-sdl2.ps1 exit $LASTEXITCODE). The --display build requires SDL2; run 'scripts/bootstrap-sdl2.ps1' to diagnose, or pass -Headless to build without the window backend. Refusing to silently build a headless maize."
+        $Sdl2Root = Resolve-MaizeToolchainDir -Tool 'sdl2' -ProbeRelativePath $Sdl2Probe
+        if ($LASTEXITCODE -ne 0 -or -not $Sdl2Root) {
+            Write-Error "SDL2 provisioning failed (bootstrap-sdl2.ps1 exit $LASTEXITCODE). The --display build requires SDL2; run 'scripts/bootstrap-sdl2.ps1' to diagnose, or pass -Headless to build without the window backend. Refusing to silently build a headless maize." -ErrorAction Continue
             exit 2
         }
     }
-    $displayOn   = $true
-    $displayArgs = @('-DMAIZE_DISPLAY=ON', "-DSDL2_DIR=$(($Sdl2CmakeDir) -replace '\\','/')")
+    $Sdl2CmakeDir = Join-Path $Sdl2Root 'lib/cmake/SDL2'
+    # Read by the DLL-install step near the end of this script. It is assigned only on
+    # this branch because that step runs only when $displayOn, and Set-StrictMode
+    # would fault on an unassigned variable rather than treating it as empty.
+    $Sdl2Dll      = Join-Path $Sdl2Root 'bin/SDL2.dll'
+    $displayOn    = $true
+    $displayArgs  = @('-DMAIZE_DISPLAY=ON', "-DSDL2_DIR=$(($Sdl2CmakeDir) -replace '\\','/')")
 }
 
 # --- Clang PGO (maize-259) --------------------------------------------------------
@@ -162,6 +172,36 @@ else {
 # applied even to a build directory first configured without them.
 Write-Host "Configuring preset '$Preset'$(if ($displayOn) { ' with SDL2 window backend' })$(if ($pgoArgs[0] -eq '-DMAIZE_PGO=use') { ' with Clang PGO' })..."
 & $Cmake --preset $Preset @displayArgs @pgoArgs
+
+# maize-439: a build directory configured before the toolchain move can never pick up
+# cmake/ToolchainRoot.cmake, because CMake only re-includes a toolchain file in a
+# directory that was FIRST configured with one, so CMakeLists.txt refuses it. The
+# refusal is right and its message explains the one-time repair, but this script OWNS
+# build/$Preset end to end, so making the operator perform that repair by hand on their
+# primary install path is asking them to fix something we can just fix. Retry once from
+# scratch, mirroring the PGO retry immediately below.
+#
+# The condition is read off the cache rather than off the preset name, so it fires only
+# where the toolchain file is genuinely in play: the failed configure leaves
+# CMAKE_TOOLCHAIN_FILE naming ToolchainRoot.cmake (CMake caches a command-line -D even
+# on a run that errors, measured on this card), while the stamp the toolchain file
+# writes is absent because it never ran. windows-msys2-* and the POSIX presets name no
+# toolchain file at all, so they never match and are never deleted.
+#
+# Deleting the directory rather than passing --fresh: --fresh needs CMake 3.24 and this
+# project's floor is 3.21, the two are equivalent (both discard the cache and
+# CMakeFiles), and deletion works on every version the project supports.
+if ($LASTEXITCODE -ne 0) {
+    $CacheFile = Join-Path $BuildDir 'CMakeCache.txt'
+    if ((Test-Path $CacheFile) -and
+        (Select-String -Path $CacheFile -Pattern '^CMAKE_TOOLCHAIN_FILE.*ToolchainRoot\.cmake' -Quiet) -and
+        -not (Select-String -Path $CacheFile -Pattern '^MAIZE_RESOLVED_TOOLCHAIN_DIR' -Quiet)) {
+        Write-Warning "Build directory $BuildDir predates the maize-439 toolchain move, so cmake/ToolchainRoot.cmake cannot run in it. Deleting it and configuring once from scratch."
+        Remove-Item -Recurse -Force $BuildDir
+        & $Cmake --preset $Preset @displayArgs @pgoArgs
+    }
+}
+
 if ($LASTEXITCODE -ne 0) {
     if ($pgoArgs[0] -eq '-DMAIZE_PGO=use') {
         # maize-259 cycle-1 fix: a stale/incompatible committed profile (e.g. after a

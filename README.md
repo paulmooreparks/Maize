@@ -36,10 +36,12 @@ and `maizeg`, which opens a window. The SDL2 window backend is opt-in
 SDL2 dependency. The compiled DOOM image, `demos/doom/doom.mzx`, is already in the repo, so
 you only need to build `maizeg`, then bring a WAD.
 
-**Windows** (PowerShell, from the repo root). SDL2 is bundled under `.toolchains/`, so there
-is nothing extra to install:
+**Windows** (PowerShell, from the repo root). `bootstrap-sdl2.ps1` fetches a pinned,
+checksum-verified SDL2 into your per-user toolchain directory, so there is nothing to
+install by hand and nothing lands inside the repository:
 
 ``` powershell
+scripts\bootstrap-sdl2.ps1
 cmake --preset windows-llvm-mingw-release -DMAIZE_DISPLAY=ON
 cmake --build --preset windows-llvm-mingw-release --target maizeg
 ```
@@ -241,9 +243,18 @@ VM image directly, with no guest OS underneath, pass `maize --bare <image>`.
     cmake --preset windows-llvm-mingw-debug
     cmake --build --preset windows-llvm-mingw-debug
 
-The bootstrap script downloads a pinned llvm-mingw release into `.toolchains\llvm-mingw\`
-(gitignored) and verifies it against a pinned SHA256 checksum. Re-running it is a no-op
-once the pinned version is already present.
+The bootstrap script downloads a pinned llvm-mingw release into
+`%LOCALAPPDATA%\Maize\toolchains\llvm-mingw\<pinned-version>\` and verifies it against a
+pinned SHA256 checksum. Nothing is written inside the repository, and re-running it is a
+no-op once the pinned version is already present. Set `MAIZE_TOOLCHAIN_ROOT` to install
+and resolve somewhere else instead; the version and checksum are pinned in
+`scripts\toolchain-pins\llvm-mingw.pin`.
+
+Keying the install directory on the version means a pin bump installs alongside its
+predecessor rather than over it, so switching branches across a bump costs no download
+and a rollback costs nothing. The configure step checks that the compiler is really
+there and fails naming both directories it looked in, plus the command above, rather
+than letting the build fail later with a bare "cannot find the file specified".
 
 A plain clang release build interprets ~26-28% slower than the same source built with
 gcc/Linux (host codegen quality on the interpreter loop, not ISA flags). Maize closes

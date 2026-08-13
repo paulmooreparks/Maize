@@ -51,6 +51,11 @@
 /build/
 /build-wsl/
 /.toolchains/
+# maize-439: the CI Windows job points MAIZE_TOOLCHAIN_ROOT here, inside the checkout,
+# so its cache path is explicit and identical across runner images. Anyone reproducing
+# the CI shape locally gets a toolchain tree in their working copy, so ignore it for
+# the same reason /.toolchains/ above is ignored.
+/.ci-toolchains/
 /compile_commands.json
 CMakeUserPresets.json
 

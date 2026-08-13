@@ -22,8 +22,10 @@ The SDL2 window backend is opt-in (`-DMAIZE_DISPLAY=ON`). This is all you need t
 *run* the committed image. From the repo root (see the top-level `README.md`,
 "Build a display-enabled `maize`", for other platforms):
 
-Windows (PowerShell). SDL2 is bundled under `.toolchains/`, nothing to install:
+Windows (PowerShell). `bootstrap-sdl2.ps1` fetches a pinned, checksum-verified SDL2
+into your per-user toolchain directory, so there is nothing to install by hand:
 
+    scripts\bootstrap-sdl2.ps1
     cmake --preset windows-llvm-mingw-release -DMAIZE_DISPLAY=ON
     cmake --build --preset windows-llvm-mingw-release
 

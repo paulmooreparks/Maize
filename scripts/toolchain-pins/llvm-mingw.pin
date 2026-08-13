@@ -1,0 +1,21 @@
+# Pinned llvm-mingw release for the Windows build (maize-439).
+#
+# Format, and every reader honours it: lines whose first character is '#' are
+# comments and blank lines are ignored. Of what remains, line 1 is the version
+# and line 2 is the SHA256 of the release asset. Nothing else is parsed, so a
+# third value needs a new file rather than a third line.
+#
+# This pin was chosen on maize-32 (resolved open question 5943): the newest
+# llvm-mingw UCRT x86_64 release at the time, with no Microsoft Visual C++
+# Redistributable dependency. Bump both lines together; recompute the hash with
+# Get-FileHash on the downloaded asset.
+#
+# The asset name is derived, not stored: llvm-mingw-<version>-ucrt-x86_64.zip,
+# from github.com/mstorsjo/llvm-mingw/releases/download/<version>/<asset>.
+#
+# A bump installs ALONGSIDE its predecessor, because the install path is keyed
+# on this version, so a rollback costs nothing and two branches on different
+# pins coexist. It also means a bump needs one bootstrap run per machine before
+# any build finds the new compiler; see CLAUDE.md.
+20260616
+b9b68a4d276e16fa25802aaba458e4638f64b3884c290aaccdc2d87083b6ca35

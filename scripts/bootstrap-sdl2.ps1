@@ -6,10 +6,20 @@
 
 .DESCRIPTION
     Downloads the pinned SDL2 mingw development archive, verifies it against a
-    pinned SHA256 checksum, and extracts the x86_64-w64-mingw32 subtree into
-    <repo-root>/.toolchains/SDL2/x86_64-w64-mingw32/ (a gitignored, fixed,
-    non-versioned directory). No admin rights, no PATH mutation, no installer:
-    the script only writes inside the repo's own .toolchains/ directory.
+    pinned SHA256 checksum, and extracts the x86_64-w64-mingw32 subtree into the
+    per-user, version-keyed toolchain location (maize-439):
+
+        %LOCALAPPDATA%\Maize\toolchains\sdl2\<pinned-version>\x86_64-w64-mingw32\
+
+    or, when MAIZE_TOOLCHAIN_ROOT is set, under that root instead. No admin
+    rights, no PATH mutation, no installer, and nothing is ever written inside the
+    repository. The version and checksum come from
+    scripts/toolchain-pins/sdl2.pin, which every resolver reads.
+
+    The tool-name segment is lowercase 'sdl2' in the per-user layout, for
+    filesystem-name consistency with 'llvm-mingw'. The in-repo fallback keeps its
+    historical uppercase '.toolchains/SDL2/' name, because an existing checkout is
+    not being renamed; scripts/lib/ToolchainRoot.ps1 holds both spellings.
 
     This provides the SDL2Config / sdl2-config.cmake that CMake's
     find_package(SDL2) resolves (CMakeLists.txt, guarded by MAIZE_DISPLAY=ON) and
@@ -31,35 +41,41 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-# --- Pinned constants ------------------------------------------------------------
-# SDL2 2.32.x is the final SDL2 (2.x) series. Bump Version + Sha256 together to move
-# the pin; recompute the hash with Get-FileHash on the downloaded asset.
-$Version = '2.32.8'
-$Asset   = "SDL2-devel-$Version-mingw.zip"
-$Url     = "https://github.com/libsdl-org/SDL/releases/download/release-$Version/$Asset"
-$Sha256  = '2f0a74c2eb3f7ffb26aeefce733ce75f5a57881adf3fab92b2430805ff7249e2'
-
 # --- Paths resolved relative to THIS script, not the caller's CWD ----------------
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot  = Resolve-Path (Join-Path $ScriptDir '..')
-$Dest      = Join-Path $RepoRoot '.toolchains/SDL2'
-$ArchDest  = Join-Path $Dest 'x86_64-w64-mingw32'
-$Stamp     = Join-Path $Dest '.bootstrap-version'
+. (Join-Path $ScriptDir 'lib/ToolchainRoot.ps1')
+
+# --- Pinned constants, read from the shared pin file -----------------------------
+# The pin lives at scripts/toolchain-pins/sdl2.pin, alongside llvm-mingw's, so a bump
+# is a one-file two-line edit and every resolver reads the same value (decision D-2).
+# The asset name is derived from the version rather than pinned separately.
+$Version = Get-MaizePinnedVersion -Tool 'sdl2'
+$Sha256  = Get-MaizePinnedSha256  -Tool 'sdl2'
+$Asset   = "SDL2-devel-$Version-mingw.zip"
+$Url     = "https://github.com/libsdl-org/SDL/releases/download/release-$Version/$Asset"
+
+# The install dir already carries the arch leaf, matching the layout the in-repo
+# fallback has always had, so the probe path below is the same under either.
+$ArchDest  = Get-MaizeToolchainInstallDir -Tool 'sdl2'
+$Dest      = Split-Path -Parent $ArchDest
+# Written LAST, after the probe files are in place, so a run interrupted mid-extraction
+# leaves a versioned directory that does not claim to be complete. The version is part
+# of the path now, so the marker no longer needs to carry it.
+$Marker    = Join-Path $Dest '.bootstrap-complete'
 $CmakeCfg  = Join-Path $ArchDest 'lib/cmake/SDL2/sdl2-config.cmake'
 $Dll       = Join-Path $ArchDest 'bin/SDL2.dll'
 
 # --- Idempotency check -----------------------------------------------------------
-if (-not $Force -and (Test-Path $Stamp) -and (Test-Path $CmakeCfg) -and (Test-Path $Dll)) {
-    $existing = (Get-Content -Raw -Path $Stamp).Trim()
-    if ($existing -eq $Version) {
-        Write-Host "SDL2 $Version already up to date at $Dest"
-        Write-Host "  cmake config: $CmakeCfg"
-        Write-Host "  runtime dll:  $Dll"
-        exit 0
-    }
+if (-not $Force -and (Test-Path $Marker) -and (Test-Path $CmakeCfg) -and (Test-Path $Dll)) {
+    Write-Host "SDL2 $Version already up to date at $Dest"
+    Write-Host "  cmake config: $CmakeCfg"
+    Write-Host "  runtime dll:  $Dll"
+    exit 0
 }
 
 # --- Remove any stale/partial destination ----------------------------------------
+# $Dest is the versioned directory, so this only ever removes an install of THIS
+# pinned version; a different version lives in its own directory and is left alone.
 if (Test-Path $Dest) {
     Write-Host "Removing existing $Dest ..."
     Remove-Item -Recurse -Force $Dest
@@ -100,7 +116,10 @@ try {
 
     $inner = Join-Path $TmpExtract "SDL2-$Version/x86_64-w64-mingw32"
     if (-not (Test-Path $inner)) {
-        Write-Error "Extraction completed but $inner is missing; the archive layout may have changed."
+        # -ErrorAction Continue so the explicit exit code below is the one the caller
+        # sees: under the script-level EAP=Stop a plain Write-Error is a TERMINATING
+        # error and `exit 1` never runs (Convention counterexamples, Entry 10).
+        Write-Error "Extraction completed but $inner is missing; the archive layout may have changed." -ErrorAction Continue
         exit 1
     }
     New-Item -ItemType Directory -Force $Dest | Out-Null
@@ -111,13 +130,13 @@ finally {
     if (Test-Path $TmpZip)     { Remove-Item -Force $TmpZip }
 }
 
-# --- Stamp the version -----------------------------------------------------------
-Set-Content -Path $Stamp -Value $Version -NoNewline
-
 if (-not (Test-Path $CmakeCfg) -or -not (Test-Path $Dll)) {
-    Write-Error "Extraction completed but expected files are missing ($CmakeCfg / $Dll)."
+    Write-Error "Extraction completed but expected files are missing ($CmakeCfg / $Dll)." -ErrorAction Continue
     exit 1
 }
+
+# --- Mark the install complete, last ----------------------------------------------
+Set-Content -Path $Marker -Value $Version -NoNewline
 
 Write-Host ""
 Write-Host "SDL2 $Version installed at $Dest"

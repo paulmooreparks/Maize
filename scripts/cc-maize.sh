@@ -155,6 +155,13 @@ esac
 . "${SCRIPT_DIR}/lib/harness-env.sh"
 maize_apply_throttle
 
+# maize-439: the vendored-clang fallback below resolves through the shared order
+# (MAIZE_TOOLCHAIN_ROOT, then the per-user default, then the in-repo .toolchains/)
+# rather than through a path spelled out here.
+MAIZE_TOOLCHAIN_LIB_DIR="${SCRIPT_DIR}/lib"
+# shellcheck source=lib/toolchain-root.sh
+. "${SCRIPT_DIR}/lib/toolchain-root.sh"
+
 # --- Parse arguments (flags accepted in any position) ----------------------------
 # Three orthogonal axes govern the compile path (RUN / EMIT / OUT); `build` is the
 # one special mode. See the Modes block above for the authoritative matrix.
@@ -324,9 +331,10 @@ if [ -z "$CPP" ]; then
         # maize-257: Git Bash ships neither cc nor gcc. Fall back to the vendored
         # llvm-mingw clang (the same compiler build-toolchain.sh's native branch
         # builds cproc-qbe/qbe with) for the -E preprocess step only.
-        _vendored_clang="${REPO_ROOT}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe"
-        if [ -f "$_vendored_clang" ]; then
-            CPP="$_vendored_clang"
+        # maize-439: resolved rather than spelled out, so a worktree with no in-repo
+        # .toolchains/ finds the same compiler the presets do.
+        if _vendored_dir=$(maize_resolve_toolchain_dir llvm-mingw bin/x86_64-w64-mingw32-clang.exe); then
+            CPP="${_vendored_dir}/bin/x86_64-w64-mingw32-clang.exe"
         fi
     fi
 fi

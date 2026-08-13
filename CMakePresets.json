@@ -30,9 +30,8 @@
       "name": "windows-llvm-mingw-toolchain",
       "hidden": true,
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "toolchainFile": "${sourceDir}/cmake/ToolchainRoot.cmake",
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "${sourceDir}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe",
-        "CMAKE_CXX_COMPILER": "${sourceDir}/.toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang++.exe",
         "CMAKE_EXE_LINKER_FLAGS": "-static"
       }
     },
