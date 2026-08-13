@@ -7,6 +7,9 @@
 // takes), and an in-process check would answer a different question.
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -19,6 +22,7 @@
 #include "decode_v2.h"
 #include "memory_v2.h"
 #include "mzasm_test_support.h"
+#include "mzvm_options.h"
 #include "opcode_v2.h"
 
 namespace maize::v2::test {
@@ -1018,6 +1022,216 @@ MZ_FIXTURE(mzvm_prints_hello_world) {
     if (ran.standard_output.find("halted") != std::string::npos) {
         record_failure("a diagnostic reached standard output:\n" + ran.standard_output);
     }
+}
+
+MZ_FIXTURE(mzvm_refuses_out_of_range_numeric_arguments) {
+    // maize-467. Every numeric option mzvm takes went through one helper that checked only
+    // whether the text parsed, so a value past the width of the result saturated at the largest
+    // representable number and was accepted, and a negative one wrapped around to the same place
+    // with no error reported anywhere. The program then loaded where the user had not asked and
+    // said nothing about it.
+    //
+    // The assertions below are about WHICH status the binary exited with and WHAT it said, not
+    // about a bare non-zero, because a crash also exits non-zero and would satisfy that. Two is
+    // mzvm's ordinary usage-failure status, which is what the fix is required to produce.
+    ScratchDir scratch("argrange");
+
+    const std::string source = "    origin $1000\n    move.zb #7 r4\n    halt\n";
+    const std::string input = scratch.write("range.mzasm", source);
+    const RunResult assembled = run_mzasm({input});
+    MZ_CHECK_EQ(static_cast<std::uint64_t>(assembled.exit_code), 0u);
+    if (assembled.exit_code != 0) {
+        return;
+    }
+    const std::string image = scratch.file("range.mzi");
+
+    const std::string mzvm = sibling_binary("mzvm");
+    MZ_CHECK(file_exists(mzvm));
+    if (!file_exists(mzvm)) {
+        return;
+    }
+
+    // The control. Every rejection below is this command with one argument changed, so a fixture
+    // that started passing because mzvm had stopped running at all would fail here first.
+    const RunResult control = run_binary(mzvm, {"--load-at", "0x1000", image});
+    MZ_CHECK_EQ(static_cast<std::uint64_t>(control.exit_code), 0u);
+    if (control.standard_error.find("halted") == std::string::npos) {
+        record_failure("the control run did not halt:\n" + control.output);
+    }
+
+    // Each option, in both of the shapes the underlying conversion used to swallow: a magnitude
+    // wider than the result type, where it saturates and sets ERANGE, and a leading minus, where
+    // it negates the magnitude and sets nothing at all.
+    const std::pair<const char*, const char*> over_range[] = {
+        {"--load-at", "0xFFFFFFFFFFFFFFFFFF"},
+        {"--load-at", "99999999999999999999999"},
+        {"--start", "0x1FFFFFFFFFFFFFFFFF"},
+        {"--start", "18446744073709551616"},  // one past the widest address there is
+        {"--max-steps", "99999999999999999999999"},
+        {"--memory", "99999999999999999999999"},
+        {"--memory", "0"},  // a memory of no bytes is as unusable as one of 2^70
+    };
+    for (const auto& [option, value] : over_range) {
+        const RunResult run = run_binary(mzvm, {option, value, image});
+        MZ_CHECK_EQ(static_cast<std::uint64_t>(run.exit_code), 2u);
+        const std::string expected =
+            std::string("mzvm: ") + option + " value '" + value + "' is out of range";
+        if (run.output.find(expected) == std::string::npos) {
+            record_failure(std::string("mzvm did not refuse ") + option + " " + value +
+                           " by name and bound:\n" + run.output);
+        }
+        // The bound is quoted, so a user is told what would have been accepted.
+        if (run.output.find("the accepted range is") == std::string::npos) {
+            record_failure(std::string("the diagnostic for ") + option +
+                           " does not name the bound:\n" + run.output);
+        }
+        // A refusal is a diagnostic, and diagnostics do not go where the guest's output goes.
+        MZ_CHECK_TEXT(run.standard_output, std::string());
+    }
+
+    // A size no host can allocate is refused by name rather than by abort. UINT64_MAX is past
+    // any vector's max_size, so the failure is std::length_error and it is the same on every
+    // host, which is what makes this a fixture rather than a machine-dependent probe. Left
+    // uncaught it was a C++ runtime abort that never named the option the user typed, and on
+    // Windows it did not even leave a message.
+    const RunResult unallocatable = run_binary(mzvm, {"--memory", "18446744073709551615", image});
+    MZ_CHECK_EQ(static_cast<std::uint64_t>(unallocatable.exit_code), 2u);
+    if (unallocatable.output.find("mzvm: cannot allocate 18446744073709551615 bytes") ==
+        std::string::npos) {
+        record_failure("an unallocatable --memory was not refused by name and size:\n" +
+                       unallocatable.output);
+    }
+    MZ_CHECK_TEXT(unallocatable.standard_output, std::string());
+
+    const std::pair<const char*, const char*> negative[] = {
+        {"--load-at", "-1"},
+        {"--start", "-4096"},
+        {"--memory", "-1"},
+        {"--max-steps", "-1"},
+        // Whitespace in front of the sign does not get it past the guard. Only the two blanks a
+        // shell will carry inside a quoted argument on every host this suite runs on appear
+        // here; the whole byte range is swept in process by the fixture below, which is where
+        // the newline that defeated the first version of this guard is proved refused.
+        {"--memory", " -1"},
+        {"--start", "\t-4096"},
+    };
+    for (const auto& [option, value] : negative) {
+        const RunResult run = run_binary(mzvm, {option, value, image});
+        MZ_CHECK_EQ(static_cast<std::uint64_t>(run.exit_code), 2u);
+        const std::string expected = std::string("'") + value + "' is negative";
+        if (run.output.find(expected) == std::string::npos) {
+            record_failure(std::string("mzvm did not refuse ") + option + " " + value +
+                           " as negative:\n" + run.output);
+        }
+        MZ_CHECK_TEXT(run.standard_output, std::string());
+    }
+
+    // The bounds themselves stay accepted, so the check above is a bound and not a ban. The
+    // widest address parses; the image does not fit there, which is a different refusal with a
+    // different sentence, and that is the one that has to appear.
+    const RunResult widest = run_binary(mzvm, {"--load-at", "18446744073709551615", image});
+    if (widest.output.find("out of range") != std::string::npos) {
+        record_failure("the widest representable address was refused as out of range:\n" +
+                       widest.output);
+    }
+}
+
+MZ_FIXTURE(mzvm_leading_whitespace_cannot_hide_a_minus_sign) {
+    // maize-467 cycle 2. The first version of the negative guard skipped a space and a tab
+    // before looking for the sign, while the conversion underneath it skips everything isspace
+    // answers for. A minus behind a newline therefore walked past the guard and was negated by
+    // the conversion, which reports nothing, and both of the original defects came back: an
+    // unallocatable memory size that aborted with no message, and a start address in unmapped
+    // memory that reported a machine fault reading like a defect in the guest.
+    //
+    // This fixture calls the parser directly rather than through the shipped binary, and that is
+    // the point. The end-to-end fixture above reaches mzvm through a shell, and a shell will not
+    // carry a raw newline inside an argument on every host this suite runs on, so the character
+    // that actually broke the guard is the one character an end-to-end fixture cannot send. In
+    // process there is no shell, so the sweep can be total: EVERY byte value, not a list of the
+    // ones somebody thought of. A list is what failed the first time.
+    ScratchDir scratch("argspace");
+    const std::string sink_path = scratch.file("diagnostics.txt");
+    std::FILE* sink = std::fopen(sink_path.c_str(), "wb");
+    MZ_CHECK(sink != nullptr);
+    if (sink == nullptr) {
+        return;
+    }
+
+    unsigned refused = 0;
+    for (unsigned byte = 1; byte < 256; ++byte) {
+        char text[4] = {static_cast<char>(byte), '-', '1', '\0'};
+        std::uint64_t value = 0;
+        const bool accepted =
+            parse_number("--start", "an address", text, 0, UINT64_MAX, value, sink);
+        if (accepted) {
+            char message[128];
+            std::snprintf(message, sizeof(message),
+                          "byte $%02X in front of a minus sign was accepted, as $%016llX", byte,
+                          static_cast<unsigned long long>(value));
+            record_failure(message);
+        } else {
+            ++refused;
+        }
+        // The same byte in front of a MAGNITUDE asks the other half of the question: the guard
+        // must not have changed which non-negative texts are accepted, only which negative ones
+        // are caught. The oracle is the library conversion itself rather than a second list of
+        // whitespace characters written here, since a second list is exactly what drifted.
+        //
+        // The minus sign is the one byte where the two are MEANT to disagree, and this loop
+        // reported it as a divergence the first time it ran, which is the oracle doing its job.
+        // It is excluded here rather than silenced, because the sweep above already asserts the
+        // divergence in the direction that matters.
+        if (byte == static_cast<unsigned>('-')) {
+            continue;
+        }
+        char positive[4] = {static_cast<char>(byte), '7', '\0', '\0'};
+        std::uint64_t parsed = 0;
+        const bool parsed_ok =
+            parse_number("--start", "an address", positive, 0, UINT64_MAX, parsed, sink);
+
+        errno = 0;
+        char* end = nullptr;
+        const unsigned long long library = std::strtoull(positive, &end, 0);
+        const bool library_ok = end != positive && *end == '\0' && errno != ERANGE;
+
+        if (parsed_ok != library_ok) {
+            char message[160];
+            std::snprintf(message, sizeof(message),
+                          "byte $%02X in front of a value: the parser %s it, the conversion %s",
+                          byte, parsed_ok ? "accepted" : "rejected",
+                          library_ok ? "accepted it" : "did not");
+            record_failure(message);
+        }
+        if (parsed_ok && library_ok && parsed != library) {
+            record_failure("a prefixed value did not parse as the conversion reads it");
+        }
+    }
+    std::fclose(sink);
+
+    // The sweep ran over the whole range rather than stopping early on the first refusal.
+    MZ_CHECK_EQ(static_cast<std::uint64_t>(refused), 255u);
+
+    // The specific characters that defeated the first guard, named so a regression report says
+    // which one came back rather than only that some byte did.
+    const std::pair<const char*, const char*> hidden[] = {
+        {"newline", "\n-1"},   {"carriage return", "\r-1"}, {"vertical tab", "\v-1"},
+        {"form feed", "\f-1"}, {"space", " -1"},            {"tab", "\t-1"},
+        {"several", " \n\t\v\f\r-1"},
+    };
+    std::FILE* second_sink = std::fopen(sink_path.c_str(), "wb");
+    MZ_CHECK(second_sink != nullptr);
+    if (second_sink == nullptr) {
+        return;
+    }
+    for (const auto& [name, text] : hidden) {
+        std::uint64_t value = 0;
+        if (parse_number("--memory", "a size", text, 1, UINT64_MAX, value, second_sink)) {
+            record_failure(std::string("a minus sign hidden behind a ") + name +
+                           " reached the conversion");
+        }
+    }
+    std::fclose(second_sink);
 }
 
 namespace {

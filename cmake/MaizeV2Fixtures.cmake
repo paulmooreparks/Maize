@@ -134,6 +134,8 @@ set(MAIZE_MZASM_FIXTURES
   flat_output_takes_the_mzi_suffix
   mzvm_runs_what_mzasm_wrote
   mzvm_prints_hello_world
+  mzvm_refuses_out_of_range_numeric_arguments
+  mzvm_leading_whitespace_cannot_hide_a_minus_sign
   nothing_in_the_v2_assembler_names_the_v1_suffix
   the_task_scanner_stops_at_the_next_task)
 

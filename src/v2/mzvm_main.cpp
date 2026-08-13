@@ -19,6 +19,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <new>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -29,6 +32,7 @@
 
 #include "interpreter_v2.h"
 #include "memory_v2.h"
+#include "mzvm_options.h"
 
 namespace {
 
@@ -60,6 +64,23 @@ void write_console_bytes(const std::vector<std::uint8_t>& bytes) {
 constexpr std::size_t kDefaultMemoryBytes = 1u << 20;  // 1 MiB
 constexpr std::uint64_t kDefaultLoadAddress = 0x1000;
 
+// What each numeric option can actually use, which is not always what its type can hold. An
+// address and a step count span the whole 64-bit range. A memory size is handed to a
+// std::size_t, and on a host whose size_t is narrower than 64 bits a larger value would be
+// truncated on the way in, so SIZE_MAX is the point past which the number the program acts on
+// would stop being the number the user typed.
+//
+// Read that ceiling for exactly what it is: a TRUNCATION guard, and nothing more. On a 64-bit
+// host SIZE_MAX is UINT64_MAX and this constant rejects nothing, so it is not what keeps an
+// unallocatable size from reaching the allocation. Nothing here could be: whether a size can be
+// allocated is a fact about the machine the program is running on this minute, and a constant
+// picked at compile time either refuses sizes some host could serve or admits sizes the host in
+// front of us cannot. main() therefore catches the allocation failure and reports it (maize-467,
+// D-1), which is the only place the true answer exists.
+constexpr std::uint64_t kMaxAddress = UINT64_MAX;
+constexpr std::uint64_t kMaxSteps = UINT64_MAX;
+constexpr std::uint64_t kMaxMemoryBytes = static_cast<std::uint64_t>(SIZE_MAX);
+
 void print_usage(std::FILE* stream) {
     std::fprintf(stream,
                  "usage: mzvm [options] <image>\n"
@@ -81,18 +102,7 @@ void print_usage(std::FILE* stream) {
                  "boot image, floating point and system instructions are not supported yet.\n");
 }
 
-bool parse_number(const char* text, std::uint64_t& out) {
-    if (text == nullptr || *text == '\0') {
-        return false;
-    }
-    char* end = nullptr;
-    const unsigned long long value = std::strtoull(text, &end, 0);
-    if (end == text || *end != '\0') {
-        return false;
-    }
-    out = static_cast<std::uint64_t>(value);
-    return true;
-}
+using maize::v2::parse_number;
 
 bool read_file(const char* path, std::vector<std::uint8_t>& bytes) {
     std::FILE* file = std::fopen(path, "rb");
@@ -107,6 +117,29 @@ bool read_file(const char* path, std::vector<std::uint8_t>& bytes) {
     const bool ok = std::ferror(file) == 0;
     std::fclose(file);
     return ok;
+}
+
+// Allocate the machine's physical memory, or say why it could not be (maize-467, D-1).
+//
+// A size that passes every range check can still be one this host cannot give us, and the
+// allocation is the only thing that knows. Left to itself the vector throws, nothing catches it,
+// and the program dies on an abort with a C++ runtime message about a vector and no mention of
+// the option the user typed, which is the same nothing-was-said failure this card exists to
+// remove. std::length_error is what a request past the vector's max_size raises and
+// std::bad_alloc is what a request the allocator cannot satisfy raises; both mean the memory
+// asked for is not available, so both get the sentence.
+//
+// The memory is owned through a pointer only because the construction has to sit inside a try
+// block while the machine below outlives it.
+std::unique_ptr<maize::v2::MemoryV2> allocate_memory(std::uint64_t bytes) {
+    try {
+        return std::make_unique<maize::v2::MemoryV2>(static_cast<std::size_t>(bytes));
+    } catch (const std::length_error&) {
+    } catch (const std::bad_alloc&) {
+    }
+    std::fprintf(stderr, "mzvm: cannot allocate %" PRIu64 " bytes of memory for the machine\n",
+                 bytes);
+    return nullptr;
 }
 
 const char* cause_name(std::uint8_t cause_number) {
@@ -142,24 +175,24 @@ int main(int argc, char** argv) {
         } else if (argument == "--registers") {
             dump_registers = true;
         } else if (argument == "--memory" && has_value) {
-            if (!parse_number(argv[++i], memory_bytes) || memory_bytes == 0) {
-                std::fprintf(stderr, "mzvm: --memory needs a positive size\n");
+            // The lower bound is the option's own rule rather than a separate test after the
+            // fact: a memory of zero bytes is as unusable as one of 2^70, and both are refused
+            // by the same sentence.
+            if (!parse_number("--memory", "a size", argv[++i], 1, kMaxMemoryBytes, memory_bytes)) {
                 return 2;
             }
         } else if (argument == "--load-at" && has_value) {
-            if (!parse_number(argv[++i], load_address)) {
-                std::fprintf(stderr, "mzvm: --load-at needs an address\n");
+            if (!parse_number("--load-at", "an address", argv[++i], 0, kMaxAddress, load_address)) {
                 return 2;
             }
         } else if (argument == "--start" && has_value) {
-            if (!parse_number(argv[++i], start_address)) {
-                std::fprintf(stderr, "mzvm: --start needs an address\n");
+            if (!parse_number("--start", "an address", argv[++i], 0, kMaxAddress, start_address)) {
                 return 2;
             }
             start_given = true;
         } else if (argument == "--max-steps" && has_value) {
-            if (!parse_number(argv[++i], max_steps)) {
-                std::fprintf(stderr, "mzvm: --max-steps needs a count\n");
+            // Zero is the documented "no limit" spelling, so it is in range here.
+            if (!parse_number("--max-steps", "a count", argv[++i], 0, kMaxSteps, max_steps)) {
                 return 2;
             }
         } else if (!argument.empty() && argument[0] == '-') {
@@ -185,7 +218,11 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    maize::v2::MemoryV2 memory(static_cast<std::size_t>(memory_bytes));
+    const std::unique_ptr<maize::v2::MemoryV2> memory_owner = allocate_memory(memory_bytes);
+    if (memory_owner == nullptr) {
+        return 2;
+    }
+    maize::v2::MemoryV2& memory = *memory_owner;
     if (!memory.load_image(load_address, image.data(), image.size())) {
         std::fprintf(stderr, "mzvm: the image does not fit in memory at the load address\n");
         return 2;
