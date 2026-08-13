@@ -15,9 +15,11 @@
 // The process id is what makes a scratch path unique between concurrent ctest processes
 // (maize-444). The split mirrors mzcc_pid() in src/mzcc_proc_posix.c and
 // src/mzcc_proc_win32.c, which answer the same question the same way.
+// <sys/wait.h> is here for the status macros the run helper needs (maize-461), not for the pid.
 #ifdef _WIN32
 #  include <process.h>
 #else
+#  include <sys/wait.h>
 #  include <unistd.h>
 #endif
 
@@ -68,6 +70,37 @@ const std::string& process_tag() {
 #endif
     }();
     return instance;
+}
+
+// The exit code of the process `std::system` ran, from whatever that call handed back
+// (maize-461). The two hosts do not return the same kind of value, and a fixture asserting an
+// exact status is wrong on one of them until this is unpacked. On Windows the return IS the
+// child's exit code, so it passes through. On POSIX it is a wait status, a packed word in which
+// a program exiting 1 reads as 256 and a program dying on a signal reads as the signal number,
+// so a fixture checking for 1 there would fail no matter what the binary did.
+//
+// The unpacking mirrors run_proc in src/mzcc_proc_posix.c line for line, including its 128 +
+// signal spelling for an abnormal death and its -1 for a status that is neither: that is the
+// shell convention, it keeps a crash distinguishable from any status a tool of ours exits with,
+// and it keeps a crash non-zero so the fixtures that only ask for non-zero are unaffected.
+//
+// `std::system` returns -1 when the shell itself could not be run, which is not a wait status
+// and is passed through as the failure it is.
+int exit_code_of(int system_result) {
+#ifdef _WIN32
+    return system_result;
+#else
+    if (system_result == -1) {
+        return -1;
+    }
+    if (WIFEXITED(system_result)) {
+        return WEXITSTATUS(system_result);
+    }
+    if (WIFSIGNALED(system_result)) {
+        return 128 + WTERMSIG(system_result);
+    }
+    return -1;
+#endif
 }
 
 }  // namespace
@@ -205,7 +238,7 @@ RunResult run_binary(const std::string& binary, const std::vector<std::string>& 
 #else
     const std::string full = command.str();
 #endif
-    result.exit_code = std::system(full.c_str());
+    result.exit_code = exit_code_of(std::system(full.c_str()));
     read_file_text(capture_out.string(), result.standard_output);
     read_file_text(capture_err.string(), result.standard_error);
     result.output = result.standard_output + result.standard_error;

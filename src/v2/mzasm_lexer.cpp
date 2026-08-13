@@ -85,8 +85,24 @@ bool is_register_name(const std::string& text, std::uint8_t& number) {
             !digits.empty() && std::all_of(digits.begin(), digits.end(),
                                            [](unsigned char c) { return std::isdigit(c) != 0; });
         if (all_digits && (digits.size() == 1 || digits[0] != '0')) {
-            const long value = std::stol(digits);
-            if (value >= 0 && value <= 31) {
+            // The conversion is bounded rather than exception-guarded (maize-461). A throwing
+            // standard conversion aborts the assembler on a digit string too wide for its result
+            // type, which turns a plainly wrong operand into a crash instead of the diagnostic
+            // this tool already knows how to write. The register file has a fixed size, so the
+            // accumulation stops the moment the value passes the highest register number and the
+            // token falls through to the caller's ordinary "is not a register" report, however
+            // many digits were typed.
+            constexpr unsigned kHighestRegister = kRegisterAliases.size() - 1;
+            unsigned value = 0;
+            bool in_range = true;
+            for (const char digit : digits) {
+                value = value * 10 + static_cast<unsigned>(digit - '0');
+                if (value > kHighestRegister) {
+                    in_range = false;
+                    break;
+                }
+            }
+            if (in_range) {
                 number = static_cast<std::uint8_t>(value);
                 return true;
             }

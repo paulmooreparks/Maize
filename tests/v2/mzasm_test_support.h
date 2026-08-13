@@ -74,6 +74,11 @@ class ScratchDir {
 };
 
 struct RunResult {
+    // The exit code of the process that ran, meaning the same number on every host (maize-461).
+    // A fixture may compare it against an exact status and get the same answer on Windows and on
+    // Linux, which is what lets a test tell a tool's own failure status apart from a crash. The
+    // POSIX wait status is unpacked in run_binary rather than here, and a process that died
+    // abnormally reports 128 + its signal, so it stays non-zero and stays distinguishable.
     int exit_code = 0;
     std::string output;  // standard output and standard error, together
 

@@ -347,6 +347,21 @@ MZ_FIXTURE(register_names_are_reserved_words) {
     // appears in and a program that redefined it would have two readings of the same token.
     expect_diagnostic(scratch, "here_label", "here:\n    nop\n", "reserved word");
     expect_diagnostic(scratch, "here_constant", "    constant here #1\n", "reserved word");
+
+    // maize-461: an rN spelling past the end of the register file is diagnosed at any length. The
+    // digit string used to go through a throwing conversion, so r99999999999999999999 aborted the
+    // assembler with an uncaught exception and the user got no file, no line and no reason. The
+    // assertions below are deliberately about WHAT the binary said and WHICH status it exited
+    // with, because a crash also exits non-zero and would satisfy a bare non-zero check.
+    for (const char* over : {"r32", "r99", "r4294967296", "r99999999999999999999",
+                             "r000000000000000000000000000000000000000000000000005"}) {
+        const std::string source = std::string("    add r1 r2 ") + over + "\n";
+        const std::string input = scratch.write("over_range.mzasm", source);
+        const RunResult run = run_mzasm({input});
+        MZ_CHECK_EQ(static_cast<std::uint64_t>(run.exit_code), 1u);
+        MZ_CHECK(run.output.find(std::string("error: '") + over + "' is not a register") !=
+                 std::string::npos);
+    }
 }
 
 // ---------------------------------------------------------------------------------------
