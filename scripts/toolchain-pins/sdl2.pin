@@ -1,5 +1,7 @@
-# Pinned SDL2 mingw development libraries for the maizeg --display window
-# backend (maize-439).
+# Pinned SDL2 mingw development libraries for the Windows window backend
+# (maize-439). v1's maizeg carried that backend and is archived (maize-450);
+# mzvmg picks it up when its display device lands (maize-456). Nothing links
+# SDL2 in the meantime, and the pin stays so the fetch keeps working.
 #
 # Format, and every reader honours it: lines whose first character is '#' are
 # comments and blank lines are ignored. Of what remains, line 1 is the version

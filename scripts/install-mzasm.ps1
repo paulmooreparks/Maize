@@ -5,58 +5,46 @@
 
 .DESCRIPTION
     Configures the CMake preset, builds the mzvm/mzvmg/mzasm targets, and copies each
-    built .exe to the install directory (default: $HOME\bin). The mzvmg VM is built
-    with the SDL2 window backend (MAIZE_DISPLAY=ON) so `--display` opens a real
-    window; the vendored SDL2 runtime (SDL2.dll) is installed alongside mzvmg.exe.
+    built .exe to the install directory (default: $HOME\bin). SDL2 is still fetched
+    and its runtime DLL installed alongside mzvmg.exe, but nothing links it yet: v1's
+    maizeg carried the window backend and is archived, and mzvmg's display device has
+    not landed (maize-456). So MAIZE_DISPLAY=ON opens no window today, and the SDL2
+    provisioning is there to keep the pinned, verified copy on the machine and beside
+    mzvmg.exe for when the port arrives.
     If the install directory is not on the user PATH it is appended, so editors and
     shells find the tools without per-workspace configuration. Wired to the default
     build task (Ctrl+Shift+B) via .vscode/tasks.json, which runs this script on every
     press so the binaries it just built are the ones on PATH (maize-454).
 
-    maize-454: the installed set is the v2 machine and the v2 assembler only. The
-    frozen v1 binaries (maize, maizeg, mazm) are no longer built or copied. mzld,
+    maize-454: the installed set is the v2 machine and the v2 assembler only. mzld,
     mzdis and mzcc keep their names under maize-422 D-1 but have not been ported yet
     (maize-423/424/425/426), so installing today's v1 builds of them would put tools
     on PATH that cannot read a v2 object; each comes back here as its parity card
-    lands. The v1 C pipeline (mzcc plus the cproc-qbe/qbe cross-toolchain) is behind
-    -WithCToolchain, opt-in, because it is sometimes a real wait and has no business
-    in a loop pressed dozens of times a day.
+    lands.
+
+    maize-450: -WithCToolchain and -NoPgo are both gone with the v1 build.
+    -WithCToolchain named mzcc plus the mazm, maize and mzld its resolver requires,
+    and none of those targets exists in this tree's CMakeLists any more. -NoPgo
+    controlled MAIZE_PGO, which applied a committed Clang profile to v1's interpreter
+    and nothing else; the profiles were trained against that interpreter, so feeding
+    them to mzvm would apply a profile that means nothing while looking like it means
+    something. Tuning the v2 interpreter is its own card. v1 is archived: its sources
+    are still here to port from, and it still builds, installs and tests on the `v1`
+    branch.
 
     Never prompts; safe for non-interactive use.
-
-    maize-259: when a committed Clang PGO profile exists for the chosen preset
-    (scripts/pgo-profiles/<Preset>/default.profdata), the build applies it via
-    -DMAIZE_PGO=use: this is what closes the ~26-28% clang-vs-gcc interpreter gap
-    on the shipped Windows binary (measured: clang baseline ~18700-19300 us/frame
-    on demos/doom's doom_bench workload, clang+PGO ~14333-14366 us/frame, matching
-    gcc/Linux's ~14330 us/frame on the same workload). The profile ships in the
-    repo, so a fresh clone reproduces this without a separate training pass; pass
-    -NoPgo to opt out (e.g. profiling a change to the interpreter itself before a
-    retrain). See scripts/build-pgo.ps1 to regenerate the profile and
-    scripts/pgo-profiles/README.md for provenance / retrain triggers.
 
 .PARAMETER Preset
     CMake preset to build. Defaults to windows-llvm-mingw-release (optimized).
 
 .PARAMETER InstallDir
     Destination directory. Defaults to $HOME\bin.
-
-.PARAMETER NoPgo
-    Build without Clang PGO even when a committed profile exists for this preset.
-
-.PARAMETER WithCToolchain
-    Also build and install the v1 C pipeline: mzcc (plus the mazm, maize and mzld its
-    resolver requires, built into the build directory but not installed), the mzcc.cmd
-    Windows forwarder, and the cproc-qbe/qbe cross-toolchain. Off by default so the inner loop stays cheap; the "Install ..."
-    VS Code task and build-world.ps1 both pass it.
 #>
 [CmdletBinding()]
 param(
     [string]$Preset = 'windows-llvm-mingw-release',
     [string]$InstallDir = (Join-Path $HOME 'bin'),
-    [switch]$Headless,
-    [switch]$NoPgo,
-    [switch]$WithCToolchain
+    [switch]$Headless
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,14 +77,16 @@ if (-not $ToolchainDir) {
 }
 Write-Host "Using llvm-mingw at $ToolchainDir"
 
-# --- SDL2 window backend (MAIZE_DISPLAY) ------------------------------------------
-# maize's --display window backend needs the vendored mingw SDL2 (dev config + DLL),
-# resolved through the same per-user-then-in-repo order as the compiler above
-# (maize-439). This install is display-supporting BY DEFAULT: when the SDL2
-# libs are missing (fresh checkout, a clean, the toolchain wiped) they are auto-fetched
-# via bootstrap-sdl2.ps1 (pinned + SHA256-verified, the counterpart of
-# bootstrap-toolchain.ps1) rather than silently degrading to a headless maize. Pass
-# -Headless to opt out (e.g. a headless server). Both branches pass MAIZE_DISPLAY
+# --- SDL2 provisioning (MAIZE_DISPLAY) --------------------------------------------
+# The window backend will need the vendored mingw SDL2 (dev config + DLL), resolved
+# through the same per-user-then-in-repo order as the compiler above (maize-439). No
+# binary consumes it yet (maize-450 archived v1's maizeg; mzvmg's display device is
+# maize-456), so this block provisions rather than enables. This install is
+# display-supporting BY DEFAULT: when the SDL2 libs are missing (fresh checkout, a
+# clean, the toolchain wiped) they are auto-fetched via bootstrap-sdl2.ps1 (pinned +
+# SHA256-verified, the counterpart of bootstrap-toolchain.ps1), so the pinned copy is
+# already in place when the port lands. Pass -Headless to skip the fetch (e.g. a
+# headless server, or an install that wants no download). Both branches pass MAIZE_DISPLAY
 # EXPLICITLY: a bare configure would inherit a stale MAIZE_DISPLAY=ON from a prior
 # CMakeCache and then hard-fail find_package(SDL2 REQUIRED) once SDL2 went missing,
 # which was the recurring "install suddenly breaks" trap.
@@ -104,7 +94,7 @@ $Sdl2Probe = 'lib/cmake/SDL2/sdl2-config.cmake'
 $Sdl2Root  = Resolve-MaizeToolchainDir -Tool 'sdl2' -ProbeRelativePath $Sdl2Probe
 
 if ($Headless) {
-    Write-Warning "-Headless: building maizeg WITHOUT the --display window backend."
+    Write-Warning "-Headless: configuring MAIZE_DISPLAY=OFF and skipping the SDL2 fetch. No binary links SDL2 yet, so the machines you get are the same either way."
     $displayOn   = $false
     $displayArgs = @('-DMAIZE_DISPLAY=OFF')
 }
@@ -115,7 +105,7 @@ else {
         & (Join-Path $ScriptDir 'bootstrap-sdl2.ps1')
         $Sdl2Root = Resolve-MaizeToolchainDir -Tool 'sdl2' -ProbeRelativePath $Sdl2Probe
         if ($LASTEXITCODE -ne 0 -or -not $Sdl2Root) {
-            Write-Error "SDL2 provisioning failed (bootstrap-sdl2.ps1 exit $LASTEXITCODE). The --display build requires SDL2; run 'scripts/bootstrap-sdl2.ps1' to diagnose, or pass -Headless to build without the window backend. Refusing to silently build a headless maize." -ErrorAction Continue
+            Write-Error "SDL2 provisioning failed (bootstrap-sdl2.ps1 exit $LASTEXITCODE). No binary links SDL2 on this branch, so nothing you build today is degraded by its absence. The fetch is still a hard prerequisite of the default install so that the pinned, SHA256-verified SDL2 is already on this machine, and already beside mzvmg.exe, when the display device lands (maize-456), rather than being scrambled for then on a machine that may be offline. Run 'scripts/bootstrap-sdl2.ps1' to diagnose, or pass -Headless to install without it." -ErrorAction Continue
             exit 2
         }
     }
@@ -128,33 +118,7 @@ else {
     $displayArgs  = @('-DMAIZE_DISPLAY=ON', "-DSDL2_DIR=$(($Sdl2CmakeDir) -replace '\\','/')")
 }
 
-# --- Clang PGO (maize-259) --------------------------------------------------------
-# A committed, merged profile ships per preset at scripts/pgo-profiles/<Preset>/
-# default.profdata (see that directory's README.md for provenance/retrain triggers).
-# When present, build against it (-DMAIZE_PGO=use): this is what makes the shipped
-# Windows maize/maizeg competitive with the gcc/Linux build (~26-28% faster
-# interpreter than a plain clang build). -NoPgo opts out; a missing profile for this
-# preset (e.g. windows-msys2-release, which is GCC and MAIZE_PGO ignores) also
-# degrades to a plain build, with a warning, rather than failing the install.
-$PgoProfileDir = Join-Path $RepoRoot "scripts/pgo-profiles/$Preset"
-$PgoProfile    = Join-Path $PgoProfileDir 'default.profdata'
-if ($NoPgo) {
-    Write-Host "-NoPgo: building '$Preset' WITHOUT Clang PGO."
-    $pgoArgs = @('-DMAIZE_PGO=')
-}
-elseif (Test-Path $PgoProfile) {
-    $pgoArgs = @('-DMAIZE_PGO=use', "-DMAIZE_PGO_DIR=$(($PgoProfileDir) -replace '\\','/')")
-}
-else {
-    # Informational, not a warning: since maize-454 the default build task runs this
-    # script on every press against a debug preset, which has no committed profile by
-    # design, and a yellow warning on every Ctrl+Shift+B would train the operator to
-    # ignore the warning stream.
-    Write-Host "No committed PGO profile for preset '$Preset' at $PgoProfile; building without PGO. Run scripts/build-pgo.ps1 to produce one (see scripts/pgo-profiles/README.md)."
-    $pgoArgs = @('-DMAIZE_PGO=')
-}
-
-# --- Resolve cmake the same way run-tests.ps1 does ------------------------------
+# --- Resolve cmake --------------------------------------------------------------
 $cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
 if ($cmakeCmd) {
     $Cmake = $cmakeCmd.Source
@@ -168,10 +132,10 @@ else {
 }
 
 # --- Configure and build ----------------------------------------------------------
-# Always reconfigure (idempotent, ~1s with Ninja) so the display/PGO cache vars are
-# applied even to a build directory first configured without them.
-Write-Host "Configuring preset '$Preset'$(if ($displayOn) { ' with SDL2 window backend' })$(if ($pgoArgs[0] -eq '-DMAIZE_PGO=use') { ' with Clang PGO' })..."
-& $Cmake --preset $Preset @displayArgs @pgoArgs
+# Always reconfigure (idempotent, ~1s with Ninja) so the display cache var is applied
+# even to a build directory first configured without it.
+Write-Host "Configuring preset '$Preset'$(if ($displayOn) { ' with SDL2 provisioned' })..."
+& $Cmake --preset $Preset @displayArgs
 
 # maize-439: a build directory configured before the toolchain move can never pick up
 # cmake/ToolchainRoot.cmake, because CMake only re-includes a toolchain file in a
@@ -179,7 +143,7 @@ Write-Host "Configuring preset '$Preset'$(if ($displayOn) { ' with SDL2 window b
 # refusal is right and its message explains the one-time repair, but this script OWNS
 # build/$Preset end to end, so making the operator perform that repair by hand on their
 # primary install path is asking them to fix something we can just fix. Retry once from
-# scratch, mirroring the PGO retry immediately below.
+# scratch.
 #
 # The condition is read off the cache rather than off the preset name, so it fires only
 # where the toolchain file is genuinely in play: the failed configure leaves
@@ -198,86 +162,37 @@ if ($LASTEXITCODE -ne 0) {
         -not (Select-String -Path $CacheFile -Pattern '^MAIZE_RESOLVED_TOOLCHAIN_DIR' -Quiet)) {
         Write-Warning "Build directory $BuildDir predates the maize-439 toolchain move, so cmake/ToolchainRoot.cmake cannot run in it. Deleting it and configuring once from scratch."
         Remove-Item -Recurse -Force $BuildDir
-        & $Cmake --preset $Preset @displayArgs @pgoArgs
+        & $Cmake --preset $Preset @displayArgs
     }
 }
 
 if ($LASTEXITCODE -ne 0) {
-    if ($pgoArgs[0] -eq '-DMAIZE_PGO=use') {
-        # maize-259 cycle-1 fix: a stale/incompatible committed profile (e.g. after a
-        # llvm-mingw major-version bump; profile format/function hashing can shift
-        # across Clang versions, see scripts/pgo-profiles/README.md "When to
-        # retrain") can turn into a hard configure failure instead of a soft
-        # per-function skip. Don't leave the operator with a bare exit code: retry
-        # once without PGO and signpost the escape hatch either way.
-        Write-Warning "cmake configure failed for preset '$Preset' with Clang PGO active (exit $LASTEXITCODE); the committed profile at $PgoProfile may be incompatible with the current toolchain pin. Retrying once without PGO..."
-        $pgoArgs = @('-DMAIZE_PGO=')
-        & $Cmake --preset $Preset @displayArgs @pgoArgs
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "cmake configure failed for preset '$Preset' (exit $LASTEXITCODE), with and without PGO; not a PGO issue." -ErrorAction Continue
-            exit 2
-        }
-        Write-Warning "Configured '$Preset' WITHOUT Clang PGO after the PGO-enabled configure failed. Retrain the profile with scripts/build-pgo.ps1 (see scripts/pgo-profiles/README.md), or pass -NoPgo to silence this warning."
-    }
-    else {
-        Write-Error "cmake configure failed for preset '$Preset' (exit $LASTEXITCODE)." -ErrorAction Continue
-        exit 2
-    }
+    Write-Error "cmake configure failed for preset '$Preset' (exit $LASTEXITCODE)." -ErrorAction Continue
+    exit 2
 }
 
-# maize-454: the installed set is v2's machine and assembler. -WithCToolchain adds the
-# v1 C pipeline, and the extra targets below are mzcc's PRECONDITION LIST, not the set
-# of tools a compile happens to spawn. mzcc.c resolve_toolchain checks five tools at
-# startup, before it does any work and whatever the subcommand: toolchain/cproc/cproc-qbe
-# and toolchain/qbe/obj/qbe (built by the cross-toolchain step further down), then
-# build/<preset>/mazm, build/<preset>/maize and build/<preset>/mzld, each a hard exit 2
-# when missing. maize is in that list even though only `mzcc -r` executes it, so leaving
-# it out makes EVERY mzcc invocation fail. All three build/ tools are built here and
-# none is installed: mzcc resolves them by path out of the build directory, so they need
-# to exist there, not on PATH. D-1 is about PATH and is untouched by this.
+# maize-418: mzvm is the console-subsystem Maize v2 machine (terminal I/O); mzvmg is the
+# graphical one, whose display device has not landed yet (maize-456), so today it is a
+# name-reserving twin of mzvm. maize-422 (D-1): mzasm is the v2 assembler.
 $InstallTools = @('mzvm', 'mzvmg', 'mzasm')
 $BuildTargets = $InstallTools
-if ($WithCToolchain) {
-    $BuildTargets = $InstallTools + @('mzcc', 'mazm', 'maize', 'mzld')
-}
 $TargetList = $BuildTargets -join ', '
 
 Write-Host "Building $TargetList ($Preset)..."
 & $Cmake --build $BuildDir --target @BuildTargets
 if ($LASTEXITCODE -ne 0) {
-    if ($pgoArgs[0] -eq '-DMAIZE_PGO=use') {
-        Write-Warning "cmake build failed for preset '$Preset' with Clang PGO active (exit $LASTEXITCODE); the committed profile at $PgoProfile may be incompatible with the current toolchain pin. Reconfiguring and retrying once without PGO..."
-        $pgoArgs = @('-DMAIZE_PGO=')
-        & $Cmake --preset $Preset @displayArgs @pgoArgs
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "cmake reconfigure without PGO failed (exit $LASTEXITCODE)." -ErrorAction Continue
-            exit 2
-        }
-        & $Cmake --build $BuildDir --target @BuildTargets
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "cmake build failed for preset '$Preset' (exit $LASTEXITCODE), with and without PGO; not a PGO issue." -ErrorAction Continue
-            exit 2
-        }
-        Write-Warning "Built '$Preset' WITHOUT Clang PGO after the PGO-enabled build failed. Retrain the profile with scripts/build-pgo.ps1 (see scripts/pgo-profiles/README.md), or pass -NoPgo to silence this warning."
-    }
-    else {
-        Write-Error "cmake build failed (exit $LASTEXITCODE)." -ErrorAction Continue
-        exit 2
-    }
+    Write-Error "cmake build failed (exit $LASTEXITCODE)." -ErrorAction Continue
+    exit 2
 }
 
 # --- Install ----------------------------------------------------------------------
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 # maize-418: mzvm is the console-subsystem Maize v2 machine (terminal I/O); mzvmg is the
-# graphical one (SDL window). maize-422 (D-1): mzasm is the v2 assembler.
-# maize-454: the frozen v1 machine (maize, maizeg, mazm) is no longer installed, and neither
-# are mzld, mzdis and mzcc, whose v2 ports have not landed yet.
+# graphical one, whose display device has not landed yet (maize-456), so today it is a
+# name-reserving twin of mzvm. maize-422 (D-1): mzasm is the v2 assembler.
+# maize-454: mzld, mzdis and mzcc are not installed, because their v2 ports have not
+# landed yet.
 $CopyTools = $InstallTools
-if ($WithCToolchain) {
-    # mzcc is the C pipeline's entry point, so it travels with the toolchain rather than
-    # with the v2 machine. mazm, maize and mzld stay in the build directory, unexported.
-    $CopyTools = $InstallTools + @('mzcc')
-}
 foreach ($tool in $CopyTools) {
     $builtExe = Join-Path $BuildDir "$tool.exe"
     if (-not (Test-Path $builtExe)) {
@@ -292,8 +207,9 @@ foreach ($tool in $CopyTools) {
     Write-Host "Installed $builtExe -> $(Join-Path $InstallDir "$tool.exe")"
 }
 
-# mzvmg.exe (graphical) links SDL2 dynamically; install the runtime DLL alongside it so it
-# starts from anywhere on PATH ($InstallDir is on PATH, so a co-located DLL resolves).
+# mzvmg.exe will link SDL2 dynamically once its display device lands (maize-456). Install
+# the runtime DLL alongside it now so it is already in place then ($InstallDir is on PATH,
+# so a co-located DLL resolves). Today nothing loads it and its presence changes nothing.
 if ($displayOn) {
     if (Test-Path $Sdl2Dll) {
         Copy-Item $Sdl2Dll (Join-Path $InstallDir 'SDL2.dll') -Force
@@ -302,7 +218,7 @@ if ($displayOn) {
         Write-Host "Installed $Sdl2Dll -> $(Join-Path $InstallDir 'SDL2.dll')"
     }
     else {
-        Write-Warning "MAIZE_DISPLAY is ON but $Sdl2Dll is missing; mzvmg.exe will fail to start until SDL2.dll is on PATH."
+        Write-Warning "MAIZE_DISPLAY is ON but $Sdl2Dll is missing, so it was not installed beside mzvmg.exe. Nothing links SDL2 yet (maize-456), so every binary this install produced still runs; re-run scripts/bootstrap-sdl2.ps1 before that changes."
     }
 }
 
@@ -349,91 +265,16 @@ if ($vmExit -ne 2 -or $vmOut -notmatch 'usage: mzvm') {
     exit 1
 }
 
-# --- v1 C pipeline (opt-in, -WithCToolchain) --------------------------------------
-# maize-454: everything below is the v1 C pipeline. It is off by default because it is
-# a cache hit most of the time and a real wait when it is not, and Ctrl+Shift+B now runs
-# this script on every press.
-if ($WithCToolchain) {
-
-# --- Resolve Git Bash (maize-257): the native mzcc forwarder and the C cross- -----
-# toolchain build below both need bash.exe, not WSL. Resolve-GitBash lives in
-# scripts/lib/gitbash.ps1 (maize-258 Decision 3), the sole definition site shared by
-# install-mzasm.ps1, build-quesos.ps1, build-userland.ps1, and build-demos.ps1.
-. (Join-Path $ScriptDir 'lib\gitbash.ps1')
-$BashExe = Resolve-GitBash
-
-# --- Windows forwarder: refresh <InstallDir>\mzcc.cmd from the repo template --------
-# mzcc.cmd is the Windows entry point for the C toolchain. maize-257: it now runs
-# scripts/cc-maize.sh (the single canonical C driver) NATIVELY via Git Bash, with no
-# WSL involved; the toolchain (cproc-qbe/qbe) it depends on is built the same way,
-# below. Rewriting it here on every build keeps it build-managed alongside the four
-# .exe surfaces and structurally unable to go stale (maize-96 OQ2). Renamed from
-# maize-cc to fit the mz* tool family (mzld, mzdis); the legacy name is removed below
-# so two names cannot drift. $BashExe and $Preset are baked into the generated
-# forwarder (absolute path + this install's preset), mirroring how
-# scripts/refresh-c-toolchain.sh bakes REPO_ROOT into the old WSL-side ~/bin/mzcc.
-if (-not $BashExe) {
-    Write-Warning 'Git Bash (bash.exe) not found; skipping the mzcc.cmd forwarder refresh. Install Git for Windows (ships Git Bash) and re-run to install mzcc.'
-}
-else {
-    $mzccCmd = @"
-@echo off
-rem mzcc: compile a C source through the Maize C toolchain (gcc-like CLI).
-rem GENERATED by scripts/install-mzasm.ps1 (maize-257) on every install: runs
-rem natively via Git Bash + the vendored llvm-mingw toolchain, no WSL involved.
-rem   mzcc <file.c>          compile+link to <file>.mzx beside the source (no run)
-rem   mzcc <file.c> -r       compile and run, propagating the guest exit code
-rem   mzcc <file.c> --emit   also leave <file>.mazm (qbe body) beside the source
-rem   mzcc --build           rebuild the cproc/qbe toolchain
-setlocal
-if "%~1"=="" (
-  echo usage: mzcc ^<file.c^> [-r ^| --emit]   ^(also: mzcc --build^)
-  exit /b 2
-)
-"$BashExe" "$("$RepoRoot" -replace '\\','/')/scripts/cc-maize.sh" --preset $Preset %*
-exit /b %errorlevel%
-"@
-    $cmdPath = Join-Path $InstallDir 'mzcc.cmd'
-    Set-Content -Path $cmdPath -Value $mzccCmd -Encoding Ascii
-    Write-Host "Refreshed $cmdPath (native Git Bash forwarder, preset $Preset)."
-}
-
-# Retire the pre-rename forwarder so a stale maize-cc.cmd can't shadow or drift.
-$legacyCmd = Join-Path $InstallDir 'maize-cc.cmd'
-if (Test-Path $legacyCmd) {
-    Remove-Item $legacyCmd -Force
-    Write-Host "Removed legacy $legacyCmd (renamed to mzcc.cmd)."
-}
-
-# --- C cross-toolchain build (cproc-qbe + qbe, native via Git Bash) ---------------
-# maize-257: scripts/build-toolchain.sh now builds cproc-qbe.exe + qbe.exe natively
-# on Windows (Git Bash + the vendored llvm-mingw clang; no WSL, no MSYS2, no
-# driver.c). Non-fatal: the v2 tools above are already installed and smoke-checked, so
-# a missing Git Bash or a toolchain hiccup only warns; mzcc then falls back to whatever
-# toolchain build already exists.
-# Build output goes to stderr; under Windows PowerShell 5.1 with
-# ErrorActionPreference=Stop that would become a terminating NativeCommandError, so
-# relax it for exactly this call (pwsh 7 is unaffected).
-if (-not $BashExe) {
-    Write-Warning 'Git Bash (bash.exe) not found; skipping C cross-toolchain (cproc/qbe) build. mzcc will use any previously built toolchain.'
-}
-else {
-    Write-Host 'Building C cross-toolchain (cproc-qbe + qbe, native Windows) via Git Bash...'
-    $repoPosix = ("$RepoRoot" -replace '\\', '/')
-    $prevEap = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    & $BashExe -lc "'$repoPosix/scripts/build-toolchain.sh'"
-    $tcExit = $LASTEXITCODE
-    $ErrorActionPreference = $prevEap
-    if ($tcExit -ne 0) {
-        Write-Warning "C cross-toolchain build failed (exit $tcExit). Native tools are installed; retry with 'bash scripts/build-toolchain.sh'."
-    }
-    else {
-        Write-Host 'C cross-toolchain built (cproc-qbe + qbe + Maize target, native Windows).'
-    }
-}
-
-} # end -WithCToolchain
+# maize-450: the v1 C pipeline used to be installed here behind -WithCToolchain. It wrote
+# the mzcc.cmd Git Bash forwarder into the install directory and built the cproc-qbe and
+# qbe cross-toolchain, all of which produce v1 guest code. It is archived with the rest of
+# v1 rather than kept as a switch nothing can satisfy, since the mzcc target it forwarded
+# to no longer exists in this tree's CMakeLists.
+#
+# An mzcc.cmd from an earlier install is deliberately left alone. It points at
+# scripts/cc-maize.sh, which is still in the tree, so it keeps working for as long as a
+# v1 toolchain build survives in the build directory, and removing a tool from somebody's
+# PATH is not this script's call to make.
 
 # Resolve the git revision the tree was built from, for a visible provenance
 # stamp in the summary line. git describe --always --dirty yields the nearest

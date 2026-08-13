@@ -36,6 +36,23 @@
 # (later stages do not run).
 set -eu
 
+# maize-450: every stage below builds v1 guest software. Stage 2 wants the mzcc driver and
+# the cproc/qbe cross-toolchain, and stages 3 through 5 compile quesOS, the userland and
+# the demos through mzcc, all of it targeting the v1 machine. v1 is archived: it gets no
+# further development or testing, and none of the targets this script needs is defined in
+# CMakeLists any more, so it would otherwise fail several minutes in with a message about
+# an unknown option.
+#
+# The script stays in the tree because it is the working description of how the v1 world
+# is assembled, which is what somebody porting quesOS to v2 needs to read. It still runs
+# on the `v1` branch, where v1 builds and its suite passes.
+echo "build-world.sh: v1 is archived (maize-450) and this script builds the v1 world:" >&2
+echo "  quesOS, the userland and the demos, all compiled through mzcc for the v1 machine." >&2
+echo "  None of those targets is built from this branch any more." >&2
+echo "  To build and run v1, check out the \`v1\` branch." >&2
+echo "  To build v2, run scripts/install-mzasm.sh (or press Ctrl+Shift+B)." >&2
+exit 2
+
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 

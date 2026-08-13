@@ -1,5 +1,16 @@
 # MaizeCTest.cmake (maize-376): scripts/run-ctest.sh's fixtures as real CTest tests.
 #
+# maize-450: THIS FILE IS NOT INCLUDED. Every fixture it registers drives a v1 tool
+# (maize, mazm, maizeg, mzld, mzcc), and v1 is archived: it gets no further development
+# and no further testing, so the 227 tests below are not registered rather than registered
+# and skipped. A skipped test still appears in every report and still invites somebody to
+# fix it.
+#
+# The file stays in the tree because it is the model for the v2 guest-toolchain suite that
+# will be needed once mzcc is ported (maize-426), and because its drift guard at the foot
+# is the mechanism that kept the CMake list and the harness's dispatch sites honest. The
+# `v1` branch still includes it and still runs it.
+#
 # Before this file the C-toolchain suite was one 4500-line shell script that always ran
 # every fixture, serially, with no per-fixture timeout and no way to select a subset.
 # Every mechanism that fixes that already exists in CTest, so the harness is wired to it

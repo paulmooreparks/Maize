@@ -1,8 +1,15 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Fetch and verify the pinned SDL2 mingw development libraries for building the
-    maizeg --display window backend on Windows.
+    Fetch and verify the pinned SDL2 mingw development libraries for the Windows
+    window backend.
+
+    maize-450: no binary links SDL2 at the moment. v1's maizeg carried the window
+    backend and is archived, and mzvmg has no display device to attach a window to
+    until maize-456 lands. The fetch stays wired into install-mzasm.ps1 so the pinned
+    SDL2 is present and verified on the machine when that port arrives, and so the
+    SDL2.dll beside mzvmg.exe is the right one rather than whatever a later scramble
+    produced.
 
 .DESCRIPTION
     Downloads the pinned SDL2 mingw development archive, verifies it against a
@@ -143,5 +150,5 @@ Write-Host "SDL2 $Version installed at $Dest"
 Write-Host "  cmake config: $CmakeCfg"
 Write-Host "  runtime dll:  $Dll"
 Write-Host ""
-Write-Host "Next: scripts/install-mzasm.ps1  (or Ctrl+Shift+B) builds mzvmg with --display."
+Write-Host "Next: scripts/install-mzasm.ps1 (or Ctrl+Shift+B) installs SDL2.dll beside mzvmg.exe. No binary links it until the display device lands (maize-456)."
 exit 0

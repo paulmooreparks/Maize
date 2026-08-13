@@ -3,7 +3,7 @@
     "tasks": [
         {
             "label": "Build Maize v2 (mzvm, mzasm), install it to ~/bin, and run its fixtures",
-            "detail": "Build the v2 machine (mzvm, mzvmg), the v2 assembler (mzasm), and both fixture binaries, copy mzvm, mzvmg, mzasm and SDL2.dll to ~/bin so they are runnable from any directory, then run the v2 fixtures. This is the fast v2 loop and it is what Ctrl+Shift+B runs. The install step is what this task was missing until maize-454: the build went green and mzasm was still not on PATH. It does NOT touch the C cross-toolchain (cproc/qbe) and builds no v1 binary; the toolchain refresh lives in the Install task below. It assumes the preset's build directory is already configured; if it is not, run one of the install or build-world tasks once first. Every target the v2 ctest label needs must be named here: the ctest step invokes the fixture binaries by path, so a fixture whose target is missing reports Not Run rather than failing to build (maize-435). Fixtures run last so their result is the last thing on screen, and a red fixture still leaves you the binaries you just built. mzvm has no device surface yet, so its output is the register dump from --registers rather than anything a program prints.",
+            "detail": "Build the v2 machine (mzvm, mzvmg), the v2 assembler (mzasm), and both fixture binaries, copy mzvm, mzvmg, mzasm and SDL2.dll to ~/bin so they are runnable from any directory, then run the v2 fixtures. This is the fast v2 loop and it is what Ctrl+Shift+B runs. The install step is what this task was missing until maize-454: the build went green and mzasm was still not on PATH. It builds no v1 binary and touches no C cross-toolchain: maize-450 archived v1, so cproc, qbe and mzcc are built by nothing in this tree and no task refreshes them any more. It assumes the preset's build directory is already configured; if it is not, run the Install task below once first. Every target the v2 ctest label needs must be named here: the ctest step invokes the fixture binaries by path, so a fixture whose target is missing reports Not Run rather than failing to build (maize-435). Fixtures run last so their result is the last thing on screen, and a red fixture still leaves you the binaries you just built. mzvm drives the console device maize-451 landed, so a guest that writes to it prints (asm/v2/hello.mzasm is the smallest one); --registers additionally dumps the register file when the machine stops.",
             "type": "shell",
             "group": {
                 "kind": "build",
@@ -28,7 +28,7 @@
         },
         {
             "label": "Assemble current .mazm",
-            "detail": "Run mazm on the active file; errors land in the Problems panel and are click-to-navigate.",
+            "detail": "Run mazm on the active file; errors land in the Problems panel and are click-to-navigate. mazm is v1's assembler and maize-450 stopped building it, so this task needs one already on PATH from a v1 build; the .mazm corpus stays as porting material and these tasks stay with it.",
             "type": "shell",
             "command": "mazm",
             "args": [
@@ -53,7 +53,7 @@
         },
         {
             "label": "Check current .mazm (no output file)",
-            "detail": "mazm --check on the active file: same clickable errors, zero filesystem effects (no .mzb written, stale .mzb kept).",
+            "detail": "mazm --check on the active file: same clickable errors, zero filesystem effects (no .mzb written, stale .mzb kept). Same v1 mazm on PATH as the task above requires.",
             "type": "shell",
             "command": "mazm",
             "args": [
@@ -129,8 +129,8 @@
             }
         },
         {
-            "label": "Build everything (build-world)",
-            "detail": "Build the native binaries + tools, the C cross toolchain, quesOS, the wave-1 userland, and the demos, all in one call. Slower than the binaries-only install task below; run it after a fresh clone or pull. On Windows this runs natively via Git Bash, no WSL involved.",
+            "label": "Install an optimized mzvm + mzvmg + mzasm to ~/bin",
+            "detail": "Build an optimized release of the Maize v2 machine (mzvm, plus mzvmg, which is its name-reserving twin until the display backend lands in maize-456) and the v2 assembler (mzasm), then copy them plus SDL2.dll to the user bin directory. The default Ctrl+Shift+B task installs a debug build and runs the fixtures; this one installs the release build and skips them, so it is what you want after pulling. maize-450 removed the C cross-toolchain step and the Build everything (build-world) task that sat beside this one: both built the v1 world (quesOS, the userland, the demos, all through mzcc), and v1 is archived. Its sources are still in the tree to port from, and it still builds on the v1 branch.",
             "type": "shell",
             "group": "build",
             "windows": {
@@ -140,38 +140,14 @@
                     "-ExecutionPolicy",
                     "Bypass",
                     "-File",
-                    "${workspaceFolder}/scripts/build-world.ps1"
+                    "${workspaceFolder}/scripts/install-mzasm.ps1"
                 ]
             },
             "linux": {
-                "command": "${workspaceFolder}/scripts/build-world.sh"
+                "command": "${workspaceFolder}/scripts/install-mzasm.sh linux-release"
             },
             "osx": {
-                "command": "${workspaceFolder}/scripts/build-world.sh"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "Install mzvm + mzvmg + mzasm + the C cross-toolchain to ~/bin",
-            "detail": "Build an optimized release of the Maize v2 machine (mzvm console, mzvmg graphical/SDL) and the v2 assembler (mzasm), copy them plus SDL2.dll to the user bin directory, and refresh the C cross-toolchain (cproc/qbe + Maize target) plus mzcc, which the default Ctrl+Shift+B task deliberately does not do. Run this after pulling, or whenever mzcc needs to be current; use Build everything (build-world) for the full \"I pulled\" rebuild. The frozen v1 binaries (maize, maizeg, mazm) are no longer built or installed (maize-454), and mzld/mzdis wait for their v2 ports. On Windows this runs natively via Git Bash, no WSL involved.",
-            "type": "shell",
-            "group": "build",
-            "windows": {
-                "command": "powershell",
-                "args": [
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    "${workspaceFolder}/scripts/install-mzasm.ps1",
-                    "-WithCToolchain"
-                ]
-            },
-            "linux": {
-                "command": "${workspaceFolder}/scripts/install-mzasm.sh --with-c-toolchain"
-            },
-            "osx": {
-                "command": "${workspaceFolder}/scripts/install-mzasm.sh --with-c-toolchain"
+                "command": "${workspaceFolder}/scripts/install-mzasm.sh macos-release"
             },
             "problemMatcher": []
         }

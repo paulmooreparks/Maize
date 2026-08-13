@@ -1,7 +1,10 @@
 #Requires -Version 5.1
 # scripts/lib/gitbash.ps1 (maize-258 Decision 3): shared PowerShell helper, dot-sourced
-# by scripts/install-mzasm.ps1, scripts/build-quesos.ps1, scripts/build-userland.ps1, and
-# scripts/build-demos.ps1. This is the SOLE definition site for Resolve-GitBash; do not
+# by scripts/build-quesos.ps1, scripts/build-userland.ps1, scripts/build-demos.ps1 and
+# scripts/build-toolchain.ps1. maize-450 dropped the last non-v1 consumer when
+# install-mzasm.ps1 stopped building the C cross-toolchain, so every caller today is a v1
+# builder that runs only on the `v1` branch. This is the SOLE definition site for
+# Resolve-GitBash; do not
 # copy the function body into another script, dot-source this file instead
 # (scripts/lib/harness-env.sh is the sh-side precedent for exactly this shape).
 #
@@ -12,8 +15,8 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-# Resolve Git Bash (maize-257): the native mzcc forwarder and the C cross-toolchain
-# build both need bash.exe, not WSL. `git --exec-path` gives the mingw64/libexec/
+# Resolve Git Bash (maize-257): the v1 guest builders and the C cross-toolchain build all
+# need bash.exe, not WSL. `git --exec-path` gives the mingw64/libexec/
 # git-core dir inside the Git install; bash.exe sits at <gitroot>/bin/bash.exe three
 # levels up. Standard install locations are the fallback. Returns $null (never
 # throws) so callers can warn-and-skip.

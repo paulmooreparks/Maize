@@ -5,29 +5,28 @@
 # .vscode/tasks.json, which runs this script on every press so the binaries it just
 # built are the ones on PATH (maize-454). Never prompts.
 #
-# maize-454: the installed set is the v2 machine and the v2 assembler only. The frozen
-# v1 binaries (maize, maizeg, mazm) are no longer built or copied. mzld, mzdis and mzcc
-# keep their names under maize-422 D-1 but have not been ported yet
+# maize-454: the installed set is the v2 machine and the v2 assembler only. mzld, mzdis
+# and mzcc keep their names under maize-422 D-1 but have not been ported yet
 # (maize-423/424/425/426), so installing today's v1 builds of them would put tools on
-# PATH that cannot read a v2 object; each comes back here as its parity card lands. The
-# v1 C pipeline (mzcc plus the cproc/qbe cross-toolchain) is behind --with-c-toolchain,
-# opt-in, because it is sometimes a real wait and has no business in a loop pressed
-# dozens of times a day.
+# PATH that cannot read a v2 object; each comes back here as its parity card lands.
 #
-# usage: install-mzasm.sh [preset] [install-dir] [--with-c-toolchain]
+# maize-450: the --with-c-toolchain option is gone with the v1 build. It named mzcc plus
+# the mazm, maize and mzld its resolver requires, and none of those targets exists in this
+# tree's CMakeLists any more. v1 is archived: its sources are still here to port from, and
+# it still builds, installs and tests on the `v1` branch.
+#
+# usage: install-mzasm.sh [preset] [install-dir]
 
 set -euo pipefail
 
 PRESET=""
 INSTALL_DIR=""
-WITH_C_TOOLCHAIN=0
 
 for arg in "$@"; do
     case "$arg" in
-        --with-c-toolchain) WITH_C_TOOLCHAIN=1 ;;
         -*)
             echo "error: unknown option '$arg'" >&2
-            echo "usage: install-mzasm.sh [preset] [install-dir] [--with-c-toolchain]" >&2
+            echo "usage: install-mzasm.sh [preset] [install-dir]" >&2
             exit 2
             ;;
         *)
@@ -55,18 +54,20 @@ if ! command -v cmake >/dev/null 2>&1; then
     exit 2
 fi
 
-# Enable the mzvmg SDL2 window backend (--display) when system SDL2 dev files are
-# present; otherwise build headless rather than failing the task on a server host.
+# Set MAIZE_DISPLAY from whether system SDL2 dev files are present, rather than failing
+# the task on a server host that has none. No binary links SDL2 today (maize-450 archived
+# v1's maizeg; mzvmg's display device is maize-456), so neither branch changes what gets
+# built; the option is kept wired so the machine is ready when the port lands.
 # MAIZE_DISPLAY is passed EXPLICITLY either way: a bare configure would inherit a
 # stale MAIZE_DISPLAY=ON from a prior CMakeCache and then hard-fail find_package(SDL2)
 # once system SDL2 went missing. (On Windows install-mzasm.ps1 instead auto-fetches a
 # vendored SDL2; on Linux/WSL, SDL2 comes from the system package manager.)
 if command -v sdl2-config >/dev/null 2>&1 || pkg-config --exists sdl2 2>/dev/null; then
     display_args=(-DMAIZE_DISPLAY=ON)
-    echo "SDL2 found; building mzvmg with the --display window backend."
+    echo "SDL2 found; configuring with MAIZE_DISPLAY=ON. Nothing links it yet (maize-456)."
 else
     display_args=(-DMAIZE_DISPLAY=OFF)
-    echo "note: SDL2 dev files not found; building headless (no --display window). Install libsdl2-dev to enable it." >&2
+    echo "note: SDL2 dev files not found; configuring with MAIZE_DISPLAY=OFF. Nothing links SDL2 yet, so this build is unaffected; install libsdl2-dev before the display device lands (maize-456)." >&2
 fi
 
 # Always reconfigure (idempotent) so the display cache var is applied even to a build
@@ -75,26 +76,11 @@ echo "Configuring preset '$PRESET'..."
 cmake --preset "$PRESET" "${display_args[@]}"
 
 # maize-418: mzvm is the console-subsystem Maize v2 machine (terminal I/O); mzvmg is the
-# graphical one (SDL window). maize-422 (D-1): mzasm is the v2 assembler.
-# --with-c-toolchain adds the v1 C pipeline, and the extra targets below are mzcc's
-# PRECONDITION LIST, not the set of tools a compile happens to spawn. mzcc.c
-# resolve_toolchain checks five tools at startup, before it does any work and whatever
-# the subcommand: toolchain/cproc/cproc-qbe and toolchain/qbe/obj/qbe (built by the
-# cross-toolchain step further down), then build/<preset>/mazm, build/<preset>/maize and
-# build/<preset>/mzld, each a hard exit 2 when missing. maize is in that list even though
-# only `mzcc -r` executes it, so leaving it out makes EVERY mzcc invocation fail. All
-# three build/ tools are built here and none is installed: mzcc resolves them by path out
-# of the build directory, so they need to exist there, not on PATH. D-1 is about PATH and
-# is untouched by this.
+# graphical one, whose display device has not landed yet (maize-456), so today it is a
+# name-reserving twin of mzvm. maize-422 (D-1): mzasm is the v2 assembler.
 install_tools=(mzvm mzvmg mzasm)
 build_targets=("${install_tools[@]}")
 copy_tools=("${install_tools[@]}")
-if [ "$WITH_C_TOOLCHAIN" -eq 1 ]; then
-    build_targets+=(mzcc mazm maize mzld)
-    # mzcc is the C pipeline's entry point, so it travels with the toolchain rather than
-    # with the v2 machine. mazm, maize and mzld stay in the build directory, unexported.
-    copy_tools+=(mzcc)
-fi
 
 echo "Building ${build_targets[*]} ($PRESET)..."
 cmake --build "$BUILD_DIR" --target "${build_targets[@]}"
@@ -137,20 +123,8 @@ if [ "$vm_rc" -ne 2 ] || ! printf '%s' "$vm_out" | grep -q 'usage: mzvm'; then
     exit 1
 fi
 
-# --- C cross-toolchain refresh (cproc/qbe + Maize target) -------------------------
-# maize-454: opt-in via --with-c-toolchain, since Ctrl+Shift+B now runs this script on
-# every press and the refresh is a real wait whenever it is not a cache hit. Non-fatal
-# when it does run: the v2 tools above are installed and smoke-checked, so a toolchain
-# hiccup (e.g. no network for the submodule fetch) only warns.
-if [ "$WITH_C_TOOLCHAIN" -eq 1 ]; then
-    set +e
-    "$SCRIPT_DIR/refresh-c-toolchain.sh"
-    tc_rc=$?
-    set -e
-    if [ "$tc_rc" -ne 0 ]; then
-        echo "warning: C cross-toolchain refresh failed (exit $tc_rc); native tools are installed. Retry with scripts/refresh-c-toolchain.sh." >&2
-    fi
-fi
+# maize-450: the C cross-toolchain refresh (cproc/qbe plus mzcc) used to run here behind
+# --with-c-toolchain. It built v1 guest code and is archived with the rest of v1.
 
 # Resolve the git revision the tree was built from, for a visible provenance
 # stamp in the summary line. git describe --always --dirty yields the nearest

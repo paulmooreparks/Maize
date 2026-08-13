@@ -13,125 +13,109 @@ on:
     - cron: '0 7 * * *'
   workflow_dispatch:
 
+# maize-450: every job here builds the v2 targets and runs the v2 tests, and nothing
+# else. v1 is archived and gets no further development or testing, so the steps that
+# built the cproc and qbe C cross-toolchain, the ones that ran scripts/run-tests.sh and
+# scripts/run-tests.ps1, and the MAIZE_CC wiring that pointed the guest suite at mzcc are
+# all gone. The submodule checkout goes with them: toolchain/cproc and toolchain/qbe exist
+# only to build v1 guest code, so no job needs to fetch them.
+#
+# Each job configures with a preset, builds untargeted, and runs ctest with no label
+# filter. The untargeted build is deliberate: after maize-450 the preset's whole target
+# set IS the v2 set, so naming targets here would be a second list to keep in sync with
+# CMakeLists for no benefit. The unfiltered ctest is deliberate for the same reason, and
+# it is also the check that the v1 suite really is unregistered rather than merely
+# deselected. A `-L v2` filter would pass either way.
+#
+# ctest runs SERIALLY on every leg. Several v2_mzasm_* fixtures share a scratch path and
+# collide under -j (maize-444), so the old -j$(nproc-2) on the two Linux legs would report
+# failures that say nothing about the code. The whole suite is roughly 15 seconds serial,
+# so there is nothing to buy back here.
+#
+# --no-tests=error (CTest 3.19+, and this project requires 3.21) stays on every leg and is
+# not optional. ctest's default is to print "No tests were found!!!" and exit 0, so a
+# configure that registered nothing would turn a leg green having verified nothing at all.
+
 jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: Build C toolchain (cproc + qbe + Maize target)
-        run: scripts/build-toolchain.sh
-
-      - name: Build and run tests
-        run: scripts/run-tests.sh
-
-      # maize-242: a Release-preset leg catches optimization-general regressions
-      # (e.g. FP tie-rounding that only mis-rounds under -O2+/LTO) that the Debug
-      # leg above cannot see. The defect this guards against sat undetected since
-      # maize-237 because no CI leg built Release on either platform.
-      - name: Build and run tests (Release)
-        run: scripts/run-tests.sh --preset linux-release
-
-      - name: C hello world end-to-end (cproc -> qbe -t maize -> mazm -> maize)
-        # maize-314: point the ctest suite at the compiled mzcc (built above by
-        # run-tests.sh's untargeted `cmake --build`, which already covers every
-        # target in the linux-debug preset) instead of the cc-maize.sh shell
-        # driver, so the suite inherits the maize-302 runtime archive and the
-        # maize-274 object cache.
-        #
-        # maize-376: driven through ctest rather than by invoking run-ctest.sh
-        # directly, so each fixture is its own test with its own timeout and a
-        # hang bounds one test instead of the whole job. run-tests.sh above
-        # already configured build/linux-debug, which is where the test
-        # registrations live. The harness still runs standalone; this is a
-        # different entry point to the same fixtures, not a replacement for it.
-        # Job width leaves two cores free rather than taking every one: the
-        # fixtures themselves fork heavily (mzcc schedules its own translation
-        # units in parallel), so an unbounded -j thrashes a small runner.
-        #
-        # --no-tests=error (CTest 3.19+, and this project already requires 3.21)
-        # is on all three legs and is not optional. ctest's default is to print
-        # "No tests were found!!!" and exit 0, so a configure that registered
-        # nothing would turn this leg green having verified nothing at all. The
-        # pre-conversion `run-ctest.sh --skip-build` invocation could not fail
-        # that way, because it either ran the fixtures or exited 2, and giving
-        # that property up silently would be a regression in what CI means.
-        # cmake/MaizeCTest.cmake can legitimately register nothing when no POSIX
-        # sh is found, so this is the guard that turns that case red here.
-        env:
-          MAIZE_CC: ${{ github.workspace }}/build/linux-debug/mzcc
+      - name: Configure and build (Debug)
         run: |
-          JOBS=$(nproc)
-          if [ "$JOBS" -gt 4 ]; then JOBS=$((JOBS - 2)); else JOBS=2; fi
-          echo "ctest -j${JOBS} (nproc=$(nproc))"
-          ctest --test-dir build/linux-debug --output-on-failure --no-tests=error -j "$JOBS"
+          cmake --preset linux-debug
+          cmake --build build/linux-debug
+
+      - name: Run the v2 suite (Debug)
+        run: ctest --test-dir build/linux-debug --output-on-failure --no-tests=error
+
+      # maize-242: a Release-preset leg catches optimization-general regressions (for
+      # instance FP tie-rounding that only mis-rounds under -O2+/LTO) that the Debug leg
+      # above cannot see. The defect that motivated it sat undetected since maize-237
+      # because no CI leg built Release on either platform, and the reasoning applies to
+      # the v2 interpreter exactly as it applied to v1's.
+      - name: Configure and build (Release)
+        run: |
+          cmake --preset linux-release
+          cmake --build build/linux-release
+
+      - name: Run the v2 suite (Release)
+        run: ctest --test-dir build/linux-release --output-on-failure --no-tests=error
 
   linux-sanitizers:
     runs-on: ubuntu-latest
     env:
-      # Leak detection is on (maize-386 freed the last of mzcc main()'s
-      # argument-parsing state, which is what had forced detect_leaks=0).
-      # LeakSanitizer defaults to on for ASan on Linux, so naming only
-      # abort_on_error here is enough; keep it that way rather than
-      # reintroducing a suppression.
+      # Leak detection is on. The suppression this job used to carry,
+      # detect_leaks=0, was forced by v1's mzcc holding its argument-parsing
+      # state at exit, and maize-386 freed that; maize-450 then took mzcc out
+      # of the build entirely, so what this leg now runs is the v2 suite alone
+      # and it is leak-clean. LeakSanitizer defaults to on for ASan on Linux,
+      # so naming only abort_on_error here is enough; keep it that way rather
+      # than reintroducing a suppression.
       ASAN_OPTIONS: abort_on_error=1
       UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: Build C toolchain (cproc + qbe + Maize target)
-        run: scripts/build-toolchain.sh
-
-      - name: Build (ASan+UBSan) and run asm suite
-        run: scripts/run-tests.sh --preset linux-asan-ubsan
-
-      - name: C toolchain end-to-end under ASan+UBSan
-        # maize-314: same flip as the plain linux job, keyed off this job's
-        # own instrumented preset/build dir so the ctest suite runs through
-        # the sanitizer-built mzcc, not cc-maize.sh.
-        # maize-376: ctest-driven, same reasoning as the plain linux job. The
-        # instrumented binaries are several times slower, so bounding a hang to
-        # one test matters more here than anywhere else.
-        env:
-          MAIZE_CC: ${{ github.workspace }}/build/linux-asan-ubsan/mzcc
+      # MAIZE_SANITIZE instruments mzvm, mzvmg and mzasm, and cmake/MaizeV2Fixtures.cmake
+      # instruments the two fixture binaries with the same flags, so this leg runs the
+      # whole v2 suite through ASan and UBSan.
+      - name: Configure and build (ASan + UBSan)
         run: |
-          JOBS=$(nproc)
-          if [ "$JOBS" -gt 4 ]; then JOBS=$((JOBS - 2)); else JOBS=2; fi
-          echo "ctest -j${JOBS} (nproc=$(nproc))"
-          ctest --test-dir build/linux-asan-ubsan --output-on-failure --no-tests=error -j "$JOBS"
+          cmake --preset linux-asan-ubsan
+          cmake --build build/linux-asan-ubsan
+
+      - name: Run the v2 suite under ASan + UBSan
+        run: ctest --test-dir build/linux-asan-ubsan --output-on-failure --no-tests=error
 
   windows:
     runs-on: windows-latest
-    # maize-439: the toolchain now installs outside the repository, at a per-user
+    # maize-439: the toolchain installs outside the repository, at a per-user
     # version-keyed location, with MAIZE_TOOLCHAIN_ROOT overriding where that is. CI
     # sets the override to a workspace-relative directory rather than using the
     # runner's real %LOCALAPPDATA% so the cache path is explicit and stays the same
     # across runner images. Every step in this job inherits it, which is what keeps
-    # the bootstrap, the CMake presets, build-toolchain.sh and mzcc agreeing on one
-    # directory.
+    # the bootstrap and the CMake presets agreeing on one directory.
     env:
       MAIZE_TOOLCHAIN_ROOT: ${{ github.workspace }}\.ci-toolchains
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       # maize-439: the one thing that holds the three toolchain resolvers to a single
       # answer. PowerShell, POSIX sh and CMake each implement the resolution order
       # because they cannot source each other's code, and divergence between them is
       # the whole risk of that shape; this fixture populates several candidate
       # locations at once with distinguishable probe bytes and asserts all three pick
-      # the same correctly-higher-precedence winner, across seven scenarios.
+      # the same correctly-higher-precedence winner, across seven scenarios. It is
+      # machine-agnostic infrastructure rather than v1 tooling, so maize-450 leaves it
+      # exactly where it is.
       #
       # It runs HERE because this is the only job with both of its prerequisites,
       # PowerShell and cmake, and it exits 2 rather than passing when either is
@@ -144,12 +128,6 @@ jobs:
         shell: bash
         run: scripts/test-toolchain-resolution.sh
 
-      # maize-257: the C toolchain (cproc-qbe + qbe) now builds natively via Git
-      # Bash (windows-latest ships it, `shell: bash`) + the vendored llvm-mingw
-      # clang, so llvm-mingw must be bootstrapped BEFORE that build step (it used
-      # to only gate the VM's own CMake build, further down). No MSYS2 setup at
-      # all: the msys2/setup-msys2 action and its gcc/make/patch/diffutils install
-      # are gone, replaced by the same native path a Windows operator runs.
       # Keyed on the pin file rather than on the bootstrap script (maize-439): the pin
       # is what decides which archive is fetched, so a script edit that changes no
       # version no longer throws the cache away, and a version bump still does.
@@ -162,44 +140,27 @@ jobs:
       - name: Bootstrap llvm-mingw toolchain
         run: scripts/bootstrap-toolchain.ps1
 
-      - name: Build C toolchain (cproc + qbe + Maize target, native)
-        shell: bash
-        run: scripts/build-toolchain.sh
-
       - name: Ensure ninja is available
         run: |
           if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
             choco install ninja -y
           }
 
-      - name: Build and run tests
-        run: scripts/run-tests.ps1
+      - name: Configure and build (Debug)
+        run: |
+          cmake --preset windows-llvm-mingw-debug
+          cmake --build build/windows-llvm-mingw-debug
+
+      - name: Run the v2 suite (Debug)
+        run: ctest --test-dir build/windows-llvm-mingw-debug --output-on-failure --no-tests=error
 
       # maize-242: Release-preset leg on the llvm-mingw (clang) toolchain. The
-      # RMM tie-rounding defect reproduced on BOTH clang and gcc Release builds,
-      # so the guard is needed on both platforms, not just one.
-      - name: Build and run tests (Release)
-        run: scripts/run-tests.ps1 -Preset windows-llvm-mingw-release
-
-      - name: C hello world end-to-end (cproc -> qbe -t maize -> mazm -> maize)
-        # maize-314: same flip, Windows leg. run-tests.ps1 above already built
-        # mzcc.exe into this preset's build dir (its cmake --build is also
-        # untargeted, so mzcc rides along with maize/mazm/mzld/maizeg/mzdis).
-        # MAIZE_CC is computed with bash's own $(pwd) rather than a github.workspace
-        # env: value: github.workspace resolves with native backslash separators on
-        # windows-latest, and there is no expression-language replace() to normalize
-        # them, whereas bash's pwd gives the same forward-slash absolute form
-        # run-ctest.sh's own REPO_ROOT/BUILD_DIR resolution already uses.
-        #
-        # maize-376: ctest-driven like the two Linux legs, but SERIAL. This leg
-        # stays without -j pending its own safety-bar pass, because the
-        # fork-exhaustion failure mode scripts/lib/harness-env.sh documents
-        # (maize-304: `dofork ... Resource temporarily unavailable` under two
-        # concurrent heavy builds) is specific to Windows/MSYS2 and this project
-        # has already hit it once. The guest-build fixtures additionally carry
-        # RESOURCE_LOCK quesos_build / userland_build on Windows only, so the
-        # locks are in place for whenever that pass happens.
-        shell: bash
+      # tie-rounding defect that motivated this reproduced on BOTH clang and gcc
+      # Release builds, so the guard belongs on both platforms rather than one.
+      - name: Configure and build (Release)
         run: |
-          export MAIZE_CC="$(pwd)/build/windows-llvm-mingw-debug/mzcc.exe"
-          ctest --test-dir build/windows-llvm-mingw-debug --output-on-failure --no-tests=error
+          cmake --preset windows-llvm-mingw-release
+          cmake --build build/windows-llvm-mingw-release
+
+      - name: Run the v2 suite (Release)
+        run: ctest --test-dir build/windows-llvm-mingw-release --output-on-failure --no-tests=error
