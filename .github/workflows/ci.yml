@@ -9,6 +9,20 @@ on:
   # to reconcile: card work lands on `dev` through the Merge stage rather
   # than through a pull request, and `master` moves only when a cut
   # promotes accepted work (maize-436).
+  #
+  # maize-388: every checkout step below carries an explicit `ref`, and the
+  # nightly does not work without it. A schedule event always runs the default
+  # branch's copy of a workflow, and when no `ref` is given the checkout
+  # inherits that same branch, so this cron had been validating `master` from
+  # the day it shipped. `master` only moves at a cut, and a cut already runs
+  # its own release checks before promoting, so a nightly there re-checks work
+  # that was checked hours earlier. `dev` is the line that moves every time a
+  # card merges and has nothing between merges, which is where a nightly
+  # regression check earns its keep. The expression leaves workflow_dispatch
+  # alone: it resolves to `github.sha`, the commit the dispatch already
+  # selected. Every job then prints what it actually checked out, in a step
+  # named "Report the checked-out ref and commit", because a run's own
+  # metadata cannot report that and a reader needs somewhere to look.
   schedule:
     - cron: '0 7 * * *'
   workflow_dispatch:
@@ -40,7 +54,27 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
+      # maize-388: see the note under `on:`. A schedule run checks out `dev`;
+      # every other event keeps the commit it was triggered on.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || github.sha }}
+
+      # maize-388: this step is permanent, and it exists because nothing else in
+      # a run's metadata can answer the question the checkout ref was added to
+      # settle. GitHub records a scheduled run against the default branch, so
+      # `gh run list --event schedule` reports `master` however the checkout
+      # resolved, and a reader filtering on that branch sees an empty list
+      # whether the ref works or is broken. The log line below is the only place
+      # the answer appears, so a reader opens the run and reads it rather than
+      # inferring it from metadata that cannot carry it.
+      - name: Report the checked-out ref and commit
+        shell: bash
+        run: |
+          echo "event:        ${{ github.event_name }}"
+          echo "ref resolved: ${{ github.event_name == 'schedule' && 'dev' || github.sha }}"
+          echo "HEAD commit:  $(git rev-parse HEAD)"
+          echo "HEAD subject: $(git log -1 --pretty=%s)"
 
       - name: Install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -79,7 +113,20 @@ jobs:
       ASAN_OPTIONS: abort_on_error=1
       UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
     steps:
+      # maize-388: see the note under `on:`. A schedule run checks out `dev`;
+      # every other event keeps the commit it was triggered on.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || github.sha }}
+
+      # maize-388: permanent, for the reason given in the `linux` job above.
+      - name: Report the checked-out ref and commit
+        shell: bash
+        run: |
+          echo "event:        ${{ github.event_name }}"
+          echo "ref resolved: ${{ github.event_name == 'schedule' && 'dev' || github.sha }}"
+          echo "HEAD commit:  $(git rev-parse HEAD)"
+          echo "HEAD subject: $(git log -1 --pretty=%s)"
 
       - name: Install ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -106,7 +153,20 @@ jobs:
     env:
       MAIZE_TOOLCHAIN_ROOT: ${{ github.workspace }}\.ci-toolchains
     steps:
+      # maize-388: see the note under `on:`. A schedule run checks out `dev`;
+      # every other event keeps the commit it was triggered on.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || github.sha }}
+
+      # maize-388: permanent, for the reason given in the `linux` job above.
+      - name: Report the checked-out ref and commit
+        shell: bash
+        run: |
+          echo "event:        ${{ github.event_name }}"
+          echo "ref resolved: ${{ github.event_name == 'schedule' && 'dev' || github.sha }}"
+          echo "HEAD commit:  $(git rev-parse HEAD)"
+          echo "HEAD subject: $(git log -1 --pretty=%s)"
 
       # maize-439: the one thing that holds the three toolchain resolvers to a single
       # answer. PowerShell, POSIX sh and CMake each implement the resolution order
