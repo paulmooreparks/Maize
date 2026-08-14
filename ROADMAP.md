@@ -20,8 +20,12 @@ check it against the conformance suite. I do not mean that every
 language on earth compiles to Maize.
 
 Speed used to be the asterisk on all of this, and it isn't anymore.
-DOOM, compiled from C, runs at about 65fps with the bytecode still fully
-interpreted, before any optimizing backend or JIT.
+DOOM, compiled from C, runs at about 75fps on Maize v1, its byte code
+JIT-compiled to native host code by a tier-up JIT that landed before the
+move to v2; the interpreter alone reached about 65fps. v2, the machine
+under active development now, does not have a JIT or an optimizing
+backend of its own yet, and inherits the same case once its toolchain
+reaches that point (Phase 3 below).
 
 That raises the ceiling without costing anything. A JIT that preserves
 semantics changes how fast the machine runs and nothing else, so results
@@ -48,11 +52,19 @@ Optimizing compiler backends (LLVM first, then GCC) and a JIT used to be
 excluded. They are now post-freeze campaigns instead, for the speed and
 the language reach described above.
 
-# Phase 1: the teaching computer
+Everything below through Phase 2 describes Maize v1, the machine's first
+instruction set architecture. Maize moved to Maize v2 on 2026-08-12, a
+clean break rather than a revision of v1, and development continues
+under the v2 campaign in Phase 3. v1 itself is complete and frozen. It
+receives no further development, by operator ruling on 2026-08-12, and
+Milestones 3 and 5 below, both still open, will not be completed on it.
+
+# Phase 1: the teaching computer (Maize v1)
 
 Phase 1 covers Milestones 0 through 5, which built the foundation and
 serve as the public on-ramp. Everything here is done except the
-conformance suite, the cost model, and the launch itself.
+conformance suite, the cost model, and the launch itself, and none of
+that remaining work will happen on v1.
 
 ## Milestone 0: ISA repairs
 
@@ -231,12 +243,21 @@ rather than recall.
 
 Exit: shipped. Measured against the success criteria above.
 
-# Phase 2: the platform
+# Phase 2: the platform (Maize v1, retired)
 
 Phase 1 produced a small, comprehensible, fully specified teaching
 computer, and that stands on its own as both a deliverable and the way
-in for anyone new. Phase 2 grows the same machine, on the same frozen
-ISA, into something you can live inside.
+in for anyone new. Phase 2 was meant to grow the same machine, on the
+same frozen ISA, into something you can live inside.
+
+That growth mostly did not happen on v1. Development stopped on
+2026-08-12 with Milestones 6 through 11 largely unbuilt, so most of what
+follows is the plan as it stood for v1 rather than open work. The
+exception is the performance milestone: the tier-up JIT and its paging
+fast path (Milestone 9) did land on v1, and that is where v1's 75fps
+DOOM comes from. Storage, a graphical session, optimizing compiler
+backends, networking, and eventually Linux never got built on v1; Phase
+3 below resequences all of it, the JIT included, against v2.
 
 Version 1.0 is quesOS built out as a Unix-like operating system on
 Maize, with the kernel, a borrowed userland, and a graphical session, on
@@ -310,19 +331,26 @@ and runs.
 
 ## Milestone 9: Performance
 
-The interpreter already runs DOOM smoothly, which suggests what is left
-is optimization rather than rescue work.
+**Status: the JIT and the address-translation fast path shipped on v1;
+the cost model is still open.** This is the one Phase 2 milestone whose
+engineering landed before v1 was frozen.
 
-- A JIT tiers up hot blocks from the interpreter while preserving
-  semantics exactly.
+The interpreter already ran DOOM smoothly, so what was left was
+optimization rather than rescue work.
+
+- A tier-up JIT compiles hot blocks to native host code while preserving
+  semantics exactly. It shipped on v1, on by default, and carries DOOM to
+  about 75fps.
 - A fast path for address translation closes the one gap none of the
   smaller levers touch, since every process under quesOS runs under
-  paging and pays for the translation walk.
-- Determinism survives all of it. A JIT stays bit-identical, and when
+  paging and pays for the translation walk. It shipped alongside the
+  JIT's paged execution path.
+- Determinism survives all of it. The JIT stays bit-identical, and when
   the cost model lands it gets defined in ISA cycles rather than
   wall-clock time so that a JITted Maize can still be metered.
 
-Exit: borrowed software feels native and the cost model still holds.
+Exit: met on v1 for the JIT and the translation fast path; the cost
+model (Milestone 2) is still open.
 
 ## Milestone 10: Networking
 
@@ -346,14 +374,103 @@ something a person can install and use.
 Exit: somebody other than me installs quesOS on Maize and gets something
 done with it.
 
+# Phase 3: the v2 campaign
+
+Maize moved to a second instruction set architecture on 2026-08-12, a
+clean break rather than a revision of v1. This phase is where
+development continues; Phase 1 and Phase 2 above are v1's
+history rather than open work.
+
+## Milestone V0: the v2 specification
+
+**Status: complete.** The design brief, the thirteen ratified decisions
+and the terminology ruling, the chapter drafting against those
+decisions, the whole-specification coherence read, and the
+ratification that froze the result all landed between 2026-07-24 and
+2026-08-12.
+
+- The decision record, `docs/design/maize2-decisions.md`.
+- The ratified specification, `docs/spec-v2/`: twenty chapters, three
+  appendices, and a glossary, frozen at base `2.0`.
+
+Exit: met. A competent implementer can build a conforming machine from
+the specification alone, and the reasoning behind every ratified
+decision is written down rather than only remembered.
+
+## Milestone V1: the machine boots
+
+**Status: complete.** `mzvm` and `mzasm` exist, the console device
+class works, and `asm/v2/hello.mzasm` assembles and runs, printing a
+greeting with no CSR, stack, call, trap, or paging involved.
+
+Exit: met.
+
+## Milestone V2: privilege, traps, and paging
+
+**Status: complete, landed on `dev`, pending the operator's
+acceptance.** The machine's privilege and memory-safety layer landed in
+one push.
+
+- Privilege levels and the CSR space, including `csr_swap` and the
+  supervisor scratch register.
+- The trap model: the cause and subcode enumeration, the four-word
+  trap frame, vectored dispatch, and `trap_return`.
+- Sv48 address translation and the paging root.
+- External interrupts, their pending and enable state, delivery,
+  waiting, and the timer.
+
+Exit: met for the machine; open until the operator accepts the work
+currently sitting in Dev Acceptance.
+
+## Milestone V3: toolchain parity
+
+**Status: open.** This milestone brings the rest of v1's toolchain up to
+v2, so a program can be built the way it already can be on v1.
+
+- The object-format and linking specification.
+- A linker that reads v2 objects.
+- A disassembler that round-trips v2 images.
+- The qbe backend, retargeted at v2, with select recognition.
+- cproc and the C runtime against the v2 ABI.
+- The VM's remaining device surface and boot sequence, at parity with
+  v1's.
+- The forty-four floating-point instructions.
+
+Exit: a C program compiles, links, and runs against the v2 machine end
+to end.
+
+## Milestone V4: quesOS on v2
+
+**Status: open, depends on V3.** This milestone ports quesOS's kernel
+and the borrowed userland, oksh and the sbase coreutils, to the v2
+machine and its C ABI.
+
+Exit: quesOS boots to an interactive shell on v2, matching what v1
+already does.
+
+## Milestone V5: the base conformance suite
+
+**Status: open.** A suite an independent implementer can run against
+their own machine to check conformance to base `2.0`, the same promise
+Milestone 3 above made for v1 and never finished.
+
+Exit: the suite exists and the reference `mzvm` passes it.
+
+This section is a snapshot. Card sequencing on the `maize` Andoneer
+workbench is the day-to-day source of truth for what happens next
+inside each milestone, and this section will need another pass once V3
+lands.
+
 # Beyond 1.0: Linux on Maize
 
 Running Linux on Maize is a completeness proof and is the reason the
-milestones above are ordered the way they are. Everything Linux demands
-of the machine, including block storage, complete MMU behavior, a
-network device, real signals, and timers, gets built and proven first
-against a kernel I control and can actually debug, which is what
-Milestones 6 through 10 amount to.
+milestones above are ordered the way they are. The machine underneath
+it changed from v1 to v2 on 2026-08-12, so the path there now runs
+through Phase 3's V3 and V4 above instead of Phase 2's Milestones 6
+through 10. Everything Linux demands of the machine, including block
+storage, complete MMU behavior, a network device, real signals, and
+timers, still needs to get built and proven first against a kernel I
+control and can actually debug.
 Bringing Linux up on devices nothing has ever exercised is the worst
 possible position to debug from. Doing quesOS first means Linux arrives
 on hardware that already works.
