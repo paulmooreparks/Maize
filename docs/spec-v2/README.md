@@ -15,13 +15,14 @@ machine is left undefined or implementation-defined by omission.
 
 ## Status
 
-**Maize base `2.0`, erratum level `2.0.3-dev`. Release candidate since 2026-08-12; not yet
+**Maize base `2.0`, erratum level `2.0.4-dev`. Release candidate since 2026-08-12; not yet
 frozen.**
 
 That line is this specification's header, and the versioning chapter refers to it by that
 name. Its first two components are the base version, which is what a conformance claim names
-and what a machine reports; the third is the erratum level, which counts corrections to this
-text and which no claim and no machine ever names. The `-dev` suffix on that level says the
+and what a machine reports; the third is the erratum level, which counts publications of
+corrections to this text, one number for every batch issued together, and which no claim and
+no machine ever names. The `-dev` suffix on that level says the
 base is still a release candidate, and it goes at the release without the number changing
 with it. A reader tracking whether they hold the current text watches the third component. A
 reader writing a conformance claim ignores it and writes `Maize base 2.0`.

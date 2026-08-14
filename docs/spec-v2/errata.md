@@ -11,7 +11,7 @@ base text and this log gains a divider at that point. Every entry above the divi
 already been applied to the text a reader holds, so there is nothing for that reader to do
 about it, and every entry below it corrects a text someone else had already read. The log is
 not emptied at the release and no entry is renumbered, because the erratum level counts
-corrections continuously across the divider and a citation has to keep meaning what it meant.
+publications continuously across the divider and a citation has to keep meaning what it meant.
 
 An erratum corrects a passage that is ambiguous, self-contradictory, wrong about what the
 reference implementation and the conformance suite already agree on, or silent where this
@@ -311,3 +311,137 @@ contradiction during implementation of the trap model; maize-466, which implemen
 and enable state and the delivery sequence this entry corrects the description of, needs no
 change. A related question, whether an erratum level counts a correction or an issuance, is
 open on card maize-483 and this entry does not depend on its answer.
+
+### `2.0.4`, 2026-08-14. The versioning chapter, the header note, and this log's own front matter said the erratum level counts corrections; it counts publications
+
+Chapter and section: `versioning.md`, "Errata" (four passages) and "What the numbers promise"
+(one passage); `README.md`, "Status"; this file's own front matter, above "What an entry
+records".
+
+Before, in `versioning.md`, "Errata":
+
+> Correcting such a passage is an erratum, and an erratum carries a third version component:
+> `2.0.1`, `2.0.2`, and so on. That component counts corrections monotonically for the life of
+> this text. It never restarts, and a number once issued is never reused or withdrawn, so a
+> citation to erratum `2.0.2` names the same correction for as long as this architecture
+> exists.
+
+Now:
+
+> Correcting such a passage is an erratum, and an erratum carries a third version component:
+> `2.0.1`, `2.0.2`, and so on. That component counts publications monotonically for the life of
+> this text: one number for every batch of corrections issued together, whether the batch holds
+> one correction or several. It never restarts, and a number once issued is never reused or
+> withdrawn, so a citation to erratum `2.0.2` names the same publication for as long as this
+> architecture exists.
+
+Before, further down the same section:
+
+> At the release the suffix drops and nothing else moves. The level the header carried as
+> `2.0.3-dev` becomes `2.0.3`, the next correction is `2.0.4`, and the log keeps the entries it
+> had. The counter does not restart at the release, so the number of a level is the number of
+> corrections that have issued since this text existed, before the freeze and after it alike.
+
+Now:
+
+> At the release the suffix drops and nothing else moves. Whatever level the header carries at
+> that moment keeps its number and loses its suffix, the erratum published after it takes the
+> next number whether it corrects one passage or several, and the log keeps the entries it had.
+> No number is skipped at the freeze and none is reissued. The counter does not restart at the
+> release, so the number of a level is the number of publications that have issued since this
+> text existed, before the freeze and after it alike, not the number of corrections those
+> publications carried.
+
+The corrected passage also drops the two level numbers the old one named. That paragraph taught
+a rule through whichever levels were current when it was written, and issuing this erratum
+falsified both: it advanced the header past the level the paragraph said the header carried,
+and it is itself the erratum the paragraph called the next one. The same section requires that
+no chapter quote the current level, for the reason this paragraph went on to demonstrate, so
+the corrected text states the transition without naming a level at all.
+
+Before, in the same section, in the paragraph describing what the header tells a reader:
+
+> That line states the level this text carries, suffix included, so a reader learns from the
+> header both which correction the text has reached and whether the base is still a release
+> candidate; the release-candidate status a later chapter's rule keys on is carried there and
+> nowhere else.
+
+Now:
+
+> That line states the level this text carries, suffix included, so a reader learns from the
+> header both which publication the text has reached and whether the base is still a release
+> candidate; the release-candidate status a later chapter's rule keys on is carried there and
+> nowhere else.
+
+Before, in the worked example further down the same section:
+
+> Both destinations exist because a bare version component is useless alone. A level of
+> `2.0.3` tells a reader that three corrections have issued and nothing about whether any of
+> them touched the chapter in front of them. The header answers which text this is, and the
+> log answers what changed.
+
+Now:
+
+> Both destinations exist because a bare version component is useless alone. A level of
+> `2.0.3` tells a reader that three publications have issued, not how many corrections they
+> held between them, and nothing about whether any of them touched the chapter in front of
+> them. The header answers which text this is, and the log answers what changed; a reader who
+> wants the correction count finds it by reading the log's entries, not by reading the level.
+
+Before, in `versioning.md`, "What the numbers promise":
+
+> - An erratum component on the base names a text correction, and names a behavior change only
+>   where the corrected passage was silent and the errata section's bound permits the change.
+
+Now:
+
+> - An erratum component on the base names a publication of text corrections, and names a
+>   behavior change only where a corrected passage was silent and the errata section's bound
+>   permits the change.
+
+Before, in `README.md`, "Status":
+
+> That line is this specification's header, and the versioning chapter refers to it by that
+> name. Its first two components are the base version, which is what a conformance claim names
+> and what a machine reports; the third is the erratum level, which counts corrections to this
+> text and which no claim and no machine ever names.
+
+Now:
+
+> That line is this specification's header, and the versioning chapter refers to it by that
+> name. Its first two components are the base version, which is what a conformance claim names
+> and what a machine reports; the third is the erratum level, which counts publications of
+> corrections to this text, one number for every batch issued together, and which no claim and
+> no machine ever names.
+
+Before, in this file's own front matter:
+
+> The log is not emptied at the release and no entry is renumbered, because the erratum level
+> counts corrections continuously across the divider and a citation has to keep meaning what
+> it meant.
+
+Now:
+
+> The log is not emptied at the release and no entry is renumbered, because the erratum level
+> counts publications continuously across the divider and a citation has to keep meaning what
+> it meant.
+
+Requirement: a reader learns how many corrections have issued against this text by counting
+entries in this log, not by reading the erratum level. The level names a publication, meaning
+a batch of corrections issued together, and it is unchanged by how many corrections the batch
+held; three of the entries above share level `2.0.1` for exactly this reason. The header
+carrying that level therefore tells a reader which publication the text has reached and no
+more, so no passage in this specification describes the level, or the header that carries it,
+as naming or counting an individual correction. Nothing here obliges an implementation to
+distinguish these two counts, since the erratum level is reported by no control and status
+register and is not named in a conformance claim; the correction is for a reader of the
+specification, not for a machine.
+
+Provenance: this restates what the log has done since its first entries rather than supplying
+an answer where the text was silent. Three separate corrections issued on 2026-08-12 all carry
+level `2.0.1`, one issued on 2026-08-13 carries `2.0.2`, and one issued on 2026-08-14 carries
+`2.0.3`, so the level has counted publications rather than corrections from the start, and the
+corrected text only now says so. Operator ruling, recorded on card maize-483: "It counts
+publications." No conformance test's expected result moves and no implementation changes,
+because the erratum level is documentation for a reader and is reported by no register and
+named in no conformance claim.

@@ -73,10 +73,11 @@ A ratified specification can still contain a passage that is ambiguous, self-con
 wrong about what the reference implementation and the conformance suite already agree on, or
 silent where this specification promises no silence.
 Correcting such a passage is an erratum, and an erratum carries a third version component:
-`2.0.1`, `2.0.2`, and so on. That component counts corrections monotonically for the life of
-this text. It never restarts, and a number once issued is never reused or withdrawn, so a
-citation to erratum `2.0.2` names the same correction for as long as this architecture
-exists.
+`2.0.1`, `2.0.2`, and so on. That component counts publications monotonically for the life of
+this text: one number for every batch of corrections issued together, whether the batch holds
+one correction or several. It never restarts, and a number once issued is never reused or
+withdrawn, so a citation to erratum `2.0.2` names the same publication for as long as this
+architecture exists.
 
 The component also carries a suffix while the base is unreleased. A level issued against this
 release candidate is written with `-dev`, as in `2.0.3-dev`; should the base ever run a beta
@@ -87,10 +88,13 @@ does not. Semantic versioning orders a prerelease suffix ahead of the bare versi
 suffixed level precedes the bare level of the same number, and comparing two levels needs no
 rule this specification has to supply.
 
-At the release the suffix drops and nothing else moves. The level the header carried as
-`2.0.3-dev` becomes `2.0.3`, the next correction is `2.0.4`, and the log keeps the entries it
-had. The counter does not restart at the release, so the number of a level is the number of
-corrections that have issued since this text existed, before the freeze and after it alike.
+At the release the suffix drops and nothing else moves. Whatever level the header carries at
+that moment keeps its number and loses its suffix, the erratum published after it takes the
+next number whether it corrects one passage or several, and the log keeps the entries it had.
+No number is skipped at the freeze and none is reissued. The counter does not restart at the
+release, so the number of a level is the number of publications that have issued since this
+text existed, before the freeze and after it alike, not the number of corrections those
+publications carried.
 
 An erratum is bounded by one rule. It changes the text so that it says what the architecture
 already required, and it changes no conformance test's expected result. If correcting a
@@ -120,7 +124,7 @@ information for a program. It appears in two places and nowhere else.
 
 The first is the specification's header, the bold line that opens the status section of
 `README.md`. That line states the level this text carries, suffix included, so a reader learns
-from the header both which correction the text has reached and whether the base is still a
+from the header both which publication the text has reached and whether the base is still a
 release candidate; the release-candidate status a later chapter's rule keys on is carried
 there and nowhere else. The header is the only place any document in this set states the
 current level. No chapter quotes it, because a quotation is a copy that goes stale the moment
@@ -133,9 +137,10 @@ suffix describes the state of the text rather than the correction; which side of
 an entry sits on is what the log's divider records.
 
 Both destinations exist because a bare version component is useless alone. A level of `2.0.3`
-tells a reader that three corrections have issued and nothing about whether any of them
-touched the chapter in front of them. The header answers which text this is, and the log
-answers what changed.
+tells a reader that three publications have issued, not how many corrections they held between
+them, and nothing about whether any of them touched the chapter in front of them. The header
+answers which text this is, and the log answers what changed; a reader who wants the
+correction count finds it by reading the log's entries, not by reading the level.
 
 The component is reported by no control and status register, does not appear in the
 boot-information block, and is not named in a conformance claim, which names the base version
@@ -201,8 +206,9 @@ guarantee.
 
 - Base `2.0` names one fixed behavior, identical on every conforming machine, frozen for
   good once this text reaches its release.
-- An erratum component on the base names a text correction, and names a behavior change only
-  where the corrected passage was silent and the errata section's bound permits the change.
+- An erratum component on the base names a publication of text corrections, and names a
+  behavior change only where a corrected passage was silent and the errata section's bound
+  permits the change.
 - Extension version `M.n` names one fixed set of assigned encodings and behaviors for that
   extension.
 - Extension version `M.n` implements everything `M.k` implemented for every `k` less than
