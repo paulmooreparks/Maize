@@ -165,7 +165,10 @@ target_include_directories(mzasm_tests PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src/v2"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/v2")
 set_property(TARGET mzasm_tests PROPERTY CXX_STANDARD 20)
-add_dependencies(mzasm_tests mzasm mzvm)
+# mzvmg joins the list on maize-456, which added fixtures that run the graphical twin. Without
+# it, `ctest -L v2` would run those fixtures against whatever mzvmg happened to be lying in the
+# build directory, or skip them on the absent-binary guard and pass having tested nothing.
+add_dependencies(mzasm_tests mzasm mzvm mzvmg)
 
 if (MAIZE_SANITIZE)
   target_compile_options(mzasm_tests PRIVATE ${_maize_san_flags})
@@ -194,6 +197,9 @@ set(MAIZE_MZASM_FIXTURES
   mzvm_prints_hello_world
   mzvm_refuses_out_of_range_numeric_arguments
   mzvm_leading_whitespace_cannot_hide_a_minus_sign
+  mzvmg_help_names_itself_and_says_it_has_no_display
+  mzvm_help_does_not_mention_the_graphical_twin
+  mzvmg_diagnostics_name_the_binary_that_printed_them
   nothing_in_the_v2_assembler_names_the_v1_suffix
   the_task_scanner_stops_at_the_next_task)
 

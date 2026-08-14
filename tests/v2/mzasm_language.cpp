@@ -1162,8 +1162,11 @@ MZ_FIXTURE(mzvm_leading_whitespace_cannot_hide_a_minus_sign) {
     for (unsigned byte = 1; byte < 256; ++byte) {
         char text[4] = {static_cast<char>(byte), '-', '1', '\0'};
         std::uint64_t value = 0;
+        // "mzvm" is passed as the program name throughout this fixture because it asserts mzvm's
+        // own parser behaviour (maize-456). The graphical twin shares the parser and would report
+        // the same refusals under its own name.
         const bool accepted =
-            parse_number("--start", "an address", text, 0, UINT64_MAX, value, sink);
+            parse_number("mzvm", "--start", "an address", text, 0, UINT64_MAX, value, sink);
         if (accepted) {
             char message[128];
             std::snprintf(message, sizeof(message),
@@ -1188,7 +1191,7 @@ MZ_FIXTURE(mzvm_leading_whitespace_cannot_hide_a_minus_sign) {
         char positive[4] = {static_cast<char>(byte), '7', '\0', '\0'};
         std::uint64_t parsed = 0;
         const bool parsed_ok =
-            parse_number("--start", "an address", positive, 0, UINT64_MAX, parsed, sink);
+            parse_number("mzvm", "--start", "an address", positive, 0, UINT64_MAX, parsed, sink);
 
         errno = 0;
         char* end = nullptr;
@@ -1226,12 +1229,108 @@ MZ_FIXTURE(mzvm_leading_whitespace_cannot_hide_a_minus_sign) {
     }
     for (const auto& [name, text] : hidden) {
         std::uint64_t value = 0;
-        if (parse_number("--memory", "a size", text, 1, UINT64_MAX, value, second_sink)) {
+        if (parse_number("mzvm", "--memory", "a size", text, 1, UINT64_MAX, value, second_sink)) {
             record_failure(std::string("a minus sign hidden behind a ") + name +
                            " reached the conversion");
         }
     }
     std::fclose(second_sink);
+}
+
+// maize-456. mzvm and mzvmg are one source file compiled twice, so until this card every
+// sentence mzvmg printed named mzvm, starting with `usage: mzvm` at the top of its own --help.
+// The three fixtures below hold the two binaries apart: the graphical twin says which one it is
+// and what it cannot do, the console machine's own text is untouched by the twin's, and the
+// naming reaches every diagnostic rather than only the banner.
+
+MZ_FIXTURE(mzvmg_help_names_itself_and_says_it_has_no_display) {
+    const std::string mzvmg = sibling_binary("mzvmg");
+    MZ_CHECK(file_exists(mzvmg));
+    if (!file_exists(mzvmg)) {
+        return;
+    }
+
+    const RunResult help = run_binary(mzvmg, {"--help"});
+    MZ_CHECK_EQ(static_cast<std::uint64_t>(help.exit_code), 0u);
+
+    // The banner. Asserted against stdout rather than the combined stream, because --help is a
+    // request answered rather than a failure reported and it belongs on stdout.
+    if (help.standard_output.find("usage: mzvmg") == std::string::npos) {
+        record_failure("mzvmg --help does not name mzvmg in its usage banner:\n" +
+                       help.standard_output);
+    }
+
+    // The display status, asserted as the TEXT rather than as the topic. A banner that merely
+    // mentions a display would satisfy a looser check while saying something wrong, and what an
+    // operator needs from this paragraph is the specific claim that the device is absent.
+    if (help.standard_output.find("no display device yet (maize-456)") == std::string::npos) {
+        record_failure("mzvmg --help does not say it has no display device yet:\n" +
+                       help.standard_output);
+    }
+}
+
+MZ_FIXTURE(mzvm_help_does_not_mention_the_graphical_twin) {
+    const std::string mzvm = sibling_binary("mzvm");
+    MZ_CHECK(file_exists(mzvm));
+    if (!file_exists(mzvm)) {
+        return;
+    }
+
+    const RunResult help = run_binary(mzvm, {"--help"});
+    MZ_CHECK_EQ(static_cast<std::uint64_t>(help.exit_code), 0u);
+
+    if (help.standard_output.find("usage: mzvm [options]") == std::string::npos) {
+        record_failure("mzvm --help no longer prints its own usage banner:\n" +
+                       help.standard_output);
+    }
+
+    // The console machine is not the place to explain what the graphical one lacks. This guards
+    // the shape of the fix as much as its text: a display paragraph printed unconditionally, or
+    // a banner built from a name that defaulted to the twin, both show up here.
+    if (help.output.find("mzvmg") != std::string::npos) {
+        record_failure("mzvm's own output names the graphical twin:\n" + help.output);
+    }
+
+    // The name check above does not cover the paragraph on its own. The display note is built
+    // from the program name, so printed unconditionally it would come out reading "mzvm has no
+    // display device yet" and carry the string "mzvmg" nowhere, which is a false statement that
+    // passes a check for the twin's name. The sentence is therefore asserted absent by its own
+    // text as well.
+    if (help.output.find("no display device yet") != std::string::npos) {
+        record_failure("mzvm's own output carries the graphical twin's display note:\n" +
+                       help.output);
+    }
+}
+
+MZ_FIXTURE(mzvmg_diagnostics_name_the_binary_that_printed_them) {
+    // The banner is one of fifteen places the name appears. A fix that reached only --help would
+    // leave mzvmg reporting a missing file, a bad option and every trap under mzvm's name, so
+    // this asserts one of the other fourteen against the shipped binary.
+    const std::string mzvmg = sibling_binary("mzvmg");
+    MZ_CHECK(file_exists(mzvmg));
+    if (!file_exists(mzvmg)) {
+        return;
+    }
+
+    ScratchDir scratch("mzvmgname");
+    const std::string absent = scratch.file("no-such-image.mzi");
+
+    const RunResult ran = run_binary(mzvmg, {absent});
+    // Exactly two, which is this machine's usage-failure status. A crash exits non-zero too, and
+    // a bare non-zero check would call one a pass (maize-461 made the code comparable on both
+    // hosts).
+    MZ_CHECK_EQ(static_cast<std::uint64_t>(ran.exit_code), 2u);
+    if (ran.standard_error.find("mzvmg: cannot read '") == std::string::npos) {
+        record_failure("mzvmg did not report the unreadable image under its own name:\n" +
+                       ran.output);
+    }
+    // Stated as its own assertion rather than left to the check above, because the specific
+    // regression is the twin's name in the twin's mouth.
+    if (ran.standard_error.find("mzvm: cannot read '") != std::string::npos) {
+        record_failure("mzvmg still calls itself mzvm when it cannot read an image:\n" +
+                       ran.output);
+    }
+    MZ_CHECK_TEXT(ran.standard_output, std::string());
 }
 
 namespace {

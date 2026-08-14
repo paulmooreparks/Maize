@@ -118,6 +118,18 @@ else {
     $displayArgs  = @('-DMAIZE_DISPLAY=ON', "-DSDL2_DIR=$(($Sdl2CmakeDir) -replace '\\','/')")
 }
 
+# Say out loud what the source comments above already say (maize-456). This install fetches SDL2,
+# turns MAIZE_DISPLAY on, and later copies SDL2.dll next to mzvmg.exe, and every one of those
+# steps looks like a window is being built. Nothing links the library, so an operator reading only
+# the console output would form an impression the build cannot support. install-mzasm.sh has
+# printed its equivalent line since maize-450; this closes the gap on the platform that actually
+# installs the DLL. It sits after both provisioning branches converge so it prints whether SDL2
+# was already present or freshly fetched, and it is inside the $displayOn test so -Headless, which
+# provisions nothing, says nothing.
+if ($displayOn) {
+    Write-Host "SDL2 provisioned; MAIZE_DISPLAY=ON. Nothing links it yet (maize-456), so this build's mzvmg.exe opens no window and the installed SDL2.dll goes unused."
+}
+
 # --- Resolve cmake --------------------------------------------------------------
 $cmakeCmd = Get-Command cmake -ErrorAction SilentlyContinue
 if ($cmakeCmd) {

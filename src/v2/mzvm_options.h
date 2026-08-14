@@ -36,11 +36,17 @@ namespace maize::v2 {
 // rejection the same way, naming the option, the text it refused, and the range it accepts. It
 // goes to the stream the caller names so that a fixture sweeping thousands of rejections can
 // send them somewhere other than the console.
-inline bool parse_number(const char* option, const char* expected, const char* text,
-                         std::uint64_t minimum, std::uint64_t maximum, std::uint64_t& out,
-                         std::FILE* diagnostics = stderr) {
+//
+// The program name arrives as an argument rather than being written into the sentences here
+// (maize-456), because two binaries run this parser: mzvm and its graphical twin mzvmg, built
+// from the same translation unit under different names. A literal here would make one of them
+// lie about which program refused the value. The caller passes its own compile-time name, and
+// the in-process fixtures pass the name whose behaviour they are asserting.
+inline bool parse_number(const char* program_name, const char* option, const char* expected,
+                         const char* text, std::uint64_t minimum, std::uint64_t maximum,
+                         std::uint64_t& out, std::FILE* diagnostics = stderr) {
     if (text == nullptr || *text == '\0') {
-        std::fprintf(diagnostics, "mzvm: %s needs %s\n", option, expected);
+        std::fprintf(diagnostics, "%s: %s needs %s\n", program_name, option, expected);
         return false;
     }
 
@@ -65,8 +71,8 @@ inline bool parse_number(const char* option, const char* expected, const char* t
         ++first;
     }
     if (*first == '-') {
-        std::fprintf(diagnostics, "mzvm: %s needs %s, and '%s' is negative\n", option, expected,
-                     text);
+        std::fprintf(diagnostics, "%s: %s needs %s, and '%s' is negative\n", program_name, option,
+                     expected, text);
         return false;
     }
 
@@ -74,8 +80,8 @@ inline bool parse_number(const char* option, const char* expected, const char* t
     char* end = nullptr;
     const unsigned long long value = std::strtoull(first, &end, 0);
     if (end == first || *end != '\0') {
-        std::fprintf(diagnostics, "mzvm: %s needs %s, and '%s' is not a number\n", option, expected,
-                     text);
+        std::fprintf(diagnostics, "%s: %s needs %s, and '%s' is not a number\n", program_name,
+                     option, expected, text);
         return false;
     }
     // Both tests are load-bearing and neither subsumes the other. ERANGE is the only signal when
@@ -84,9 +90,9 @@ inline bool parse_number(const char* option, const char* expected, const char* t
     // than the type, where the conversion succeeded and reported nothing.
     if (errno == ERANGE || value > maximum || value < minimum) {
         std::fprintf(diagnostics,
-                     "mzvm: %s value '%s' is out of range; the accepted range is %" PRIu64
+                     "%s: %s value '%s' is out of range; the accepted range is %" PRIu64
                      " to %" PRIu64 "\n",
-                     option, text, minimum, maximum);
+                     program_name, option, text, minimum, maximum);
         return false;
     }
     out = static_cast<std::uint64_t>(value);

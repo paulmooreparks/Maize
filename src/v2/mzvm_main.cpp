@@ -61,6 +61,13 @@ void write_console_bytes(const std::vector<std::uint8_t>& bytes) {
 #endif
 }
 
+// Which of the two machines this build is (maize-456). CMakeLists.txt compiles this one file
+// into both `mzvm` and `mzvmg` and defines the name per target, so the binary an operator ran is
+// the binary every sentence below names. There is no runtime fallback and there should not be:
+// a missing define is a build that cannot say what it is, and the compiler should stop rather
+// than let it guess.
+constexpr const char* kProgramName = MAIZE_V2_PROGRAM_NAME;
+
 constexpr std::size_t kDefaultMemoryBytes = 1u << 20;  // 1 MiB
 constexpr std::uint64_t kDefaultLoadAddress = 0x1000;
 
@@ -81,10 +88,12 @@ constexpr std::uint64_t kMaxAddress = UINT64_MAX;
 constexpr std::uint64_t kMaxSteps = UINT64_MAX;
 constexpr std::uint64_t kMaxMemoryBytes = static_cast<std::uint64_t>(SIZE_MAX);
 
-void print_usage(std::FILE* stream) {
+void print_usage(std::FILE* stream, const char* program_name) {
     std::fprintf(stream,
-                 "usage: mzvm [options] <image>\n"
-                 "\n"
+                 "usage: %s [options] <image>\n"
+                 "\n",
+                 program_name);
+    std::fprintf(stream,
                  "Run a Maize v2 program. The image is a flat file of instruction bytes; it is\n"
                  "loaded into memory at the load address and execution starts there.\n"
                  "\n"
@@ -100,6 +109,24 @@ void print_usage(std::FILE* stream) {
                  "and the console class at ports $0010 through $001F, and no other device class,\n"
                  "so what the guest writes to the console port reaches standard output. Loading a\n"
                  "boot image, floating point and system instructions are not supported yet.\n");
+
+    // The graphical twin says what it is not (maize-456). `mzvmg` is installed as the graphical
+    // machine and SDL2.dll is installed beside it, so everything an operator can see from outside
+    // says a window is coming, and nothing they can see says the machine carries no framebuffer
+    // and no keyboard class to put in one.
+    //
+    // The condition is the printed name rather than a second compile definition, so the sentence
+    // and the banner above it cannot disagree about which binary this is. Every clause here is
+    // false the day the display device lands, which is the point: the paragraph is deleted then,
+    // and the fixture pinning its text fails until somebody does.
+    if (std::strcmp(program_name, "mzvmg") == 0) {
+        std::fprintf(stream,
+                     "\n"
+                     "%s has no display device yet (maize-456). It carries no framebuffer and no\n"
+                     "keyboard class, opens no window, and loads no SDL2 library. Today it runs\n"
+                     "exactly what mzvm runs, and this paragraph goes away when that changes.\n",
+                     program_name);
+    }
 }
 
 using maize::v2::parse_number;
@@ -137,8 +164,8 @@ std::unique_ptr<maize::v2::MemoryV2> allocate_memory(std::uint64_t bytes) {
     } catch (const std::length_error&) {
     } catch (const std::bad_alloc&) {
     }
-    std::fprintf(stderr, "mzvm: cannot allocate %" PRIu64 " bytes of memory for the machine\n",
-                 bytes);
+    std::fprintf(stderr, "%s: cannot allocate %" PRIu64 " bytes of memory for the machine\n",
+                 kProgramName, bytes);
     return nullptr;
 }
 
@@ -170,7 +197,7 @@ int main(int argc, char** argv) {
         const std::string argument = argv[i];
         const bool has_value = (i + 1) < argc;
         if (argument == "-h" || argument == "--help") {
-            print_usage(stdout);
+            print_usage(stdout, kProgramName);
             return 0;
         } else if (argument == "--registers") {
             dump_registers = true;
@@ -178,43 +205,47 @@ int main(int argc, char** argv) {
             // The lower bound is the option's own rule rather than a separate test after the
             // fact: a memory of zero bytes is as unusable as one of 2^70, and both are refused
             // by the same sentence.
-            if (!parse_number("--memory", "a size", argv[++i], 1, kMaxMemoryBytes, memory_bytes)) {
+            if (!parse_number(kProgramName, "--memory", "a size", argv[++i], 1, kMaxMemoryBytes,
+                              memory_bytes)) {
                 return 2;
             }
         } else if (argument == "--load-at" && has_value) {
-            if (!parse_number("--load-at", "an address", argv[++i], 0, kMaxAddress, load_address)) {
+            if (!parse_number(kProgramName, "--load-at", "an address", argv[++i], 0, kMaxAddress,
+                              load_address)) {
                 return 2;
             }
         } else if (argument == "--start" && has_value) {
-            if (!parse_number("--start", "an address", argv[++i], 0, kMaxAddress, start_address)) {
+            if (!parse_number(kProgramName, "--start", "an address", argv[++i], 0, kMaxAddress,
+                              start_address)) {
                 return 2;
             }
             start_given = true;
         } else if (argument == "--max-steps" && has_value) {
             // Zero is the documented "no limit" spelling, so it is in range here.
-            if (!parse_number("--max-steps", "a count", argv[++i], 0, kMaxSteps, max_steps)) {
+            if (!parse_number(kProgramName, "--max-steps", "a count", argv[++i], 0, kMaxSteps,
+                              max_steps)) {
                 return 2;
             }
         } else if (!argument.empty() && argument[0] == '-') {
-            std::fprintf(stderr, "mzvm: unrecognized option '%s'\n", argument.c_str());
-            print_usage(stderr);
+            std::fprintf(stderr, "%s: unrecognized option '%s'\n", kProgramName, argument.c_str());
+            print_usage(stderr, kProgramName);
             return 2;
         } else if (image_path == nullptr) {
             image_path = argv[i];
         } else {
-            std::fprintf(stderr, "mzvm: more than one image named\n");
+            std::fprintf(stderr, "%s: more than one image named\n", kProgramName);
             return 2;
         }
     }
 
     if (image_path == nullptr) {
-        print_usage(stderr);
+        print_usage(stderr, kProgramName);
         return 2;
     }
 
     std::vector<std::uint8_t> image;
     if (!read_file(image_path, image)) {
-        std::fprintf(stderr, "mzvm: cannot read '%s'\n", image_path);
+        std::fprintf(stderr, "%s: cannot read '%s'\n", kProgramName, image_path);
         return 2;
     }
 
@@ -224,7 +255,8 @@ int main(int argc, char** argv) {
     }
     maize::v2::MemoryV2& memory = *memory_owner;
     if (!memory.load_image(load_address, image.data(), image.size())) {
-        std::fprintf(stderr, "mzvm: the image does not fit in memory at the load address\n");
+        std::fprintf(stderr, "%s: the image does not fit in memory at the load address\n",
+                     kProgramName);
         return 2;
     }
 
@@ -261,11 +293,11 @@ int main(int argc, char** argv) {
             // reader should go and look at: a zero vector-table entry is a missing handler, and
             // a double fault is a trap stack or vector table the machine could not reach.
             std::fprintf(stderr,
-                         "mzvm: trap %u (%s) subcode %u, aux $%016" PRIX64
+                         "%s: trap %u (%s) subcode %u, aux $%016" PRIX64
                          ", at $%016" PRIX64 "\n",
-                         result.trap.cause, cause_name(result.trap.cause), result.trap.subcode,
-                         result.trap.aux, result.trap.pc);
-            std::fprintf(stderr, "mzvm: %s\n",
+                         kProgramName, result.trap.cause, cause_name(result.trap.cause),
+                         result.trap.subcode, result.trap.aux, result.trap.pc);
+            std::fprintf(stderr, "%s: %s\n", kProgramName,
                          result.disposition == maize::v2::TrapDisposition::HaltedDoubleFault
                              ? "double fault: the vector read or the frame push could not be "
                                "performed, and the machine halted"
@@ -278,9 +310,9 @@ int main(int argc, char** argv) {
             // a defect in the program or in this build, and it says so loudly rather than
             // returning a plausible-looking trap record.
             std::fprintf(stderr,
-                         "mzvm: opcode $%02X at $%016" PRIX64
+                         "%s: opcode $%02X at $%016" PRIX64
                          " is not implemented in this build\n",
-                         result.opcode, result.pc);
+                         kProgramName, result.opcode, result.pc);
             exit_code = 3;
             break;
         case maize::v2::StepStatus::Suspended:
@@ -290,14 +322,15 @@ int main(int argc, char** argv) {
             // unimplemented-opcode report rather than a guest-visible trap. Saying so beats
             // spinning until a person kills the process or an outer timeout does.
             std::fprintf(stderr,
-                         "mzvm: wait_for_interrupt at $%016" PRIX64
+                         "%s: wait_for_interrupt at $%016" PRIX64
                          " can never complete, because no enabled cause is pending and no device "
                          "has anything scheduled\n",
-                         result.pc);
+                         kProgramName, result.pc);
             exit_code = 1;
             break;
         case maize::v2::StepStatus::Advanced:
-            std::fprintf(stderr, "mzvm: step limit reached at $%016" PRIX64 "\n", machine.pc());
+            std::fprintf(stderr, "%s: step limit reached at $%016" PRIX64 "\n", kProgramName,
+                         machine.pc());
             exit_code = 1;
             break;
     }

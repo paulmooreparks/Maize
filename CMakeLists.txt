@@ -96,6 +96,15 @@ add_executable(mzvmg ${MAIZE_V2_SOURCES} "src/v2/mzvm_main.cpp")
 target_include_directories(mzvm  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/v2")
 target_include_directories(mzvmg PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/v2")
 
+# maize-456: each twin is told which one it is, because one source file compiled twice
+# cannot work it out at runtime. argv[0] is not the answer: it carries whatever path the
+# caller typed, it is empty when the caller says so, and a program that reports a name an
+# operator can choose is reporting nothing. So the name is fixed here, per target, and
+# every diagnostic either binary prints is built from it. Before this, `mzvmg --help`
+# printed `usage: mzvm`, and each of the other fourteen things it can say named the twin.
+target_compile_definitions(mzvm  PRIVATE MAIZE_V2_PROGRAM_NAME="mzvm")
+target_compile_definitions(mzvmg PRIVATE MAIZE_V2_PROGRAM_NAME="mzvmg")
+
 # maize-422: mzasm, the Maize v2 assembler. src/maize_obj.h is shared with v1's tools
 # because the object format carries no instruction knowledge and D-3 extends it in place
 # with a v2 version byte and one new relocation type.
