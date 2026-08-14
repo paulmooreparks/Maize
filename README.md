@@ -23,8 +23,10 @@ built and where to find it.
 
 ## Where v2 stands today
 
-The v2 specification is ratified and frozen at base `2.0` (`docs/spec-v2/README.md`), and it
-covers the whole machine: the register model, the instruction encoding, memory and
+The v2 specification is a release candidate at base `2.0` (`docs/spec-v2/README.md`). The
+thirteen decisions and the terminology ruling it implements were ratified on 2026-08-12, and
+the text still takes corrections under that ratification until base `2.0` ships. It covers
+the whole machine: the register model, the instruction encoding, memory and
 execution, every base instruction including floating point, the trap model, privilege
 levels, Sv48 paging, boot, the calling convention, and the device surface.
 
@@ -53,7 +55,7 @@ retires from that role as its own v2 port lands.
 twenty chapters plus three appendices and a glossary. It states a defined outcome for every
 input, including every invalid one, and it is written so a reader who has never seen the
 C++ source can build a conforming machine from the prose alone. It is not duplicated
-here, because a single frozen source of truth beats two that drift apart.
+here, because a single source of truth beats two that drift apart.
 
 Start at `docs/spec-v2/README.md` for the authority chain and the reading routes, or go
 straight to `docs/spec-v2/terminology.md` if you already know what you are looking for. Read

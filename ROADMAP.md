@@ -386,12 +386,12 @@ history rather than open work.
 **Status: complete.** The design brief, the thirteen ratified decisions
 and the terminology ruling, the chapter drafting against those
 decisions, the whole-specification coherence read, and the
-ratification that froze the result all landed between 2026-07-24 and
-2026-08-12.
+ratification that made the result a release candidate all landed
+between 2026-07-24 and 2026-08-12.
 
 - The decision record, `docs/design/maize2-decisions.md`.
 - The ratified specification, `docs/spec-v2/`: twenty chapters, three
-  appendices, and a glossary, frozen at base `2.0`.
+  appendices, and a glossary, a release candidate at base `2.0`.
 
 Exit: met. A competent implementer can build a conforming machine from
 the specification alone, and the reasoning behind every ratified
