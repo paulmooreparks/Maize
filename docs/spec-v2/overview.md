@@ -28,11 +28,13 @@ its declared inputs, so two conforming machines executing the same image, with t
 device inputs delivered at the same instruction boundaries, observe the same architectural
 state at every instruction boundary.
 
-The architecture is a small frozen base plus named, independently versioned extensions. The
-base is everything in this document that is not marked as belonging to an extension, and it
-freezes exactly once, at v2.0, forever. Growth happens in extensions (`cap`, `vec`, `meter`,
-and `atomic` are the anticipated first set), each with its own version, its own opcode page
-behind an escape byte, and its own control-and-status-register range. A conformance claim
+The architecture is a small base plus named, independently versioned extensions. The base is
+everything in this document that is not marked as belonging to an extension, and it freezes
+exactly once, at v2.0's release, forever after; this text is the release candidate for that
+freeze, and the versioning chapter says what the release-candidate status means until then.
+Growth happens in extensions (`cap`, `vec`, `meter`, and `atomic` are the anticipated first
+set), each with its own version, its own opcode page behind an escape byte, and its own
+control-and-status-register range. A conformance claim
 names the base version and the exact set of extensions, so a base-only machine is a
 complete and certifiable Maize.
 

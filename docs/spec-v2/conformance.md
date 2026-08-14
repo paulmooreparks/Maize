@@ -40,6 +40,32 @@ bitmap advertises an extension its list omits fails conformance, as does a machi
 advertises an extension whose suite section it cannot pass, and as does a machine that
 implements an extension's instructions while advertising neither.
 
+## Claims against a release candidate
+
+A conformance claim, in the sense this chapter has just defined, names the frozen base. The
+versioning chapter states why: a claim presumes a fixed target that no two implementations
+can diverge against, and while this document set carries the release-candidate header, the
+target is not yet fixed, since it can still gain a correction the errata mechanism permits.
+No release-candidate machine is entitled to write `Maize base 2.0` and mean the claim this
+chapter defines.
+
+What a release-candidate machine can report instead is a suite result, naming the erratum
+level the suite was run at rather than the base version alone. It reads `Maize base 2.0,
+release candidate, erratum level <level>`, where `<level>` is the level the header carried
+when the suite ran. This chapter does not print that level's current value, for the reason the
+versioning chapter gives: a copy of the level made anywhere but the header goes stale the
+moment the next erratum issues. The base version token itself still carries no suffix;
+`release candidate` and the erratum level are separate clauses naming what a conformance
+claim's `Maize base 2.0` alone does not need to. A suite result carries the same extension-set
+and boot-information checks a conformance claim does, run against the base and extension
+sections as they stand at that erratum level, and a report of one states the erratum level for
+the same reason a conformance report states the suite version. What it does not carry is the
+guarantee a conformance claim carries: the suite itself can gain a test between one erratum
+and the next, so a suite result recorded at one erratum level says nothing about whether the
+same machine passes at the next, and a suite result never converts into a conformance claim
+merely because a machine held onto a passing result across the base's release. Reconfirming
+against the frozen suite is what a conformance claim requires.
+
 ## How the suite is factored
 
 The conformance suite is factored the way the architecture is factored, into one base

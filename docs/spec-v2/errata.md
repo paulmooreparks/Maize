@@ -4,11 +4,23 @@ This file records every correction issued against the ratified text of Maize bas
 is the companion to the erratum component of the specification's header: the header says
 which text a reader holds, and this log says what changed to get there.
 
+Every entry below was issued during the release-candidate period the versioning chapter
+describes, against a text nobody outside this project had yet built a second implementation
+of. At the release of Maize base `2.0`, the corrections these entries record fold into the
+base text and this log gains a divider at that point. Every entry above the divider has
+already been applied to the text a reader holds, so there is nothing for that reader to do
+about it, and every entry below it corrects a text someone else had already read. The log is
+not emptied at the release and no entry is renumbered, because the erratum level counts
+corrections continuously across the divider and a citation has to keep meaning what it meant.
+
 An erratum corrects a passage that is ambiguous, self-contradictory, wrong about what the
 reference implementation and the conformance suite already agree on, or silent where this
 specification promises no silence, and it changes no conformance test's expected result. The
-versioning chapter states the rule and its bound. A change that would alter what a conforming
-machine does is not an erratum, whatever its size.
+versioning chapter states the rule and its bound, including the one case the bound admits: a
+passage that was silent constrained nothing, so a correction filling the silence narrows the
+set of conforming machines rather than moving an answer this specification had already given.
+Outside that case, a change that would alter what a conforming machine does is not an erratum,
+whatever its size.
 
 ## What an entry records
 
@@ -72,7 +84,7 @@ direction-dependent, matching the direction-dependence the register state alread
 Provenance: the passage said no more than the sentence quoted above, so which inaccessible
 address is reported when a fault interrupts a transfer whose direction the implementation
 chooses was left unstated. This requirement was supplied by an operator ruling on that silence,
-recorded on card maize-431, and it does not restate anything the frozen text already compelled.
+recorded on card maize-431, and it does not restate anything the ratified text already compelled.
 An earlier ruling on the same silence named the region's lowest inaccessible address instead;
 it was checked against the running implementation, found to change a conformance result, and
 withdrawn before it shipped.
@@ -110,7 +122,7 @@ Requirement: an implementation whose descending `block_copy` faults and resumes 
 each pointer at the value it held when the resumed execution began plus only the bytes remaining
 at that point, never the instruction's original count.
 
-Provenance: this requirement restates what the frozen text already compelled. The restartability
+Provenance: this requirement restates what the ratified text already compelled. The restartability
 contract states that the three named registers describe exactly the work that remains, so no
 other state survives the fault, and the descending-progress rule leaves the pointer registers
 unmoved throughout a descending transfer. A resumed execution therefore holds no record of its
@@ -141,8 +153,8 @@ field's raw value when a bitfield instruction's invalid immediate carries an inv
 zero, and the position field's raw value otherwise.
 
 Provenance: this requirement was supplied by an operator ruling on a silence, recorded on card
-maize-431. It does not restate anything the frozen text already compelled, because neither
-reading contradicted anything the frozen text said. No conformance test's expected result moves,
+maize-431. It does not restate anything the ratified text already compelled, because neither
+reading contradicted anything the ratified text said. No conformance test's expected result moves,
 since no conformance binary could assert on this field while the answer did not exist.
 
 ### `2.0.2`, 2026-08-13. The class contract version has no numbering scheme
@@ -237,8 +249,8 @@ contract version higher than the one it expects for a class it recognizes procee
 refuses.
 
 Provenance: this requirement was supplied by an operator ruling on a silence, recorded on card
-maize-452, D-1. It does not restate anything the frozen text already compelled, because the
-frozen text named the field and said nothing about what values it could carry. No conformance
+maize-452, D-1. It does not restate anything the ratified text already compelled, because the
+ratified text named the field and said nothing about what values it could carry. No conformance
 test's expected result moves: no conformance binary could assert a value for this field while
 the specification defined none, so filling the silence changes no test that existed before it.
 The property the conformance notes gain is new for the same reason, and it narrows what

@@ -12,29 +12,60 @@ where the numbers are small, monotonic, and discoverable at runtime.
 
 ## The base version
 
-The base version of this specification is `2.0`, ratified on 2026-08-12. A machine
-implementing this text implements Maize base `2.0`, and there is no base version after it.
+The base version of this specification is `2.0`. A machine implementing this text implements
+Maize base `2.0`, and there is no base version after it; `2.0` names the one architecture
+this text will ever describe, whether the copy a reader holds is a release candidate or the
+frozen text that follows one.
 
 Maize v1 remains a separate architecture with its own version line. The `2` is a lineage
 marker, not a compatibility statement, and no v1 binary runs on a v2 machine.
 
+### Release candidate, and the freeze that follows it
+
+The thirteen decisions and the terminology ruling this text implements were ratified on
+2026-08-12. Ratification governs how the text changes from that point on: a change goes
+through a ratified decision and a reviewed change, and nobody edits the text to win an
+argument with their own code. It does not by itself mean the text has stopped changing, and
+this document set has not: it is a release candidate, and it stays one until Maize base
+`2.0` ships.
+
+A release candidate exists because a review pass does not find every defect a specification
+can carry. DOOM, quesOS running on this architecture, and a second implementer building from
+this text without the reference machine at hand are still ahead of it, and each is expected
+to surface a passage review already read as fine and an implementation could not follow, the
+way the first implementation of the trap model already has. Declaring the text frozen before
+that work happens would freeze whatever it has not yet found.
+
+The freeze happens once, at the release of Maize base `2.0`. At that release the corrections
+this candidate accumulated fold into the base text, so a reader who receives the frozen text
+already receives everything an erratum established along the way, and the errata log gains a
+divider marking every entry above it as already applied. A second implementer working from
+the frozen text therefore starts from a text that has already absorbed what this release
+candidate found wrong with itself, needs to do nothing about the entries above the divider,
+and reads below it only what a reader found wrong with the frozen text. The erratum level
+keeps counting across the divider and loses its suffix there, which the errata section below
+states in full.
+
 ### The base does not revise
 
-Base `2.0` is ratified, so no change to the behavior of the base architecture is possible
-within Maize v2. There is no `2.1`, there is no mechanism to produce one, and this
-specification defines no process by which the frozen text could be amended to alter a
-behavior. Every capability added to Maize v2 arrives as a named extension
-under the rules the extensions chapter fixes.
+Once frozen, base `2.0` does not revise. No change to a behavior this text already specifies
+is possible within Maize v2, before the release or after it: there is no `2.1`, there is no
+mechanism to produce one, and this specification defines no process by which the text could
+be amended to alter a behavior it already gives. A passage this text leaves silent is a
+different case, bounded by the errata section below, and that bound applies during the
+release-candidate period exactly as it will afterward. Every capability added to Maize v2
+arrives as a named extension under the rules the extensions chapter fixes.
 
 The consequence for a program is direct. A binary that uses only base instructions and only
 base architectural state behaves identically on every conforming Maize v2 machine that will
 ever be built, and a machine on which it does not is defective rather than differently
 versioned.
 
-The consequence for an implementer is equally direct. An implementation of base `2.0` is
-never obsoleted by a later base, and the work of building one is bounded by a document that
-has stopped moving. The weekend-reimplementable budget the design set for itself only means
-anything if the target holds still.
+The consequence for an implementer is equally direct. An implementation of the frozen base
+`2.0` is never obsoleted by a later base, and the work of building one is bounded by a
+document that has stopped moving. The weekend-reimplementable budget the design set for
+itself assumes a target that holds still, which is exactly what a release candidate does
+not yet promise and the frozen text does.
 
 ### Errata
 
@@ -42,7 +73,24 @@ A ratified specification can still contain a passage that is ambiguous, self-con
 wrong about what the reference implementation and the conformance suite already agree on, or
 silent where this specification promises no silence.
 Correcting such a passage is an erratum, and an erratum carries a third version component:
-`2.0.1`, `2.0.2`, and so on.
+`2.0.1`, `2.0.2`, and so on. That component counts corrections monotonically for the life of
+this text. It never restarts, and a number once issued is never reused or withdrawn, so a
+citation to erratum `2.0.2` names the same correction for as long as this architecture
+exists.
+
+The component also carries a suffix while the base is unreleased. A level issued against this
+release candidate is written with `-dev`, as in `2.0.3-dev`; should the base ever run a beta
+line before its release, a level issued on that line is written with `-beta` instead; and a
+level on the released base carries no suffix at all. The suffix names the line the text is
+on and says nothing about the correction itself, which is why it can change while the number
+does not. Semantic versioning orders a prerelease suffix ahead of the bare version, so every
+suffixed level precedes the bare level of the same number, and comparing two levels needs no
+rule this specification has to supply.
+
+At the release the suffix drops and nothing else moves. The level the header carried as
+`2.0.3-dev` becomes `2.0.3`, the next correction is `2.0.4`, and the log keeps the entries it
+had. The counter does not restart at the release, so the number of a level is the number of
+corrections that have issued since this text existed, before the freeze and after it alike.
 
 An erratum is bounded by one rule. It changes the text so that it says what the architecture
 already required, and it changes no conformance test's expected result. If correcting a
@@ -60,16 +108,29 @@ not establish it, and a behavior this specification constrains but no binary hap
 stands as written. Erratum `2.0.2` is the first correction to reach this case, and its entry
 in `errata.md` records both the silence it filled and the narrowing it cost.
 
+The release-candidate period is when this exception matters most, because a silence is
+cheapest to fill before anyone outside this project has built against it. Nothing in this
+rule confines the exception to that period, and the same bound applies to an erratum issued
+after the freeze, but an erratum issued then is filling a silence a third-party
+implementation may already have chosen its own answer for, which is a cost this rule does not
+waive and a future erratum in that position should weigh accordingly.
+
 The erratum component is documentation for readers of this specification rather than
 information for a program. It appears in two places and nowhere else.
 
 The first is the specification's header, the bold line that opens the status section of
-`README.md`. That line states the level this text carries, and it is the only place any
-document in this set states the current level. No chapter quotes it, because a quotation is a
-copy that goes stale the moment the level advances.
+`README.md`. That line states the level this text carries, suffix included, so a reader learns
+from the header both which correction the text has reached and whether the base is still a
+release candidate; the release-candidate status a later chapter's rule keys on is carried
+there and nowhere else. The header is the only place any document in this set states the
+current level. No chapter quotes it, because a quotation is a copy that goes stale the moment
+the level advances.
 
 The second is the errata log, `errata.md`. Each entry there names the level that erratum
-introduced, so the log holds the history of levels while the header holds the current one.
+introduced, so the log holds the history of levels while the header holds the current one. An
+entry names the number without the suffix, since the number is what a citation uses and the
+suffix describes the state of the text rather than the correction; which side of the release
+an entry sits on is what the log's divider records.
 
 Both destinations exist because a bare version component is useless alone. A level of `2.0.3`
 tells a reader that three corrections have issued and nothing about whether any of them
@@ -138,8 +199,10 @@ A version number in Maize v2 carries exactly the following promises, and a progr
 implementer relying on more than this is relying on something the architecture does not
 guarantee.
 
-- Base `2.0` names one fixed, frozen behavior, identical on every conforming machine.
-- An erratum component on the base names a text correction and never a behavior change.
+- Base `2.0` names one fixed behavior, identical on every conforming machine, frozen for
+  good once this text reaches its release.
+- An erratum component on the base names a text correction, and names a behavior change only
+  where the corrected passage was silent and the errata section's bound permits the change.
 - Extension version `M.n` names one fixed set of assigned encodings and behaviors for that
   extension.
 - Extension version `M.n` implements everything `M.k` implemented for every `k` less than
@@ -164,3 +227,13 @@ A conformance claim names the base version and the exact set of extensions with 
 versions, and the conformance chapter fixes the claim's form and what backs it. The
 relationship between the two chapters is that this one defines what the numbers mean and
 that one defines what it takes to be entitled to write them down.
+
+A conformance claim as that chapter defines it is a claim against the frozen base, and no
+release candidate is entitled to make one: conformance in this architecture presumes a fixed
+target that two implementations cannot diverge against, and a release candidate is, by what
+this chapter has just spent several sections establishing, not yet fixed. What a
+release-candidate test run supports instead, and what the conformance chapter names, is a
+suite result: a statement that a machine passed the suite as it stood at a named erratum
+level. A suite result is not portable the way a conformance claim is, because the suite
+itself can gain a test the next erratum needs, and a result recorded against one erratum
+level says nothing about whether the same machine would pass against the next.

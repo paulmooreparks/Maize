@@ -17,10 +17,14 @@ on.
 
 Freezing the base means that the encoding, the register model, the instruction inventory,
 the trap model, the memory model, the privileged architecture, and the calling convention
-described by the rest of this specification stop changing at ratification and stay stopped.
-A binary assembled against the frozen base runs on every conforming Maize v2 machine that
-will ever exist, whatever extensions that machine also implements, and it observes the same
-architectural state at every step.
+described by the rest of this specification stop changing once the base freezes at the
+release of Maize base `2.0`, and stay stopped forever after. Ratification is a narrower
+event than the freeze: it is what makes a decision or a text change binding from this point
+on, and the versioning chapter states why the base still carries a release-candidate header
+for a period after ratification rather than a frozen one. A binary assembled against the
+frozen base runs on every conforming Maize v2 machine that will ever exist, whatever
+extensions that machine also implements, and it observes the same architectural state at
+every step.
 
 The freeze runs in the other direction too. A machine that implements the base and nothing
 else is a complete Maize v2 machine, not a subset or a profile or a reduced configuration.
