@@ -390,7 +390,7 @@ ratification that froze the result all landed between 2026-07-24 and
 2026-08-12.
 
 - The decision record, `docs/design/maize2-decisions.md`.
-- The ratified specification, `docs/spec-v2/`: twenty chapters, two
+- The ratified specification, `docs/spec-v2/`: twenty chapters, three
   appendices, and a glossary, frozen at base `2.0`.
 
 Exit: met. A competent implementer can build a conforming machine from

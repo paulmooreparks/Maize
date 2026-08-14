@@ -50,7 +50,7 @@ retires from that role as its own v2 port lands.
 ## The Maize v2 ISA Reference
 
 **[The Maize v2 specification](docs/spec-v2/README.md)** is the normative instruction set,
-twenty chapters plus two appendices and a glossary. It states a defined outcome for every
+twenty chapters plus three appendices and a glossary. It states a defined outcome for every
 input, including every invalid one, and it is written so a reader who has never seen the
 C++ source can build a conforming machine from the prose alone. It is not duplicated
 here, because a single frozen source of truth beats two that drift apart.
