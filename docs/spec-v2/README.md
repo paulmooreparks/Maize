@@ -15,7 +15,7 @@ machine is left undefined or implementation-defined by omission.
 
 ## Status
 
-**Maize base `2.0`, erratum level `2.0.2-dev`. Release candidate since 2026-08-12; not yet
+**Maize base `2.0`, erratum level `2.0.3-dev`. Release candidate since 2026-08-12; not yet
 frozen.**
 
 That line is this specification's header, and the versioning chapter refers to it by that

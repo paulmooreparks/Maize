@@ -511,8 +511,14 @@ of them.
   cause and a halt kind of 2, and the handler does not run.
 - A nested trap's frame lies 32 bytes below the outer frame when the handler has not moved the
   trap-stack register.
-- With two interrupt causes pending and enabled, the lower-numbered one is delivered first, and
-  its pending bit is clear at the handler's first instruction while the other's remains set.
+- With two interrupt causes that no device owns pending and enabled, the lower-numbered one is
+  delivered first, its pending bit is clear at the handler's first instruction, and the other
+  cause's pending bit remains set. A device-owned cause's pending bit is also clear the instant
+  delivery runs, but if the device is still asserting the condition it reports, its latch has
+  already set the bit again by the handler's first instruction. That reassertion is the
+  acknowledgement paragraph's own rule in effect, not a delivery defect, so a binary that
+  expects a device-owned cause's bit to read clear at that point is not exercising this
+  guarantee.
 - An interrupt raised during a long `block_copy` is delivered before the copy completes, the
   captured program counter is the `block_copy` instruction's own address, and `trap_return`
   finishes the copy with every byte transferred exactly once.

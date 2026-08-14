@@ -265,3 +265,49 @@ to `$0001` and renames it from `kClassContractVersionPlaceholder` to
 `kClassContractVersionInitial`, since the old name recorded that the value was an unchosen
 placeholder rather than an answer, which is also why no fixture asserted it. A fixture asserts
 it now.
+
+### `2.0.3`, 2026-08-14. The conformance line requiring a clear pending bit at the handler's first instruction cannot hold for a device-owned cause
+
+Chapter and section: `trap-model.md`, "Delivery" and "Conformance notes".
+
+Before, in "Conformance notes":
+
+> - With two interrupt causes pending and enabled, the lower-numbered one is delivered first, and
+>   its pending bit is clear at the handler's first instruction while the other's remains set.
+
+Now, in "Conformance notes":
+
+> - With two interrupt causes that no device owns pending and enabled, the lower-numbered one is
+>   delivered first, its pending bit is clear at the handler's first instruction, and the other
+>   cause's pending bit remains set. A device-owned cause's pending bit is also clear the instant
+>   delivery runs, but if the device is still asserting the condition it reports, its latch has
+>   already set the bit again by the handler's first instruction. That reassertion is the
+>   acknowledgement paragraph's own rule in effect, not a delivery defect, so a binary that
+>   expects a device-owned cause's bit to read clear at that point is not exercising this
+>   guarantee.
+
+Requirement: an implementation clears a cause's pending bit as part of delivery, for every
+cause including one a device owns, and delivery does nothing further about that bit. Whether
+the bit still reads clear at the handler's first instruction depends on whether the interrupt's
+source is a device that has re-latched its condition in the meantime, which the acknowledgement
+paragraph already governs; delivery's own guarantee is directly observable only for a cause no
+device owns, because nothing else touches that cause's bit between delivery and the handler's
+first instruction.
+
+Provenance: the "Delivery" section already required the machine to clear a cause's pending bit
+on delivery, and the acknowledgement paragraph a few lines below it already required a
+device that latches a condition of its own to re-raise the cause until the handler clears the
+device's own latch. The conformance line stated a third thing, that the bit reads clear at the
+handler's first instruction regardless of cause, which the other two passages together make
+false for any cause a device owns: delivery clears the bit, the device's latch is unchanged
+because the handler has not run, and the device reasserts before the handler's first
+instruction. This restates what the delivery and acknowledgement passages already compelled
+between them; it supplies nothing an operator ruling settled, and no conformance test's
+expected result moves. The fixture this bound was checked against,
+`lowest_numbered_deliverable_cause_wins` in `tests/v2/fixtures_interrupts.cpp`, already used
+causes 40 and 45, which belong to no device class this machine carries, so its expected result
+already exercised only the device-free case the corrected line now states. maize-475 found the
+contradiction during implementation of the trap model; maize-466, which implements the pending
+and enable state and the delivery sequence this entry corrects the description of, needs no
+change. A related question, whether an erratum level counts a correction or an issuance, is
+open on card maize-483 and this entry does not depend on its answer.
