@@ -4,7 +4,9 @@ Working state for picking up development. Positioning and milestone sequencing l
 
 ## Where things stand
 
-Milestone 0 (ISA repairs), Milestone 0.5 (stabilization), and the bulk of Milestone 1 (C toolchain) are complete and on `origin/master`. The toolchain runs end to end: C11 source compiles through mzcc, links against the freestanding runtime, and runs on the VM with a working heap, variadic printf, and real errno reporting. CI runs the asm corpus and the C corpus on Linux and Windows, plus a sanitizer leg, as a nightly batch and on demand rather than on every push (maize-318).
+Maize moved to a second instruction set architecture, v2, on 2026-08-12; ROADMAP.md's Phase 3 is the current campaign, and this file's "Landed" section below still describes v1, which is frozen and preserved on the `v1` branch. v2's specification is ratified and frozen at base `2.0` (`docs/spec-v2/`), and the VM, the assembler, and the core machine (privilege levels, the trap model, Sv48 paging, external interrupts) are on `dev`, with the rest of the toolchain, quesOS, and the conformance suite still queued (ROADMAP.md Milestones V3 through V5). The paragraph and bullets below predate that move and describe v1's toolchain as it stood before the freeze; a full pass bringing this section itself up to v2 is filed as maize-472.
+
+Milestone 0 (ISA repairs), Milestone 0.5 (stabilization), and the bulk of Milestone 1 (C toolchain) are complete on the `v1` branch. That toolchain runs end to end there: C11 source compiles through mzcc, links against the freestanding runtime, and runs on the v1 VM with a working heap, variadic printf, and real errno reporting. CI ran the asm corpus and the C corpus on Linux and Windows, plus a sanitizer leg, as a nightly batch and on demand rather than on every push (maize-318), while v1 was still under development.
 
 Landed:
 - ISA: separate carry/overflow flags per operand width; signed and unsigned div/mod; ADC/SBB; MULW/UMULW; the full branch-complement set; the SETcc family with C-friendly synonyms; SAR; NEG; flat-64 pointer model; guaranteed process-start register/stack contract with a System V-style argc/argv/envp block.
@@ -14,16 +16,19 @@ Landed:
 
 ## Build and test
 
-Prereqs: CMake 3.21+ and Ninja. On Windows the compiler is fetched by the bootstrap script; on Linux use system GCC/Clang. The C toolchain additionally needs the submodules (`git submodule update --init --recursive`).
+Prereqs: CMake 3.21+ and Ninja. On Windows the compiler is fetched by the bootstrap script; on Linux use system GCC/Clang.
 
     # Windows (from repo root, no Visual Studio needed)
     scripts\bootstrap-toolchain.ps1
-    scripts\run-tests.ps1
+    scripts\install-mzasm.ps1
+    ctest --test-dir build\windows-llvm-mingw-release
 
     # Linux / WSL (needs ninja on PATH)
-    scripts/run-tests.sh
+    cmake --preset linux-release
+    cmake --build --preset linux-release
+    ctest --test-dir build/linux-release
 
-`run-tests.{ps1,sh}` builds the four tools (maize, mazm, mzld, mzdis) and runs the asm/ corpus, exit 0/1/2. `scripts/run-ctest.sh` compiles and runs the ctest/ C corpus through the full mzcc pipeline and diffs each program's output (and exit status, where asserted) against its committed fixture; its 80 fixtures are also registered as CTest tests (maize-376, `cmake/MaizeCTest.cmake`), so `ctest --test-dir build/<preset> [-jN] [-L <subsystem>] [-R <name>]` selects, parallelises and individually times them. Manual smoke test: `mazm asm/hello.mazm` then `maize asm/hello.mzb` prints "Hello, world!".
+`ctest` runs the whole v2 suite (`cmake/MaizeV2Fixtures.cmake`): the interpreter's own fixtures and the mzasm assembler's, one CTest entry each, all labeled `v2`. `scripts/run-tests.{ps1,sh}` still build and drive `maize.exe`, a v1 binary this branch no longer builds, and `scripts/run-ctest.sh` still drives the v1 mzcc pipeline; both are stale until repointed or retired (maize-473). Manual smoke test: `mzasm asm/v2/hello.mzasm` then `mzvm asm/v2/hello.mzi` prints "hello, maize".
 
 ## Environment notes and gotchas
 
@@ -34,8 +39,10 @@ Prereqs: CMake 3.21+ and Ninja. On Windows the compiler is fetched by the bootst
 
 ## What is next
 
-- The Milestone 1 tail: Unicode source files in the assembler.
-- Milestone 2: the per-instruction specification v1.0 and the cycle cost model, the flagship artifact.
-- Non-blocking ergonomics: the mazm `-Wswitch` cleanup and optimized/Release CMake presets.
+Development continues on v2, not on the items below, which were v1's own backlog before the freeze and are not being pursued.
 
-Task-level detail, priorities, and dependencies live on the `maize` Andoneer workbench.
+- The v1 Milestone 1 tail: Unicode source files in the assembler.
+- The v1 cycle cost model.
+- Non-blocking v1 ergonomics: the mazm `-Wswitch` cleanup and optimized/Release CMake presets.
+
+For what is actually next, see ROADMAP.md's Phase 3 (Milestones V3 through V5) and the `maize` Andoneer workbench, which carries task-level detail, priorities, and dependencies.
