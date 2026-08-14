@@ -20,11 +20,12 @@ check it against the conformance suite. I do not mean that every
 language on earth compiles to Maize.
 
 Speed used to be the asterisk on all of this, and it isn't anymore.
-DOOM, compiled from C, runs at about 65fps with the bytecode still fully
-interpreted, before any optimizing backend or JIT. That result is on
-Maize v1; v2, the machine under active development now, does not have a
-JIT or an optimizing backend of its own yet, and inherits the same case
-once its toolchain reaches that point (Phase 3 below).
+DOOM, compiled from C, runs at about 75fps on Maize v1, its byte code
+JIT-compiled to native host code by a tier-up JIT that landed before the
+move to v2; the interpreter alone reached about 65fps. v2, the machine
+under active development now, does not have a JIT or an optimizing
+backend of its own yet, and inherits the same case once its toolchain
+reaches that point (Phase 3 below).
 
 That raises the ceiling without costing anything. A JIT that preserves
 semantics changes how fast the machine runs and nothing else, so results
@@ -249,12 +250,14 @@ computer, and that stands on its own as both a deliverable and the way
 in for anyone new. Phase 2 was meant to grow the same machine, on the
 same frozen ISA, into something you can live inside.
 
-That growth did not happen on v1. Development stopped on 2026-08-12,
-before any of Milestones 6 through 11 shipped, so everything below is
-the plan as it stood for v1 rather than open work. Storage, a graphical
-session, optimizing compiler backends, a JIT, networking, and
-eventually Linux are all still on the table; Phase 3 below resequences
-them against v2.
+That growth mostly did not happen on v1. Development stopped on
+2026-08-12 with Milestones 6 through 11 largely unbuilt, so most of what
+follows is the plan as it stood for v1 rather than open work. The
+exception is the performance milestone: the tier-up JIT and its paging
+fast path (Milestone 9) did land on v1, and that is where v1's 75fps
+DOOM comes from. Storage, a graphical session, optimizing compiler
+backends, networking, and eventually Linux never got built on v1; Phase
+3 below resequences all of it, the JIT included, against v2.
 
 Version 1.0 is quesOS built out as a Unix-like operating system on
 Maize, with the kernel, a borrowed userland, and a graphical session, on
@@ -328,19 +331,26 @@ and runs.
 
 ## Milestone 9: Performance
 
-The interpreter already runs DOOM smoothly, which suggests what is left
-is optimization rather than rescue work.
+**Status: the JIT and the address-translation fast path shipped on v1;
+the cost model is still open.** This is the one Phase 2 milestone whose
+engineering landed before v1 was frozen.
 
-- A JIT tiers up hot blocks from the interpreter while preserving
-  semantics exactly.
+The interpreter already ran DOOM smoothly, so what was left was
+optimization rather than rescue work.
+
+- A tier-up JIT compiles hot blocks to native host code while preserving
+  semantics exactly. It shipped on v1, on by default, and carries DOOM to
+  about 75fps.
 - A fast path for address translation closes the one gap none of the
   smaller levers touch, since every process under quesOS runs under
-  paging and pays for the translation walk.
-- Determinism survives all of it. A JIT stays bit-identical, and when
+  paging and pays for the translation walk. It shipped alongside the
+  JIT's paged execution path.
+- Determinism survives all of it. The JIT stays bit-identical, and when
   the cost model lands it gets defined in ISA cycles rather than
   wall-clock time so that a JITted Maize can still be metered.
 
-Exit: borrowed software feels native and the cost model still holds.
+Exit: met on v1 for the JIT and the translation fast path; the cost
+model (Milestone 2) is still open.
 
 ## Milestone 10: Networking
 
@@ -368,7 +378,7 @@ done with it.
 
 Maize moved to a second instruction set architecture on 2026-08-12, a
 clean break rather than a revision of v1. This phase is where
-development actually continues; Phase 1 and Phase 2 above are v1's
+development continues; Phase 1 and Phase 2 above are v1's
 history rather than open work.
 
 ## Milestone V0: the v2 specification

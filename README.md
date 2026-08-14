@@ -14,9 +14,10 @@ later rebuilt as a virtual CPU of my own design.
 Maize is on its second instruction set architecture. **Maize v2** is a clean break from the
 first: thirty-two full-width general registers, no condition-flag register, and a
 byte-granular, variable-length encoding built for software decode and for translation to a
-host processor. The specification is the product, and the C++ virtual machine in this
-repository is one implementation of it; a competent implementer can build a second one
-against `docs/spec-v2/` alone. **Maize v1**, the sixteen-register CISC machine this project
+host processor. The specification under `docs/spec-v2/` is the authority for what the
+machine does, and the C++ virtual machine in this repository is one implementation of it;
+somebody can build a second from that specification alone. **Maize v1**, the
+sixteen-register CISC machine this project
 shipped first, is frozen and preserved on the `v1` branch. See "Maize v1" below for what it
 built and where to find it.
 
@@ -51,22 +52,21 @@ retires from that role as its own v2 port lands.
 **[The Maize v2 specification](docs/spec-v2/README.md)** is the normative instruction set,
 twenty chapters plus two appendices and a glossary. It states a defined outcome for every
 input, including every invalid one, and it is written so a reader who has never seen the
-C++ source can build a conforming machine from the prose alone. It is deliberately not
-duplicated here; a single frozen source of truth beats two that drift apart.
+C++ source can build a conforming machine from the prose alone. It is not duplicated
+here, because a single frozen source of truth beats two that drift apart.
 
 Start at `docs/spec-v2/README.md` for the authority chain and the reading routes, or go
 straight to `docs/spec-v2/terminology.md` if you already know what you are looking for. Read
-that chapter regardless of what else you skip: v2's size vocabulary is literal, a word is 64
-bits, a half-word is 32, a quarter-word is 16, and a byte is 8, which breaks with both the
+that chapter even if you skip everything else. v2's size vocabulary is literal: a word is 64
+bits, a half-word is 32, a quarter-word is 16, and a byte is 8. That breaks with both the
 Intel convention and the RISC-V/ARM convention, and a reader carrying either one into the
 later chapters will misread them.
 
 ## Hello, World!
 
 Here is [`asm/v2/hello.mzasm`](asm/v2/hello.mzasm), the first program a person can watch run
-on Maize v2. It writes a greeting one byte at a time to the console's data port and halts,
-which is the shortest straight line from the reset address to an observable byte: no CSR, no
-stack, no call, no trap, no paging.
+on Maize v2. It writes a greeting one byte at a time to the console's data port and then
+halts, using no CSR, stack, call, trap, or paging along the way.
 
     include "devices.mzasm"
 
@@ -207,8 +207,8 @@ Maize v1 is the machine this project shipped first: a sixteen-register CISC desi
 x86 flags lineage, fully specified, with a complete toolchain (`mazm`, `mzld`, `mzdis`,
 `mzcc`) and its own operating system, quesOS, running a borrowed Unix userland (the
 [oksh](https://github.com/ibara/oksh) shell and the
-[sbase](https://core.suckless.org/sbase/) coreutils) and playing DOOM at around 65fps, its
-byte code still fully interpreted.
+[sbase](https://core.suckless.org/sbase/) coreutils) and playing DOOM at around 75fps once a
+tier-up JIT, landed on v1 before the move to v2, compiled its byte code to native host code.
 
 <img src="doom.png" alt="DOOM running on Maize v1" width="480">
 
