@@ -390,21 +390,27 @@ loaded, and `pc_add #0 r10` puts the address of the following instruction there.
 A target the module defines in the same section folds at assembly time, and the assembler checks
 that the displacement fits in a signed 32-bit field. A target that is `extern`, or that lives in
 another section, emits a placeholder of zero and a 32-bit program-counter-relative relocation
-that the linker resolves, and the relocation's numbering and name are deferred to a future
-object-format and linking specification, separate from this document set, which leaves the
-assembler's own behavior fully defined because the bytes it emits are the ones the
-instruction inventory fixes. A displacement that does not fit is a diagnostic, and the assembler does not rewrite the
-branch into a longer sequence, because rewriting one instruction into several is exactly what
-the next section forbids.
+that the linker resolves. The relocation's numbering and name are fixed by the Maize v2 object
+format and linking specification, at `docs/spec-v2-toolchain/object-format.md`, which stands
+outside this specification and carries a version line of its own. That document names this
+relocation `R_MAIZE_PCREL32` and numbers it 3, and the assembler contributes an addend of -4.
+The relocation measures from the first byte of the patched field, the machine measures the
+displacement from the following instruction, and because that field is the last four bytes of
+the instruction, the addend of -4 is what reconciles the two. Nothing in this chapter depends on
+either value, and the assembler's own behavior is fully defined without them because the bytes
+it emits are the ones the instruction inventory fixes. A displacement that does not fit is a
+diagnostic, and the assembler does not rewrite the branch into a longer sequence, because
+rewriting one instruction into several is exactly what the next section forbids.
 
-Exactly one instruction immediate outside the target slots accepts a relocatable
-expression, and it is the immediate of `move.w`, which emits an eight-byte placeholder and
-a 64-bit absolute relocation the linker resolves, under the same deferred numbering as the
-program-counter-relative form. That is what lets startup code write `move.w stack_top r30`
-before any section layout is known. Every other instruction immediate takes a constant
-expression only, and a relocatable expression in one is a diagnostic, matching the rule the
-data directives state, because absolute relocations exist at 32 and 64 bits and nowhere
-narrower.
+Exactly one instruction immediate outside the target slots accepts a relocatable expression, and
+it is the immediate of `move.w`, which emits an eight-byte placeholder and
+a 64-bit absolute relocation the linker resolves, numbered and named by the same object format
+and linking specification, where it is `R_MAIZE_ABS64`, type number 1, and takes an addend equal
+to the constant part of the relocatable expression, and therefore zero for a bare symbol. That
+is what lets startup code write `move.w stack_top r30` before any section layout is known. Every
+other instruction immediate takes a constant expression only, and a relocatable expression in
+one is a diagnostic, matching the rule the data directives state, because absolute relocations
+exist at 32 and 64 bits and nowhere narrower.
 
 ## The pseudo-instruction policy
 

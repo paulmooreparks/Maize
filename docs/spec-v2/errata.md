@@ -445,3 +445,138 @@ corrected text only now says so. Operator ruling, recorded on card maize-483: "I
 publications." No conformance test's expected result moves and no implementation changes,
 because the erratum level is documentation for a reader and is reported by no register and
 named in no conformance claim.
+
+### `2.0.5`, 2026-08-17. The branch-target relocation deferred its numbering and name to a specification that did not exist
+
+Chapter and section: `assembler.md`, "Branch targets, pc_add, and relocations".
+
+Before:
+
+> that the linker resolves, and the relocation's numbering and name are deferred to a future
+> object-format and linking specification, separate from this document set, which leaves the
+> assembler's own behavior fully defined because the bytes it emits are the ones the
+> instruction inventory fixes.
+
+Now:
+
+> that the linker resolves. The relocation's numbering and name are fixed by the Maize v2 object
+> format and linking specification, at `docs/spec-v2-toolchain/object-format.md`, which stands
+> outside this specification and carries a version line of its own. That document names this
+> relocation `R_MAIZE_PCREL32` and numbers it 3, and the assembler contributes an addend of -4.
+> The relocation measures from the first byte of the patched field, the machine measures the
+> displacement from the following instruction, and because that field is the last four bytes of
+> the instruction, the addend of -4 is what reconciles the two. Nothing in this chapter depends on
+> either value, and the assembler's own behavior is fully defined without them because the bytes
+> it emits are the ones the instruction inventory fixes.
+
+Requirement: an assembler emits, for a branch, `jump`, `call`, or `pc_add` target that is
+`extern` or lies in another section, a placeholder of zero and a relocation of type 3,
+`R_MAIZE_PCREL32`, carrying an addend of -4 plus the constant part of the relocatable expression.
+The bytes the assembler emits into the instruction stream are unchanged, and the instruction
+inventory continues to fix them.
+
+Provenance: this restates a requirement the text already bound rather than filling a silence. The
+passage already required a 32-bit program-counter-relative relocation and already stated that its
+numbering and name lived outside this specification; the correction replaces a pointer at a
+document that did not exist with a pointer at one that does, and it names the values that
+document assigns. Operator ruling that the format is an ELF subset, recorded on card maize-417,
+and the numbering recorded as decision D-4 on the same card. No conformance test's expected
+result moves and no conforming machine behaves differently, because no machine can observe an
+object format: a machine sees bytes in memory and the bytes this passage governs are unchanged.
+
+### `2.0.5`, 2026-08-17. The `move.w` relocation deferred its numbering under the same missing specification
+
+Chapter and section: `assembler.md`, "Branch targets, pc_add, and relocations".
+
+Before:
+
+> a 64-bit absolute relocation the linker resolves, under the same deferred numbering as the
+> program-counter-relative form.
+
+Now:
+
+> a 64-bit absolute relocation the linker resolves, numbered and named by the same object format
+> and linking specification, where it is `R_MAIZE_ABS64`, type number 1, and takes an addend equal
+> to the constant part of the relocatable expression, and therefore zero for a bare symbol.
+
+Requirement: an assembler emits, for a `move.w` immediate that names a relocatable expression, an
+eight-byte placeholder and a relocation of type 1, `R_MAIZE_ABS64`, carrying an addend equal to
+the constant part of the relocatable expression and therefore zero for a bare symbol. The
+eight-byte placeholder and the instruction's ten-byte length are unchanged.
+
+Provenance: this restates a requirement the text already bound rather than filling a silence. The
+passage already required a 64-bit absolute relocation and already placed its numbering outside
+this specification. The relocation numbering is decision D-4 on card maize-417. No conformance
+test's expected result moves and no conforming machine behaves differently, for the same reason
+the preceding entry gives.
+
+### `2.0.5`, 2026-08-17. The unwind shape for a frame-pointer-less function deferred to a specification that did not exist
+
+Chapter and section: `abi.md`, "The frame pointer and unwinding".
+
+Before:
+
+> A function that omits the
+> frame pointer is unwound from the metadata its object file carries, and the shape of that
+> metadata is deferred to a future object-format and linking specification, separate from this
+> document set, which leaves nothing here undefined because the unwind metadata is a note about
+> tooling and every rule this chapter states holds without it.
+
+Now:
+
+> A function that omits the
+> frame pointer is unwound from the metadata its object file carries, and the shape of that
+> metadata is fixed by the Maize v2 object format and linking specification, at
+> `docs/spec-v2-toolchain/object-format.md`, which stands outside this specification and carries a
+> version line of its own. That document places the metadata in an `.eh_frame` section and fixes
+> what DWARF call-frame information leaves to a processor supplement, including the DWARF register
+> number of every register and the return-address column. Nothing here is left undefined by that
+> division, because the metadata is a note about tooling and every rule this chapter states holds
+> without it.
+
+Requirement: a producer that emits a function without a frame pointer emits DWARF call-frame
+information for it in an `.eh_frame` section, under the register numbering, alignment factors,
+return-address column, and call-frame instruction subset that the named document fixes. Every
+rule this chapter states about register roles, frame layout, and the frame-pointer chain is
+unchanged, and a function that does use a frame pointer is still unwound by walking that chain.
+
+Provenance: this restates a requirement the text already bound rather than filling a silence. The
+passage already required that such a function be unwound from metadata its object file carries
+and already placed the shape of that metadata outside this specification. The format is decision
+D-6 on card maize-417. No conformance test's expected result moves and no conforming machine
+behaves differently, because call-frame information is read by a debugger or an exception runtime
+and is never read by the machine.
+
+### `2.0.5`, 2026-08-17. The chapter index had no way to mention a normative document outside the specification
+
+Chapter and section: `SUMMARY.md`, "Related documents", a section this entry adds.
+
+Before: the file ended with the appendix table and named no document outside this specification.
+
+Now:
+
+> ## Related documents
+>
+> One normative document sits outside this specification and outside the tables above. The object
+> format and linking specification, at
+> [`../spec-v2-toolchain/object-format.md`](../spec-v2-toolchain/object-format.md), fixes the ELF
+> subset the Maize v2 toolchain emits and consumes: the relocatable object and the linked
+> executable, the section and symbol model, the relocation set, the archive, and the call-frame
+> information a debugger reads. It is not a chapter of the Maize v2 instruction set architecture,
+> and it is versioned on a line of its own, because an object format is a contract between tools
+> rather than a property of the machine, and no conformance binary can observe it. A Maize v2
+> conformance claim names the ISA base version and never names that document's version. The tables
+> above therefore still list every file of the ISA specification, and this document is pointed at
+> from outside them rather than added to one.
+
+Requirement: a reader of the chapter index can reach the object format and linking specification
+and can tell that it is not part of this specification and not named by a conformance claim. The
+index's tables continue to list every file of the Maize v2 instruction set architecture and no
+other file, so a tool or a reader that treats those tables as the definitive file list stays
+correct.
+
+Provenance: this supplies a pointer where the index was silent, and the silence constrained
+nothing, so the addition narrows nothing and moves no answer this specification had already
+given. The placement outside the tables is decision D-2 on card maize-417. No conformance test's
+expected result moves and no implementation changes, because the chapter index is navigation for
+a reader and is named in no conformance claim.

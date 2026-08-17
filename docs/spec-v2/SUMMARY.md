@@ -45,3 +45,17 @@ and the terminology chapter is the one to read first whatever else a reader skip
 | B | [`appendix-b-encoding-quickref.md`](appendix-b-encoding-quickref.md) | Encoding Quick Reference | The length-class table, the operand-byte layout, the slot classes, the escape bytes, and the worked encodings, gathered on one page. Non-normative restatement. |
 | C | [`appendix-c-syscall-surface.md`](appendix-c-syscall-surface.md) | The Syscall Surface | What the machine contributes to a system call, what it deliberately does not, provider selection, and why the block-memory syscalls of v1 have no successor. |
 | D | [`appendix-d-glossary.md`](appendix-d-glossary.md) | Glossary | Every term of art the chapters use, defined once, with the chapter that owns each one named. |
+
+## Related documents
+
+One normative document sits outside this specification and outside the tables above. The object
+format and linking specification, at
+[`../spec-v2-toolchain/object-format.md`](../spec-v2-toolchain/object-format.md), fixes the ELF
+subset the Maize v2 toolchain emits and consumes: the relocatable object and the linked
+executable, the section and symbol model, the relocation set, the archive, and the call-frame
+information a debugger reads. It is not a chapter of the Maize v2 instruction set architecture,
+and it is versioned on a line of its own, because an object format is a contract between tools
+rather than a property of the machine, and no conformance binary can observe it. A Maize v2
+conformance claim names the ISA base version and never names that document's version. The tables
+above therefore still list every file of the ISA specification, and this document is pointed at
+from outside them rather than added to one.

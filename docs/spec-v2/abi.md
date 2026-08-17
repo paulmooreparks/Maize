@@ -121,9 +121,13 @@ fixed offsets, and sets `fp` to the frame address, which is the value `sp` had a
 saved link register lives at `@fp-$8` and the caller's saved frame pointer at `@fp-$10`, so a
 backtrace walks the chain by reading those two words and repeating. A function that omits the
 frame pointer is unwound from the metadata its object file carries, and the shape of that
-metadata is deferred to a future object-format and linking specification, separate from this
-document set, which leaves nothing here undefined because the unwind metadata is a note about
-tooling and every rule this chapter states holds without it.
+metadata is fixed by the Maize v2 object format and linking specification, at
+`docs/spec-v2-toolchain/object-format.md`, which stands outside this specification and carries a
+version line of its own. That document places the metadata in an `.eh_frame` section and fixes
+what DWARF call-frame information leaves to a processor supplement, including the DWARF register
+number of every register and the return-address column. Nothing here is left undefined by that
+division, because the metadata is a note about tooling and every rule this chapter states holds
+without it.
 
 The prologue and epilogue of a frame-pointer function are fixed sequences. A 32-byte frame
 looks like this:
